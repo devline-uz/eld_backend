@@ -30,7 +30,7 @@ export class MobileSyncController {
         rejected: [{ clientId: 'uuid3', code: 'DRIVING_TIME_IMMUTABLE' }],
         serverChanges: [],
         serverTime: '2026-09-11T15:41:00.000Z',
-        hosEngineVersion: '1.0.0',
+        hosEngineVersion: '1.0.1',
         nextSyncAfterSec: 60,
       },
     },

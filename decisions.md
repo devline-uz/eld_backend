@@ -1278,7 +1278,40 @@ few seconds is not. The per-driver budget cannot make §19 unreachable: 300/min 
 driver and each request may carry 500 events, so 60 drivers cover the 300 req/s peak and a real
 fleet needs a small fraction of it.
 
-## D-048 — `HOS_ENGINE_VERSION` stays `1.0.0` after the B-041 gap-resolution fix
+## D-048 — `HOS_ENGINE_VERSION` bumped to `1.0.1` for the B-041 gap-resolution fix (REVERSES the original D-048)
+**Problem:** B-041 changed how `zonedToUtc()` resolves a local time that does not exist, which
+changes RODS day boundaries in midnight-transition zones — a behaviour change to the engine.
+Does `HOS_ENGINE_VERSION` bump? The original D-048 (below, superseded) said no, because the
+drift checker SKIPS the server-vs-`DriverHosSnapshot` comparison when the versions differ
+(tz.md §8), so a bump appears to blind the nightly drift sweep fleet-wide.
+**Options:** (a) bump to `1.0.1` on both sides; (b) keep `1.0.0` because no US home terminal
+can reach the changed code path; (c) bump and special-case the skip.
+**Choice:** (a) — `1.0.1` in `src/modules/hos/hos.constants.ts` and
+`mobile/lib/hos/hos_constants.dart`, byte-identical, both pinned by a literal assertion
+(`hos.constants.spec.ts` and `mobile/test/hos_engine_version_test.dart`).
+**Why:** the original reasoning had the failure mode backwards. An app build already shipped
+with the OLD Dart engine keeps reporting `1.0.0` no matter what the server says. With the
+server also on `1.0.0`, the nightly sweep and `POST /v1/mobile/hos-state` *do* compare two
+engines that genuinely disagree, and any difference is reported as **unexplained drift** —
+`alert.hos_engine_drift` + Sentry, with no clue as to the cause. That is the worst of both
+worlds: the guard is not preserved, it is poisoned. Bumping makes the same disagreement surface
+as `HOS_ENGINE_VERSION_MISMATCH` / `versionMismatch: true`, which names the real cause and
+tells the old app its engine is stale instead of silently trusting it. "Never blind the sweep"
+is also not free-standing: a version-skipped snapshot is now logged as a WARN by
+`HosDriftService.runNightlySweep` (count + `serverVersion`), so the loss of coverage is
+visible and bounded by the app-upgrade rollout rather than silent.
+**Snapshots already stamped `1.0.0`:** left exactly as they are — accepted-and-skipped, NOT
+recomputed and NOT backfilled. `DriverHosSnapshot.hosEngineVersion` records *which engine the
+truck ran*; it is evidence, not a server-owned cache, so rewriting it to `1.0.1` would assert
+that an old app computed with the new rules. No migration or data backfill is needed: the next
+post from each app overwrites the row with its real version, and until then the comparison is
+correctly skipped. Nothing in the codebase compares that column for anything other than the
+skip decision (`HosStateService.compareSnapshot`); the conformance fixtures in
+`eld.docs/hos-conformance/` embed no version string, and `hos-recalc` only stamps
+`HOS_ENGINE_VERSION` onto its own result object (never persisted), so there is no latent
+equality mismatch left anywhere.
+
+### Superseded — original D-048 (`HOS_ENGINE_VERSION` stays `1.0.0`), kept for history
 **Problem:** B-041 changed how `zonedToUtc()` resolves a local time that does not exist, which
 is a change to RODS day boundaries — normally a reason to bump `HOS_ENGINE_VERSION`. But the
 drift checker *skips* the server-vs-`DriverHosSnapshot` comparison whenever the versions differ
@@ -1297,6 +1330,11 @@ fixtures unchanged on TS and Dart. No `HosState` a real FMCSA-regulated driver c
 changes, so there is nothing for a version bump to protect, and keeping the version preserves
 drift coverage. Both engines were changed in the same commit window, so TS and Dart never
 disagree at a given version.
+
+*Status: superseded by the decision above on 2026-09-11 (team-lead call). The factual
+claim it rests on — that the changed branch is unreachable for US terminals — still holds; what
+it got wrong is that an unchanged version number does not keep old and new engines comparable,
+it only hides that they are not.*
 
 ## D-049 — dev's Prisma `connection_limit` set to 4, not tz.md §19's blanket "20" (B-038)
 **Problem:** B-038 found `.env.development`'s `DATABASE_URL` at `connection_limit=10` while

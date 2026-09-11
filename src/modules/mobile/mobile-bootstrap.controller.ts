@@ -26,7 +26,7 @@ export class MobileBootstrapController {
     schema: {
       example: {
         serverTime: '2026-09-11T15:41:00.000Z',
-        hosEngineVersion: '1.0.0',
+        hosEngineVersion: '1.0.1',
         driver: { id: 'drv_1', firstName: 'John', lastName: 'Smith', cdlNumber: 'W8569238', cdlState: 'KY' },
         vehicle: { id: 'veh_1', unitNumber: '4821' },
         device: { id: 'dev_1', serial: 'PT30-001', bleState: 'CONNECTED' },

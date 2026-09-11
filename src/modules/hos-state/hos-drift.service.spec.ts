@@ -1,4 +1,5 @@
 /** TZ §8.6 point 5 — the nightly sweep: paging, version skips, per-driver isolation. */
+import { Logger } from '@nestjs/common';
 import type { DriverHosSnapshot } from '@prisma/client';
 import { HOS_ENGINE_VERSION } from '../hos/hos.constants';
 import { HosDriftService, DRIFT_SWEEP_PAGE_SIZE } from './hos-drift.service';
@@ -62,6 +63,32 @@ describe('HosDriftService.runNightlySweep', () => {
     expect(result.compared).toBe(1);
     expect(result.skippedVersion).toBe(2);
     expect(result.drifted).toBe(0);
+  });
+
+  it('warns out loud when a version bump leaves part of the fleet uncomparable', async () => {
+    const { service } = build([snapshot('a'), snapshot('b', '1.0.0')]);
+    const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    try {
+      const result = await service.runNightlySweep(NOW);
+      expect(result.skippedVersion).toBe(1);
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({ skippedVersion: 1, scanned: 2, serverVersion: HOS_ENGINE_VERSION }),
+        expect.stringContaining('stale, not drifting'),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('says nothing about stale versions when the whole fleet is comparable', async () => {
+    const { service } = build([snapshot('a'), snapshot('b')]);
+    const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    try {
+      await service.runNightlySweep(NOW);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('counts and names the drifting drivers', async () => {

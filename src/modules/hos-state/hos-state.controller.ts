@@ -34,7 +34,7 @@ export class HosStateController {
     schema: {
       example: {
         accepted: true,
-        engineVersion: '1.0.0',
+        engineVersion: '1.0.1',
         versionMismatch: false,
         drift: false,
         server: { driveRemainingSec: 0, shiftRemainingSec: 1140, cycleRemainingSec: 46140, breakRemainingSec: 7440 },

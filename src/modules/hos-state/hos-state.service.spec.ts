@@ -269,6 +269,22 @@ describe('HosStateService.compareSnapshot', () => {
     expect(repo.recordComparison).not.toHaveBeenCalled();
   });
 
+  /**
+   * The concrete post-bump case: a truck still running the pre-B-041 Dart engine reports 1.0.0.
+   * That is a KNOWN engine disagreement, so it must surface as a version skip (which the app
+   * turns into "update the app"), never as unexplained drift.
+   */
+  it('skips a snapshot stamped with the previous engine release (1.0.0)', async () => {
+    const { service, recalc, repo, alertQueue, sentry } = build();
+    const result = await service.compareSnapshot(snapshot({ hosEngineVersion: '1.0.0' }), NOW);
+    expect(HOS_ENGINE_VERSION).not.toBe('1.0.0');
+    expect(result).toMatchObject({ compared: false, skippedVersion: true, drift: false });
+    expect(recalc.computeCurrentState).not.toHaveBeenCalled();
+    expect(repo.recordComparison).not.toHaveBeenCalled();
+    expect(alertQueue.add).not.toHaveBeenCalled();
+    expect(sentry.capture).not.toHaveBeenCalled();
+  });
+
   it('skips a snapshot whose driver no longer exists', async () => {
     const { service, repo } = build(null);
     const result = await service.compareSnapshot(snapshot(), NOW);

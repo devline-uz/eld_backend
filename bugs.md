@@ -1024,7 +1024,10 @@ local time inside the DST gap") had pinned the wrong behaviour as if specified �
 `2025-03-09T06:30:00.000Z` for a 02:30 that never happens, i.e. 01:30 EST, an hour *before* the
 requested time. It now asserts the forward resolution (`07:30Z` = 03:30 EDT) and cites this
 bug. No conformance fixture covered the gap, so all 54 golden fixtures still pass on both
-sides; `HOS_ENGINE_VERSION` stays `1.0.0` (see D-048).
+sides. `HOS_ENGINE_VERSION` was initially left at `1.0.0` (original D-048) and has since been
+bumped to `1.0.1` on both sides — see the rewritten D-048: an app on the old Dart engine keeps
+reporting `1.0.0`, so an unchanged server version turned a real engine disagreement into
+unexplained drift instead of `HOS_ENGINE_VERSION_MISMATCH`.
 
 ## B-040 — `RetentionRepository.parseBound()` read `EldEvent` partition bounds with the JS legacy (local-timezone) Date parser instead of UTC · FIXED
 **Found:** `test/integration/retention.spec.ts`, while building the retention.processor

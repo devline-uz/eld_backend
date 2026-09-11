@@ -85,6 +85,20 @@ export class HosDriftService {
       },
       'HOS engine drift sweep done',
     );
+
+    // A version bump (e.g. 1.0.0 -> 1.0.1 for B-041) makes EVERY un-upgraded app skip the
+    // comparison, so drift coverage silently drops to zero. §8.6 says skip, not alert — but the
+    // sweep must say out loud how much of the fleet it could not check.
+    if (result.skippedVersion > 0) {
+      this.logger.warn(
+        {
+          skippedVersion: result.skippedVersion,
+          scanned: result.scanned,
+          serverVersion: HOS_ENGINE_VERSION,
+        },
+        'HOS drift sweep skipped snapshots reporting a different HOS_ENGINE_VERSION — those apps are stale, not drifting',
+      );
+    }
     return result;
   }
 }
