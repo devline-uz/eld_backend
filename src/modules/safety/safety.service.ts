@@ -1,5 +1,4 @@
 import { Injectable } from '@nestjs/common';
-import type { Prisma } from '@prisma/client';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
 import { OffsetPage } from '../../common/dto/list-query.dto';
@@ -34,7 +33,7 @@ export class SafetyService {
   async updateEvent(id: string, dto: UpdateSafetyEventDto) {
     const event = await this.repo.findById({ id });
     if (!event) throw new AppException(ERROR_CODES.NOT_FOUND, 'Safety event not found.', 404);
-    return this.repo.update({ id }, dto as Prisma.SafetyEventUpdateInput);
+    return this.repo.update({ id }, dto);
   }
 
   /**

@@ -57,6 +57,41 @@ describe('resolveRestartEnd', () => {
   });
 });
 
+/**
+ * The 34 h restart is credited at the 34th hour of the run, so a run whose duration ROUNDS UP
+ * to 34 h (ELD timestamps carry milliseconds) must not be credited before that instant has
+ * actually arrived — crediting it early would wipe the driver's cycle hours a fraction of a
+ * second too soon.
+ */
+describe('resolveRestartEnd — sub-second precision at the 34 h mark', () => {
+  const startMs = new Date('2025-01-14T05:00:00.400Z').getTime();
+  const restRuns = (nowMs: number) => {
+    const segments = buildSegments([{ at: new Date(startMs), status: 'OFF', special: 'NONE' }], new Date(nowMs));
+    return { runs: findRestRuns(segments), now: new Date(nowMs) };
+  };
+
+  it('rounds 33:59:59.600 up to 34 h but does not credit the restart yet', () => {
+    const { runs, now } = restRuns(startMs + 34 * H * 1000 - 400);
+    expect(runs[0].durationSec).toBe(34 * H);
+    expect(resolveRestartEnd(runs, null, now)).toBeNull();
+  });
+
+  it('credits the restart the moment the 34th hour is genuinely reached', () => {
+    const { runs, now } = restRuns(startMs + 34 * H * 1000);
+    expect(resolveRestartEnd(runs, null, now)?.toISOString()).toBe('2025-01-15T15:00:00.400Z');
+  });
+
+  it('falls back to the earlier completed restart when the newest one is a rounding artefact', () => {
+    const { runs, now } = build([[34 * H, 'OFF'], [4 * H, 'D'], [34 * H, 'OFF']]);
+    // Last run is complete; shave the clock so its 34th hour has not arrived yet.
+    const earlyNow = new Date(now.getTime() - 1000);
+    const trimmed = findRestRuns(buildSegments(timeline('2025-01-14T05:00:00Z', [[34 * H, 'OFF'], [4 * H, 'D'], [34 * H - 1, 'OFF']]).events, earlyNow));
+    expect(trimmed[trimmed.length - 1].durationSec).toBe(34 * H - 1);
+    expect(resolveRestartEnd(trimmed, null, earlyNow)?.toISOString()).toBe('2025-01-15T15:00:00.000Z');
+    expect(runs).toHaveLength(2);
+  });
+});
+
 describe('onDutyByDay', () => {
   it('bills on-duty and driving to the local day', () => {
     const { segments } = build([[10 * H, 'OFF'], [2 * H, 'ON'], [3 * H, 'D']]);
@@ -93,6 +128,32 @@ describe('onDutyByDay', () => {
   it('counts a 25-hour day correctly', () => {
     const { segments } = build([[13 * H, 'ON']], '2025-11-02T04:00:00Z');
     expect(onDutyByDay(segments, TZ, null).get('2025-11-02')).toBe(13 * H);
+  });
+});
+
+/**
+ * Day-boundary pathologies. `dayKeysBetween` walks CALENDAR keys, so a key can exist on the
+ * calendar while having no local duration at all; such a day must contribute nothing and must
+ * not swallow the neighbouring days' seconds.
+ */
+describe('onDutyByDay — degenerate local days', () => {
+  it('bills the hour before a midnight DST transition to the correct day (B-041)', () => {
+    // America/Havana springs forward AT midnight on 2026-03-08: 2026-03-07 23:00 local is the
+    // last hour of 03-07 and used to vanish from the cycle entirely.
+    const segments = buildSegments([{ at: new Date('2026-03-08T04:00:00Z'), status: 'ON', special: 'NONE' }], new Date('2026-03-08T05:00:00Z'));
+    const totals = onDutyByDay(segments, 'America/Havana', null);
+    expect(totals.get('2026-03-07')).toBe(H);
+    expect(totals.get('2026-03-08')).toBeUndefined();
+  });
+
+  it('attributes nothing to a calendar date the zone skipped, without losing seconds', () => {
+    // Pacific/Apia jumped from 2011-12-29 to 2011-12-31; the key 2011-12-30 has zero length.
+    const segments = buildSegments([{ at: new Date('2011-12-29T20:00:00Z'), status: 'D', special: 'NONE' }], new Date('2011-12-30T14:00:00Z'));
+    const totals = onDutyByDay(segments, 'Pacific/Apia', null);
+    expect(totals.get('2011-12-30')).toBeUndefined();
+    expect(totals.get('2011-12-29')).toBe(14 * H);
+    expect(totals.get('2011-12-31')).toBe(4 * H);
+    expect([...totals.values()].reduce((a, b) => a + b, 0)).toBe(18 * H);
   });
 });
 

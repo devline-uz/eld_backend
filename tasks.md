@@ -108,24 +108,24 @@ Bootstrap, offline sync, duty-status changes, DVIR, signature capture for the dr
 ## Phase 7 — DVIR and Service
 Full defect reporting and maintenance workflow.
 **Owner:** `eld-fleet-ops`
-- [ ] DVIR module: inspections, defect reporting
-- [ ] Work order module
-- [ ] Maintenance scheduling
-- [ ] DTC (diagnostic trouble code) capture
-- [ ] Defect resolution workflow tied to work orders
-- [ ] DVIR backend fully wired to Figma flows
+- [x] DVIR module: inspections, defect reporting
+- [x] Work order module
+- [x] Maintenance scheduling
+- [x] DTC (diagnostic trouble code) capture
+- [x] Defect resolution workflow tied to work orders
+- [x] DVIR backend fully wired to Figma flows
 **Done when:** DVIR screens functionally complete per Figma · a reported defect traces through to a resolved work order.
 **Depends on:** Phase 2, Phase 6
 
 ## Phase 8 — Reports
 Reporting suite and scheduling.
 **Owner:** `eld-reports-jobs`
-- [ ] IFTA report generation
-- [ ] Activity report
-- [ ] DVIR report
-- [ ] FMCSA compliance package
-- [ ] Report scheduler (BullMQ)
-- [ ] Report storage via S3 adapter
+- [x] IFTA report generation
+- [x] Activity report
+- [x] DVIR report
+- [x] FMCSA compliance package
+- [x] Report scheduler (BullMQ)
+- [x] Report storage via S3 adapter
 **Done when:** Reports section functionally complete per Figma · scheduled reports run and land in storage without manual trigger.
 **Depends on:** Phase 4, Phase 5, Phase 7
 
@@ -144,14 +144,14 @@ FMCSA data transfer file generation.
 ## Phase 10 — Operations
 Dispatch and safety features.
 **Owner:** `eld-fleet-ops` (trips, safety, geofences, messaging) · `eld-reports-jobs` (notifications: rules, delivery, alert processor) · support: `eld-realtime-offline` (in-app + push delivery)
-- [ ] Trips module: dispatch, trip lifecycle — `eld-fleet-ops`
-- [ ] Safety module: harsh events, scoring, coaching — `eld-fleet-ops`
-- [ ] Geofences module — `eld-fleet-ops`
-- [ ] Messaging module: chat, broadcast — `eld-fleet-ops`
-- [ ] Notification rules and channels (`SMS` rejected with `422 CHANNEL_NOT_AVAILABLE`) — `eld-reports-jobs`
-- [ ] Alert processor (BullMQ): throttle, cooldown, quiet hours — `eld-reports-jobs`
-- [ ] In-app and FCM delivery path for alerts — `eld-realtime-offline`
-- [ ] WebSocket gateway wiring for real-time dispatch/safety updates — `eld-realtime-offline`
+- [x] Trips module: dispatch, trip lifecycle — `eld-fleet-ops`
+- [x] Safety module: harsh events, scoring, coaching — `eld-fleet-ops`
+- [x] Geofences module — `eld-fleet-ops`
+- [x] Messaging module: chat, broadcast — `eld-fleet-ops`
+- [x] Notification rules and channels (`SMS` rejected with `422 CHANNEL_NOT_AVAILABLE`) — `eld-reports-jobs`
+- [x] Alert processor (BullMQ): throttle, cooldown, quiet hours — `eld-reports-jobs`
+- [x] In-app and FCM delivery path for alerts — `eld-realtime-offline`
+- [x] WebSocket gateway wiring for real-time dispatch/safety updates — `eld-realtime-offline`
 **Done when:** Dispatch and Safety sections functionally complete per Figma · a harsh-event trigger produces a scored, coachable record and a notification.
 **Depends on:** Phase 3, Phase 6
 
@@ -171,12 +171,12 @@ Carrier profile, integrations, API access, support tooling.
 ## Phase 12 — Hardening
 Load, security, monitoring, backup, and long-run HOS verification before production readiness.
 **Owner:** `eld-security` · support: `eld-qa-test`, `eld-devops`
-- [ ] Load test suite (k6) against acceptance p95 targets
-- [ ] Security review: threat model, attack-surface pass
-- [ ] Monitoring/alerting for API and worker containers
-- [ ] Backup exercise (restore drill, not just backup creation)
-- [ ] 7-day HOS drift monitoring window (TS vs Dart) in a near-production setting
-- [ ] CI gate wiring for all coverage thresholds (see Global gates)
+- [x] Load test suite (k6) against acceptance p95 targets — `test/load/k6-acceptance.js`, run twice against dev; see B-037/B-038/B-039, D-044
+- [x] Security review: threat model, attack-surface pass (`docs/threat-model.md`; B-027…B-035)
+- [x] Monitoring/alerting for API and worker containers — real `WorkerHeartbeatService`/`QueueDepthService` liveness+metrics (B-024 follow-up), `docker/prometheus/{prometheus,alerts}.yml`, real `@sentry/node` client
+- [x] Backup exercise (restore drill, not just backup creation) — `scripts/restore-drill.sh`, run for real against prod, see B-026 and `docs/deploy.md` restore log
+- [ ] 7-day HOS drift monitoring window (TS vs Dart) in a near-production setting — infra/schedule/metric/procedure in place (nightly `hos-drift` job + `onebook_sentry_captures_total{fingerprint="hos_engine_drift"}`); the 7-day elapsed observation itself has NOT run — cannot complete within this session
+- [x] CI gate wiring for all coverage thresholds (see Global gates) — `.github/workflows/ci.yml`, every gate command verified locally
 - [ ] Final compliance-checklist sign-off pass
 **Done when:** k6 report shows p95 within target · 7-day HOS drift window shows zero unexplained drift · backup restore drill succeeds · all CI gates pass on the release candidate.
 **Depends on:** all prior phases
@@ -190,14 +190,14 @@ From TZ §25 — apply across every phase, not just at the end:
 - [x] Dev and prod schemas identical (`db:check-drift` clean)
 - [ ] Every new endpoint links to at least one Figma screen
 - [x] Relevant compliance-checklist items are checked off as work lands
-- [ ] p95 does not exceed target (k6 report)
+- [ ] p95 does not exceed target (k6 report) — throttle bug fixed (B-037), but DB-pool exhaustion (B-038) + heavy concurrent-agent contention on this box made the run unrepresentative; not certifiable either way from this data, see D-044
 - [x] Permission test written for every role
 
 CI coverage gates (hard gates):
-- [x] `hos/` (TS) coverage ≥ 95%
-- [x] `common/units/` coverage = 100%
+- [x] `hos/` (TS) coverage ≥ 95% — per-file gate Jest actually enforces now passes: every `hos/` file 100% stmts/branch/funcs/lines (`npx jest --coverage --selectProjects unit`), B-039 FIXED (found and fixed B-041 while covering `cycle.ts:48`)
+- [x] `common/units/` coverage = 100% — verified `npx jest --coverage`: 100/100/100/100
 - [x] TS/Dart HOS conformance fixture match = 100%
-- [ ] `db:check-drift` clean (dev vs prod schema) on every CI run
+- [ ] `db:check-drift` clean (dev vs prod schema) on every CI run — gate is wired into `.github/workflows/ci.yml` and works (verified locally); left unchecked because dev currently has 5 migrations not yet `migrate deploy`'d to prod (concurrent Phase-work-in-progress), so the box itself is not clean right now — deploying those to prod is outside this task's scope
 
 ## Compliance checklist
 From TZ §23 — authoritative wording lives in `tz.md` §23.
@@ -210,9 +210,9 @@ From TZ §23 — authoritative wording lives in `tz.md` §23.
 - [x] Malfunction/diagnostic conditions are auto-detected
 - [x] Output file format matches Appendix A (including in TEST mode)
 - [x] Email transfer goes only to the `fmcsa.dot.gov` domain
-- [ ] RODS retained 6 months, audit retained 24 months
+- [x] RODS retained 6 months, audit retained 24 months
 - [x] Location precision: on-duty 1 mile, Personal Conveyance 10 miles
-- [ ] All timestamps stored in UTC, converted to carrier region only for display
+- [x] All timestamps stored in UTC, converted to carrier region only for display
 - [x] DST transitions correctly produce 23- or 25-hour days
 - [x] Odometer offset applied correctly and calibration audited
 - [x] Metric → imperial conversion is 100% test covered

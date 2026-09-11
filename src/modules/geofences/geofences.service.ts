@@ -1,5 +1,4 @@
 import { Injectable } from '@nestjs/common';
-import type { Prisma } from '@prisma/client';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
 import { CreateGeofenceDto, UpdateGeofenceDto } from './dto/geofences.dto';
@@ -20,12 +19,12 @@ export class GeofencesService {
   }
 
   create(dto: CreateGeofenceDto) {
-    return this.repo.create(dto as Prisma.GeofenceCreateInput);
+    return this.repo.create(dto);
   }
 
   async update(id: string, dto: UpdateGeofenceDto) {
     await this.get(id);
-    return this.repo.update({ id }, dto as Prisma.GeofenceUpdateInput);
+    return this.repo.update({ id }, dto);
   }
 
   async remove(id: string) {

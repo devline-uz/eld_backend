@@ -1,0 +1,39 @@
+# OneBook ELD — Prometheus scrape config (tz.md §22.5).
+#
+# Scrapes both containers independently: the API's own HTTP `/metrics` and the worker's
+# bare `/metrics` listener on WORKER_HEALTH_PORT (src/worker.ts — the worker has no Nest
+# HTTP stack, see B-024 in backend/bugs.md for why it needed its own liveness surface).
+# Not wired into docker-compose.yml as a running service — this file is handed to whatever
+# Prometheus instance the box already runs (or will run), same as docker/caddy/Caddyfile is
+# handed to the box's live Caddy config rather than run by this compose file.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - alerts.yml
+
+scrape_configs:
+  - job_name: onebook-api-prod
+    static_configs:
+      - targets: ["api:3000"]
+        labels: { env: prod, service: api }
+
+  - job_name: onebook-worker-prod
+    static_configs:
+      - targets: ["worker:3002"]
+        labels: { env: prod, service: worker }
+
+  - job_name: onebook-api-dev
+    static_configs:
+      - targets: ["api-dev:3001"]
+        labels: { env: dev, service: api }
+
+  # Not part of docker-compose.yml (same as node_exporter for DiskUsageHigh) — stand up
+  # postgres_exporter pointed at the shared onebook-postgres instance and hand it this job
+  # so PostgresConnectionsNearLimit / EldDevConnectionsNearLimit (alerts.yml, B-038) can fire.
+  - job_name: onebook-postgres
+    static_configs:
+      - targets: ["postgres_exporter:9187"]
+        labels: { env: shared, service: postgres }

@@ -30,7 +30,7 @@ describe('DefectsService (TZ §5.10 out-of-service rule)', () => {
   });
 
   it('404s resolving a defect that does not exist', async () => {
-    repo.findById.mockResolvedValue(null as never);
+    repo.findById.mockResolvedValue(null);
     await expect(service.resolve('missing', { status: 'REPAIRED' }, 'user_1')).rejects.toBeInstanceOf(AppException);
   });
 

@@ -98,6 +98,12 @@ export const ERROR_CODES = {
   /** §13.4 — a change `type` the server does not recognise (client is ahead of the server). */
   SYNC_UNKNOWN_CHANGE_TYPE: 'SYNC_UNKNOWN_CHANGE_TYPE',
 
+  // --- reports (TZ §15) -----------------------------------------------------
+  REPORT_NOT_FOUND: 'REPORT_NOT_FOUND',
+  REPORT_NOT_READY: 'REPORT_NOT_READY',
+  REPORT_SCHEDULE_NOT_FOUND: 'REPORT_SCHEDULE_NOT_FOUND',
+  INVALID_CRON_EXPRESSION: 'INVALID_CRON_EXPRESSION',
+
   // --- storage / integrations (TZ §16, §17) -------------------------------
   FILE_TOO_LARGE: 'FILE_TOO_LARGE',
   UNSUPPORTED_FILE_TYPE: 'UNSUPPORTED_FILE_TYPE',

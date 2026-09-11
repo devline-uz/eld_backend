@@ -32,11 +32,22 @@ if [[ -z "$PROD_URL" ]]; then
   exit 2
 fi
 
-DB_NAME="$(node -e "console.log(new URL(process.env.PROD_URL).pathname.replace(/^\//, ''))" PROD_URL="$PROD_URL" 2>/dev/null || true)"
+DB_NAME="$(PROD_URL="$PROD_URL" node -e "console.log(new URL(process.env.PROD_URL).pathname.replace(/^\//, ''))" 2>/dev/null || true)"
 if [[ "$DB_NAME" != "onebook_eld" ]]; then
   echo "backup: refusing to run — PROD_DATABASE_URL does not point at onebook_eld (got \"$DB_NAME\")." >&2
   exit 1
 fi
+
+# B-026: `pg_dump` runs INSIDE the postgres container (`docker exec`), which listens on its
+# own 127.0.0.1:5432 — the host-side DSN's port (55432, the published mapping) is not
+# reachable from inside the container's own network namespace, and `pg_dump` also rejects
+# Prisma's `?connection_limit=N` query parameter outright ("invalid URI query parameter").
+# Rebuild a container-local DSN, same credentials/db, host=127.0.0.1 port=5432, no query string.
+CONTAINER_URL="$(PROD_URL="$PROD_URL" node -e "
+const u = new URL(process.env.PROD_URL);
+u.hostname = '127.0.0.1'; u.port = '5432'; u.search = '';
+console.log(u.toString());
+")"
 
 mkdir -p "$BACKUP_DEST"
 TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -44,8 +55,8 @@ DUMP_FILE="$BACKUP_DEST/onebook_eld_${TIMESTAMP}.dump"
 
 echo "backup: dumping onebook_eld -> $DUMP_FILE"
 
-docker exec -e PGPASSWORD_UNUSED=1 "$CONTAINER" pg_dump \
-  --dbname "$PROD_URL" \
+docker exec "$CONTAINER" pg_dump \
+  --dbname "$CONTAINER_URL" \
   --format=custom \
   --file=/tmp/onebook_eld_backup.dump
 

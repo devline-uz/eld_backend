@@ -1,7 +1,8 @@
-import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiCreatedResponse, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Perm } from '../../common/decorators/perm.decorator';
+import { DriverGuard } from '../../common/guards/driver.guard';
 import { zodBody } from '../../common/pipes/zod-validation.pipe';
 import type { ContextUser } from '../../core/context/request-context';
 import {
@@ -31,6 +32,10 @@ export class LogsController {
   constructor(private readonly logs: LogsService) {}
 
   @Post('edit-requests/:id/accept')
+  // §395.30(c)(1) — the DRIVER resolves a carrier proposal, nobody else. Without this guard
+  // any authenticated principal (a permission-less back-office user, an unscoped API key)
+  // could activate a carrier edit without the driver ever seeing it (bugs.md B-0NN).
+  @UseGuards(DriverGuard)
   @ApiOperation({
     summary:
       'Driver accepts a carrier edit (§395.30): the proposal becomes the active record and the original is marked Inactive — Changed.',
@@ -64,6 +69,7 @@ export class LogsController {
   }
 
   @Post('edit-requests/:id/reject')
+  @UseGuards(DriverGuard)
   @ApiOperation({ summary: 'Driver rejects a carrier edit (§395.30): the request is closed, the log is unchanged.' })
   @ApiCreatedResponse({ description: 'The request is closed and the log is untouched.', schema: { example: { id: 'edt_1', status: 'REJECTED', resolvedAt: '2026-09-11T15:41:00.000Z', driverComment: 'I was off duty, not on duty.' } } })
   @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.NOT_FOUND, 'Edit request not found.'), apiError.conflict(ERROR_CODES.EDIT_ALREADY_RESOLVED, 'This edit request was already accepted or rejected.')] })

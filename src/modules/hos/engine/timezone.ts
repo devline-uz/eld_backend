@@ -41,9 +41,14 @@ export interface WallClock {
   second: number;
 }
 
-/** Local wall-clock fields of `instant` in `timeZone`. */
-export function wallClock(timeZone: string, instant: Date): WallClock {
-  const parts = formatter(timeZone).formatToParts(instant);
+/**
+ * Wall-clock fields out of `Intl` parts. Exported so the missing-part fallback is testable:
+ * every ICU build emits all six numeric fields for the options in `formatter()`, so the `0`
+ * default is only reachable for a parts list that is missing a field — it exists so a hostile
+ * or stripped-down ICU degrades to a defined instant instead of `NaN` propagating into the
+ * day boundaries (a `NaN` day key would silently drop a whole RODS day from the cycle).
+ */
+export function wallClockFromParts(parts: Intl.DateTimeFormatPart[]): WallClock {
   const get = (type: string): number => {
     const part = parts.find((p) => p.type === type);
     return part ? Number(part.value) : 0;
@@ -51,6 +56,11 @@ export function wallClock(timeZone: string, instant: Date): WallClock {
   // `en-US` renders midnight as hour 24 under some ICU versions even with hourCycle h23.
   const hour = get('hour') % 24;
   return { year: get('year'), month: get('month'), day: get('day'), hour, minute: get('minute'), second: get('second') };
+}
+
+/** Local wall-clock fields of `instant` in `timeZone`. */
+export function wallClock(timeZone: string, instant: Date): WallClock {
+  return wallClockFromParts(formatter(timeZone).formatToParts(instant));
 }
 
 /** Offset of `timeZone` at `instant`, in milliseconds east of UTC. */
@@ -78,9 +88,20 @@ export function dayKey(timeZone: string, instant: Date): string {
  */
 export function zonedToUtc(timeZone: string, w: WallClock): Date {
   const naive = Date.UTC(w.year, w.month - 1, w.day, w.hour, w.minute, w.second);
-  let ts = naive - offsetMs(timeZone, new Date(naive));
-  ts = naive - offsetMs(timeZone, new Date(ts));
+  const first = naive - offsetMs(timeZone, new Date(naive));
+  const ts = naive - offsetMs(timeZone, new Date(first));
+  // A local time inside the spring-forward gap does not exist, and the second pass lands on the
+  // wrong side of it: the corrected instant renders as a DIFFERENT wall clock (the last moment
+  // before the transition). Resolve such times forward, to the later candidate. This matters for
+  // zones that transition AT midnight (America/Havana, America/Santiago): without it `dayStart`
+  // disagrees with `dayKey`, and `onDutyByDay` silently drops the hour before the transition.
+  if (ts !== first && stamp(wallClock(timeZone, new Date(ts))) !== stamp(w)) return new Date(Math.max(first, ts));
   return new Date(ts);
+}
+
+/** A wall clock collapsed to one comparable number (not an instant — no zone applied). */
+function stamp(w: WallClock): number {
+  return Date.UTC(w.year, w.month - 1, w.day, w.hour, w.minute, w.second);
 }
 
 /** Parses "YYYY-MM-DD". */

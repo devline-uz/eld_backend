@@ -112,4 +112,16 @@ export const FIGMA_UNMAPPED_ROUTES: Record<string, string> = {
   // the role-guide exports do not capture it separately from the pages it overlays.
   'GET /api/notifications': 'In-app notification bell (TZ §14) — not a distinct screen in the role-guide export.',
   'POST /api/notifications/read-all': 'In-app notification bell "mark all read" (TZ §14) — same as above.',
+  // Reports (TZ §11.6/§15). Only the IFTA and FMCSA-pack tabs of the Reports screen were
+  // exported (p.20/p.21) — the generic generate/list/status/download/schedule flow and the
+  // Activity/DVIR report tabs are not captured as separate role-guide pages.
+  'POST /api/reports/generate': 'Reports — generic "Generate report" action, no separate role-guide page beyond the IFTA/FMCSA tabs (p.20/p.21).',
+  'GET /api/reports': 'Reports — job list/history, not a distinct role-guide page.',
+  'GET /api/reports/schedules': 'Reports — schedule list, not a distinct role-guide page.',
+  'POST /api/reports/schedules': 'Reports — "New schedule" action, not a distinct role-guide page.',
+  'PATCH /api/reports/schedules/{id}': 'Reports — edit schedule, not a distinct role-guide page.',
+  'GET /api/reports/activity': 'Reports — Activity tab; role-guide export only captured the IFTA/FMCSA tabs (p.20/p.21).',
+  'GET /api/reports/dvir': 'Reports — DVIR tab; role-guide export only captured the IFTA/FMCSA tabs (p.20/p.21).',
+  'GET /api/reports/{id}': 'Reports — job status polling, not a distinct role-guide page.',
+  'GET /api/reports/{id}/download': 'Reports — download action shared by every report tab, not a distinct role-guide page.',
 };

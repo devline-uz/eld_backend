@@ -66,6 +66,9 @@ class FakeRepo {
   events: FakeEvent[] = [poolEvent(1n, '2026-06-01T12:00:00Z'), poolEvent(2n, '2026-06-01T13:00:00Z', 1)];
   driver: Record<string, unknown> | null = { id: DRIVER, username: 'jsmith', homeTerminalTimezone: 'America/New_York' };
 
+  /** §395.32 — driver↔unit association for a self-claim; flipped to false by the IDOR test. */
+  associated = true;
+  hasDriverVehicleAssociation = jest.fn(async () => this.associated);
   findSegment = jest.fn(async () => this.segment);
   listSegments = jest.fn(async () => ({ items: [this.segment], total: 1, page: 1, limit: 25, totalPages: 1 }));
   findDriver = jest.fn(async () => this.driver);
@@ -239,6 +242,32 @@ describe('annotation and driver confirmation', () => {
     expect(writer.rows).toHaveLength(0);
     expect(audit.insert).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'UNIDENTIFIED_CONFIRM_DECLINED' }),
+    );
+  });
+
+  it('refuses a self-claim for a unit the driver never operated (§395.32 IDOR regression)', async () => {
+    const { service, repo, writer, audit } = build();
+    repo.associated = false;
+
+    await expect(
+      service.confirm('seg-1', { accept: true }, { id: 'driver-2', type: 'driver' }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN', status: 403 });
+
+    // Nothing was attributed: another driver's unidentified driving stays in the pool.
+    expect(writer.rows).toHaveLength(0);
+    expect(repo.updateSegment).not.toHaveBeenCalled();
+    expect(audit.insert).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'UNIDENTIFIED_CONFIRM_DENIED' }),
+    );
+  });
+
+  it('checks the association against the segment vehicle and end time, not client input', async () => {
+    const { service, repo } = build();
+    await service.confirm('seg-1', { accept: true }, { id: DRIVER, type: 'driver' });
+    expect(repo.hasDriverVehicleAssociation).toHaveBeenCalledWith(
+      DRIVER,
+      'veh-1',
+      new Date('2026-06-01T13:00:00Z'),
     );
   });
 });

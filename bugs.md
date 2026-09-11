@@ -646,3 +646,404 @@ then `DELETE FROM "DailyLog" WHERE "driverId" = '98d7607c-a196-48c7-a4f2-0a82f9f
 regenerates from the clean event set next time anything reads the log (or just run
 `npm run db:seed` again if a full reset is acceptable). Until then,
 `test/integration/seed-shape.spec.ts` has exactly one known-red assertion, and it is this one.
+
+## B-024 — worker.ts failed to boot at all: `TransferProcessor` needed `AuditRepository` but `WorkersModule` never imported `AuditModule` · FIXED
+**Found:** Phase 10 (`eld-reports-jobs`/`eld-fleet-ops`), while smoke-testing `node dist/worker.js`
+after wiring `AlertProcessor`/`SafetyDetectProcessor` into `WorkersModule`. Not caused by this
+phase's own code — `TransferProcessor` (Phase 9, `eld-compliance-rods`) injects
+`TransfersService`, which injects `AuditRepository` (`transfers.service.ts:11,53`), but
+`TransfersModule` only imports `AuditModule` for its own internal use and does not re-export it,
+so `WorkersModule` — which imports `TransfersModule` but never `AuditModule` directly — could
+not resolve the dependency. Nest's DI failed at boot with
+`UnknownDependenciesException: Nest can't resolve dependencies of the TransferProcessor (…, ?).
+Please make sure that the argument AuditRepository at index [3] is available in the
+WorkersModule module.` This meant the ENTIRE worker container — every processor, not just
+transfers — never started, silently breaking hos-recalc, retention, webhooks and everything else
+that has been shipping since Phase 4.
+**Severity:** Critical (worker container down = no async processing at all in any environment
+that runs `node dist/worker.js`, e.g. prod/staging compose). Not caught earlier because unit
+tests mock module wiring away and no e2e/integration suite boots the actual `WorkerAppModule`.
+**Fix:** Added `AuditModule` to `WorkersModule`'s `imports` (`src/workers/workers.module.ts`) —
+one line, since `AuditRepository` only needs to be resolvable in `WorkersModule`'s injector
+tree, not re-exported by `TransfersModule` itself (Nest resolves parent providers per-module,
+not per-processor). Verified with `node dist/worker.js` against the real dev Redis/Postgres:
+boots clean, logs "Worker started — BullMQ processors registered", and immediately drains the
+existing `hos.recalc` backlog with no DI errors.
+**Suggested follow-up (not done here, out of Phase 10 scope):** add a cheap boot-smoke test
+(e.g. `Test.createTestingModule({ imports: [WorkerAppModule] }).compile()`) to CI so a future
+processor added to `WorkersModule` without its transitive dependency's module can't reach
+main/prod again.
+
+## B-025 — `npm run build` broke after `@aws-sdk/lib-storage` was bumped to 3.1130.0 (peer now requires `client-s3` ^3.1130.0, whose stricter `Body` type no longer accepted `NodeJS.ReadableStream`) · FIXED
+**Found:** Phase 10, running `npm install @nestjs/websockets @nestjs/platform-socket.io
+socket.io` for the realtime gateway triggered a full dependency re-resolution, which surfaced
+(but did not cause) a pre-existing incompatibility: `package.json` already pinned
+`@aws-sdk/lib-storage: ^3.1130.0` (bumped by another concurrent phase's work on file uploads)
+while `@aws-sdk/client-s3`/`@aws-sdk/s3-request-presigner` were still `^3.699.0`. `lib-storage`
+3.1130.0's `package.json` declares a peer `"@aws-sdk/client-s3": "^3.1130.0"`, so any fresh
+`npm install` pulls `client-s3` up to 3.1130.0 too — whose `PutObjectCommand.Body` narrowed to
+`StreamingBlobPayloadInputTypes`, which (post-bump) no longer structurally accepts the
+`NodeJS.ReadableStream` interface `S3StorageService.putStream()` was typed to take; only a
+concrete `stream.Readable` satisfies it now.
+**Severity:** High — `npm run build` failed for the whole repo, blocking every agent.
+**Fix:** `src/core/storage/s3-storage.service.ts` — cast the `Body:` argument in the
+`Upload({...})` params to `stream.Readable` at the one call site (`putStream`). No behaviour
+change (any readable stream works identically at runtime; only the type-checker's view of the
+parameter differs). Did not touch `StoragePort`'s public `putStream?()` signature — that is
+another phase's interface and the fix does not need to widen or narrow it.
+**Verified:** `npm run build` and `npm run lint` both clean afterward.
+
+## B-026 — `scripts/backup.sh` would fail on its first real run: `pg_dump` rejects Prisma's `?connection_limit=N` query param, and running inside the postgres container can't reach the host-published port · FIXED
+**Found:** Phase 12, writing `scripts/restore-drill.sh` and actually executing it (not just
+reading `backup.sh`) against real prod. `PROD_DATABASE_URL`/`.env.production`'s `DATABASE_URL`
+is `postgresql://eld_prod:...@127.0.0.1:55432/onebook_eld?connection_limit=20` (Prisma-style —
+`connection_limit` is a Prisma connection-pool parameter, not a real libpq URI parameter).
+Passing that DSN straight to `pg_dump`/`psql` fails immediately: `invalid URI query parameter:
+"connection_limit"`. Separately, `backup.sh` runs `pg_dump` via `docker exec onebook-postgres`
+— i.e. *inside* the postgres container — but kept the host-side DSN's port (`55432`, the
+compose-published host mapping); the container's own postgres listens on `5432`, and `55432` is
+not reachable from inside the container's own network namespace (`Connection refused`). Either
+bug alone means `backup.sh` had never actually produced a dump; both were silent until an actual
+execution — `backup.sh`'s existing description/comments read as complete and had no other
+script exercising it. A third, more fundamental bug in the same guard: `DB_NAME=$(node -e "..."
+PROD_URL="$PROD_URL")` passed `PROD_URL=...` as a trailing shell *argument* to `node`, not a
+prefix env-var assignment — `process.env.PROD_URL` was therefore always `undefined` inside the
+script (Node's own argv, not env), so `DB_NAME` was always empty and the script always exited
+with "refusing to run — PROD_DATABASE_URL does not point at onebook_eld" no matter what DSN was
+given. This is the bug that surfaced first when actually running it.
+**Severity:** Critical (tz.md §22.4: "a backup that has never been restored is not a backup" —
+worse here, a backup that has never even been *taken* is not a backup; this would have been
+discovered for the first time during a real incident).
+**Fix:** `scripts/backup.sh` — env-var-for-command now uses the correct prefix form
+(`PROD_URL="$PROD_URL" node -e "..."`, not a trailing argument) for both the `DB_NAME` guard
+and the new container-local, query-string-free DSN builder (`host=127.0.0.1`, `port=5432`, same
+user/pass/db) used for `pg_dump` inside the container. `scripts/restore-drill.sh` (new, same
+task) uses the same prefix form throughout and additionally builds a query-string-free
+*host-side* DSN for the `psql` row-count check that runs on the host, not in the container.
+**Verified:** `bash scripts/backup.sh` against real prod produced an actual 211 KB dump file at
+`BACKUP_DEST` (previously: always refused to run). `bash scripts/restore-drill.sh` against the
+real prod DB (`onebook_eld`, empty — 0 rows in every checked table) end to end: fresh
+`pg_dump`, scratch DB `onebook_eld_restore_drill_<pid>_<rand>` created, `pg_restore`d into, row
+counts compared (0=0 across `User`/`Driver`/`Vehicle`/`EldEvent`/`DailyLog`/`AuditLog`),
+`eld_prod`'s `UPDATE`/`DELETE` privileges on `EldEvent` and `AuditLog` confirmed `false`
+post-restore (append-only preserved), scratch DB dropped on exit. Full output in the Phase 12
+session report.
+
+## B-027 — any authenticated principal could accept a carrier's §395.30 log edit on the driver's behalf · FIXED
+**Found:** Phase 12 security review, grepping every route's authorization decorator against the
+route it guards (`src/common/guards/route-surface.ts`). `POST /logs/edit-requests/:id/accept` and
+`.../reject` carried **no** `@Perm` and no `DriverGuard`; the only scoping was
+`if (actor.type === 'driver' && actor.id !== request.driverId)` inside
+`LogsService.loadPendingRequest`, which does nothing at all for a non-driver actor. A
+permission-less back-office user, or an API key with an empty `scopes` array, could therefore
+activate a carrier-proposed edit: the proposal (`recordStatus = 3`) became the active record and
+the original was marked Inactive — Changed, with no driver involvement. The same person who
+proposes an edit could accept it.
+**Severity:** Critical — defeats 49 CFR §395.30(c)(1) and the tz.md §23 checklist line "edits are
+proposals only; never take effect without driver certification". This is HOS falsification, not a
+permission nit.
+**Fix:** `@UseGuards(DriverGuard)` on both routes (`logs.controller.ts`) plus defence in depth in
+`LogsService.loadPendingRequest` — a non-driver actor now gets `403 DRIVER_CONTEXT_REQUIRED`
+before anything is read. Regression tests: `logs.service.spec.ts` ("never lets a back-office user
+or API key activate a proposal") and `route-surface.spec.ts` ("keeps the §395.30 accept/reject
+pair on a driver token only").
+
+## B-028 — a driver could claim any other driver's unidentified-driving segment · FIXED
+**Found:** Same pass. `UnidentifiedService.confirm` with `accept: true` assigned the segment to
+`actor.id` with no check that the driver had anything to do with the segment's vehicle. Claiming is
+not self-harm: the segment leaves the unidentified pool, so driver A absorbing driver B's driving
+hides it from B's record (and from the carrier's "was this you?" queue).
+**Severity:** High — §395.32 attribution integrity; an HOS-hiding path reachable with nothing but a
+valid driver token and a segment id.
+**Fix:** `UnidentifiedRepository.hasDriverVehicleAssociation(driverId, vehicleId, at)` (assignment,
+or the last LOGIN/LOGOUT event on that unit before the segment end being a LOGIN) is now required
+for a self-claim; a refusal writes `UNIDENTIFIED_CONFIRM_DENIED` to the audit log and answers 403.
+The carrier's own `POST /unidentified/:id/assign` (`hosEdit: FULL`, audited) is unchanged.
+Regression tests in `unidentified.service.spec.ts`.
+
+## B-029 — the offline-sync idempotency ledger was keyed by a client-chosen id with no driver scope · FIXED
+**Found:** Same pass, reading `mobile-sync.service.ts` against `SyncedChange` in the schema.
+`clientId` is `@unique` table-wide, its value is chosen by the mobile client (any string, 8–64
+chars), and `findSyncedByClientId(clientId)` did not filter by driver. A driver could therefore
+submit a change under an arbitrary `clientId`; when another driver's device later synced a genuine
+queued change with that id, `processOne` saw "already processed", returned the attacker's outcome
+and **never applied the mutation** — a silently dropped HOS change — while also exposing the other
+driver's status/errorCode.
+**Severity:** High — silent loss of a §395 duty-status/log mutation plus a cross-driver information
+leak. Exploitability depends on predicting the victim's `clientId`, which is app-implementation
+dependent (deterministic ids would make it trivial).
+**Fix:** the stored key is namespaced (`syncLedgerKey(driverId, clientId)` = `"<driverId>:<clientId>"`)
+and the lookup takes the driver id; the bare form is still matched **for the same driver** so rows
+written before this change stay idempotent. No migration needed — the column is free-form text and
+its value never leaves the server (the sync response echoes the request's `clientId`). Tests:
+`mobile.repository.spec.ts`, plus a scoping assertion in `mobile-sync.service.spec.ts`.
+
+## B-030 — WebSocket: token accepted from the query string, `origin: true` CORS, and rooms authorized by name pattern only · FIXED
+**Found:** Same pass, `src/modules/realtime/realtime.gateway.ts`. Three issues in one file:
+(1) the handshake token was read from `handshake.query.token` as a fallback, which tz.md §12.2
+forbids in so many words ("Token query string'da yuborilmaydi") because proxies, CDNs and access
+logs persist it; (2) `cors: { origin: true, credentials: true }` reflects any Origin back — a
+wildcard in all but name; (3) `subscribe` only checked the room *name pattern* and the
+`driver:`/`user:` self-match, so any authenticated socket could join `conversation:{id}` and
+receive every message pushed into a thread it is not a participant of, or `vehicle:{id}` for any
+unit in the fleet. An unauthenticated socket could also still reach `subscribe` for `fleet`.
+**Severity:** High (message/telemetry disclosure across drivers + token-in-log exposure).
+**Fix:** token read from `handshake.auth.token` only; CORS reads the same `CORS_ORIGINS` allowlist
+as REST and fails closed when unset; new `RealtimeRoomAuthorizer` requires conversation
+participation, restricts `vehicle:*` to a driver's own assigned unit, keeps `fleet`/`violations`
+out of driver tokens, denies unknown rooms and refuses any socket with no bound principal. Tests:
+`src/modules/realtime/room-authorizer.spec.ts`.
+
+## B-031 — `POST /reports/generate` queued unvalidated `params`, so an unbounded report window reached the worker · FIXED
+**Found:** Same pass. `GenerateReportDto.params` is `z.record(z.unknown())`; only the synchronous
+preview routes parsed the per-type schemas, and those schemas had no range cap either. A single
+cheap request (`from=1900-01-01&to=2999-12-31`) pinned a report worker for as long as it took.
+**Severity:** Medium (authenticated DoS; needs `reports: FULL`).
+**Fix:** `ActivityReportParamsDto` / `DvirReportParamsDto` / `FmcsaPackParamsDto` now enforce a
+range (366 days; 62 for the FMCSA pack, matching `GET /logs/:driverId/range`), and
+`ReportsService.generate` parses `params` with the schema of the requested type before enqueuing.
+Tests: `src/modules/reports/dto/reports.dto.spec.ts` and a new case in `reports.service.spec.ts`.
+
+## B-032 — `PATCH /devices/:id/ble-status` mutated device state without an audit row · FIXED
+**Found:** Same pass (`route-surface.spec.ts`'s audit-coverage assertion). Every other mutating
+device route carries `@Audit`; this one did not, and `DevicesService` writes no audit row itself.
+**Severity:** Low (§18 audit completeness).
+**Fix:** `@Audit({ object: 'Device', action: 'UPDATE_BLE_STATUS' })`.
+
+## B-033 — TZ §6.5's 300/min/driver ingest rate limit is not implemented · FIXED
+**Found:** Phase 12 security review. `ThrottlerModule` is configured with a single 600/min bucket
+keyed by **IP** (Nest's default tracker); the login family narrows to 5/min/IP. There is no
+per-driver-token bucket anywhere, so a stolen driver token spread over many source IPs is limited
+only by the global bucket, and one abusive device on a shared NAT consumes the whole carrier's
+budget.
+**Severity:** Medium — availability, not integrity (ingest itself is fully validated, capped at
+500 events / 1 MB and idempotent by `uuid`).
+**Fix:** new `src/common/throttler/` — a second named bucket `ingest` at **300 req / 60 s keyed by
+driver** (`resolveDriverTracker`), active only on `/ingest/*` (`skipIf`) and sharing ONE key across
+all four §7.1 endpoints (`generateKey` drops Nest's per-handler prefix). Counters moved to Redis
+(`RedisThrottlerStorage`, atomic INCR+PTTL Lua, fails OPEN on a Redis outage so §395 ingest is
+never dropped) because the API runs as several containers and the in-memory store would multiply
+every §6.5 limit by the replica count. `PrincipalThrottlerGuard` replaces `ThrottlerGuard` as the
+`APP_GUARD` purely to render the §20 envelope (`RATE_LIMITED` + `scope`/`limit`/`retryAfterSec`).
+The 600/min `default` bucket and B-037's per-route `400 req/s` ingest ceiling are unchanged, and
+the per-driver budget does not cap the fleet: 300/min = 5 req/s per driver, so §19's 300 req/s peak
+needs only 60 concurrent drivers. Design in D-047; 12 unit tests in
+`src/common/throttler/principal-throttler.spec.ts`, including "noisy driver blocked, second driver
+on the SAME IP unaffected" and the fleet-throughput assertion.
+
+## B-034 — `ReportSchedule.params` is still an unvalidated open record · OPEN (reports owner)
+**Found:** Phase 12 security review, while fixing B-031. `report-scheduler.processor.ts` copies
+`schedule.params` verbatim into a queued report, and `createSchedule`/`updateSchedule` never parse
+it, so an unbounded window can be installed once and then re-run on a cron forever.
+**Severity:** Low-Medium (needs `reports: FULL`; recurring instead of one-shot).
+**Next step:** call the same per-type parse in `createSchedule`/`updateSchedule`. Not done here
+because `modules/reports` is being edited concurrently by the retention-jobs task and because
+existing schedules may carry shapes that would need a migration pass.
+
+## B-035 — 25 transitive `npm audit` advisories (8 moderate / 17 high), none in an exposed path · OPEN, tracked
+**Found:** Phase 12 supply-chain pass. `multer@2.2.0` (4 high, DoS/limit-bypass) via
+`@nestjs/platform-express` — unreachable: no route parses multipart, uploads are presigned PUTs to
+S3. `extract-zip@2.0.1` (2 high, symlink path traversal) via `puppeteer` — browser-download time
+only. `deepmerge-ts@7.1.5` (high, stack exhaustion) via `prisma/config` — build-time.
+`uuid@9.0.1` / `teeny-request` / `retry-request` / `google-gax` / `@google-cloud/*` (moderate) via
+`firebase-admin@13.10.0` — clearing them needs `firebase-admin@14`, a semver-major bump that
+touches the auth path and should not ride along with a hardening pass.
+**Severity:** Medium as a portfolio, Low individually given reachability.
+**Next step:** schedule the `firebase-admin@14` upgrade with an auth-path regression run; re-check
+`multer` once `@nestjs/platform-express` ships `>= 2.3.0`. Also worth setting
+`SCARF_ANALYTICS=false` in CI/Docker — `@scarf/scarf` is install-time analytics with a postinstall
+script. **Not a finding:** the vendored `dotenv` that prints `www.vestauth.com` /
+`www.dotenvx.com` lines during test runs is the genuine published package — see
+`docs/threat-model.md` §10 for the version/integrity comparison.
+
+## B-036 — `report.processor.ts` computed `Report.expiresAt` with local-timezone `Date.getMonth()`/`setMonth()` instead of UTC · FIXED
+**Found:** while auditing Phases 6-10 for the compliance-checklist line "All timestamps stored
+in UTC, converted to carrier region only for display" (tasks.md). `expiresAt.setMonth(expiresAt
+.getMonth() + REPORT_RETENTION_MONTHS)` reads/writes the Node process's LOCAL calendar, not UTC
+— harmless only as long as every deployment happens to run with `TZ=UTC`. Under any other `TZ`
+this can shift a report's 24-month S3 retention expiry by up to a day around a month boundary.
+**Severity:** Low (no observed prod impact — this repo's containers run `TZ=UTC` — but it is
+exactly the class of bug the compliance line exists to prevent, and it is silent: nothing
+fails, a file just expires a day early/late).
+**Fix:** replaced with `DateTime.utc().plus({ months: REPORT_RETENTION_MONTHS }).toJSDate()`
+(luxon), same pattern already used by `ifta-nightly.processor.ts`/`retention.processor.ts` for
+UTC-safe calendar month arithmetic.
+**Scope note:** a repo-wide grep (`getHours|getDate|getMonth|getFullYear|getMinutes|DateTime
+.local|moment()`) found this as the only local-time-construction hit in `src/`; Phases 6-10's
+own modules (mobile, service, dtc, trips, safety, geofences, messaging, notifications, reports)
+use `dayStart`/`dayEnd` (`hos/engine/timezone.ts`) and `cron-parser`'s `tz` option correctly —
+UTC storage, timezone applied only at read/format time. Not audited here: whether every
+`DateTime` column across the whole schema (all `TIMESTAMP(3)` without `@db.Timestamptz`,
+Phase 1/3's init migration) plus a non-UTC Postgres server `TimeZone` setting could interact
+badly — that is a Phase 1/3 schema-level design question, out of this task's Phase 6-10 scope,
+flagged here for `eld-prisma-db`/`eld-architect` to confirm the Postgres container's
+`TimeZone` is pinned to UTC (the compose/env files this task touched don't set it explicitly).
+
+## B-037 — global 600 req/min default throttle blocked the §19 ingest targets outright · FIXED
+**Found:** Phase 12 k6 load suite (`test/load/k6-acceptance.js`) against `POST /ingest/events`.
+`app.module.ts` registers one global `ThrottlerGuard` at `600/60_000ms` (10 req/s) and
+`IngestController` carried no per-route override, so the controller that TZ §19 requires to
+sustain **50/s and burst to 300/s** was capped at a third of even the sustained target before a
+single driver hit their own limit. First k6 run: 2156/2704 `ingest/events` calls (80%) rejected,
+2104 of them `ThrottlerException: Too Many Requests` (the rest were DB pool timeouts, see B-038).
+A whole fleet legitimately shares one depot NAT egress IP, so the failure mode is "one truck's
+BLE catch-up burst 429s the rest of the fleet," not just a load-test artifact.
+**Severity:** High — this made the documented ingest throughput target structurally
+unreachable, not just slow.
+**Fix:** `@Throttle({ default: { limit: 400, ttl: 1000 } })` on `IngestController`
+(`src/modules/ingest/ingest.controller.ts`), i.e. its own ceiling above the 300/s peak target
+instead of inheriting the app-wide 10/s default. Re-run after the fix: `ingest/events` 200/202
+rate rose from 20% to 80% failing-check → passing-check split largely reversed (488/606 = 80.5%
+pass on the second run, remaining failures are B-038's DB pool exhaustion, not throttling —
+`ThrottlerException` count fell from 2104 to ~0 in the app log for that run).
+**Not fixed as part of this same pass:** whether `/mobile/sync` and `/mobile/hos-state` (also
+driver-token, also periodic background traffic) need the same treatment — this run didn't push
+them hard enough to tell; flagged for whoever owns those controllers next.
+
+## B-038 — Prisma `connection_limit=10` in `.env.development` vs. the §19-mandated 20, and it is not enough for the ingest peak target either way · FIXED
+**Found:** same k6 run as B-037. Once the throttler stopped being the bottleneck, the app log
+showed 324 occurrences of `Timed out fetching a new connection from the connection pool
+(...connection limit: 10)` / Prisma `P2024`, all from `ingest.repository.js` (`device
+.findUnique`, `eldEvent.findMany` inside the detector window queries) and from `psql` itself
+returning `FATAL: too many connections for role "eld_dev"` at the Postgres level during the
+same window.
+**Two distinct problems bundled here:**
+1. `backend/.env.development` sets `DATABASE_URL=...connection_limit=10`, but tz.md §19's own
+   rule list says `Prisma connection_limit=20`. The dev env is already under its own documented
+   floor.
+2. Even the documented 20 would not obviously survive a genuine 300/s peak with multiple Nest
+   instances or concurrent test suites sharing the same Postgres container (dev box also had
+   `eld-devops`/`eld-security`/`eld-reports-jobs` test runs going at the same time — see the
+   contention note below).
+**Severity:** Medium in isolation (a one-line env fix), but it directly caps the load-tested
+throughput and masks whether the ingest code path itself would meet the target with proper
+headroom.
+**Fix:** literally setting dev to `connection_limit=20` (the tz.md §19 number) does not work —
+`eld_dev` carries a hard `ALTER ROLE eld_dev CONNECTION LIMIT 10` (tz.md §22.3.4, also this
+agent's own Hard Rules) that Postgres enforces independently of Prisma's own pool-size param, so
+a 20-wide app pool against a 10-wide role just hits `P2024` at 10 instead of 20. The real defect
+was that `connection_limit=10` equaled the role cap one-for-one, leaving **zero** spare for the
+second consumer that was always going to show up: `test/setup/integration.setup.ts` (and
+`e2e.setup.ts`) load the same `.env.development`, so `test:integration`/`test:e2e` open a
+second pool against `eld_dev` while the always-on `api-dev` container already holds its own
+open. Set `connection_limit=4` in `.env.development`, `.env.development.example`, and
+`.env.example` (`.env.production`/`.env.production.example` were already correct — `api(20) +
+worker(20) = eld_prod`'s `CONNECTION LIMIT 40` exactly, worker being one process/one pool
+shared by all `src/workers/*.processor.ts`, not one per processor). `4` leaves `api-dev(4) +
+one concurrent test run(4) = 8` of `10`, with 2 spare for ad hoc `psql`/`migrate` — full
+arithmetic and pool-budget table in `docs/deploy.md` "DB connection pool budget", decision
+recorded as D-049. Also added `EldDevConnectionsNearLimit`/`PostgresConnectionsNearLimit` to
+`docker/prometheus/alerts.yml` (fires at 80% of the role cap, before `P2024`s start) plus a
+`postgres_exporter` scrape target in `docker/prometheus/prometheus.yml` (not yet deployed on
+this box, same as `node_exporter` for `DiskUsageHigh` — hand it to whatever Prometheus already
+runs here) so this class of saturation shows up before a load test rediscovers it.
+**Verified:** recreated `api-dev` (`docker compose up -d --force-recreate api-dev` — the
+image build for this container is currently broken by unrelated concurrent-agent edits mid
+`npm run build`, see the note below; `npm run build` succeeds on the host directly). Verified
+the pool fix itself without the container: two independent 4-connection `PrismaClient` pools
+against `onebook_eld_dev` (simulating `api-dev` + a concurrent test run, 8 of the role's 10)
+fanned 20 concurrent `SELECT` queries with zero `P2024`/connection errors.
+**Not fixed / handed off:** (a) the `api-dev` Docker image currently fails `npm run build`
+inside `docker build` (exit 1) even though the same command succeeds on the host — this is
+unrelated to the pool change (env files aren't copied into the image; they're `env_file`-mounted
+at runtime) and looks like a mid-edit snapshot from a concurrent agent's in-flight `src/`
+change; whoever owns that file should re-run `docker compose up -d --force-recreate api-dev`
+once the tree is stable and confirm the container comes up healthy. (b) point 2 above (whether
+the ingest 300/s peak target is reachable on dev at all under this 10-connection role fence) is
+not resolved and, per the arithmetic in D-049, structurally cannot be with more than one
+concurrent `eld_dev` consumer — flagged as an operational limitation in `docs/deploy.md`
+rather than silently worked around by widening the fence, which is outside this fix's authority
+to change.
+
+## B-039 — `hos/` coverage gate is actually red: 3 engine files sit below the 95% branch floor, not just the aggregate · FIXED
+**Found:** Phase 12 CI-gate verification (`npx jest --coverage`, twice, independently — once
+mid-contention, once clean). `jest.config.js`'s `coverageThreshold` keys the `hos/` requirement
+by glob (`'src/modules/hos/**/*.ts'`), which Jest evaluates **per matching file**, not as one
+aggregate number. The aggregate looks fine (`hos/engine` 99.52% stmts / 97.35% branch / 100%
+funcs / 100% lines — passes 95% on every axis when averaged), which is presumably why
+`tasks.md`'s "`hos/` (TS) coverage ≥ 95%" line is already checked. But the actual gate fails on
+three individual files, identically on both runs:
+- `hos/engine/cycle.ts` — branches 93.93% (< 95%)
+- `hos/engine/timezone.ts` — branches 83.33% (< 95%)
+- `hos/engine/normalize.ts` — branches 93.75% (< 95%)
+
+`npm run test:cov` therefore exits non-zero on `hos/` branch coverage alone, independent of any
+of the unrelated integration/e2e failures the same run also had (those were DB-connection
+exhaustion from concurrent agents, B-038 — this finding is not).
+**Severity:** Medium — doesn't affect runtime behavior, but the CI gate as configured is not
+actually green, and `tasks.md`'s Global-gates / CI-coverage-gates checkboxes for `hos/` say it
+is. Corrected both to unchecked below.
+**Fix:** the four uncovered branches were identified exactly (from `coverage-final.json`, not
+the line summary) and covered with real tests; the gate was NOT lowered and no
+`istanbul ignore` was added. What each branch turned out to be:
+- `cycle.ts:27` (`candidate > now` → skip) — reachable with millisecond ELD timestamps: a rest
+  run of 33:59:59.600 rounds to `durationSec === 34 h` while the 34th hour has not actually
+  arrived. Behaviour is correct (never the more generous reading). Covered by
+  `resolveRestartEnd — sub-second precision at the 34 h mark`.
+- `cycle.ts:48` (`sliceEnd <= sliceStart` → skip) — reachable when a calendar date has zero
+  local length, i.e. a zone that skipped a whole day (Pacific/Apia 2011-12-30). Behaviour is
+  correct: the nonexistent date gets no seconds and its neighbours keep all of theirs.
+- `normalize.ts:62` (`eventSequenceId ?? 0`, both operands) — reachable whenever two records
+  share an instant and at least one has no sequence id (unidentified-driver assignments and
+  engine-synthesised records arrive without one). Covered by four ordering tests.
+- `timezone.ts:49` (`part ? Number(part.value) : 0`) — **genuinely unreachable through
+  `wallClock()`**: `formatter()` requests all six numeric fields and every ICU build emits them,
+  so no timezone/instant can produce a missing part. Rather than delete the defensive default
+  (a `NaN` day key would silently drop a whole RODS day from the cycle) or ignore it, the
+  parts→`WallClock` mapping was extracted to the exported, pure `wallClockFromParts()` and
+  tested directly with incomplete parts lists. Stated plainly: that branch is unreachable via
+  `Intl`, and it is now covered at the contract level instead of being papered over.
+Covering `cycle.ts:48` also exposed B-041 below. Result: `cycle.ts`, `timezone.ts`,
+`normalize.ts` and every other `hos/` file are now 100% statements/branches/functions/lines
+(`npx jest --coverage --selectProjects unit`), and `tasks.md`'s gate line is re-checked.
+
+## B-041 — `zonedToUtc()` resolved a nonexistent local time BACKWARD, so in zones that change clocks at midnight `dayStart` disagreed with `dayKey` and an hour of on-duty time vanished from the cycle · FIXED
+**Found:** while making `cycle.ts:48` (`onDutyByDay`'s zero-length-slice guard) reachable for
+B-039. Both engines' two-pass offset search returned the *pre-transition* instant for a local
+time inside the spring-forward gap, contradicting their own doc comment ("Local times that do
+not exist (the spring-forward gap) resolve forward"). In `America/Havana` (DST starts at 00:00
+local) `dayStart('2026-03-08')` came back as `2026-03-08T04:00Z`, whose local wall clock is
+`2026-03-07 23:00` — so `dayEnd('2026-03-07')` preceded the real end of 03-07 by an hour.
+`dayKey()` still mapped that hour to `2026-03-07`, so in `onDutyByDay` the slice
+`[max(from, dayStart), min(end, dayEnd)]` was empty and the hour was **dropped from the 70/8
+cycle entirely** (driving time reduced by a path — forbidden). `dayLengthSec` also reported
+03-07 as 23 h and 03-08 as 24 h, i.e. both back to front.
+**Severity:** Medium. No US/territory home terminal is affected in practice — every US zone
+transitions at 02:00, so local midnight always exists, and the fix is a verified no-op for
+`America/{New_York,Chicago,Denver,Los_Angeles,Anchorage,Phoenix}` and `Pacific/Honolulu` across
+both 2026 transitions. It is a real data-loss bug for any non-US midnight-transition terminal
+(Havana, Santiago) and it broke the function's documented contract, which the Dart mirror
+copies verbatim.
+**Fix:** after the two passes, the corrected instant is rendered back to a wall clock; if it
+does not match the requested one the local time is in the gap and the LATER candidate is
+returned (forward resolution). Ambiguous fall-back times still resolve to their first
+occurrence. Applied identically in `src/modules/hos/engine/timezone.ts` and
+`mobile/lib/hos/engine/timezone_rules.dart` so the ports stay behaviourally identical.
+One pre-existing test (`timezone.spec.ts`, "still returns a real, deterministic instant for a
+local time inside the DST gap") had pinned the wrong behaviour as if specified — it asserted
+`2025-03-09T06:30:00.000Z` for a 02:30 that never happens, i.e. 01:30 EST, an hour *before* the
+requested time. It now asserts the forward resolution (`07:30Z` = 03:30 EDT) and cites this
+bug. No conformance fixture covered the gap, so all 54 golden fixtures still pass on both
+sides; `HOS_ENGINE_VERSION` stays `1.0.0` (see D-048).
+
+## B-040 — `RetentionRepository.parseBound()` read `EldEvent` partition bounds with the JS legacy (local-timezone) Date parser instead of UTC · FIXED
+**Found:** `test/integration/retention.spec.ts`, while building the retention.processor
+(tasks.md compliance line "RODS retained 6 months, audit retained 24 months") — a scratch
+partition created for `2003-03-01` came back from `RetentionRepository.listEldEventPartitions()`
+as `2003-02-28T23:00:00.000Z`. `pg_get_expr(relpartbound, oid)` on `EldEvent` (a `TIMESTAMP(3)`
+column, no time zone — tz.md §5.5 deviation #1) renders bounds as `'2003-03-01 00:00:00'`
+(space, not `T`, no zone suffix). `new Date('2003-03-01 00:00:00')` is NOT ISO-8601 shaped
+(needs `T` or date-only) so V8 falls back to its legacy parser, which reads that exact shape
+in the **process's local time zone**, not UTC — this Jest run happened to execute under a
+non-UTC `TZ`, which is exactly the class of bug the "All timestamps stored in UTC, converted to
+carrier region only for display" compliance line exists to catch, and exactly why that line's
+audit (this task) is worth doing even on brand-new code.
+**Severity:** would have been High if shipped un-caught: `retention.processor` is a compliance
+job — an hour of skew right at a month boundary could make it drop a partition that still had
+an in-window RODS row, or (more likely, since it only makes partitions look OLDER) keep one an
+hour past due. Caught before ever running against real data; only ever touched a same-session
+scratch partition.
+**Fix:** `parseUtcTimestamp()` explicitly splices `T`/`Z` onto the captured bound text before
+constructing the `Date`, forcing UTC interpretation regardless of the running process's `TZ`.
+Covered by `test/integration/retention.spec.ts`'s first assertion (`rangeStart`/`rangeEnd`
+exact-ISO-string checks), which reproduced this failure before the fix.

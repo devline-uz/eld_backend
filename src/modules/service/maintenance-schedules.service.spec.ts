@@ -29,12 +29,12 @@ describe('MaintenanceSchedulesService (TZ §5.10)', () => {
   });
 
   it('404s for an unknown schedule', async () => {
-    repo.findById.mockResolvedValue(null as never);
+    repo.findById.mockResolvedValue(null);
     await expect(service.get('missing')).rejects.toBeInstanceOf(AppException);
   });
 
   it('404s creating a schedule for an unknown vehicle', async () => {
-    vehicles.findById.mockResolvedValue(null as never);
+    vehicles.findById.mockResolvedValue(null);
     await expect(service.create({ vehicleId: 'veh_x', name: 'Brakes', intervalMi: 25000, enabled: true })).rejects.toBeInstanceOf(AppException);
   });
 

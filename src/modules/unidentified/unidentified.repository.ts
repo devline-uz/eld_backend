@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { Driver, EldEvent, Prisma, UnidentifiedSegment } from '@prisma/client';
 import { BaseRepository, ModelDelegate } from '../../core/prisma/base.repository';
+import { EVENT_TYPE, LOGIN_CODE } from '../ingest/event-codes';
 import { PrismaService } from '../../core/prisma/prisma.service';
 
 export type UnidentifiedTx = Prisma.TransactionClient;
@@ -47,6 +48,31 @@ export class UnidentifiedRepository extends BaseRepository<
       this.prisma.unidentifiedSegment.count({ where }),
     ]);
     return { items, total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)) };
+  }
+
+  /**
+   * §395.32 / §7.4 rule 2 — a driver may only claim unidentified driving recorded on a unit
+   * they actually operated: their current assignment, or an open (not logged-out) LOGIN
+   * session on that unit at the time of the segment. Without this, any driver token could
+   * absorb another driver's unidentified driving and empty it out of that driver's log.
+   */
+  async hasDriverVehicleAssociation(driverId: string, vehicleId: string, at: Date): Promise<boolean> {
+    const driver = await this.prisma.driver.findUnique({
+      where: { id: driverId },
+      select: { assignedVehicleId: true },
+    });
+    if (driver?.assignedVehicleId === vehicleId) return true;
+    const lastLogin = await this.prisma.eldEvent.findFirst({
+      where: {
+        vehicleId,
+        driverId,
+        eventType: EVENT_TYPE.LOGIN_LOGOUT,
+        eventDateTime: { lte: at },
+      },
+      orderBy: [{ eventDateTime: 'desc' }, { id: 'desc' }],
+      select: { eventCode: true },
+    });
+    return lastLogin?.eventCode === LOGIN_CODE.LOGIN;
   }
 
   findDriver(driverId: string): Promise<Driver | null> {

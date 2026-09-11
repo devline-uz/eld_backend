@@ -8,6 +8,16 @@ export interface PutObjectOptions {
 export interface StoragePort {
   /** Uploads bytes and returns the stored key (prefix already applied). */
   put(key: string, body: Buffer | Uint8Array, options?: PutObjectOptions): Promise<string>;
+  /**
+   * Streaming multipart upload — reports (TZ §15) must never buffer a whole CSV/PDF export
+   * in memory. Optional so the one lightweight `StoragePort` test mock does not need an
+   * implementation; the real `S3StorageService` always provides one.
+   */
+  putStream?(
+    key: string,
+    body: NodeJS.ReadableStream,
+    options?: PutObjectOptions,
+  ): Promise<{ key: string; sizeBytes: number }>;
   get(key: string): Promise<Buffer>;
   delete(key: string): Promise<void>;
   exists(key: string): Promise<boolean>;

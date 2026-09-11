@@ -1,5 +1,5 @@
 /** TZ §8.3 step 0 — RODS day boundaries follow the driver's HOME TERMINAL timezone. */
-import { addDays, dayDiff, dayEnd, dayKey, dayKeysBetween, dayLengthSec, dayStart, offsetMs, parseDayKey, wallClock, zonedToUtc } from './timezone';
+import { addDays, dayDiff, dayEnd, dayKey, dayKeysBetween, dayLengthSec, dayStart, offsetMs, parseDayKey, wallClock, wallClockFromParts, zonedToUtc } from './timezone';
 
 const NY = 'America/New_York';
 const LA = 'America/Los_Angeles';
@@ -155,12 +155,108 @@ describe('zonedToUtc', () => {
   it('round-trips a summer local time', () => {
     expect(zonedToUtc(NY, { year: 2025, month: 7, day: 15, hour: 12, minute: 0, second: 0 }).toISOString()).toBe('2025-07-15T16:00:00.000Z');
   });
-  it('still returns a real, deterministic instant for a local time inside the DST gap', () => {
-    // 02:30 local never happens on 2025-03-09. Both engines must agree on SOMETHING here, so
-    // the two-pass offset search is specified: it lands on the instant one hour earlier.
-    expect(zonedToUtc(NY, { year: 2025, month: 3, day: 9, hour: 2, minute: 30, second: 0 }).toISOString()).toBe('2025-03-09T06:30:00.000Z');
+  it('resolves a local time inside the DST gap FORWARD (B-041)', () => {
+    // 02:30 local never happens on 2025-03-09. Both engines resolve the gap forward, past the
+    // transition (02:30 EST would be 07:30Z, and the clock is already 03:30 EDT there), so a
+    // day boundary that falls in a gap can never land on the previous local day.
+    expect(zonedToUtc(NY, { year: 2025, month: 3, day: 9, hour: 2, minute: 30, second: 0 }).toISOString()).toBe('2025-03-09T07:30:00.000Z');
   });
   it('resolves the ambiguous fall-back local time to the first occurrence', () => {
     expect(zonedToUtc(NY, { year: 2025, month: 11, day: 2, hour: 1, minute: 30, second: 0 }).toISOString()).toBe('2025-11-02T05:30:00.000Z');
+  });
+});
+
+describe('wallClockFromParts — defensive fallback for an incomplete parts list', () => {
+  const parts = (fields: Record<string, string>): Intl.DateTimeFormatPart[] =>
+    Object.entries(fields).map(([type, value]) => ({ type, value }) as Intl.DateTimeFormatPart);
+
+  it('reads a complete parts list', () => {
+    expect(wallClockFromParts(parts({ year: '2025', month: '03', day: '09', hour: '02', minute: '30', second: '05' })))
+      .toEqual({ year: 2025, month: 3, day: 9, hour: 2, minute: 30, second: 5 });
+  });
+
+  it('defaults a missing field to 0 instead of letting NaN reach the day key', () => {
+    expect(wallClockFromParts(parts({ year: '2025', month: '03', day: '09' })))
+      .toEqual({ year: 2025, month: 3, day: 9, hour: 0, minute: 0, second: 0 });
+  });
+
+  it('defaults every field of an empty parts list', () => {
+    expect(wallClockFromParts([])).toEqual({ year: 0, month: 0, day: 0, hour: 0, minute: 0, second: 0 });
+  });
+
+  it('normalises an ICU build that renders midnight as hour 24', () => {
+    expect(wallClockFromParts(parts({ year: '2025', month: '03', day: '09', hour: '24', minute: '00', second: '00' })).hour).toBe(0);
+  });
+});
+
+/**
+ * Regression for the spring-forward gap. In zones whose DST transition is AT midnight the RODS
+ * day boundary itself is a non-existent local time; resolving it backwards made `dayStart`
+ * disagree with `dayKey` and cost the driver the hour before the transition.
+ */
+describe('zonedToUtc — non-existent local times resolve forward', () => {
+  const HAV = 'America/Havana';   // transitions at 00:00 local (2026-03-08)
+  const SCL = 'America/Santiago'; // transitions at 24:00 local (2026-09-06)
+  const CHATHAM = 'Pacific/Chatham'; // +12:45/+13:45 — forces the second pass to correct
+
+  it('maps Havana midnight of the transition day to the instant just after the gap', () => {
+    // 2026-03-08 00:00 CST does not exist; the clock goes 23:59:59 → 01:00:00 CDT.
+    expect(zonedToUtc(HAV, { year: 2026, month: 3, day: 8, hour: 0, minute: 0, second: 0 }).toISOString())
+      .toBe('2026-03-08T05:00:00.000Z');
+  });
+
+  it('keeps dayStart consistent with dayKey in a midnight-transition zone', () => {
+    for (const key of ['2026-03-07', '2026-03-08', '2026-03-09']) {
+      expect(dayKey(HAV, dayStart(HAV, key))).toBe(key);
+    }
+    for (const key of ['2026-09-05', '2026-09-06', '2026-09-07']) {
+      expect(dayKey(SCL, dayStart(SCL, key))).toBe(key);
+    }
+  });
+
+  it('gives the Havana transition day 23 h and the day before it a full 24 h', () => {
+    expect(dayLengthSec(HAV, '2026-03-07')).toBe(86_400);
+    expect(dayLengthSec(HAV, '2026-03-08')).toBe(82_800);
+  });
+
+  it('gives the Santiago transition day 23 h', () => {
+    expect(dayLengthSec(SCL, '2026-09-06')).toBe(82_800);
+  });
+
+  it('resolves a 02:30 that does not exist forward, never backward', () => {
+    // America/New_York 2026-03-08: 02:00 EST → 03:00 EDT, so 02:30 is in the gap.
+    const resolved = zonedToUtc(NY, { year: 2026, month: 3, day: 8, hour: 2, minute: 30, second: 0 });
+    expect(resolved.toISOString()).toBe('2026-03-08T07:30:00.000Z');
+    expect(wallClock(NY, resolved)).toMatchObject({ day: 8, hour: 3, minute: 30 });
+  });
+
+  it('still returns the first occurrence of an ambiguous fall-back local time', () => {
+    // 2026-11-01 01:30 happens twice in New York; the earlier (EDT) instant is the answer.
+    expect(zonedToUtc(NY, { year: 2026, month: 11, day: 1, hour: 1, minute: 30, second: 0 }).toISOString())
+      .toBe('2026-11-01T05:30:00.000Z');
+  });
+
+  it('accepts a second-pass correction when the local time does exist', () => {
+    // Chatham's 12:45/13:45 offsets put the naive guess on the far side of the transition, so
+    // the two passes disagree even though 2026-09-26 20:00 is a perfectly real local time.
+    const resolved = zonedToUtc(CHATHAM, { year: 2026, month: 9, day: 26, hour: 20, minute: 0, second: 0 });
+    expect(resolved.toISOString()).toBe('2026-09-26T07:15:00.000Z');
+    expect(wallClock(CHATHAM, resolved)).toMatchObject({ day: 26, hour: 20, minute: 0 });
+  });
+
+  it('keeps every US home-terminal zone round-tripping across both transitions', () => {
+    for (const zone of [NY, LA, PHX, AK, HNL, 'America/Chicago', 'America/Denver']) {
+      for (const key of ['2026-03-07', '2026-03-08', '2026-03-09', '2026-10-31', '2026-11-01', '2026-11-02']) {
+        expect(dayKey(zone, dayStart(zone, key))).toBe(key);
+        expect(dayEnd(zone, key).getTime()).toBe(dayStart(zone, addDays(key, 1)).getTime());
+      }
+    }
+  });
+
+  it('reports a calendar date the zone skipped entirely as a zero-length day', () => {
+    // Pacific/Apia jumped from 2011-12-29 straight to 2011-12-31: 12-30 never happened.
+    expect(dayLengthSec('Pacific/Apia', '2011-12-30')).toBe(0);
+    expect(dayLengthSec('Pacific/Apia', '2011-12-29')).toBe(86_400);
+    expect(dayKey('Pacific/Apia', dayStart('Pacific/Apia', '2011-12-29'))).toBe('2011-12-29');
   });
 });

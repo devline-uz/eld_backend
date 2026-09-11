@@ -9,7 +9,7 @@ function point(overrides: Partial<TelemetryPointDto> = {}): TelemetryPointDto {
     longitude: -83,
     isTransition: false,
     ...overrides,
-  } as TelemetryPointDto;
+  };
 }
 
 describe('DtcService (TZ §5.7 — DTC capture from the ingest path)', () => {

@@ -14,6 +14,13 @@ export const envSchema = z.object({
 
   // --- database (TZ §22.3) -------------------------------------------------
   DATABASE_URL: z.string().url(),
+  /** TZ §5.5/§18/§23 — connection string for the narrowly-scoped `eld_retention_svc` role
+   * (SELECT+DELETE on `AuditLog` only, bootstrapped by
+   * `scripts/bootstrap-retention-role.sql`). Deliberately NOT `DATABASE_URL`: the app role
+   * has DELETE revoked on `AuditLog` (B-009) and must never get it back. Optional — when
+   * unset, `retention.processor` still archives+drops `EldEvent` partitions but skips the
+   * `AuditLog` purge step (logs a warning) rather than falling back to the app role. */
+  RETENTION_DATABASE_URL: z.string().url().optional(),
 
   // --- redis / BullMQ ------------------------------------------------------
   REDIS_URL: z.string().url(),
@@ -76,7 +83,12 @@ export const envSchema = z.object({
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
   LOG_PRETTY: bool('false'),
   SENTRY_DSN: z.string().optional(),
+  /** TZ §22.5 — separate Sentry projects for dev and prod; defaults to NODE_ENV when unset. */
+  SENTRY_ENVIRONMENT: z.string().optional(),
   METRICS_ENABLED: bool('true'),
+  /** Worker container has no HTTP stack of its own (§3.3) — this is its own health/metrics
+   * listener, separate from the API's PORT, so both containers can be probed independently. */
+  WORKER_HEALTH_PORT: z.coerce.number().int().positive().default(3002),
 
   // --- misc ----------------------------------------------------------------
   SEED_ANCHOR_DATE: z.string().optional(),

@@ -112,6 +112,14 @@ describe('MobileSyncService', () => {
     expect(result.accepted).toEqual(['client-1']);
   });
 
+  it('looks the idempotency ledger up scoped to the syncing driver, never by clientId alone', async () => {
+    const dto: SyncRequestDto = { changes: [change()] };
+    await service.sync('drv_1', dto, actor, NOW);
+    // Regression guard: an unscoped lookup let one driver burn a `clientId` and have another
+    // driver's genuine queued HOS change silently skipped (bugs.md).
+    expect(repo.findSyncedByClientId).toHaveBeenCalledWith('drv_1', 'client-1');
+  });
+
   it('rejects a batch over 1 MB with SYNC_BATCH_TOO_LARGE', async () => {
     const big = change({ payload: { status: 'OFF', startAt: NOW, annotation: 'x'.repeat(2 * 1024 * 1024) } });
     const dto: SyncRequestDto = { changes: [big] };

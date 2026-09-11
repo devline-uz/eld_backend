@@ -99,6 +99,7 @@ export class DevicesController {
 
   @Patch(':id/ble-status')
   @Perm('devices', 'FULL')
+  @Audit({ object: 'Device', action: 'UPDATE_BLE_STATUS' })
   @ApiOperation({ summary: 'Records the BLE connection state reported by the app (CONNECTED/OUT_OF_RANGE/DISCONNECTED).' })
   @ApiOkResponse({ schema: { example: { id: 'dev_1', bleState: 'OUT_OF_RANGE', lastHeartbeatAt: '2026-09-11T15:41:00.000Z' } } })
   @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.DEVICE_NOT_FOUND, 'Device not found.')] })

@@ -67,6 +67,45 @@ describe('normalizeEvents', () => {
   });
 });
 
+/**
+ * §8.3 step 1 tie-break. `eventSequenceId` is optional on the way in: unidentified-driver
+ * assignments and engine-synthesised records (annotations, malfunction-driven status changes)
+ * reach the engine without one, and two such records can share an instant. A missing id sorts
+ * as 0 — before any real ELD sequence number, which starts at 1 (§4.5.x) — and equal ids must
+ * leave the caller's order untouched rather than producing a nondeterministic log.
+ */
+describe('normalizeEvents — ties when eventSequenceId is absent', () => {
+  it('keeps input order for two same-instant records that both lack a sequence id', () => {
+    const first = ev('2025-01-14T06:00:00Z', 'SB');
+    const second = ev('2025-01-14T06:00:00Z', 'D');
+    const sorted = normalizeEvents([first, second], NOW);
+    expect(sorted.map((e) => e.status)).toEqual(['SB', 'D']);
+    expect(normalizeEvents([second, first], NOW).map((e) => e.status)).toEqual(['D', 'SB']);
+  });
+
+  it('sorts a record with no sequence id before one with a real sequence id', () => {
+    const withId = { ...ev('2025-01-14T06:00:00Z', 'ON'), eventSequenceId: 7 };
+    const withoutId = ev('2025-01-14T06:00:00Z', 'OFF');
+    expect(normalizeEvents([withId, withoutId], NOW).map((e) => e.status)).toEqual(['OFF', 'ON']);
+  });
+
+  it('still orders by sequence id when only the earlier record lacks one', () => {
+    const withoutId = ev('2025-01-14T06:00:00Z', 'OFF');
+    const withId = { ...ev('2025-01-14T06:00:00Z', 'D'), eventSequenceId: 1 };
+    expect(normalizeEvents([withoutId, withId], NOW).map((e) => e.status)).toEqual(['OFF', 'D']);
+  });
+
+  it('mixes present and absent ids across several instants deterministically', () => {
+    const events = [
+      { ...ev('2025-01-14T08:00:00Z', 'D'), eventSequenceId: 3 },
+      ev('2025-01-14T08:00:00Z', 'ON'),
+      { ...ev('2025-01-14T07:00:00Z', 'SB'), eventSequenceId: 2 },
+      ev('2025-01-14T07:00:00Z', 'OFF'),
+    ];
+    expect(normalizeEvents(events, NOW).map((e) => e.status)).toEqual(['OFF', 'SB', 'ON', 'D']);
+  });
+});
+
 describe('buildSegments', () => {
   it('returns nothing for no events', () => expect(buildSegments([], NOW)).toEqual([]));
 

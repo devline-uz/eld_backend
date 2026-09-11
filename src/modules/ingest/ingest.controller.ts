@@ -1,5 +1,6 @@
 import { Body, Controller, HttpCode, Post, Req, Res, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { DriverGuard } from '../../common/guards/driver.guard';
@@ -24,10 +25,23 @@ import { IngestEventsResult, IngestService } from './ingest.service';
  *
  * Figma: "Driver app → sync" (background upload indicator) and "Settings > ELD devices"
  * (BLE state / stored-event backlog surfaced from ble-state + device-status).
+ *
+ * B-024 — the app-wide default throttle (600 req/min = 10 req/s, `app.module.ts`) sits an
+ * order of magnitude below the §19 ingest targets (50/s sustained, 300/s peak) and a whole
+ * fleet legitimately shares one egress IP behind the same depot NAT. Every driver on that
+ * fleet would start seeing 429s long before the documented target is reached, so this
+ * controller carries its own, much higher, ceiling (§19 peak + headroom).
+ *
+ * B-033 — that IP ceiling is a fleet-wide backstop only. §6.5's real ingest limit is
+ * 300 req/min PER DRIVER, enforced by the `ingest` bucket in
+ * `common/throttler/throttler.options.ts` (one bucket across all four endpoints below), so one
+ * misbehaving device can no longer spend the whole carrier NAT's budget. Do not add a named
+ * `ingest` override to `@Throttle()` here — the limit is intentionally configured centrally.
  */
 @ApiTags('ingest')
 @ApiBearerAuth()
 @UseGuards(DriverGuard)
+@Throttle({ default: { limit: 400, ttl: 1000 } })
 @Controller('ingest')
 export class IngestController {
   constructor(private readonly ingest: IngestService) {}

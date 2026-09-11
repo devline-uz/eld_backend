@@ -926,10 +926,14 @@ model IftaSegment {
   distanceMi   Int
   tollMi       Int      @default(0)
   fuelGal      Decimal  @default(0) @db.Decimal(10, 2)
+  /// TZ §15 — set once the IFTA quarter containing `date` has closed; a locked segment is
+  /// never recomputed by the nightly job even if telemetry is later revised.
+  locked       Boolean  @default(false)
   createdAt    DateTime @default(now())
 
   @@unique([vehicleId, jurisdiction, date])
   @@index([date])
+  @@index([locked])
 }
 
 model FuelPurchase {

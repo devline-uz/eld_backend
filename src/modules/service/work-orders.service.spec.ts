@@ -31,7 +31,7 @@ describe('WorkOrdersService (TZ §5.10 — defect resolution workflow tied to a 
 
   describe('create', () => {
     it('404s for an unknown vehicle', async () => {
-      vehicles.findById.mockResolvedValue(null as never);
+      vehicles.findById.mockResolvedValue(null);
       await expect(service.create({ vehicleId: 'veh_x', title: 'Brake service', priority: 'NORMAL' }, 'user_1')).rejects.toBeInstanceOf(AppException);
     });
 

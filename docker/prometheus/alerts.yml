@@ -1,0 +1,168 @@
+# OneBook ELD — alert definitions (tz.md §22.5, tasks.md Phase 12).
+#
+# Paired with prometheus.yml (scrapes api:3000, worker:3002, api-dev:3001). Every rule below
+# maps to a condition tz.md/docs/deploy.md calls out by name, plus the worker-specific ones
+# B-024 exists to prevent from recurring silently (worker not ticking, failed jobs, drift-job
+# failure, transfer failure).
+
+groups:
+  - name: onebook-eld.availability
+    rules:
+      - alert: OneBookTargetDown
+        expr: up{job=~"onebook-.*"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.job }} is unreachable"
+          description: "Prometheus has not been able to scrape {{ $labels.job }} ({{ $labels.instance }}) for 2 minutes."
+
+      - alert: WorkerNotTicking
+        # onebook_worker_heartbeat_timestamp_seconds is set every 15s by WorkerHeartbeatService
+        # (src/modules/health/worker-heartbeat.service.ts) once WorkerAppModule finishes
+        # booting. B-024: a DI wiring bug crashed the worker at boot and only a bare
+        # process-presence healthcheck existed to notice — this metric going stale (or never
+        # existing) catches both a crash-at-boot and a live-but-wedged worker.
+        expr: time() - onebook_worker_heartbeat_timestamp_seconds > 90
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "Worker has not ticked in over 90s"
+          description: "onebook_worker_heartbeat_timestamp_seconds is stale on {{ $labels.instance }} — the worker process is down, crashed during boot, or its event loop is wedged."
+
+      - alert: DatabaseUnreachable
+        # /health/ready only returns 503 when HealthRepository.pingDatabase() fails; the
+        # MetricsInterceptor (src/modules/health/metrics.interceptor.ts) records every HTTP
+        # call including health endpoints, so a run of 503s here is a real DB outage, not a
+        # scrape gap.
+        expr: increase(onebook_http_requests_total{route="/health/ready",status="503"}[5m]) > 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "API cannot reach the database"
+          description: "{{ $labels.instance }} has answered /health/ready with 503 for at least 2 minutes."
+
+  - name: onebook-eld.queues
+    rules:
+      - alert: QueueBacklog
+        # onebook_queue_depth{queue,state} is polled every 15s by QueueDepthService
+        # (src/modules/health/queue-depth.service.ts). 500 is tz.md/docs/deploy.md's named
+        # threshold for the HOS recalc queue; applied to every queue here since any queue
+        # backing up means the worker stopped keeping up with it.
+        expr: onebook_queue_depth{state=~"waiting|active"} > 500
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.queue }} backlog above 500 jobs"
+          description: "{{ $labels.queue }} has {{ $value }} {{ $labels.state }} jobs for at least 5 minutes — worker is not keeping up."
+
+      - alert: JobsFailing
+        expr: increase(onebook_worker_queue_failed_jobs_total[15m]) > 0
+        for: 0m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.queue }} has failed jobs"
+          description: "{{ $labels.queue }} recorded {{ $value }} job failure(s) (all retries exhausted) in the last 15 minutes. Also reported to Sentry per-job by WorkerHeartbeatService."
+
+      - alert: TransferJobsFailing
+        # §10.1/§10.4 eRODS send step — a failure here means a driver's output file did not
+        # reach FMCSA; this gets its own (lower-latency) alert on top of the generic
+        # JobsFailing rule above.
+        expr: increase(onebook_worker_queue_failed_jobs_total{queue="transfer"}[15m]) > 0
+        for: 0m
+        labels: { severity: critical }
+        annotations:
+          summary: "eRODS transfer job(s) failed"
+          description: "{{ $value }} transfer queue job(s) failed in the last 15 minutes — a driver's output file transmission to FMCSA did not complete."
+
+      - alert: HosDriftJobFailing
+        # §8.6 nightly sweep (src/workers/hos-drift.processor.ts, cron 03:20 UTC). A failed
+        # sweep means the drift comparison this section's own 7-day monitoring window depends
+        # on did not run that night at all — distinct from DriftDetected below, which fires
+        # when the sweep ran and found a real mismatch.
+        expr: increase(onebook_worker_queue_failed_jobs_total{queue="hos-drift"}[26h]) > 0
+        for: 0m
+        labels: { severity: critical }
+        annotations:
+          summary: "Nightly HOS drift sweep job failed"
+          description: "The hos-drift queue recorded a job failure in the last 26h — the §8.6 nightly sweep did not complete successfully."
+
+  - name: onebook-eld.performance
+    rules:
+      - alert: ApiP95LatencyHigh
+        # tz.md §19 target: p95 <= 500ms. onebook_http_request_duration_seconds is the
+        # histogram MetricsInterceptor records for every HTTP request.
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(onebook_http_request_duration_seconds_bucket[5m])) by (le)
+          ) > 0.5
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "API p95 latency above 500ms"
+          description: "p95 request duration has been above the tz.md §19 500ms target for 5 minutes."
+
+      - alert: IngestLagHigh
+        # No dedicated ingest-lag metric exists yet (open item — see decisions.md). Until
+        # then this proxies via ingest route latency; replace with a direct
+        # now() - EldEvent.receivedAt gauge once one is added.
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(onebook_http_request_duration_seconds_bucket{route=~"/api/v1/ingest.*"}[5m])) by (le)
+          ) > 300
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Ingest endpoint latency elevated (lag proxy)"
+          description: "PLACEHOLDER proxy metric — p95 ingest route latency exceeded 300s. Replace with a real receivedAt-to-processedAt lag gauge; tz.md §22.5 threshold is lag > 5 minutes."
+
+      - alert: DiskUsageHigh
+        # Requires node_exporter on the host (not part of this compose file — same as
+        # prometheus.yml itself, this is definitions to hand to whatever Prometheus/Alertmanager
+        # already runs on the box).
+        expr: (1 - node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) * 100 > 80
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Disk usage above 80%"
+          description: "Root filesystem on {{ $labels.instance }} is above 80% used for 10 minutes."
+
+  - name: onebook-eld.database
+    rules:
+      - alert: EldDevConnectionsNearLimit
+        # B-038 / docs/deploy.md "DB connection pool budget": `eld_dev` is hard-capped at
+        # `ALTER ROLE eld_dev CONNECTION LIMIT 10` (tz.md §22.3.4), shared by api-dev
+        # (connection_limit=4) plus whatever test:integration/test:e2e run loads the same
+        # .env.development at the same time. Fire before the role limit is actually hit
+        # (>=8 of 10) so P2024s don't need to happen first. Requires postgres_exporter
+        # (default `pg_stat_database_numbackends`), see prometheus.yml.
+        expr: pg_stat_database_numbackends{datname="onebook_eld_dev"} >= 8
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "eld_dev connections approaching its CONNECTION LIMIT 10"
+          description: "{{ $value }} backends open on onebook_eld_dev (role eld_dev is hard-capped at 10) — api-dev plus a concurrent test:integration/test:e2e run (or ad hoc psql/migrate) is about to hit P2024. See docs/deploy.md DB connection pool budget."
+
+      - alert: PostgresConnectionsNearLimit
+        # Whole-instance version of the same idea for eld_prod (CONNECTION LIMIT 40, already
+        # fully budgeted by api(20)+worker(20) with zero spare — see docs/deploy.md) and as a
+        # general backstop against server-wide max_connections (100) exhaustion.
+        expr: sum(pg_stat_database_numbackends) / on() pg_settings_max_connections > 0.8
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Postgres instance above 80% of max_connections"
+          description: "Total backends across all databases on the shared onebook-postgres instance are above 80% of max_connections for 5 minutes."
+
+  - name: onebook-eld.schema
+    rules:
+      - alert: SchemaDrift
+        # scripts/check-drift.sh exits non-zero on drift; wire the nightly cron wrapper to
+        # also push this gauge (0 = clean, 1 = drift) via a Pushgateway, or run check-drift.sh
+        # under node_exporter's textfile collector. The CI gate (.github/workflows/ci.yml)
+        # fails the build on drift independently of this alert.
+        expr: onebook_schema_drift_detected == 1
+        for: 0m
+        labels: { severity: critical }
+        annotations:
+          summary: "Dev/prod schema drift detected"
+          description: "scripts/check-drift.sh found a difference between onebook_eld_dev and onebook_eld schemas. See docs/deploy.md."

@@ -113,8 +113,8 @@ export class AlertProcessor extends WorkerHost {
     const recipientKey = `${recipient.kind}:${recipient.id}`;
     const zone = await this.resolveZone(recipient);
     const now = new Date();
-    const throttle = (rule.throttle ?? undefined) as { perDriverPerDay?: number; cooldownMin?: number } | undefined;
-    const quietHours = (rule.quietHours ?? undefined) as { from: string; to: string; timezone: string } | undefined;
+    const throttle = rule.throttle as { perDriverPerDay?: number; cooldownMin?: number } | null | undefined;
+    const quietHours = rule.quietHours as { from: string; to: string; timezone: string } | null | undefined;
 
     const deliveriesTodayCount = throttle?.perDriverPerDay
       ? await this.deliveries.countToday(rule.id, recipientKey, startOfLocalDay(now, zone))
@@ -169,7 +169,7 @@ export class AlertProcessor extends WorkerHost {
         data: {
           ...(recipient.kind === 'user' ? { userId: recipient.id } : { driverId: recipient.id }),
           type: rule.id,
-          title: String(payload.title ?? 'Alert'),
+          title: typeof payload.title === 'string' ? payload.title : 'Alert',
           body: JSON.stringify(payload).slice(0, 500),
         },
       });

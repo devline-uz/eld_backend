@@ -12,6 +12,7 @@ import request from 'supertest';
 import { AppModule } from '../../src/app.module';
 import { configureApp } from '../../src/main';
 import { HOS_ENGINE_VERSION } from '../../src/modules/hos/hos.constants';
+import { syncLedgerKey } from '../../src/modules/mobile/mobile.repository';
 
 const prisma = new PrismaClient();
 const tinySignaturePng =
@@ -199,7 +200,7 @@ describe('Mobile API (e2e, tz.md §6 / §13)', () => {
       expect(res.body.data.hosEngineVersion).toBe(HOS_ENGINE_VERSION);
       expect(res.body.data.nextSyncAfterSec).toEqual(expect.any(Number));
 
-      const count = await prisma.syncedChange.count({ where: { clientId } });
+      const count = await prisma.syncedChange.count({ where: { clientId: syncLedgerKey(driverId, clientId) } });
       expect(count).toBe(1);
     });
 
@@ -222,7 +223,7 @@ describe('Mobile API (e2e, tz.md §6 / §13)', () => {
       expect(second.body.data.rejected).toEqual([]);
 
       // Exactly one ledger row and (by extension) exactly one underlying mutation.
-      expect(await prisma.syncedChange.count({ where: { clientId } })).toBe(1);
+      expect(await prisma.syncedChange.count({ where: { clientId: syncLedgerKey(driverId, clientId) } })).toBe(1);
     });
 
     it('a duty_status change carrying eventCode D-equivalent driving intent is rejected as DRIVING_TIME_IMMUTABLE, and the rejection is remembered on replay', async () => {
@@ -258,14 +259,14 @@ describe('Mobile API (e2e, tz.md §6 / §13)', () => {
       expect(res.body.data.accepted).toEqual([]);
       expect(res.body.data.rejected).toEqual([{ clientId, code: 'NOT_FOUND', message: expect.any(String) }]);
 
-      const stored = await prisma.syncedChange.findUniqueOrThrow({ where: { clientId } });
+      const stored = await prisma.syncedChange.findUniqueOrThrow({ where: { clientId: syncLedgerKey(driverId, clientId) } });
       expect(stored.status).toBe('REJECTED');
       expect(stored.errorCode).toBe('NOT_FOUND');
 
       // Replay: the rejection is remembered, not retried.
       const replay = await request(server()).post('/api/mobile/sync').set('Authorization', `Bearer ${token}`).send({ changes: [change] });
       expect(replay.body.data.rejected).toEqual([{ clientId, code: 'NOT_FOUND' }]);
-      expect(await prisma.syncedChange.count({ where: { clientId } })).toBe(1);
+      expect(await prisma.syncedChange.count({ where: { clientId: syncLedgerKey(driverId, clientId) } })).toBe(1);
     });
 
     it('rejects a batch over the 500-change ceiling with SYNC_BATCH_TOO_LARGE', async () => {

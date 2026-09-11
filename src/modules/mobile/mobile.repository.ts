@@ -70,8 +70,23 @@ export class MobileRepository extends BaseRepository<
   // §13.4/13.6 — the sync idempotency ledger
   // ---------------------------------------------------------------------
 
-  findSyncedByClientId(clientId: string): Promise<SyncedChange | null> {
-    return this.prisma.syncedChange.findUnique({ where: { clientId } });
+  /**
+   * §13.6 — the idempotency ledger is looked up PER DRIVER. `SyncedChange.clientId` is unique
+   * across the whole table, and the value is chosen by the mobile client, so an unscoped
+   * lookup let driver A burn an arbitrary `clientId` and have driver B's genuine queued
+   * change silently skipped (and A read B's outcome). The stored key is therefore namespaced
+   * with the driver id; the bare form is still accepted on read so rows written before this
+   * change stay idempotent for their own driver.
+   */
+  findSyncedByClientId(driverId: string, clientId: string): Promise<SyncedChange | null> {
+    return this.prisma.syncedChange.findFirst({
+      where: {
+        OR: [
+          { clientId: syncLedgerKey(driverId, clientId) },
+          { clientId, driverId },
+        ],
+      },
+    });
   }
 
   /**
@@ -93,7 +108,15 @@ export class MobileRepository extends BaseRepository<
   ): Promise<{ status: 'ACCEPTED' | 'REJECTED'; errorCode: string | null } | 'DUPLICATE'> {
     try {
       const row = await this.prisma.syncedChange.create({
-        data: { driverId, clientId, type, status, errorCode, occurredAt, result: result ?? undefined },
+        data: {
+          driverId,
+          clientId: syncLedgerKey(driverId, clientId),
+          type,
+          status,
+          errorCode,
+          occurredAt,
+          result: result ?? undefined,
+        },
       });
       return { status: row.status, errorCode: row.errorCode };
     } catch (err) {
@@ -222,4 +245,10 @@ export class MobileRepository extends BaseRepository<
 
 function isUniqueViolation(err: unknown): boolean {
   return typeof err === 'object' && err !== null && (err as { code?: string }).code === 'P2002';
+}
+
+/** Driver-scoped idempotency key for `SyncedChange.clientId` (never returned to a client —
+ * the sync response echoes the raw `clientId` from the request). */
+export function syncLedgerKey(driverId: string, clientId: string): string {
+  return `${driverId}:${clientId}`;
 }

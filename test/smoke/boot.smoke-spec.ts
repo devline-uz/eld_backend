@@ -24,6 +24,11 @@ const ROOT = resolve(__dirname, '../..');
 const MAIN_ENTRY = resolve(ROOT, 'dist/main.js');
 const WORKER_ENTRY = resolve(ROOT, 'dist/worker.js');
 const API_PORT = Number(process.env.SMOKE_API_PORT ?? 18173);
+// Worker's own health/metrics listener (src/worker.ts, added Phase 12 alongside
+// WorkerHeartbeatService — see B-024/D-045) binds a real host port too, unlike the old
+// process-presence-only healthcheck. Configurable the same way as SMOKE_API_PORT so two
+// concurrent `npm run test:smoke`/`test:cov` runs on this shared box don't collide on 3002.
+const WORKER_HEALTH_PORT = Number(process.env.SMOKE_WORKER_HEALTH_PORT ?? 18174);
 const READY_TIMEOUT_MS = 20_000;
 
 /** Parses `.env.development` in-memory only — never logged, never written elsewhere. */
@@ -35,6 +40,7 @@ function devEnv(): NodeJS.ProcessEnv {
     // Deliberately NOT overridden: LOG_PRETTY stays whatever .env.development says (true),
     // so a missing pino-pretty (or any other transport) makes bootstrap fail for real.
     PORT: String(API_PORT),
+    WORKER_HEALTH_PORT: String(WORKER_HEALTH_PORT),
     NODE_ENV: 'development',
     SWAGGER_ENABLED: 'true',
   };
@@ -167,6 +173,17 @@ describe('Boot smoke test — dist/main.js and dist/worker.js (real .env.develop
       await new Promise((r) => setTimeout(r, 1_500));
       expect(worker.exitCode).toBeNull();
       expect(worker.signalCode).toBeNull();
+
+      // B-024 regression guard: the worker's own /health/live must answer — this is exactly
+      // the signal that did not exist when a DI wiring bug once crashed WorkerAppModule at
+      // boot while the old process-presence-only healthcheck stayed green.
+      const live = await fetch(`http://127.0.0.1:${WORKER_HEALTH_PORT}/health/live`);
+      expect(live.status).toBe(200);
+      expect(await live.json()).toMatchObject({ status: 'ok' });
+
+      const metrics = await fetch(`http://127.0.0.1:${WORKER_HEALTH_PORT}/metrics`);
+      expect(metrics.status).toBe(200);
+      expect(await metrics.text()).toEqual(expect.stringContaining('onebook_worker_heartbeat_timestamp_seconds'));
     },
     READY_TIMEOUT_MS + 10_000,
   );

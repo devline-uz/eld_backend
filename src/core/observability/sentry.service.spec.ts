@@ -1,10 +1,11 @@
 /** TZ §8.6 / §19 — the Sentry reporting seam. */
 import type { AppConfigService } from '../config/config.service';
+import { MetricsService } from '../../modules/health/metrics.service';
 import { SentryService } from './sentry.service';
 
 function build(dsn?: string): SentryService {
   const config = { get: jest.fn((key: string) => (key === 'SENTRY_DSN' ? dsn : undefined)) };
-  return new SentryService(config as unknown as AppConfigService);
+  return new SentryService(config as unknown as AppConfigService, new MetricsService());
 }
 
 describe('SentryService', () => {

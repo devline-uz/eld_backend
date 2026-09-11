@@ -140,14 +140,21 @@ services:
       - .env.production
     environment:
       NODE_ENV: production
+      WORKER_HEALTH_PORT: 3002
+    ports:
+      - "127.0.0.1:13002:3002"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     healthcheck:
-      # Worker has no HTTP surface; liveness is process-presence based.
-      test: ["CMD-SHELL", "node -e \"process.exit(0)\""]
+      # B-024 — a bare "process is running" check stayed green while a DI wiring bug crashed
+      # WorkerAppModule at boot before a single BullMQ processor registered. /health/live is
+      # backed by WorkerHeartbeatService.isAlive() (src/worker.ts / worker-heartbeat.service.ts):
+      # it only answers 200 once boot finished and keeps ticking every 15s, so a boot crash or a
+      # wedged event loop both flip this to unhealthy.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3002/health/live"]
       <<: *node-healthcheck
     deploy:
       resources:

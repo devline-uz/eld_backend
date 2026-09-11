@@ -4,6 +4,12 @@ export const QUEUES = {
   /** §8.6 — nightly server-vs-app HOS state drift comparison. */
   HOS_DRIFT: 'hos-drift',
   REPORT: 'report',
+  /** §15 — self-scheduling minute tick that scans `ReportSchedule` and enqueues due
+   * `report.generate` jobs into REPORT. A separate queue from REPORT itself so the tick's
+   * own worker never accidentally consumes a `report.generate` job (Phase 8). */
+  REPORT_SCHEDULER: 'report-scheduler',
+  /** §15 — nightly per-jurisdiction `IftaSegment` computation from telemetry (Phase 8). */
+  IFTA_NIGHTLY: 'ifta-nightly',
   TRANSFER: 'transfer',
   ALERT: 'alert',
   SAFETY_DETECT: 'safety-detect',

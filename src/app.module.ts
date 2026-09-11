@@ -1,6 +1,6 @@
 import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
-import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
 import { CommonModule } from './common/common.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
@@ -11,11 +11,14 @@ import { ApiKeyVerifier } from './common/guards/api-key-verifier.port';
 import { AuditInterceptor } from './common/interceptors/audit.interceptor';
 import { TransformInterceptor } from './common/interceptors/transform.interceptor';
 import { RequestContextMiddleware } from './common/middleware/request-context.middleware';
+import { PrincipalThrottlerGuard } from './common/throttler/principal-throttler.guard';
+import { buildThrottlerOptions } from './common/throttler/throttler.options';
 import { AppConfigModule } from './core/config/config.module';
 import { AppConfigService } from './core/config/config.service';
 import { EventsModule } from './core/events/events.module';
 import { FirebaseModule } from './core/firebase/firebase.module';
 import { AppLoggerModule } from './core/logger/logger.module';
+import { ObservabilityModule } from './core/observability/observability.module';
 import { PrismaModule } from './core/prisma/prisma.module';
 import { QueueModule } from './core/queue/queue.module';
 import { StorageModule } from './core/storage/storage.module';
@@ -50,6 +53,7 @@ import { NotificationsModule } from './modules/notifications/notifications.modul
 import { RealtimeModule } from './modules/realtime/realtime.module';
 import { DtcModule } from './modules/dtc/dtc.module';
 import { ServiceModule } from './modules/service/service.module';
+import { ReportsModule } from './modules/reports/reports.module';
 
 /**
  * Module tree per TZ §3.4. Feature modules are added by their owning phase.
@@ -61,6 +65,7 @@ import { ServiceModule } from './modules/service/service.module';
   imports: [
     AppConfigModule,
     AppLoggerModule,
+    ObservabilityModule,
     PrismaModule,
     QueueModule,
     StorageModule,
@@ -120,19 +125,26 @@ import { ServiceModule } from './modules/service/service.module';
     MessagingModule,
     NotificationsModule,
     RealtimeModule,
-    // TZ §6.5 — "API 600/daq/token" default bucket; `AuthController` narrows login-family
-    // routes to 5/min/IP with `@Throttle()`. Tracked by IP (Nest's default) rather than by
-    // token, since the per-token bucket only makes sense once a request is authenticated —
-    // a true per-token limiter is a follow-up once `modules/integrations` needs it too.
-    // Skipped under NODE_ENV=test so e2e suites that call /auth/login dozens of times don't
-    // trip their own 429s; ThrottlerGuard's decision logic is covered by a unit test instead.
+    // Phase 8 — Reports (TZ §15). IFTA/activity/DVIR/FMCSA-pack generation (async, queued),
+    // the report scheduler (`ReportSchedule` cron rows) and S3-backed download. Owned by
+    // eld-reports-jobs.
+    ReportsModule,
+    // TZ §6.5 — two buckets, both defined in `common/throttler/throttler.options.ts`:
+    // `default` = 600/min/IP (`AuthController` narrows the login family to 5/min/IP,
+    // `IngestController` widens itself to 400/s for the §19 targets) and `ingest` =
+    // 300/min PER DRIVER on `/ingest/*` (B-033 — an IP bucket is the wrong key for device
+    // traffic: a whole fleet shares one carrier-NAT address). Counters live in Redis so the
+    // limit is shared across API containers. Both buckets are skipped under NODE_ENV=test so
+    // e2e suites don't trip their own 429s; the decision logic is unit-tested instead.
     ThrottlerModule.forRootAsync({
       imports: [AppConfigModule],
       inject: [AppConfigService],
-      useFactory: (config: AppConfigService) => ({
-        throttlers: [{ name: 'default', ttl: 60_000, limit: 600 }],
-        skipIf: () => config.isTest,
-      }),
+      useFactory: (config: AppConfigService) =>
+        buildThrottlerOptions({
+          isTest: config.isTest,
+          redisUrl: config.get('REDIS_URL'),
+          redisDb: config.get('REDIS_DB'),
+        }),
     }),
   ],
   providers: [
@@ -149,7 +161,7 @@ import { ServiceModule } from './modules/service/service.module';
     // Same override reasoning as TokenVerifier above, for the API-key half of JwtAuthGuard
     // (modules/api-keys, TZ §6.5/§11.7).
     { provide: ApiKeyVerifier, useExisting: ApiKeysAuthAdapter },
-    { provide: APP_GUARD, useClass: ThrottlerGuard },
+    { provide: APP_GUARD, useClass: PrincipalThrottlerGuard },
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: TwoFactorSetupGuard },
     { provide: APP_GUARD, useClass: PermissionGuard },

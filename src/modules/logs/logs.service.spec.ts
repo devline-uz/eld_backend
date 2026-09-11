@@ -276,6 +276,30 @@ describe('§395.30 — a carrier edit is a proposal, never an applied change', (
     });
   });
 
+  it('never lets a back-office user or API key activate a proposal (§395.30(c)(1) regression)', async () => {
+    const { service, repo, writer } = build();
+    repo.events = [
+      evt({ id: 1n, at: '2026-06-01T12:00:00Z', code: 4 }),
+      evt({ id: 5n, at: '2026-06-01T12:00:00Z', code: 2, recordStatus: 3, supersedesId: 1n }),
+    ];
+
+    for (const impostor of [
+      { id: 'user-1', type: 'user' as const, permissions: { hosEdit: 'FULL' as const } },
+      { id: 'key-1', type: 'api-key' as const, permissions: { hosEdit: 'FULL' as const } },
+    ]) {
+      await expect(service.acceptEditRequest('5', impostor, {})).rejects.toMatchObject({
+        code: 'DRIVER_CONTEXT_REQUIRED',
+        status: 403,
+      });
+      await expect(service.rejectEditRequest('5', impostor, {})).rejects.toMatchObject({
+        code: 'DRIVER_CONTEXT_REQUIRED',
+        status: 403,
+      });
+    }
+    // The proposal is still inert: nothing was appended, so nothing became the active record.
+    expect(writer.rows).toHaveLength(0);
+  });
+
   it('lets only the driver whose record it is answer', async () => {
     const { service, repo } = build();
     repo.events = [
@@ -373,6 +397,13 @@ describe('§9.2 — certification', () => {
     const { service } = build();
     await expect(
       service.certify({ dates: ['2026-06-01'], driverId: DRIVER }, { id: 'user-1', type: 'user', permissions: { hosCertifyOnBehalf: 'READ' } }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN', status: 403 });
+  });
+
+  it('treats an API-key principal as certify-on-behalf, so it needs the permission too', async () => {
+    const { service } = build();
+    await expect(
+      service.certify({ dates: ['2026-06-01'], driverId: DRIVER }, { id: 'key-1', type: 'api-key', permissions: {} }),
     ).rejects.toMatchObject({ code: 'FORBIDDEN', status: 403 });
   });
 

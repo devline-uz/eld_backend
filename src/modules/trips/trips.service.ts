@@ -61,7 +61,7 @@ export class TripsService {
         ...(driverId && { driver: { connect: { id: driverId } } }),
         ...(vehicleId && { vehicle: { connect: { id: vehicleId } } }),
         ...(trailerId && { trailerId }),
-      } as Prisma.TripCreateInput,
+      },
       (stops ?? []).map((s) => ({ ...s })),
     );
     return trip;

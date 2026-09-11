@@ -43,12 +43,29 @@ describe('DVIR / Service (e2e, tz.md §5.10)', () => {
     expect(token).toEqual(expect.any(String));
 
     // Deliberately NOT johnsmith — B-023 / seed-shape.spec.ts pins his exact RODS shape.
+    // A paired device is required for the ingest/telemetry DTC-capture case below.
     const driver = await prisma.driver.findFirstOrThrow({
-      where: { assignedVehicleId: { not: null }, status: 'ACTIVE', username: { not: 'johnsmith' } },
+      where: {
+        assignedVehicleId: { not: null },
+        status: 'ACTIVE',
+        username: { not: 'johnsmith' },
+        assignedVehicle: { device: { isNot: null } },
+      },
       orderBy: { username: 'asc' },
     });
     driverId = driver.id;
     vehicleId = driver.assignedVehicleId as string;
+  });
+
+  // Every `it()` in this suite is independent: a prior test's still-open CRITICAL defect
+  // (e.g. "lists the DVIR..." never resolves the one it seeds) would otherwise block the
+  // out-of-service restore assertion in a later test. Resolve and restore between tests.
+  afterEach(async () => {
+    await prisma.defect.updateMany({
+      where: { vehicleId, status: 'OPEN', severity: 'CRITICAL' },
+      data: { status: 'REPAIRED', resolvedAt: new Date() },
+    });
+    await prisma.vehicle.update({ where: { id: vehicleId }, data: { status: 'ACTIVE' } }).catch(() => undefined);
   });
 
   afterAll(async () => {
@@ -273,7 +290,7 @@ describe('DVIR / Service (e2e, tz.md §5.10)', () => {
             },
           ],
         });
-      expect(res.status).toBe(201);
+      expect(res.status).toBe(200);
 
       const dtcList = await request(server()).get(`/api/vehicles/${vehicleId}/dtc`).set(auth());
       expect(dtcList.body.data.items.some((d: { spn: number; fmi: number }) => d.spn === 5246 && d.fmi === 0)).toBe(true);

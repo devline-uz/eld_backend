@@ -550,7 +550,9 @@ export class LogsService {
   // =========================================================================
 
   async certify(dto: CertifyDto, actor: ContextUser) {
-    const onBehalf = actor.type === 'user';
+    // Anything that is not a driver token certifies "on behalf" and therefore needs
+    // hosCertifyOnBehalf = FULL — an API-key principal must not slip past that check.
+    const onBehalf = actor.type !== 'driver';
     const driverId = onBehalf ? dto.driverId : actor.id;
     if (!driverId) {
       throw new AppException(
@@ -782,8 +784,18 @@ export class LogsService {
     if (!request.driverId) {
       throw new AppException(ERROR_CODES.NOT_FOUND, 'Edit request has no driver.', 404, { requestId });
     }
-    // §395.30(c)(1) — only the driver whose log it is may accept or reject.
-    if (actor.type === 'driver' && actor.id !== request.driverId) {
+    // §395.30(c)(1) — only the driver whose log it is may accept or reject. Defence in depth
+    // behind `@UseGuards(DriverGuard)` on the two routes: a non-driver principal (back-office
+    // user, API key) must never be able to activate a proposal on the driver's behalf,
+    // otherwise "edits are proposals only" (§23) is decided by the proposer.
+    if (actor.type !== 'driver') {
+      throw new AppException(
+        ERROR_CODES.DRIVER_CONTEXT_REQUIRED,
+        'Only the driver whose record it is may resolve this edit request (§395.30(c)(1)).',
+        403,
+      );
+    }
+    if (actor.id !== request.driverId) {
       throw new AppException(
         ERROR_CODES.FORBIDDEN,
         'Only the driver whose record it is may resolve this edit request.',

@@ -74,7 +74,7 @@ export class MobileSyncService {
     actor: ContextUser,
   ): Promise<{ status: 'ACCEPTED' | 'REJECTED'; errorCode: string | null; message?: string }> {
     // §13.6 — same clientId twice: idempotent, the first outcome wins, nothing is re-applied.
-    const existing = await this.repo.findSyncedByClientId(change.clientId);
+    const existing = await this.repo.findSyncedByClientId(driverId, change.clientId);
     if (existing) {
       return { status: existing.status, errorCode: existing.errorCode };
     }
@@ -109,7 +109,7 @@ export class MobileSyncService {
     );
     if (recorded === 'DUPLICATE') {
       // Lost a race against a concurrent replay of the same clientId — its outcome is authoritative.
-      const settled = await this.repo.findSyncedByClientId(change.clientId);
+      const settled = await this.repo.findSyncedByClientId(driverId, change.clientId);
       return { status: settled?.status ?? status, errorCode: settled?.errorCode ?? errorCode };
     }
     return { status: recorded.status, errorCode: recorded.errorCode, message };

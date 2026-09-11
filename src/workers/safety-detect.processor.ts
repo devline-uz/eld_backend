@@ -73,9 +73,9 @@ export class SafetyDetectProcessor extends WorkerHost {
         event: 'safety.event_created',
         payload: { vehicleId, driverId, type: e.type, severity: e.severity },
       });
-      await this.alertQueue.add('alert.harsh_event', { vehicleId, driverId, type: e.type, severity: e.severity }).catch((err) =>
-        this.logger.error({ err }, 'Failed to enqueue alert.harsh_event'),
-      );
+      await this.alertQueue
+        .add('alert.harsh_event', { vehicleId, driverId, type: e.type, severity: e.severity })
+        .catch((err: unknown) => this.logger.error({ err }, 'Failed to enqueue alert.harsh_event'));
     }
   }
 
@@ -115,7 +115,7 @@ export class SafetyDetectProcessor extends WorkerHost {
         });
         await this.alertQueue
           .add(`alert.geofence_${t.kind.toLowerCase()}`, { vehicleId, geofenceId: t.geofenceId })
-          .catch((err) => this.logger.error({ err }, 'Failed to enqueue geofence alert'));
+          .catch((err: unknown) => this.logger.error({ err }, 'Failed to enqueue geofence alert'));
       }
     }
   }

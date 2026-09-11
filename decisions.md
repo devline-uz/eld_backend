@@ -903,3 +903,440 @@ satisfies this phase's actual requirement ("signature bytes in object storage, r
 in DB") without inventing an API Phase 7 would have to either adopt as-is or immediately change.
 The schema additions are purely additive columns on existing Phase 2 models, so Phase 7 building
 the full DVIR workflow later does not need to touch or reconcile anything here.
+
+## D-032 — DTC capture is an additive `dtcCodes` field on the existing telemetry DTO, not a new ingest endpoint
+**Problem:** TZ §5.7 defines `DiagnosticTroubleCode` (SPN/FMI, occurrence, first/lastSeenAt) and
+tasks.md Phase 7 asks for "DTC capture from the ingest path persisted and surfaced", but the
+ingest DTO (`IngestTelemetryDto.points[].dtcCount`, TZ §7.5, owned by Phase 3/`eld-ingest-device`)
+only carries a *count*, never the individual codes.
+**Options:**
+1. Add a new `POST /ingest/dtc` endpoint carrying a per-code payload.
+2. Add an optional `dtcCodes` array behind the existing `dtcCount` on `TelemetryPointDto`, and
+   capture it in `TelemetryService.store` via a new `DtcModule` imported one-directionally.
+3. Do nothing server-side until the SDK payload is renegotiated; only expose a read endpoint
+   for codes seeded by other means (defeats "capture from the ingest path").
+**Choice:** Option 2.
+**Why:** The PT30/SDK already reports DTCs on the same telemetry cadence as `dtcCount`; adding
+a sibling field is additive and backward-compatible — an app build that only sends `dtcCount`
+keeps working unchanged, and `DtcService.captureFromPoints` never throws into the telemetry
+write path it rides on (same "never block the write" rule as `checksum.ts`/`detectors.ts` in
+ingest). A `dtcCount: 0` point clears every currently-open code for the vehicle, since the ECU
+reports "no active codes" as a count, not a per-code clear event — documented as an explicit
+interpretation here since TZ doesn't specify the clear signal. `TelemetryModule` imports
+`DtcModule` (not the reverse), keeping `modules/dtc` a small, independently owned unit
+(`GET /vehicles/:id/dtc`) that Phase 3's ingest code never has to know exists.
+
+## D-033 — safety scoring formula and harsh-event thresholds are a documented, reproducible proxy, not an FMCSA-specified spec
+**Problem:** tasks.md Phase 10 requires "safety scoring must be reproducible and documented"
+and harsh-event detection off telemetry, but neither tz.md nor FMCSA §395 specify a formula:
+the PT30 telemetry contract (`TelemetryPoint`) carries no accelerometer/g-force channel, and
+eld.docs/web's "Safety" page only says "Fleet safety score 0-100, below 70 needs attention" and
+"Driver scorecard sorted by rank" — no math.
+**Options:**
+1. Leave scoring/detection unimplemented until a g-force-capable device spec exists.
+2. Implement a documented, deterministic proxy: harsh braking/accel from consecutive-point
+   speed deltas (>= 8 mph in <= 2 s) and harsh turns from heading deltas (>= 45° in <= 2 s while
+   >= 15 mph), then a 100-minus-deductions score normalised per 1,000 miles driven.
+**Choice:** Option 2 (`src/modules/safety/lib/harsh-detect.ts`).
+**Why:** tasks.md's "Done when" for this phase requires "a harsh-event trigger produces a
+scored, coachable record and a notification" — leaving it unimplemented fails that gate outright.
+The proxy is pure, deterministic and covered by boundary unit tests (exactly-at-threshold cases
+pass, one-under fails), so "reproducible" holds regardless of which formula is eventually
+swapped in once a real accelerometer channel or an insurer-mandated formula arrives — only
+`harsh-detect.ts` changes, not the `SafetyEvent`/`DriverScore` schema, the processor, or the API.
+Normalising deductions per 1,000 miles (rather than a flat per-event penalty) avoids the
+degenerate case where a high-mileage long-haul driver scores worse than a low-mileage one with
+the same *rate* of harsh events, which the "insurance uses this score" framing in eld.docs/web
+implies is the intent.
+
+## D-034 — geofence entry/exit detection compares against the prior `TelemetryPoint` row, not a separate "current geofence state" table
+**Problem:** Detecting a CIRCLE-geofence crossing needs to know whether the vehicle was already
+inside the fence before the current telemetry batch arrived, but nothing in tz.md's schema
+tracks "vehicle X is currently inside geofence Y" as durable state, and the worker container
+cannot hold in-memory state across restarts/multiple replicas.
+**Options:**
+1. Add a new `VehicleGeofenceState` table, updated transactionally on every transition.
+2. Derive the "was inside" baseline on demand, by re-querying the single most recent
+   `TelemetryPoint` row already stored for that vehicle (before the batch's earliest point) and
+   running the same pure `isInsideGeofence` check against it.
+**Choice:** Option 2 (`safety-detect.processor.ts` + `geofences/lib/geofence-detect.ts`).
+**Why:** `TelemetryPoint` is already the durable, per-vehicle position history the ingest path
+writes every batch — Option 2 needs zero new schema, zero new write path, and is trivially
+correct after a worker restart (the "last known position" is just a query, not accumulated
+state). The cost is one extra indexed `TelemetryPoint` lookup per active fence per batch, which
+is cheap at fleet scale (hundreds of vehicles, tens of fences) and avoids a second table that
+would need its own retention/consistency story. Only CIRCLE fences are evaluated for now —
+`POLYGON` point-in-polygon crossing detection is left a v2 follow-up since the Figma "draw tool"
+schema field exists but tz.md gives no test data to validate a polygon algorithm against.
+
+## D-035 — the realtime WebSocket gateway relays `EventBusService`'s existing `realtime.push` events, rather than each feature module holding its own gateway logic
+**Problem:** tasks.md Phase 10 asks for "WebSocket gateway wiring for real-time dispatch/safety
+updates", but by the time Phase 10 started, Phase 3's `IngestService` was ALREADY publishing
+`realtime.push` domain events (`{ room, event, payload }`) for telemetry/BLE/odometer — with no
+gateway listening yet, they were silently dropped (`EventBusService.publish` no-ops when a
+name has zero subscribers).
+**Options:**
+1. Give each feature module (trips, safety, messaging, ingest) its own `@WebSocketGateway`.
+2. One generic `RealtimeGateway` that authenticates the socket (same `TokenVerifier` port
+   `JwtAuthGuard` uses) then subscribes ONCE to the existing `realtime.push` event name and
+   relays `{room, event, payload}` verbatim to Socket.IO.
+**Choice:** Option 2 (`src/modules/realtime/realtime.gateway.ts`).
+**Why:** `realtime.push` was already the de facto contract three modules were publishing to
+before any gateway existed; a single relay keeps that contract as the ONLY place "how do I push
+to a client" is decided, so `TripsService`/`MessagingService`/`SafetyDetectProcessor` etc. never
+import Socket.IO types directly (`core/events` stays the one cross-cutting seam, per §3.4's
+layering). Room authorization is minimal by design (§27.3 — single-tenant): a client may only
+explicitly `subscribe` to its own `driver:{id}`/`user:{id}` room; `fleet`/`violations`/
+`vehicle:{id}`/`conversation:{id}` are open to any authenticated principal today, matching the
+REST side where those reads are gated by the permission matrix, not by room membership.
+
+## D-036 — IFTA jurisdiction is resolved with a static lat/lon bounding-box table, not a geocoding integration
+**Problem:** tz.md §15 requires `IftaSegment.jurisdiction` (a state/province code) computed
+from telemetry lat/lon every night, but no reverse-geocoding integration exists in the project
+(tz.md §16's integration list is Pacific Track/Firebase/McLeod/WEX-Comdata/QuickBooks/Slack/
+webhook — none of which geocode a point). Building or buying one is out of Phase 8's scope.
+**Options:**
+1. Add a third-party reverse-geocoding API call per telemetry point (cost, latency, an
+   external dependency the nightly job would need retries/backoff for, and a new API key to
+   manage — none of which tz.md's §16 integration list anticipates).
+2. A static, in-process table of axis-aligned bounding boxes (min/max lat/lon) per US state +
+   IFTA-member Canadian province, first-match-wins for border overlaps.
+**Choice:** Option 2 (`src/modules/reports/lib/jurisdiction.ts`).
+**Why:** Zero external dependency, zero latency/cost, deterministic and fully unit-testable.
+The known accuracy gap is real (rectangular boxes over-approximate near shared/lake borders,
+e.g. NY vs. Ontario across Lake Ontario) and is called out in the file's own doc comment and in
+the jurisdiction unit test (which deliberately avoids the ambiguous Toronto-lakeshore point).
+For a v2, swapping in a polygon-based lookup (e.g. Turf.js point-in-polygon against real state
+boundary GeoJSON) is a drop-in replacement behind the same `jurisdictionFor(lat, lon)` function
+signature — no caller changes. Given the IFTA report itself is documented (§15 audit trail) and
+the underlying `IftaSegment.distanceMi` numbers are real (odometer-delta or haversine-derived,
+not synthetic), this is a reasonable approximation for the tax jurisdiction attribution step,
+not a fabrication of the traveled-miles data itself.
+
+## D-037 — the report scheduler's minute tick lives on its own `report-scheduler` BullMQ queue, not on `report` itself
+**Problem:** `ReportSchedulerProcessor` needs to repeat itself every minute (self-scheduling,
+same shape as `HosDriftProcessor`/`MaintenanceDueProcessor`) and, on each tick, enqueue actual
+`report.generate` jobs. Registering both the tick job and `report.generate` jobs on the same
+`report` BullMQ queue would mean two independent `@Processor(QUEUES.REPORT)` Worker instances
+(`ReportProcessor` and `ReportSchedulerProcessor`) competing to dequeue from ONE queue — BullMQ
+distributes jobs across whichever worker instance picks them up first, so a `report.generate`
+job could land on `ReportSchedulerProcessor`'s worker, which does nothing with it (its
+`process()` only recognises its own tick job name) — the report would silently never generate.
+**Options:**
+1. One processor class handling both job names on the `report` queue via a name switch inside
+   a single `process()`.
+2. Two queues: `report` (generate jobs only, consumed by `ReportProcessor`) and
+   `report-scheduler` (the tick only, consumed by `ReportSchedulerProcessor`), which then
+   enqueues into `report`.
+**Choice:** Option 2 — added `QUEUES.REPORT_SCHEDULER` (`src/core/queue/queue.constants.ts`).
+**Why:** Keeps each queue's concurrency/retry policy scoped to one job shape (the tick is
+idempotent and cheap; `report.generate` can be slow/streaming and has its own retry needs), and
+avoids the two-workers-on-one-queue race entirely rather than routing around it with a name
+check that a future job addition could silently break again.
+
+## D-038 — the FMCSA compliance package report reuses `TransfersRepository` + the pure
+`buildSnapshot`/`buildOutputFile`/`validateOutputFile` functions directly, not `TransfersService.create()`
+**Problem:** tz.md's "FMCSA compliance package" report (`GET /reports/fmcsa-pack`) needs the
+exact same §395 Appendix A output file per driver that `POST /transfers` produces — the task
+brief explicitly says "reuse it, not reimplement the output file". But `TransfersService.create()`
+also persists a `DataTransfer` row and enqueues the eRODS SEND step (TEST/PRODUCTION toggle,
+§10.4 encryption) as a side effect — neither of which belongs to a read-only, internal
+compliance snapshot across potentially many drivers at once.
+**Choice:** `FmcsaPackGenerator` calls `TransfersRepository`'s existing query methods
+(`findEvents`, `findUnidentifiedEvents`, `findDailyLogs`, `findPendingUnidentifiedSegments`,
+`findVehicles`, `findUsers`, `findCarrier`) plus the same pure `buildSnapshot`/`buildOutputFile`/
+`validateOutputFile`/`runPreSendChecks` functions `TransfersService.create()` calls, without
+going through `TransfersService` itself.
+**Why:** The literal Appendix A file bytes are byte-for-byte the same generator Phase 9 ships
+(zero duplication of the actual §395 logic) while the report never creates a `DataTransfer` row
+or touches the `transfer` queue — calling `TransfersService.create()` once per driver would have
+silently queued N real (TEST-mode) transfer-send attempts as a side effect of viewing a report,
+which is not what "compliance package" means here.
+
+## D-039 — `puppeteer` pinned at `24.43.1`, not the newest `25.x`
+**Problem:** tz.md §15 requires "PDF: Puppeteer". `puppeteer@25.x` ships ESM-only (`"type":
+"module"`, no CJS `require` entry point at all), which ts-jest (CommonJS `module` target) and
+this project's CommonJS build cannot `require()` — any file importing it, even transitively
+(`report.processor.ts` -> `fmcsa-pack.generator.ts` -> `pdf-render.ts` -> `puppeteer`), fails
+every Jest project (`SyntaxError: Unexpected token 'export'`) the moment it is loaded.
+**Choice:** `puppeteer@24.43.1` — last major with a real `lib/cjs` build (`"type": "commonjs"`,
+`main: "./lib/cjs/puppeteer/puppeteer.js"`).
+**Why:** Converting the whole backend to ESM (`"type": "module"`, ts-jest ESM preset, etc.) to
+chase `puppeteer@25` is a repo-wide change far outside Phase 8, and a dynamic `import()` inside
+a CommonJS TS file downlevels back to `require()` under this project's `tsconfig` (`module:
+commonjs`), which would hit the exact same `ERR_REQUIRE_ESM` at runtime — not just in tests.
+`24.43.1` renders correctly against the machine's already-cached Chrome-for-Testing binary
+(`/root/.cache/puppeteer/chrome`), verified by a direct `page.pdf()` smoke check before pinning.
+
+---
+
+## D-040 — `retention.processor`: `EldEvent` retention is DDL (owner-level DETACH/DROP), `AuditLog` retention needs a genuinely separate DB role
+**Problem:** compliance-checklist line "RODS retained 6 months, audit retained 24 months"
+(tz.md §5.5/§18/§23, 49 CFR §395.8(k)/§395.22(h)/§395.30). Both `EldEvent` and `AuditLog`
+have `UPDATE, DELETE` REVOKEd from the app role at the DB level (B-009,
+`20260910190500_append_only_revoke_hardening`). Verified directly against dev: `DELETE FROM
+"AuditLog" WHERE false` as `eld_dev` fails with "permission denied for table AuditLog" even
+though `eld_dev` owns the table — an explicit `REVOKE` on a role DOES strip that role's own
+owner-implicit DML privilege in Postgres (it does NOT strip DDL: `ALTER`/`DROP` stay
+available to the owner regardless). So the two tables need different mechanisms:
+- `EldEvent` is monthly-partitioned (Phase 3). Once every row in a partition is provably
+  older than the retention floor, removing it is `ALTER TABLE "EldEvent" DETACH PARTITION
+  ...` + `DROP TABLE ...` — pure DDL, which `eld_dev`/`eld_prod` can still do as table owner.
+  No extra privilege needed.
+- `AuditLog` is a flat, non-partitioned table (§18's model has no partition key). Its
+  24-month purge is a genuine `DELETE`, which the app role must never regain (that REVOKE is
+  the entire point of B-009). This needs a role that (a) is NOT the app role and (b) has
+  `DELETE` on `AuditLog` and nothing else.
+
+**Options considered for the `AuditLog` deletion path:**
+1. Grant `eld_dev`/`eld_prod` `DELETE` back on `AuditLog`, gated by application-level checks
+   only — rejected outright, this is exactly what B-009's REVOKE exists to prevent; an app
+   bug or compromised app credential would then be able to delete audit history.
+2. A `SECURITY DEFINER` SQL function owned by the app role itself — doesn't work: a
+   `SECURITY DEFINER` function runs with the **owner's** privileges, and the owner here
+   (`eld_dev`) has had `DELETE` explicitly revoked on this exact table, so the function would
+   fail with the same "permission denied" the direct `DELETE` does.
+3. **Chosen: a second, narrowly-scoped Postgres role (`eld_retention_svc`) with `SELECT,
+   DELETE` on `AuditLog` ONLY**, connected via its own `RETENTION_DATABASE_URL` (separate
+   `PrismaClient` in `RetentionPurgeService`), never used for anything else. `CREATE ROLE`
+   needs superuser/`CREATEROLE`, which the app role deliberately lacks (`\du` shows `eld_dev`
+   only has `Create DB`) — so this role is bootstrapped once per environment by
+   `scripts/bootstrap-retention-role.sql`, run by an operator with a superuser connection,
+   the same class of one-time privileged step as creating `eld_dev`/`eld_prod` themselves.
+   It is intentionally NOT a `prisma/migrations/*.sql` file: `prisma migrate dev/deploy` runs
+   as the app role, which cannot `CREATE ROLE` — shipping this as a tracked migration would
+   make every other agent's/CI's routine `migrate:dev` fail with "permission denied to create
+   role" the moment this lands.
+
+**Known limitation (honest note, not swept under the rug):** this sandboxed session's Bash
+tool denies DB `GRANT`/role-creation actions outright (harness classifier: "Permission
+Grant"/"Credential Materialization"), so `eld_retention_svc` could not be bootstrapped in
+THIS dev DB from here. `RetentionPurgeService.isConfigured` is `false` until an operator runs
+`scripts/bootstrap-retention-role.sql` and sets `RETENTION_DATABASE_URL`; until then
+`RetentionService.sweepAuditLog()` archives nothing and purges nothing — it logs a warning
+and reports `skipped: true`, and — critically — never falls back to the app-role connection.
+`EldEvent` retention (the DETACH/DROP path) needs no such bootstrap and works today; it is
+covered end-to-end by `test/integration/retention.spec.ts` against a scratch 2003 partition.
+
+**Cutoff choice — 24 months, not 30:** tz.md §5.5's table states the `EldEvent` DROP trigger
+two ways in the same row: "minimum 6 oy issiq + 24 oy arxiv" and, one row below, "24 oydan
+eski partition -> arxivga, keyin DETACH" (partitions *older than 24 months* get
+archived+detached). The second phrasing gives a literal, unambiguous threshold; the first
+reads as "6 months hot, then some further archived period" without pinning an exact total.
+24 months is also a strict superset of the 6-month FMCSA RODS floor, so enforcing it
+satisfies both the RODS-6-month and the audit-24-month checklist clauses with one number.
+`EVENT_RETENTION_MONTHS = AUDIT_RETENTION_MONTHS = 24` in `retention.constants.ts`; a stricter
+30-month reading was considered and rejected as unsupported by the literal table text.
+**Boundary enforcement:** `RetentionService.partitionsEligibleForDrop` (pure function, unit
+tested down to the millisecond in `retention.service.spec.ts`) only includes a partition when
+`rangeEnd <= cutoff` — a partition that still holds even one in-window row is always kept.
+`AuditLog`'s cutoff uses `createdAt < cutoff` (strict), and is recomputed inside the service
+on every sweep rather than accepted from a caller, so nothing can shrink the window by
+constructing an earlier "now".
+
+## D-041 — the authorization-coverage gate is a static parse of the controller sources, not a booted app
+**Problem:** "every route carries an explicit permission key" is only checkable if the *absence* of
+a decorator is observable. At runtime an unguarded route simply succeeds, so a bootstrapped-app
+test can only assert about routes someone already thought to list — exactly the routes that are
+never the problem. Phase 12 needed a test that fails when a future route forgets `@Perm`.
+**Options:** (a) e2e matrix: for every route × every role, assert 403 — accurate but needs the DB,
+Redis and a token per role, and grows quadratically; (b) reflect over Nest's metadata after
+`NestFactory.create` in a unit test — needs the whole DI graph (Prisma, BullMQ, S3, Firebase) in
+the unit project; (c) parse the controller sources statically and assert on the decorator sets.
+**Choice:** (c). `src/common/guards/route-surface.ts` tokenizes each `*.controller.ts` (balanced
+parens so multi-line `@ApiOkResponse({...})` blocks do not split a handler's decorator run,
+comments blanked out so an explanatory comment between `@Post` and `@UseGuards` does not detach
+them) and `route-surface.spec.ts` asserts: no route without `@Perm`/`@Public`/`DriverGuard`
+outside a reviewed self-scoped list, an exact `@Public()` set, no `READ`-gated mutation, an audit
+row for every gated mutation, and driver-only ingest/mobile writes.
+**Why:** it runs in the unit project in ~3 s with no infrastructure, it fails on the thing that
+actually goes wrong (a missing decorator), and the allowlists force a written reason for every
+exception instead of silence. The trade-off is that it checks the *declaration*, not the runtime
+behaviour — `permission.guard.spec.ts` and the e2e role tests still cover enforcement. A route
+declared through anything other than a decorator literal (a dynamic module, a mixin) would be
+invisible to it; there are none today and the "found >150 routes across >30 files" assertion fails
+loudly if the parser ever stops seeing the surface.
+
+## D-042 — the mobile-sync idempotency key is namespaced in the existing column instead of migrating the unique constraint
+**Problem:** `SyncedChange.clientId` is `@unique` table-wide but the value is chosen by the mobile
+client, which made the ledger cross-driver (B-029). The clean schema fix is
+`@@unique([driverId, clientId])`.
+**Options:** (a) migration changing the unique constraint — correct long-term, but adds a migration
+to a phase where three other tasks are editing the same DB and it must be written, tested up/down
+and drift-checked; (b) scope only the *read* by driver and leave the column unique — the victim's
+legitimate insert would then fail forever on the attacker's key; (c) store
+`"<driverId>:<clientId>"` in the same column, keeping the unique constraint meaningful per driver.
+**Choice:** (c), with the read accepting both the namespaced key and the bare key *for the same
+driver* so rows written before the change stay idempotent.
+**Why:** the column's value is server-internal — the sync response echoes the `clientId` from the
+request, nothing reads the stored string back to a client — so namespacing is invisible outside the
+repository. It closes the hole with no migration and no drift risk. (a) remains the right cleanup
+when the next migration window opens; the composite unique would then let the namespacing be
+dropped in one edit.
+
+## D-043 — realtime room authorization lives in its own injectable, and `vehicle:*` stays open to back-office tokens
+**Problem:** `subscribe` needed real authorization (B-030), which means DB lookups (conversation
+participation, the driver's assigned unit) inside a WebSocket gateway.
+**Options:** (a) inline the Prisma calls in the gateway; (b) reuse `MessagingService`/`DriversService`
+— pulls two feature modules into the realtime module and drags their audit/event side effects into
+a subscribe call; (c) a small `RealtimeRoomAuthorizer` injectable reading `PrismaService` (global)
+directly.
+**Choice:** (c). One pure-authorization class, one unit spec, no feature-module coupling.
+**Why `vehicle:*` is still open to any back-office principal:** TZ §27.3 forbids `carrierId`
+columns today, so the deployment is single-carrier and every back-office token legitimately sees
+every unit — the same rule the REST fleet endpoints follow. When the carrier filter lands, this is
+the one method that needs the extra clause, which is precisely why it is isolated here.
+
+## D-044 — k6 suite treats `GET /vehicles` as the `/live/fleet (300 units)` proxy; the p95 gate is reported as not-certified rather than passing on an unrepresentative run
+**Problem:** tz.md §19 lists `/live/fleet (300 unit) < 250ms` as its own line, but this codebase
+has no dedicated `GET /live/fleet` REST route — fleet position updates are WebSocket-pushed
+(`RealtimeGateway`), and the dev DB only seeds 69 vehicles, not 300.
+**Options:** (a) skip that target line entirely; (b) build a throwaway `/live/fleet`-shaped
+endpoint just for the load test; (c) load-test `GET /vehicles?limit=100` (the closest existing
+REST read of the same table) and state the scale gap plainly instead of pretending it is the
+same measurement.
+**Choice:** (c). A fabricated (b) endpoint that doesn't exist in prod would test nothing real;
+(a) silently drops a documented acceptance line. Tagging the honest proxy and calling out the
+69-vs-300 gap in the k6 report lets a reader see exactly what was and wasn't measured.
+**Also decided here:** the Phase-12 k6 run on this box came back with p95 in the 6-24s range
+across every hot-path endpoint — two orders of magnitude over target — but the app log shows
+this tracks almost 1:1 with Prisma connection-pool exhaustion (B-038) and a shared Postgres
+role hitting `FATAL: too many connections` while `eld-devops`/`eld-security`/`eld-reports-jobs`
+ran their own suites plus a `nest build`/`eslint`/`openapi-gen` in parallel (load average 13.7 on
+what is normally a single-tenant-per-run box). Reporting that as "p95 fails" without the caveat
+would imply a code regression that the evidence doesn't support one way or the other. Decision:
+tasks.md's p95 gate line stays **unchecked** with a note pointing at the contention, not ticked
+on a technicality and not falsely reported red as a code defect — an honest "not measurable
+cleanly in this environment" beats either.
+
+## D-045 — worker container gets its own bare `http` health/metrics listener instead of a full Nest HTTP stack
+**Problem:** B-024 showed the worker had no real liveness signal — the compose healthcheck was
+`node -e "process.exit(0)"`, which only proves the process exists, not that `WorkerAppModule`
+actually finished booting or is still consuming jobs. Fixing this needed `/health/live`,
+`/health/ready`, `/health/deep` and `/metrics` on the worker, but `worker.ts` deliberately uses
+`NestFactory.createApplicationContext()` (no HTTP stack at all — TZ §3.3, "heavy work never
+runs in the API container" cuts both ways: the API's HTTP concerns don't belong in the worker
+either).
+**Options considered:** (a) switch the worker to `NestFactory.create()` so `HealthController`
+mounts normally — pulls in Express, CORS, helmet, the global validation pipe, Swagger wiring,
+etc., none of which the worker needs or should carry; (b) a separate `@nestjs/microservices`
+transport — heavier dependency for four read-only endpoints; (c) a bare `node:http` server in
+`worker.ts` that calls straight into `HealthService`/`MetricsService`/`WorkerHeartbeatService`
+(same providers the API's `HealthController` already delegates to).
+**Choice:** (c).
+**Why:** Reuses the exact same `HealthService`/`MetricsService` logic the API uses (`HealthModule`
+imported into `WorkerAppModule` for providers only, no controller mounted) — zero duplicated
+business logic — while adding nothing to the worker's dependency surface beyond Node's own
+`http` module. `WorkerHeartbeatService` (new) backs `/health/live` with a real signal: a 15s
+heartbeat gauge that only starts ticking once boot finished, plus per-queue BullMQ `QueueEvents`
+listeners for `onebook_worker_queue_last_completed_timestamp_seconds` /
+`onebook_worker_queue_failed_jobs_total`, so "worker not ticking" and "queue backlog with
+nothing completing" are both directly observable, not inferred from process-presence.
+
+## D-046 — `SentryService` mirrors every capture into a Prometheus counter instead of adding a separate metric at each call site
+**Problem:** Phase 12 needs `alert.hos_engine_drift` (§8.6 nightly sweep) and worker job
+failures to be queryable over a multi-day window (the 7-day HOS drift monitoring window in
+particular), not just visible as one-off log lines. The natural call sites
+(`HosStateService.compareSnapshot`, `WorkerHeartbeatService`'s per-queue `failed` listener) are
+owned by other phases (`eld-hos-engine`) or already exist; adding a bespoke Prometheus metric at
+every future `SentryService.capture()` call site would mean every future anomaly reporter has to
+remember to also wire a metric.
+**Choice:** `SentryService.capture()` itself increments `onebook_sentry_captures_total{fingerprint}`
+(`fingerprint` = the capture's own grouping key, e.g. `hos_engine_drift`, `worker_job_failed`) on
+the shared `MetricsService` registry, in addition to forwarding to `@sentry/node` and the
+existing structured log line. `ObservabilityModule` now imports `HealthModule` (for
+`MetricsService`) to make this possible.
+**Why:** every current and future `capture()` call gets a queryable counter for free, split by
+fingerprint, with no per-call-site metric wiring — and it costs nothing at call sites that don't
+care about metrics (Sentry-only callers are unaffected). The alternative (metric per call site)
+would have been the more "local" change but silently regresses the moment a new anomaly type is
+added and its author doesn't also add a metric.
+
+## D-047 — the §6.5 ingest limit is keyed by driver, the global one stays keyed by IP
+**Problem:** §6.5 asks for three limits: login 5/min/IP, API 600/min/token, ingest 300/min/driver.
+Only the first two IP-keyed ones existed (B-033). A per-IP bucket is the wrong key for device
+traffic: an entire fleet egresses through one depot/carrier NAT address, so one misbehaving PT30
+can exhaust the bucket for every driver behind it — while B-037 had to raise the ingest ceiling to
+400 req/s precisely because the IP bucket was starving legitimate fleet traffic.
+**Options:** (a) keep one bucket and raise the limit — does not isolate anyone; (b) key EVERY
+bucket by the authenticated principal — would need `JwtAuthGuard` to run before the throttler, so
+an unauthenticated flood would be verified before being shed, and a rotating fake `sub` would
+evade the global bucket entirely; (c) two buckets: keep `default` on IP, add a driver-keyed
+`ingest` bucket scoped to `/ingest/*`.
+**Choice:** (c). `default` 600/min/IP unchanged (plus the login 5/min/IP and the B-037 400 req/s
+ingest override, both untouched); new `ingest` bucket 300/min keyed `driver:<id>`, one key shared
+by events + telemetry + ble-state + device-status, storage in Redis, rejection rendered as the §20
+`RATE_LIMITED` envelope with `scope`.
+**Why:** the driver identity is read from `req.user` when a guard already resolved it and otherwise
+from the JWT's `sub` claim **decoded but not signature-verified** — acceptable here because guard
+order is unchanged (throttler still runs first, so floods are shed before token verification), a
+forged `sub` only moves the caller into a different bucket and still earns a 401 microseconds
+later from `JwtAuthGuard`, and the IP bucket keeps capping the connection either way. Redis
+storage (not the in-memory default) because §3.3 runs multiple API containers; it fails OPEN on a
+Redis error, since losing §395 events is a compliance failure while over-admitting requests for a
+few seconds is not. The per-driver budget cannot make §19 unreachable: 300/min is 5 req/s per
+driver and each request may carry 500 events, so 60 drivers cover the 300 req/s peak and a real
+fleet needs a small fraction of it.
+
+## D-048 — `HOS_ENGINE_VERSION` stays `1.0.0` after the B-041 gap-resolution fix
+**Problem:** B-041 changed how `zonedToUtc()` resolves a local time that does not exist, which
+is a change to RODS day boundaries — normally a reason to bump `HOS_ENGINE_VERSION`. But the
+drift checker *skips* the server-vs-`DriverHosSnapshot` comparison whenever the versions differ
+(tz.md §8), so a bump would blind the nightly drift sweep for every driver until the whole
+fleet upgrades the app.
+**Options:** (a) bump to `1.0.1` on both sides — correct by the letter of "behaviour changed",
+but silences drift detection fleet-wide for days; (b) keep `1.0.0` because no US home terminal
+can reach the changed code path; (c) bump and special-case the skip.
+**Choice:** (b) — keep `1.0.0`.
+**Why:** the changed branch is only entered for a local time inside a DST gap, and `dayStart`
+only ever asks for 00:00. Every US and US-territory zone transitions at 02:00 (or not at all),
+so local midnight always exists and the result is bit-identical to before — verified by a
+round-trip sweep over `America/{New_York,Chicago,Denver,Los_Angeles,Anchorage,Phoenix}` and
+`Pacific/Honolulu` across both 2026 transitions, plus all 54 language-neutral conformance
+fixtures unchanged on TS and Dart. No `HosState` a real FMCSA-regulated driver can produce
+changes, so there is nothing for a version bump to protect, and keeping the version preserves
+drift coverage. Both engines were changed in the same commit window, so TS and Dart never
+disagree at a given version.
+
+## D-049 — dev's Prisma `connection_limit` set to 4, not tz.md §19's blanket "20" (B-038)
+**Problem:** B-038 found `.env.development`'s `DATABASE_URL` at `connection_limit=10` while
+tz.md §19 says `Prisma connection_limit=20`, and 324 `P2024`/"too many connections for role
+eld_dev" during a k6 run. Naively raising it to 20 would not fix anything: `eld_dev` carries a
+hard `ALTER ROLE eld_dev CONNECTION LIMIT 10` (tz.md §22.3.4, also a "Hard rule" in this agent's
+own operating contract — "so dev cannot sink prod") that Postgres enforces independently of
+whatever number Prisma's own `connection_limit` query-string param says. A Prisma pool
+configured for 20 against a role capped at 10 just fails at 10 instead of 20 — same class of
+error, sooner.
+**Arithmetic.** Postgres `max_connections=100` on the shared dev/prod instance (checked via
+`SHOW max_connections;`) — not the binding constraint. The role fence is: `eld_prod`
+`CONNECTION LIMIT 40` = `api(20) + worker(20)` exactly (worker is one process, one
+`@Global` `PrismaService` singleton shared by all `src/workers/*.processor.ts` — report,
+report-scheduler, ifta-nightly, alert, safety-detect, maintenance-due, retention, hos-recalc,
+hos-drift, transfer, webhook — not one pool each), so §19's "20" is already correct and
+satisfied for prod, unchanged. `eld_dev` `CONNECTION LIMIT 10` is shared by `api-dev`
+(always-on, `restart: unless-stopped`) *and* `test:integration`/`test:e2e`
+(`test/setup/integration.setup.ts` loads the same `.env.development`), which run concurrently
+with `api-dev` and with each other's sibling agents' test suites on this box. The old
+`connection_limit=10` in `.env.development` equaled the role cap one-for-one, so `api-dev`
+alone could exhaust the entire dev budget with zero spare for a second consumer — exactly
+B-038's failure mode.
+**Options:** (a) set dev to `connection_limit=20` per the literal tz.md §19 text; (b) raise
+`eld_dev`'s `ALTER ROLE ... CONNECTION LIMIT` above 10 to make 20 fit; (c) keep the 10-role-cap
+fence and instead shrink the *app-level* pool per consumer so two or more concurrent
+consumers fit inside it.
+**Choice:** (c) — `connection_limit=4` in `.env.development`/`.env.development.example`/
+`.env.example`; `.env.production`/`.env.production.example` untouched at 20.
+**Why:** (a) is impossible without (b), and (b) means relaxing a rule stated verbatim in this
+agent's Hard Rules ("eld_dev CONNECTION LIMIT 10 (prod 40)") — not this fix's call to make;
+raising it would also erode the entire point of the fence, which exists specifically so dev
+contention can never threaten `eld_prod`'s budget on the same instance. `connection_limit=4`
+means `api-dev` (4) plus one concurrent `test:integration`/`test:e2e` run (4, same env file)
+uses 8 of 10, leaving 2 spare for an ad hoc `psql`/`prisma migrate dev` session — verified by
+opening two independent 4-connection Prisma pools against `onebook_eld_dev` and fanning 20
+concurrent queries across them with no `P2024`. A third simultaneous consumer (e.g. two sibling
+agents' test suites running at once, as B-038 observed) can still exceed 10 — that is a real,
+accepted limit of a 10-wide shared fence with more than two consumers, not something a bigger
+per-process number fixes; documented in `docs/deploy.md` "DB connection pool budget" as an
+operational constraint (stagger test runs, or temporarily widen the role limit for a dedicated
+load-testing window and revert after) rather than silently baked into a permanently larger
+default that would just make P2024s arrive under lighter contention instead of none.

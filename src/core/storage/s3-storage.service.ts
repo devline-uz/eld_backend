@@ -5,6 +5,7 @@ import {
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
+import { Upload } from '@aws-sdk/lib-storage';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { Injectable } from '@nestjs/common';
 import { ERROR_CODES } from '../../common/errors/codes';
@@ -55,6 +56,36 @@ export class S3StorageService implements StoragePort {
       }),
     );
     return finalKey;
+  }
+
+  /** TZ §15 — multipart streaming upload; the caller's readable stream is piped straight to
+   * S3/MinIO in chunks, so a million-row CSV/PDF export never sits fully in process memory. */
+  async putStream(
+    key: string,
+    body: NodeJS.ReadableStream,
+    options?: PutObjectOptions,
+  ): Promise<{ key: string; sizeBytes: number }> {
+    const finalKey = this.withPrefix(key);
+    let sizeBytes = 0;
+    body.on('data', (chunk: Buffer) => {
+      sizeBytes += chunk.length;
+    });
+    const upload = new Upload({
+      client: this.client,
+      params: {
+        Bucket: this.bucket,
+        Key: finalKey,
+        // `@aws-sdk/lib-storage`'s `StreamingBlobPayloadInputTypes` wants a concrete
+        // `stream.Readable`, not just the `NodeJS.ReadableStream` interface this port takes
+        // (any readable — e.g. a `PassThrough` — satisfies both at runtime; only the type
+        // matches differ after the 3.1130 SDK bump).
+        Body: body as unknown as import('node:stream').Readable,
+        ContentType: options?.contentType,
+        Metadata: options?.metadata,
+      },
+    });
+    await upload.done();
+    return { key: finalKey, sizeBytes };
   }
 
   async get(key: string): Promise<Buffer> {

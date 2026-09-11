@@ -5,6 +5,9 @@
   "entryFile": "main",
   "compilerOptions": {
     "deleteOutDir": true,
-    "tsConfigPath": "tsconfig.build.json"
+    "tsConfigPath": "tsconfig.build.json",
+    "assets": [
+      { "include": "modules/reports/templates/**/*.html", "outDir": "dist" }
+    ]
   }
 }

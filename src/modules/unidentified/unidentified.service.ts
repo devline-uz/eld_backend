@@ -324,6 +324,26 @@ export class UnidentifiedService {
   async confirm(id: string, dto: ConfirmUnidentifiedDto, actor: ContextUser) {
     const segment = await this.requireSegment(id);
     if (dto.accept) {
+      // §395.32 — a self-claim is only credible on a unit this driver actually operated.
+      // A carrier user assigning through `POST /unidentified/:id/assign` (hosEdit = FULL) is a
+      // different, audited decision and keeps its own rules.
+      const associated = await this.repo.hasDriverVehicleAssociation(
+        actor.id,
+        segment.vehicleId,
+        segment.endAt,
+      );
+      if (!associated) {
+        await this.writeAudit(actor, 'UNIDENTIFIED_CONFIRM_DENIED', id, {
+          after: { driverId: actor.id, vehicleId: segment.vehicleId },
+          detail: 'Self-claim refused: the driver has no assignment or login session on this unit (§395.32).',
+        });
+        throw new AppException(
+          ERROR_CODES.FORBIDDEN,
+          'You can only claim unidentified driving recorded on a vehicle you operated.',
+          403,
+          { segmentId: id },
+        );
+      }
       return this.assign(id, { driverId: actor.id, annotation: dto.annotation }, actor);
     }
     if (segment.assignedDriverId === actor.id) {
