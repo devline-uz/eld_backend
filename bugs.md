@@ -1047,3 +1047,29 @@ scratch partition.
 constructing the `Date`, forcing UTC interpretation regardless of the running process's `TZ`.
 Covered by `test/integration/retention.spec.ts`'s first assertion (`rangeStart`/`rangeEnd`
 exact-ISO-string checks), which reproduced this failure before the fix.
+
+## B-042 — no `.dockerignore`, so `COPY . .` overwrote the image's Alpine/musl `node_modules` with the host's glibc build · FIXED
+**Found:** picking up the `api-dev` rebuild handoff left by the Phase 12 devops task, which
+reported that `npm run build` failed *inside* `docker build` while the identical command
+succeeded on the host. That symptom was blamed on a concurrent agent's mid-edit `src/`
+snapshot; it was not — the tree was stable and the build still failed.
+**Cause:** the repository had no `.dockerignore`. The build context was therefore 754 MB
+(618 MB of it `node_modules`, plus `dist/`, `coverage/`, `.git/`), and more importantly
+`Dockerfile`'s `COPY . .` in the `build` stage ran *after*
+`COPY --from=deps /app/node_modules ./node_modules` — so the host's `node_modules` replaced
+the ones `npm ci` had just installed for `node:24-alpine`. The host installs against glibc,
+the image runs musl; Prisma's query-engine binaries are the most sensitive to that mismatch.
+**Severity:** Medium-High. This is not a dev-only convenience issue — `api`, `worker` and
+`api-dev` are all built from this same `Dockerfile`, so every production image inherited
+whatever native binaries happened to be on the build host, and the build was only ever
+"working" when the host and the image agreed by luck.
+**Fix:** added `/root/projects/devline/eld_logistics/backend/.dockerignore` excluding
+`node_modules`, `.git`, `dist`, `coverage`, `*.tsbuildinfo`, `.env`/`.env.*`, and the
+build-irrelevant `test`, `docs`, `scripts`, `*.md`, `.github`.
+**Verified:** build context 754 MB → 5.7 MB; `docker compose build api-dev` now completes
+(`RUN npm run build` 69.8 s, previously the failing step), image `onebook-eld-api-dev:latest`
+built clean. The `api-dev` container itself is not running and is not needed for host-side
+development — only the image build was verified.
+**Note:** the `.env`/`.env.*` exclusion is defence in depth. The Dockerfile never copied env
+files into a layer; compose mounts them at runtime via `env_file`. They simply have no
+business being in the build context.

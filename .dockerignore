@@ -1,0 +1,19 @@
+# Host-built node_modules must never reach the image: the deps stage installs
+# them for Alpine/musl, and COPY . . would overwrite that with glibc builds
+# (Prisma engines in particular).
+node_modules
+.git
+dist
+coverage
+*.tsbuildinfo
+
+# secrets / local env — mounted at runtime via env_file, never baked in
+.env
+.env.*
+
+# not needed to build or run
+test
+docs
+scripts
+*.md
+.github
