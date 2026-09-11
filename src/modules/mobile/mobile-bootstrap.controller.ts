@@ -1,0 +1,43 @@
+import { Controller, Get, UseGuards } from '@nestjs/common';
+import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { DriverGuard } from '../../common/guards/driver.guard';
+import { ApiStandardErrors } from '../../common/errors';
+import { MobileBootstrapService } from './mobile-bootstrap.service';
+
+/**
+ * TZ §11.8 / §13.2 — `GET /mobile/bootstrap`. Driver token only: the app calls this once on
+ * cold start and after every reconnect to refresh everything it needs to run fully offline
+ * until the next call (§8.6 point 4, §13.5).
+ */
+@ApiTags('mobile')
+@ApiBearerAuth()
+@UseGuards(DriverGuard)
+@Controller('mobile')
+export class MobileBootstrapController {
+  constructor(private readonly bootstrap: MobileBootstrapService) {}
+
+  @Get('bootstrap')
+  @ApiOperation({
+    summary:
+      'Driver/vehicle/device/carrier context, current HOS state, the engine version, server time and the offline DOT-inspection packet (§8.6, §13.2, §13.5).',
+  })
+  @ApiOkResponse({
+    schema: {
+      example: {
+        serverTime: '2026-09-11T15:41:00.000Z',
+        hosEngineVersion: '1.0.0',
+        driver: { id: 'drv_1', firstName: 'John', lastName: 'Smith', cdlNumber: 'W8569238', cdlState: 'KY' },
+        vehicle: { id: 'veh_1', unitNumber: '4821' },
+        device: { id: 'dev_1', serial: 'PT30-001', bleState: 'CONNECTED' },
+        hos: { state: { currentStatus: 'ON', driveRemainingSec: 39600 } },
+        inspectionPacket: { days: [] },
+        syncConfig: { batchMaxChanges: 500, batchMaxBytes: 1048576 },
+      },
+    },
+  })
+  @ApiStandardErrors()
+  get(@CurrentUser('id') driverId: string) {
+    return this.bootstrap.bootstrap(driverId);
+  }
+}

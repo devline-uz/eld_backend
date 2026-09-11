@@ -1,0 +1,41 @@
+# OneBook ELD — reverse proxy routes (tz.md §22.2).
+# Caddy is already the proxy on this box; this file only adds the two
+# API routes (prod :3000, dev :3001). Fill in real hostnames per server.
+#
+# Install: copy the relevant `handle`/site block into the box's live
+# Caddyfile (or `import` this file from it) and reload with
+# `caddy reload --config /etc/caddy/Caddyfile`.
+
+# --- Production API --------------------------------------------------
+api.onebook-eld.example.com {
+	encode gzip
+
+	reverse_proxy /* localhost:3000 {
+		header_up X-Forwarded-Proto {scheme}
+	}
+
+	# Prometheus scrape + health endpoints pass through untouched — Caddy
+	# does not need auth on these, the app enforces it where required.
+	handle /metrics {
+		reverse_proxy localhost:3000
+	}
+
+	log {
+		output file /var/log/caddy/onebook-api-prod.log
+		format json
+	}
+}
+
+# --- Development API (watch mode) -------------------------------------
+api-dev.onebook-eld.example.com {
+	encode gzip
+
+	reverse_proxy /* localhost:3001 {
+		header_up X-Forwarded-Proto {scheme}
+	}
+
+	log {
+		output file /var/log/caddy/onebook-api-dev.log
+		format json
+	}
+}

@@ -1,0 +1,195 @@
+name: onebook-eld
+
+# OneBook ELD — dev + prod share one Postgres and one Redis instance on this
+# box (backend/tz.md §22.2/§22.3). Separation is enforced by DB name / role /
+# Redis DB index / bucket name, not by separate infra.
+
+x-node-healthcheck: &node-healthcheck
+  interval: 10s
+  timeout: 5s
+  retries: 5
+  start_period: 15s
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: onebook-postgres
+    ports:
+      - "127.0.0.1:55432:5432"
+    restart: unless-stopped
+    environment:
+      # Bootstrap superuser only — application roles are created by the init
+      # scripts below. Never used by the app itself.
+      POSTGRES_USER: ${POSTGRES_SUPERUSER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?set in server secrets folder}
+      POSTGRES_DB: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    # No host port published — this box already runs unrelated native
+    # Postgres on 5432 for other projects. api/worker/api-dev reach this
+    # over the internal compose network as `postgres:5432`; use
+    # `docker compose exec postgres psql ...` for host-side access.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_SUPERUSER:-postgres}"]
+      <<: *node-healthcheck
+
+  redis:
+    image: redis:7-alpine
+    container_name: onebook-redis
+    ports:
+      - "127.0.0.1:63791:6379"
+    restart: unless-stopped
+    # DB 0 = prod, DB 1 = dev (tz.md §22.3.4). noeviction protects prod's
+    # BullMQ/queue data from being evicted under memory pressure; dev shares
+    # the same policy since it's the same instance.
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD:?set in server secrets folder}
+      --maxmemory-policy noeviction
+    environment:
+      # Needed inside the container for the healthcheck below — the
+      # top-level ${REDIS_PASSWORD} substitution above only happens on the
+      # host side when rendering `command`, it is not otherwise visible
+      # to processes inside the container.
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set in server secrets folder}
+    volumes:
+      - redis_data:/data
+    # No host port published — 6379 is already used by unrelated native
+    # Redis on this box. Reachable internally as `redis:6379`.
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a $${REDIS_PASSWORD} ping | grep -q PONG"]
+      <<: *node-healthcheck
+
+  minio:
+    image: minio/minio:latest
+    container_name: onebook-minio
+    ports:
+      - "127.0.0.1:19000:9000"
+      - "127.0.0.1:19001:9001"
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set in server secrets folder}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set in server secrets folder}
+    volumes:
+      - minio_data:/data
+    # No host ports published — 9000/9001 are already used by unrelated
+    # native MinIO on this box. Reachable internally as `minio:9000`.
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      <<: *node-healthcheck
+
+  # One-shot: creates onebook-dev / onebook-prod buckets on first boot.
+  minio-init:
+    image: minio/mc:latest
+    container_name: onebook-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD} &&
+      mc mb -p local/onebook-dev &&
+      mc mb -p local/onebook-prod &&
+      exit 0
+      "
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set in server secrets folder}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set in server secrets folder}
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    container_name: onebook-api
+    restart: unless-stopped
+    command: ["node", "dist/main.js"]
+    env_file:
+      - .env.production
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+    ports:
+      - "127.0.0.1:13000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health/live"]
+      <<: *node-healthcheck
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    container_name: onebook-worker
+    restart: unless-stopped
+    command: ["node", "dist/worker.js"]
+    env_file:
+      - .env.production
+    environment:
+      NODE_ENV: production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # Worker has no HTTP surface; liveness is process-presence based.
+      test: ["CMD-SHELL", "node -e \"process.exit(0)\""]
+      <<: *node-healthcheck
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+
+  api-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: build
+    container_name: onebook-api-dev
+    restart: unless-stopped
+    # watch mode — runs against the compiled build stage which still has
+    # devDependencies + full source + Nest CLI.
+    command: ["npm", "run", "start:dev"]
+    env_file:
+      - .env.development
+    environment:
+      NODE_ENV: development
+      PORT: 3001
+    ports:
+      - "127.0.0.1:13001:3001"
+    volumes:
+      - ./src:/app/src
+      - ./prisma:/app/prisma
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3001/health/live"]
+      <<: *node-healthcheck
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1G
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:

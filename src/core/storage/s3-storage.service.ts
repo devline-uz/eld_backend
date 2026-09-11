@@ -1,0 +1,112 @@
+import {
+  DeleteObjectCommand,
+  GetObjectCommand,
+  HeadObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { Injectable } from '@nestjs/common';
+import { ERROR_CODES } from '../../common/errors/codes';
+import { AppException } from '../../common/errors/app.exception';
+import { AppConfigService } from '../config/config.service';
+import { PutObjectOptions, StoragePort } from './storage.port';
+
+/**
+ * S3-compatible adapter, used against MinIO in dev and S3 in prod.
+ * TZ §27.1 point 5: every key goes through `withPrefix()` so a tenant prefix can be
+ * introduced later without touching call sites.
+ */
+@Injectable()
+export class S3StorageService implements StoragePort {
+  private readonly client: S3Client;
+  private readonly bucket: string;
+  private readonly prefix: string;
+  private readonly defaultTtl: number;
+
+  constructor(config: AppConfigService) {
+    this.bucket = config.get('S3_BUCKET');
+    this.prefix = config.get('S3_KEY_PREFIX');
+    this.defaultTtl = config.get('S3_PRESIGN_TTL_SEC');
+    const accessKeyId = config.get('S3_ACCESS_KEY');
+    const secretAccessKey = config.get('S3_SECRET_KEY');
+    this.client = new S3Client({
+      region: config.get('S3_REGION'),
+      endpoint: config.get('S3_ENDPOINT'),
+      forcePathStyle: config.get('S3_FORCE_PATH_STYLE'),
+      credentials: accessKeyId && secretAccessKey ? { accessKeyId, secretAccessKey } : undefined,
+    });
+  }
+
+  private withPrefix(key: string): string {
+    return this.prefix ? `${this.prefix.replace(/\/$/, '')}/${key}` : key;
+  }
+
+  async put(key: string, body: Buffer | Uint8Array, options?: PutObjectOptions): Promise<string> {
+    const finalKey = this.withPrefix(key);
+    await this.client.send(
+      new PutObjectCommand({
+        Bucket: this.bucket,
+        Key: finalKey,
+        Body: body,
+        ContentType: options?.contentType,
+        ContentLength: options?.contentLength,
+        Metadata: options?.metadata,
+      }),
+    );
+    return finalKey;
+  }
+
+  async get(key: string): Promise<Buffer> {
+    const res = await this.client.send(
+      new GetObjectCommand({ Bucket: this.bucket, Key: this.withPrefix(key) }),
+    );
+    if (!res.Body) {
+      throw new AppException(ERROR_CODES.STORAGE_UNAVAILABLE, `Empty object body for "${key}".`);
+    }
+    return Buffer.from(await res.Body.transformToByteArray());
+  }
+
+  async delete(key: string): Promise<void> {
+    await this.client.send(
+      new DeleteObjectCommand({ Bucket: this.bucket, Key: this.withPrefix(key) }),
+    );
+  }
+
+  async exists(key: string): Promise<boolean> {
+    try {
+      await this.client.send(
+        new HeadObjectCommand({ Bucket: this.bucket, Key: this.withPrefix(key) }),
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  presignPut(key: string, contentType: string, ttlSec?: number): Promise<string> {
+    return getSignedUrl(
+      this.client,
+      new PutObjectCommand({
+        Bucket: this.bucket,
+        Key: this.withPrefix(key),
+        ContentType: contentType,
+      }),
+      { expiresIn: ttlSec ?? this.defaultTtl },
+    );
+  }
+
+  presignGet(key: string, ttlSec?: number): Promise<string> {
+    return getSignedUrl(
+      this.client,
+      new GetObjectCommand({ Bucket: this.bucket, Key: this.withPrefix(key) }),
+      { expiresIn: ttlSec ?? this.defaultTtl },
+    );
+  }
+
+  /** Storage reachability probe for /health/deep. */
+  async ping(): Promise<boolean> {
+    await this.presignGet('__healthcheck__', 60);
+    return true;
+  }
+}

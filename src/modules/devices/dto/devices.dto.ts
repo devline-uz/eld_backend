@@ -1,0 +1,55 @@
+import { z } from 'zod';
+
+export const DeviceModelEnum = z.enum(['PT30', 'PT40']);
+export const DeviceStatusEnum = z.enum(['UNASSIGNED', 'ASSIGNED', 'FAULTY', 'RETIRED']);
+export const BleStateEnum = z.enum(['CONNECTED', 'OUT_OF_RANGE', 'DISCONNECTED']);
+
+/** TZ §5.4 — PT30/PT40 registry ("Settings > ELD devices" Figma screen: registered devices,
+ * firmware, heartbeats). */
+export const CreateDeviceDto = z.object({
+  serial: z.string().min(1).max(60),
+  bleMacAddress: z.string().max(30).optional(),
+  model: DeviceModelEnum.default('PT30'),
+  firmware: z.string().max(20).optional(),
+  periodicConnectedSec: z.number().int().min(2).max(7200).default(30),
+  periodicDisconnectedMin: z.number().int().min(1).max(480).default(30),
+});
+export type CreateDeviceDto = z.infer<typeof CreateDeviceDto>;
+
+export const UpdateDeviceDto = CreateDeviceDto.partial().extend({
+  status: DeviceStatusEnum.optional(),
+});
+export type UpdateDeviceDto = z.infer<typeof UpdateDeviceDto>;
+
+/** Device <-> vehicle binding lives only on `Device.vehicleId` (hard rule). */
+export const PairDeviceDto = z.object({
+  vehicleId: z.string().uuid(),
+});
+export type PairDeviceDto = z.infer<typeof PairDeviceDto>;
+
+export const UpdateFirmwareDto = z.object({
+  firmware: z.string().min(1).max(20),
+});
+export type UpdateFirmwareDto = z.infer<typeof UpdateFirmwareDto>;
+
+/** TZ §5.4 — the app reports BLE connection state; never guessed server-side. */
+export const UpdateBleStatusDto = z.object({
+  bleState: BleStateEnum,
+  storedEventsCount: z.number().int().min(0).optional(),
+});
+export type UpdateBleStatusDto = z.infer<typeof UpdateBleStatusDto>;
+
+export const DeviceListQueryDto = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(200).default(25),
+  sort: z.string().max(60).optional(),
+  q: z.string().max(200).optional(),
+  status: DeviceStatusEnum.optional(),
+  bleState: BleStateEnum.optional(),
+});
+export type DeviceListQueryDto = z.infer<typeof DeviceListQueryDto>;
+
+export const ImportDevicesDto = z.object({
+  devices: z.array(CreateDeviceDto).min(1).max(1000),
+});
+export type ImportDevicesDto = z.infer<typeof ImportDevicesDto>;

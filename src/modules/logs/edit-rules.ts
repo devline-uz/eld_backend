@@ -1,0 +1,127 @@
+/**
+ * 49 CFR §395.30(c)(2) + TZ §9.1/§9.3 — driving time is immutable.
+ *
+ * "A motor carrier may request edits ... but the ELD must not allow the driving time to be
+ * reduced or reassigned to another duty status." That binds BOTH directions: the carrier's
+ * edit request AND the driver's own correction. Everything in this file is pure so the rule
+ * can be tested without a database and reused by any caller that writes §395 records.
+ */
+import type { DutyStatus } from '../hos/hos.types';
+
+export const DRIVING_EVENT_TYPE = 1;
+export const DRIVING_EVENT_CODE = 3;
+
+/** Reason an edit is refused with `422 DRIVING_TIME_IMMUTABLE`. */
+export type DrivingImmutabilityReason =
+  | 'RESTATUS_DRIVING'
+  | 'SHORTEN_DRIVING'
+  | 'DELETE_DRIVING'
+  | 'OVERLAPS_DRIVING'
+  | 'MANUAL_DRIVING';
+
+export interface Interval {
+  startAt: Date;
+  endAt: Date;
+}
+
+export interface TargetEvent {
+  eventType: number;
+  eventCode: number;
+  eventDateTime: Date;
+  /** End of the interval the record owns — the next active record, or `now`. */
+  intervalEndAt: Date;
+}
+
+export interface EditProposal {
+  proposedStatus: DutyStatus;
+  proposedStart: Date;
+  proposedEnd?: Date | null;
+}
+
+export function isDrivingRecord(event: { eventType: number; eventCode: number }): boolean {
+  return event.eventType === DRIVING_EVENT_TYPE && event.eventCode === DRIVING_EVENT_CODE;
+}
+
+/** Do `[aStart, aEnd)` and `[bStart, bEnd)` share more than a boundary instant? */
+export function overlaps(a: Interval, b: Interval): boolean {
+  return a.startAt.getTime() < b.endAt.getTime() && b.startAt.getTime() < a.endAt.getTime();
+}
+
+/**
+ * §395.30 — a carrier edit request against an existing record.
+ *
+ * Allowed on a driving record: annotation only (same status, same boundaries, or an EXTENSION
+ * of the driving interval). Anything that restatuses it, starts it later or ends it earlier is
+ * a reduction of driving time and is refused. A non-driving record may not be moved on top of
+ * driving time either — that would consume driving time indirectly.
+ */
+export function checkEditProposal(
+  target: TargetEvent,
+  proposal: EditProposal,
+  drivingIntervals: Interval[] = [],
+): DrivingImmutabilityReason | null {
+  if (isDrivingRecord(target)) {
+    if (proposal.proposedStatus !== 'D') return 'RESTATUS_DRIVING';
+    if (proposal.proposedStart.getTime() > target.eventDateTime.getTime()) return 'SHORTEN_DRIVING';
+    if (proposal.proposedEnd && proposal.proposedEnd.getTime() < target.intervalEndAt.getTime()) {
+      return 'SHORTEN_DRIVING';
+    }
+    return null;
+  }
+
+  const proposed: Interval = {
+    startAt: proposal.proposedStart,
+    endAt: proposal.proposedEnd ?? target.intervalEndAt,
+  };
+  // Any overlap with an active driving interval is refused, including one the record already
+  // touched: re-writing a non-driving record over driving time reduces driving time just the
+  // same, and §395.30(c)(2) has no "it was already like that" exception.
+  for (const driving of drivingIntervals) {
+    if (overlaps(proposed, driving)) return 'OVERLAPS_DRIVING';
+  }
+  return null;
+}
+
+export interface SelfEditProposal {
+  status: DutyStatus;
+  startAt: Date;
+  endAt?: Date | null;
+}
+
+/**
+ * TZ §9.3 — the driver's own correction. The driver may move between OFF / SB / ON and may add
+ * a missing OFF/SB/ON interval; they may never create, shorten, delete or restatus driving
+ * time. A manual `D` entry is refused too: driving is recorded by the ELD from the ECM, never
+ * typed in (§395.26(b)).
+ */
+export function checkDriverSelfEdit(
+  proposal: SelfEditProposal,
+  drivingIntervals: Interval[],
+  target?: TargetEvent,
+): DrivingImmutabilityReason | null {
+  if (proposal.status === 'D') return 'MANUAL_DRIVING';
+  if (target && isDrivingRecord(target)) return 'RESTATUS_DRIVING';
+
+  const proposed: Interval = {
+    startAt: proposal.startAt,
+    endAt: proposal.endAt ?? proposal.startAt,
+  };
+  if (proposed.endAt.getTime() <= proposed.startAt.getTime()) {
+    // An open-ended entry runs until the next record; treat it as a point for overlap purposes
+    // and let the caller's timeline decide the rest.
+    return null;
+  }
+  for (const driving of drivingIntervals) {
+    if (overlaps(proposed, driving)) return 'OVERLAPS_DRIVING';
+  }
+  return null;
+}
+
+/** Human-readable detail for the `422 DRIVING_TIME_IMMUTABLE` envelope. */
+export const IMMUTABILITY_DETAIL: Record<DrivingImmutabilityReason, string> = {
+  RESTATUS_DRIVING: 'Driving time cannot be reassigned to another duty status (49 CFR §395.30(c)(2)).',
+  SHORTEN_DRIVING: 'Driving time cannot be shortened (49 CFR §395.30(c)(2)).',
+  DELETE_DRIVING: 'A driving record cannot be deleted (49 CFR §395.30(c)(2)).',
+  OVERLAPS_DRIVING: 'The proposed interval would overwrite recorded driving time (49 CFR §395.30(c)(2)).',
+  MANUAL_DRIVING: 'Driving time is recorded automatically and cannot be entered manually (49 CFR §395.26(b)).',
+};

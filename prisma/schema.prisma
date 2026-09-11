@@ -1,0 +1,1393 @@
+// OneBook ELD — Prisma schema (Phase 1, dev DB).
+// Source of truth: backend/tz.md §5, §6, §18, §19, §22. FMCSA §395 outranks tz.md on conflict.
+//
+// Deliberate deviations from the literal tz.md snippets (all additive / required for correctness):
+//  1. EldEvent uses a COMPOSITE primary key `@@id([id, eventDateTime])` instead of a bare
+//     `id` PK, and its two unique constraints include `eventDateTime`
+//     (`@@unique([uuid, eventDateTime])`, `@@unique([driverId, eventSequenceId, eventDateTime])`).
+//     Postgres native RANGE partitioning (tz §5.5 "oylik partition") requires every unique/PK
+//     index on a partitioned table to include the partition key. `id` autoincrement and true
+//     app-level idempotency (`uuid`, `driverId+eventSequenceId`) are unaffected — ingest never
+//     spans a fabricated duplicate across two different `eventDateTime` values in practice, and
+//     the ingest service (owned by another agent) still generates/validates these independent of
+//     the DB constraint. This is the standard, documented trade-off for native pg partitioning.
+//  2. Added `DriverSession` (mirrors `Session` but for the Driver subject, tz §6.1: drivers get
+//     their own JWT refresh-token lifecycle). Not in the tz.md snippet for §5.2 because that
+//     section only shows the User-side `Session` model, but §6.1 requires refresh-token storage
+//     for both subjects.
+//  No `carrierId` column was added anywhere — tz §27.3. `BaseRepository.scopeWhere()` is the
+//  designated future hook.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// §5.1 — Carrier (singleton row, CHECK constraints added via raw SQL in the migration)
+// ---------------------------------------------------------------------------
+
+model Carrier {
+  id                      String       @id @default("carrier")
+  name                    String
+  dotNumber               String
+  mcNumber                String?
+  ein                     String?
+  timezone                String       @default("America/New_York")
+  hosRuleset              HosRuleset   @default(US_70_8_PROPERTY)
+  distanceUnit            DistanceUnit @default(MILES)
+  cycleRestart            Boolean      @default(true)
+  unassignedThresholdMin  Int          @default(3)
+  dvirRetentionMonths     Int          @default(24)
+  allowPersonalConveyance Boolean      @default(true)
+  allowYardMove           Boolean      @default(true)
+  addressLine1            String?
+  city                    String?
+  state                   String?
+  zip                     String?
+  phone                   String?
+  complianceEmail         String?
+  logoUrl                 String?
+
+  // eRODS — §395 Appendix A: ELD Identifier / Registration ID, exactly 4 chars from [A-Z0-9].
+  // Enforced by CHECK eld_identifier_format / eld_registration_id_format (migration
+  // 20260911150000_erods_identifier_charset) — VarChar(4) alone allows shorter/illegal values.
+  eldIdentifier     String    @default("OBK1") @db.VarChar(4)
+  eldRegistrationId String?   @db.VarChar(4)
+  erodsMode         ErodsMode @default(TEST)
+
+  updatedAt DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// §5.2 — Users, roles, sessions
+// ---------------------------------------------------------------------------
+
+model User {
+  id               String       @id @default(uuid())
+  email            String       @unique
+  passwordHash     String?
+  googleUid        String?      @unique
+  authProvider     AuthProvider @default(PASSWORD)
+  firstName        String
+  lastName         String
+  jobTitle         String?
+  phone            String?
+  roleId           String
+  status           UserStatus   @default(INVITED)
+  twoFactorSecret  String?
+  twoFactorEnabled Boolean      @default(false)
+  recoveryCodes    String[]     @default([])
+  lastActiveAt     DateTime?
+  invitedById      String?
+  invitedAt        DateTime?
+  createdAt        DateTime     @default(now())
+
+  role           Role      @relation(fields: [roleId], references: [id])
+  sessions       Session[]
+  managedDrivers Driver[]  @relation("DriverFleetManager")
+  apiKeys        ApiKey[]
+
+  @@index([status])
+}
+
+model Role {
+  id          String   @id @default(uuid())
+  key         String   @unique
+  name        String
+  description String?
+  isSystem    Boolean  @default(false)
+  permissions Json
+  createdAt   DateTime @default(now())
+
+  users User[]
+}
+
+model Session {
+  id          String    @id @default(uuid())
+  userId      String
+  refreshHash String
+  userAgent   String?
+  ip          String?
+  deviceLabel String?
+  lastSeenAt  DateTime  @default(now())
+  expiresAt   DateTime
+  revokedAt   DateTime?
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt])
+}
+
+/// Driver-side refresh-token session (tz §6.1: driver JWT access 24h / refresh 90d).
+/// Mirrors `Session` — not in the §5.2 tz.md snippet (which only shows the User side).
+model DriverSession {
+  id          String    @id @default(uuid())
+  driverId    String
+  refreshHash String
+  userAgent   String?
+  ip          String?
+  deviceLabel String?
+  appVersion  String?
+  lastSeenAt  DateTime  @default(now())
+  expiresAt   DateTime
+  revokedAt   DateTime?
+  driver      Driver    @relation(fields: [driverId], references: [id], onDelete: Cascade)
+
+  @@index([driverId, revokedAt])
+}
+
+// ---------------------------------------------------------------------------
+// §5.3 — Drivers and units
+// ---------------------------------------------------------------------------
+
+model Driver {
+  id           String       @id @default(uuid())
+  username     String       @unique
+  passwordHash String
+  firstName    String
+  lastName     String
+  email        String?
+  phone        String?
+  cdlNumber    String
+  cdlState     String
+  status       DriverStatus @default(ACTIVE)
+
+  // RODS day boundary follows THIS timezone, never Carrier.timezone.
+  homeTerminalName     String
+  homeTerminalTimezone String @default("America/New_York")
+
+  hosRuleset HosRuleset @default(US_70_8_PROPERTY)
+
+  fleetManagerId    String?
+  assignedVehicleId String? @unique
+
+  allowPersonalConveyance Boolean @default(false)
+  allowYardMove           Boolean @default(false)
+  adverseDrivingEnabled   Boolean @default(false)
+  shortHaulException      Boolean @default(false)
+  splitSleeperEnabled     Boolean @default(false)
+  eldExempt               Boolean @default(false)
+  eldExemptReason         String?
+
+  appVersion   String?
+  appPlatform  String?
+  sdkVersion   String?
+  lastSyncAt   DateTime?
+  registeredAt DateTime  @default(now())
+
+  fleetManager      User?              @relation("DriverFleetManager", fields: [fleetManagerId], references: [id])
+  assignedVehicle   Vehicle?           @relation("VehicleDriver", fields: [assignedVehicleId], references: [id])
+  dailyLogs         DailyLog[]
+  violations        HosViolation[]
+  pushTokens        PushToken[]
+  dvirs             Dvir[]
+  trips             Trip[]
+  hosSnapshot       DriverHosSnapshot?
+  pairingsAsPrimary CoDriverPairing[]  @relation("PairingPrimary")
+  pairingsAsCo      CoDriverPairing[]  @relation("PairingCo")
+  sessions          DriverSession[]
+  syncedChanges     SyncedChange[]
+
+  @@index([status])
+}
+
+/// Co-driver pairing is TIME-bounded, not a permanent field (team driving history must persist).
+model CoDriverPairing {
+  id              String    @id @default(uuid())
+  primaryDriverId String
+  coDriverId      String
+  vehicleId       String
+  startedAt       DateTime
+  endedAt         DateTime?
+  startedById     String?
+  endedById       String?
+
+  primaryDriver Driver  @relation("PairingPrimary", fields: [primaryDriverId], references: [id])
+  coDriver      Driver  @relation("PairingCo", fields: [coDriverId], references: [id])
+  vehicle       Vehicle @relation(fields: [vehicleId], references: [id])
+
+  @@index([primaryDriverId, startedAt])
+  @@index([coDriverId, startedAt])
+  @@index([vehicleId, startedAt])
+}
+
+model PushToken {
+  id          String      @id @default(uuid())
+  driverId    String
+  token       String      @unique
+  platform    AppPlatform
+  deviceLabel String?
+  lastSeenAt  DateTime    @default(now())
+  createdAt   DateTime    @default(now())
+
+  driver Driver @relation(fields: [driverId], references: [id], onDelete: Cascade)
+
+  @@index([driverId])
+}
+
+model Vehicle {
+  id           String   @id @default(uuid())
+  unitNumber   String   @unique
+  vin          String   @unique
+  make         String?
+  model        String?
+  year         Int?
+  licensePlate String?
+  plateState   String?
+  fuelType     FuelType @default(DIESEL)
+  sleeperBerth Boolean  @default(false)
+
+  odometerMi           Int       @default(0)
+  deviceOdometerMi     Int?
+  odometerOffsetMi     Int       @default(0)
+  odometerCalibratedAt DateTime?
+  engineHours          Decimal   @default(0) @db.Decimal(10, 2)
+
+  busType     BusType?
+  status      VehicleStatus @default(ACTIVE)
+  notes       String?
+  activatedAt DateTime?
+  createdAt   DateTime      @default(now())
+
+  // Device <-> Vehicle link exists ONLY on Device.vehicleId.
+  device     Device?
+  driver     Driver?               @relation("VehicleDriver")
+  pairings   CoDriverPairing[]
+  dvirs      Dvir[]
+  defects    Defect[]
+  workOrders WorkOrder[]
+  schedules  MaintenanceSchedule[]
+  trips      Trip[]
+
+  @@index([status])
+}
+
+model Trailer {
+  id     String        @id @default(uuid())
+  number String        @unique
+  vin    String?
+  status VehicleStatus @default(ACTIVE)
+
+  dvirs Dvir[]
+}
+
+// ---------------------------------------------------------------------------
+// §5.4 — PT30 device
+// ---------------------------------------------------------------------------
+
+model Device {
+  id            String       @id @default(uuid())
+  serial        String       @unique
+  bleMacAddress String?      @unique
+  model         DeviceModel
+  firmware      String?
+  vehicleId     String?
+  status        DeviceStatus @default(UNASSIGNED)
+
+  bleState          BleState  @default(DISCONNECTED)
+  lastSeenAt        DateTime?
+  lastEventAt       DateTime?
+  storedEventsCount Int       @default(0)
+
+  periodicConnectedSec    Int @default(30)
+  periodicDisconnectedMin Int @default(30)
+
+  pairedAt  DateTime?
+  createdAt DateTime  @default(now())
+
+  vehicle Vehicle?   @relation(fields: [vehicleId], references: [id])
+
+  @@unique([vehicleId])
+  @@index([status])
+  @@index([bleState, lastSeenAt])
+}
+
+// ---------------------------------------------------------------------------
+// §5.5 — EldEvent, append-only core (monthly-partitioned, see migration.sql)
+// ---------------------------------------------------------------------------
+
+model EldEvent {
+  id        BigInt  @default(autoincrement())
+  uuid      String
+  driverId  String?
+  vehicleId String?
+  deviceId  String?
+
+  eventType       Int
+  eventCode       Int
+  eventSequenceId Int
+  eventDateTime   DateTime
+  timezoneOffset  Int
+  recordStatus    Int      @default(1)
+  recordOrigin    Int
+
+  latitude                     Decimal? @db.Decimal(9, 6)
+  longitude                    Decimal? @db.Decimal(9, 6)
+  locationPrecisionMi          Int      @default(1)
+  locationName                 String?
+  locationSource               Int?
+  distanceSinceLastValidCoords Int?
+
+  totalVehicleMiles   Int?
+  rawDeviceOdometerKm Int?
+  totalEngineHours    Decimal? @db.Decimal(10, 2)
+
+  malfunctionCode String?
+  diagnosticCode  String?
+
+  /// §7.3 rule 5 / §7.8 `T` — signed device-clock drift from server UTC, persisted on every
+  /// event whose drift was measurable (not only on the ones that exceeded the 10-minute limit).
+  timeDriftSec Int?
+
+  annotation   String?     @db.VarChar(60)
+  comment      String?
+  supersedesId BigInt?
+  editedById   String?
+  editorType   EditorType?
+  editReason   String?
+
+  wasStoredOnDevice  Boolean  @default(false)
+  receivedAt         DateTime @default(now())
+  uploadedByDriverId String?
+
+  checksum  String
+  createdAt DateTime @default(now())
+
+  // NO Prisma relations, and NO foreign keys in the database — see bugs.md B-009.
+  // An append-only table cannot participate in referential integrity at all: EVERY delete
+  // action Postgres offers needs a privilege the append-only REVOKE removes. SET NULL runs
+  // `UPDATE "EldEvent" SET ... = NULL` (UPDATE revoked), and NO ACTION / RESTRICT / CASCADE
+  // run `SELECT ... FOR KEY SHARE` on the referencing rows, which also requires UPDATE or
+  // DELETE privilege. So any hard DELETE of a Driver/Vehicle/Device failed with
+  // "permission denied for table EldEvent" even when the row had no events at all.
+  // `driverId` / `vehicleId` / `deviceId` stay as indexed scalar columns and are validated by
+  // `IngestService.resolveContext()` before any row is written — which is also the correct
+  // compliance semantics: a §395 record keeps the driver/vehicle/device id it was recorded
+  // with forever, and is never silently re-pointed or nulled by a parent-row operation.
+
+  // Composite PK/uniques include eventDateTime — required by native pg RANGE
+  // partitioning on eventDateTime (see header comment, deviation #1).
+  @@id([id, eventDateTime])
+  @@unique([uuid, eventDateTime])
+  @@unique([driverId, eventSequenceId, eventDateTime])
+  @@index([driverId, eventDateTime])
+  @@index([vehicleId, eventDateTime])
+  @@index([recordStatus, eventDateTime])
+}
+
+/// §5.5 "Event Sequence ID" — the monotonic 1..65535 counter is allocated at ingest, once,
+/// under a per-key Postgres advisory lock. Kept in its own tiny table rather than derived with
+/// `MAX(eventSequenceId)` because the number WRAPS at 65535 (so MAX is not the last value) and
+/// because `EldEvent` is append-only and partitioned — a per-driver scan would grow forever.
+/// `key` is the driverId, or `unidentified:<vehicleId>` for events with no driver (§7.4 rule 3).
+model EventSequenceCounter {
+  key            String   @id
+  lastSequenceId Int      @default(0)
+  updatedAt      DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// §5.6 — Telemetry (Virtual Dashboard), monthly-partitioned by `time`
+// ---------------------------------------------------------------------------
+
+model TelemetryPoint {
+  time      DateTime
+  vehicleId String
+  driverId  String?
+
+  latitude   Decimal @db.Decimal(9, 6)
+  longitude  Decimal @db.Decimal(9, 6)
+  speedMph   Int?
+  headingDeg Int?
+
+  odometerMi  Int?
+  engineHours Decimal? @db.Decimal(10, 2)
+  idleHours   Decimal? @db.Decimal(10, 2)
+  ptoHours    Decimal? @db.Decimal(10, 2)
+
+  engineOn Boolean?
+  rpm      Int?
+  gear     String?
+  seatBelt Boolean?
+  loadPct  Int?
+
+  fuelPct          Int?
+  fuelPct2         Int?
+  defPct           Int?
+  fuelRateGph      Decimal? @db.Decimal(6, 2)
+  fuelEconomyMpg   Decimal? @db.Decimal(5, 2)
+  totalFuelUsedGal Decimal? @db.Decimal(10, 2)
+  totalFuelIdleGal Decimal? @db.Decimal(10, 2)
+
+  oilPressurePsi Decimal? @db.Decimal(6, 1)
+  oilPct         Int?
+  oilTempC       Int?
+  coolantPct     Int?
+  coolantTempC   Int?
+  intakeTempC    Int?
+  ambientTempC   Int?
+  transmOilTempC Int?
+
+  dtcCount Int?
+  busType  BusType?
+  voltage  Decimal? @db.Decimal(4, 1)
+
+  @@id([time, vehicleId])
+  @@index([vehicleId, time])
+}
+
+// ---------------------------------------------------------------------------
+// §5.7 — DTC
+// ---------------------------------------------------------------------------
+
+model DiagnosticTroubleCode {
+  id          String    @id @default(uuid())
+  vehicleId   String
+  spn         Int?
+  fmi         Int?
+  occurrence  Int       @default(1)
+  source      String?
+  description String?
+  firstSeenAt DateTime
+  lastSeenAt  DateTime
+  clearedAt   DateTime?
+
+  @@index([vehicleId, clearedAt])
+}
+
+// ---------------------------------------------------------------------------
+// §5.8 — Daily logs and violations
+// ---------------------------------------------------------------------------
+
+model DailyLog {
+  id       String   @id @default(uuid())
+  driverId String
+  logDate  DateTime @db.Date
+  timezone String
+
+  offDutySec      Int @default(0)
+  sleeperSec      Int @default(0)
+  drivingSec      Int @default(0)
+  onDutySec       Int @default(0)
+  totalDistanceMi Int @default(0)
+
+  certified          Boolean     @default(false)
+  certifiedAt        DateTime?
+  certifiedById      String?
+  certifierType      EditorType?
+  certificationCount Int         @default(0)
+  signatureUrl       String?
+  /// §13 — sha256 of the signature bytes stored at `signatureUrl`, so a certification can be
+  /// verified without re-downloading the image from object storage.
+  signatureHash      String?
+
+  hasViolation   Boolean @default(false)
+  violationCount Int     @default(0)
+  hasUnassigned  Boolean @default(false)
+  hasEdits       Boolean @default(false)
+
+  recalcVersion  Int       @default(1)
+  recalculatedAt DateTime?
+
+  driver     Driver         @relation(fields: [driverId], references: [id])
+  violations HosViolation[]
+
+  @@unique([driverId, logDate])
+  @@index([logDate])
+  @@index([certified, logDate])
+}
+
+model HosViolation {
+  id             String          @id @default(uuid())
+  driverId       String
+  dailyLogId     String?
+  logDate        DateTime        @db.Date
+  type           ViolationType
+  occurredAt     DateTime
+  exceededBySec  Int
+  detail         String
+  status         ViolationStatus @default(OPEN)
+  recalcVersion  Int             @default(1)
+  resolvedAt     DateTime?
+  resolvedById   String?
+  resolutionNote String?
+
+  driver   Driver    @relation(fields: [driverId], references: [id])
+  dailyLog DailyLog? @relation(fields: [dailyLogId], references: [id])
+
+  // Stable key: occurredAt is NOT part of it (recalc may shift it by seconds).
+  @@unique([driverId, logDate, type])
+  @@index([status, occurredAt])
+}
+
+// ---------------------------------------------------------------------------
+// §5.9 — Unidentified driving
+// ---------------------------------------------------------------------------
+
+model UnidentifiedSegment {
+  id               String             @id @default(uuid())
+  vehicleId        String
+  startAt          DateTime
+  endAt            DateTime
+  durationSec      Int
+  distanceMi       Int
+  startLocation    String?
+  endLocation      String?
+  status           UnidentifiedStatus @default(PENDING)
+  assignedDriverId String?
+  assignedById     String?
+  assignedAt       DateTime?
+  annotation       String?            @db.VarChar(60)
+  eventIds         BigInt[]
+  fromStoredEvents Boolean            @default(false)
+
+  @@index([status, startAt])
+  @@index([vehicleId, startAt])
+}
+
+// ---------------------------------------------------------------------------
+// §5.10 — DVIR, maintenance, trips, safety, messaging, notifications, reports, IFTA, integrations
+// ---------------------------------------------------------------------------
+
+model Dvir {
+  id                 String        @id @default(uuid())
+  driverId           String
+  vehicleId          String
+  trailerId          String?
+  type               DvirType
+  submittedAt        DateTime
+  odometerMi         Int
+  latitude           Decimal?      @db.Decimal(9, 6)
+  longitude          Decimal?      @db.Decimal(9, 6)
+  locationName       String?
+  vehicleCondition   DvirCondition
+  driverSignatureUrl String
+  /// §13 — sha256 of the signature bytes at `driverSignatureUrl` (§6 "signature capture and storage").
+  driverSignatureHash String?
+  notes              String?       @db.VarChar(500)
+
+  mechanicName         String?
+  mechanicSignedAt     DateTime?
+  mechanicNote         String?
+  repairStatus         RepairStatus @default(NOT_REQUIRED)
+  nextDriverReviewedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  driver  Driver       @relation(fields: [driverId], references: [id])
+  vehicle Vehicle      @relation(fields: [vehicleId], references: [id])
+  trailer Trailer?     @relation(fields: [trailerId], references: [id])
+  defects Defect[]
+  photos  Attachment[]
+
+  @@index([vehicleId, submittedAt])
+  @@index([driverId, submittedAt])
+  @@index([repairStatus])
+}
+
+/// Out-of-service rule: an OPEN CRITICAL defect flips Vehicle.status to OUT_OF_SERVICE
+/// (enforced in the DVIR service, not the DB) and blocks driver assignment.
+model Defect {
+  id             String         @id @default(uuid())
+  dvirId         String
+  vehicleId      String
+  category       String
+  part           DefectPart
+  severity       DefectSeverity
+  description    String         @db.VarChar(500)
+  status         DefectStatus   @default(OPEN)
+  outOfService   Boolean        @default(false)
+  workOrderId    String?
+  resolvedAt     DateTime?
+  resolvedById   String?
+  resolutionNote String?
+  createdAt      DateTime       @default(now())
+
+  dvir      Dvir         @relation(fields: [dvirId], references: [id], onDelete: Cascade)
+  vehicle   Vehicle      @relation(fields: [vehicleId], references: [id])
+  workOrder WorkOrder?   @relation(fields: [workOrderId], references: [id])
+  photos    Attachment[]
+
+  @@index([vehicleId, status])
+  @@index([status, severity])
+}
+
+model WorkOrder {
+  id          String            @id @default(uuid())
+  number      String            @unique
+  vehicleId   String
+  title       String
+  description String?
+  priority    WorkOrderPriority @default(NORMAL)
+  status      WorkOrderStatus   @default(OPEN)
+  vendor      String?
+  costUsd     Decimal?          @db.Decimal(10, 2)
+  odometerMi  Int?
+  openedById  String
+  openedAt    DateTime          @default(now())
+  dueAt       DateTime?
+  closedAt    DateTime?
+
+  vehicle Vehicle  @relation(fields: [vehicleId], references: [id])
+  defects Defect[]
+
+  @@index([status, dueAt])
+  @@index([vehicleId, status])
+}
+
+model MaintenanceSchedule {
+  id            String    @id @default(uuid())
+  vehicleId     String
+  name          String
+  intervalMi    Int?
+  intervalDays  Int?
+  lastServiceMi Int?
+  lastServiceAt DateTime?
+  nextDueMi     Int?
+  nextDueAt     DateTime?
+  enabled       Boolean   @default(true)
+
+  vehicle Vehicle @relation(fields: [vehicleId], references: [id])
+
+  @@index([vehicleId, enabled])
+  @@index([nextDueAt])
+}
+
+model Trip {
+  id               String     @id @default(uuid())
+  number           String     @unique
+  driverId         String?
+  vehicleId        String?
+  trailerId        String?
+  status           TripStatus @default(PLANNED)
+  shippingDocument String?
+  commodity        String?
+  weightLbs        Int?
+  pieces           Int?
+  plannedStartAt   DateTime?
+  plannedEndAt     DateTime?
+  startedAt        DateTime?
+  completedAt      DateTime?
+  etaAt            DateTime?
+  onTime           Boolean?
+  notes            String?    @db.VarChar(500)
+  createdById      String
+  createdAt        DateTime   @default(now())
+
+  driver  Driver?    @relation(fields: [driverId], references: [id])
+  vehicle Vehicle?   @relation(fields: [vehicleId], references: [id])
+  stops   TripStop[]
+
+  @@index([status, plannedStartAt])
+  @@index([driverId, status])
+}
+
+model TripStop {
+  id          String     @id @default(uuid())
+  tripId      String
+  sequence    Int
+  type        StopType
+  name        String
+  address     String?
+  latitude    Decimal?   @db.Decimal(9, 6)
+  longitude   Decimal?   @db.Decimal(9, 6)
+  scheduledAt DateTime?
+  arrivedAt   DateTime?
+  departedAt  DateTime?
+  status      StopStatus @default(PENDING)
+  note        String?
+
+  trip Trip @relation(fields: [tripId], references: [id], onDelete: Cascade)
+
+  @@unique([tripId, sequence])
+}
+
+model Geofence {
+  id           String       @id @default(uuid())
+  name         String
+  type         GeofenceType @default(CIRCLE)
+  centerLat    Decimal?     @db.Decimal(9, 6)
+  centerLon    Decimal?     @db.Decimal(9, 6)
+  radiusMi     Decimal?     @db.Decimal(6, 2)
+  polygon      Json?
+  category     String?
+  alertOnEnter Boolean      @default(false)
+  alertOnExit  Boolean      @default(false)
+  enabled      Boolean      @default(true)
+  createdAt    DateTime     @default(now())
+}
+
+model SafetyEvent {
+  id            String          @id @default(uuid())
+  driverId      String?
+  vehicleId     String
+  type          SafetyEventType
+  occurredAt    DateTime
+  severity      Int
+  speedMph      Int?
+  speedLimitMph Int?
+  gForce        Decimal?        @db.Decimal(4, 2)
+  latitude      Decimal?        @db.Decimal(9, 6)
+  longitude     Decimal?        @db.Decimal(9, 6)
+  locationName  String?
+  durationSec   Int?
+  status        CoachingStatus  @default(NEW)
+  coachedById   String?
+  coachedAt     DateTime?
+  coachingNote  String?
+
+  @@index([driverId, occurredAt])
+  @@index([vehicleId, occurredAt])
+  @@index([status, occurredAt])
+}
+
+model DriverScore {
+  id             String   @id @default(uuid())
+  driverId       String
+  periodStart    DateTime @db.Date
+  periodEnd      DateTime @db.Date
+  score          Int
+  harshCount     Int      @default(0)
+  speedingCount  Int      @default(0)
+  milesDriven    Int      @default(0)
+  violationCount Int      @default(0)
+  rank           Int?
+
+  @@unique([driverId, periodStart])
+}
+
+model Conversation {
+  id            String           @id @default(uuid())
+  type          ConversationType @default(DIRECT)
+  title         String?
+  lastMessageAt DateTime?
+  createdById   String
+  createdAt     DateTime         @default(now())
+
+  participants ConversationParticipant[]
+  messages     Message[]
+
+  @@index([lastMessageAt])
+}
+
+model ConversationParticipant {
+  id             String    @id @default(uuid())
+  conversationId String
+  userId         String?
+  driverId       String?
+  lastReadAt     DateTime?
+  mutedUntil     DateTime?
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@unique([conversationId, userId, driverId])
+}
+
+model Message {
+  id             String    @id @default(uuid())
+  conversationId String
+  senderUserId   String?
+  senderDriverId String?
+  body           String    @db.VarChar(2000)
+  attachmentId   String?
+  clientId       String?   @unique
+  sentAt         DateTime  @default(now())
+  deliveredAt    DateTime?
+  readAt         DateTime?
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, sentAt])
+}
+
+model AlertRule {
+  id         String        @id @default(uuid())
+  key        String        @unique
+  name       String
+  severity   AlertSeverity
+  conditions Json
+  channels   String[]
+  recipients Json
+  throttle   Json?
+  quietHours Json?
+  enabled    Boolean       @default(true)
+  isSystem   Boolean       @default(false)
+  createdAt  DateTime      @default(now())
+
+  deliveries AlertDelivery[]
+}
+
+model AlertDelivery {
+  id          String         @id @default(uuid())
+  alertRuleId String
+  channel     String
+  recipient   String
+  subjectType String?
+  subjectId   String?
+  payload     Json
+  status      DeliveryStatus @default(QUEUED)
+  attempts    Int            @default(0)
+  error       String?
+  sentAt      DateTime?
+  createdAt   DateTime       @default(now())
+
+  alertRule AlertRule @relation(fields: [alertRuleId], references: [id])
+
+  @@index([status, createdAt])
+  @@index([subjectType, subjectId])
+}
+
+model Notification {
+  id         String    @id @default(uuid())
+  userId     String?
+  driverId   String?
+  type       String
+  title      String
+  body       String
+  objectType String?
+  objectId   String?
+  readAt     DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId, readAt])
+  @@index([driverId, readAt])
+}
+
+model Report {
+  id            String       @id @default(uuid())
+  type          ReportType
+  format        ReportFormat
+  params        Json
+  status        ReportStatus @default(QUEUED)
+  fileKey       String?
+  fileSizeBytes Int?
+  rowCount      Int?
+  error         String?
+  requestedById String
+  requestedAt   DateTime     @default(now())
+  completedAt   DateTime?
+  expiresAt     DateTime?
+
+  @@index([requestedById, requestedAt])
+  @@index([status])
+}
+
+model ReportSchedule {
+  id          String       @id @default(uuid())
+  reportType  ReportType
+  format      ReportFormat
+  params      Json
+  cron        String
+  timezone    String
+  recipients  String[]
+  enabled     Boolean      @default(true)
+  lastRunAt   DateTime?
+  nextRunAt   DateTime?
+  createdById String
+}
+
+model DataTransfer {
+  id                String         @id @default(uuid())
+  driverId          String
+  method            TransferMethod
+  rangeStart        DateTime       @db.Date
+  rangeEnd          DateTime       @db.Date
+  outputFileComment String         @db.VarChar(60)
+  fileName          String
+  fileKey           String
+  fileSizeBytes     Int
+  checksum          String
+  encrypted         Boolean        @default(false)
+  status            TransferStatus @default(QUEUED)
+  erodsMode         ErodsMode
+  referenceId       String?
+  responseCode      String?
+  responseBody      String?
+  attempts          Int            @default(0)
+  requestedById     String?
+  requestedByType   EditorType
+  createdAt         DateTime       @default(now())
+  sentAt            DateTime?
+
+  @@index([driverId, createdAt])
+  @@index([status])
+}
+
+model IftaSegment {
+  id           String   @id @default(uuid())
+  vehicleId    String
+  driverId     String?
+  jurisdiction String
+  date         DateTime @db.Date
+  distanceMi   Int
+  tollMi       Int      @default(0)
+  fuelGal      Decimal  @default(0) @db.Decimal(10, 2)
+  createdAt    DateTime @default(now())
+
+  @@unique([vehicleId, jurisdiction, date])
+  @@index([date])
+}
+
+model FuelPurchase {
+  id           String   @id @default(uuid())
+  vehicleId    String
+  driverId     String?
+  purchasedAt  DateTime
+  jurisdiction String
+  gallons      Decimal  @db.Decimal(8, 2)
+  pricePerGal  Decimal  @db.Decimal(6, 3)
+  totalUsd     Decimal  @db.Decimal(10, 2)
+  vendor       String?
+  receiptId    String?
+  source       String?
+  externalId   String?  @unique
+  odometerMi   Int?
+
+  @@index([vehicleId, purchasedAt])
+}
+
+model Integration {
+  id         String            @id @default(uuid())
+  provider   String            @unique
+  enabled    Boolean           @default(false)
+  config     Json
+  status     IntegrationStatus @default(DISCONNECTED)
+  lastSyncAt DateTime?
+  lastError  String?
+  createdAt  DateTime          @default(now())
+}
+
+model ApiKey {
+  id          String    @id @default(uuid())
+  name        String
+  keyHash     String    @unique
+  prefix      String
+  scopes      String[]
+  createdById String
+  createdBy   User      @relation(fields: [createdById], references: [id])
+  lastUsedAt  DateTime?
+  expiresAt   DateTime?
+  revokedAt   DateTime?
+  createdAt   DateTime  @default(now())
+}
+
+model WebhookDelivery {
+  id            String         @id @default(uuid())
+  integrationId String?
+  url           String
+  eventType     String
+  payload       Json
+  signature     String
+  status        DeliveryStatus @default(QUEUED)
+  attempts      Int            @default(0)
+  httpStatus    Int?
+  responseBody  String?
+  nextRetryAt   DateTime?
+  createdAt     DateTime       @default(now())
+
+  @@index([status, nextRetryAt])
+}
+
+model Attachment {
+  id        String @id @default(uuid())
+  key       String @unique
+  mimeType  String
+  sizeBytes Int
+  width     Int?
+  height    Int?
+  /// §13 — sha256 of the stored bytes (DVIR photos and signatures).
+  sha256    String?
+
+  dvirId         String?
+  defectId       String?
+  messageId      String?
+  fuelPurchaseId String?
+
+  uploadedById   String?
+  uploadedByType EditorType
+  createdAt      DateTime   @default(now())
+
+  dvir   Dvir?   @relation(fields: [dvirId], references: [id], onDelete: Cascade)
+  defect Defect? @relation(fields: [defectId], references: [id], onDelete: Cascade)
+
+  @@index([dvirId])
+  @@index([defectId])
+}
+
+model SupportTicket {
+  id                String         @id @default(uuid())
+  number            String         @unique
+  subject           String
+  body              String
+  category          String?
+  priority          TicketPriority @default(NORMAL)
+  status            TicketStatus   @default(OPEN)
+  createdByUserId   String?
+  createdByDriverId String?
+  assignedToId      String?
+  createdAt         DateTime       @default(now())
+  resolvedAt        DateTime?
+}
+
+model Feedback {
+  id         String   @id @default(uuid())
+  driverId   String?
+  userId     String?
+  answers    Json
+  comment    String?  @db.VarChar(1000)
+  appVersion String?
+  platform   String?
+  createdAt  DateTime @default(now())
+}
+
+/// §13.4/13.6 — one row per processed `POST /mobile/sync` change. `clientId` is unique so a
+/// replayed batch (retry after a dropped response, or the same change queued twice on the
+/// device) is a no-op the second time: "same clientId twice → idempotent, the first one wins."
+/// This is deliberately OUTSIDE the EldEvent/AuditLog append-only tables — it is a dedup
+/// ledger, not a compliance record, and unlike those tables it is safe to prune.
+model SyncedChange {
+  id          String             @id @default(uuid())
+  driverId    String
+  clientId    String             @unique
+  type        String
+  status      SyncedChangeStatus
+  errorCode   String?
+  result      Json?
+  occurredAt  DateTime
+  processedAt DateTime           @default(now())
+
+  driver Driver @relation(fields: [driverId], references: [id], onDelete: Cascade)
+
+  @@index([driverId, processedAt])
+}
+
+enum SyncedChangeStatus {
+  ACCEPTED
+  REJECTED
+}
+
+/// 8.6 point 5 — app-computed last HOS state, for server-side drift comparison.
+model DriverHosSnapshot {
+  driverId         String       @id
+  computedAt       DateTime
+  receivedAt       DateTime     @default(now())
+  hosEngineVersion String
+  appPlatform      AppPlatform?
+  state            Json
+
+  lastComparedAt DateTime?
+  maxDriftSec    Int?
+  driftAlerted   Boolean   @default(false)
+
+  driver Driver @relation(fields: [driverId], references: [id], onDelete: Cascade)
+}
+
+// ---------------------------------------------------------------------------
+// §18 — Audit log (append-only)
+// ---------------------------------------------------------------------------
+
+model AuditLog {
+  id         BigInt     @id @default(autoincrement())
+  actorId    String
+  actorType  EditorType
+  action     String
+  objectType String
+  objectId   String
+  before     Json?
+  after      Json?
+  detail     String?
+  ip         String?
+  userAgent  String?
+  createdAt  DateTime   @default(now())
+
+  @@index([createdAt])
+  @@index([objectType, objectId])
+}
+
+// ---------------------------------------------------------------------------
+// §5.11 — Enums
+// ---------------------------------------------------------------------------
+
+enum HosRuleset {
+  US_70_8_PROPERTY
+  US_60_7_PROPERTY
+  US_70_8_PASSENGER
+  US_60_7_PASSENGER
+}
+
+enum DistanceUnit {
+  MILES
+  KILOMETERS
+}
+
+enum ErodsMode {
+  TEST
+  PRODUCTION
+}
+
+enum AuthProvider {
+  PASSWORD
+  GOOGLE
+}
+
+enum UserStatus {
+  INVITED
+  ACTIVE
+  DISABLED
+}
+
+enum DriverStatus {
+  ACTIVE
+  INACTIVE
+  TERMINATED
+}
+
+enum VehicleStatus {
+  ACTIVE
+  INACTIVE
+  OUT_OF_SERVICE
+}
+
+enum DeviceStatus {
+  UNASSIGNED
+  ASSIGNED
+  FAULTY
+  RETIRED
+}
+
+enum DeviceModel {
+  PT30
+  PT40
+}
+
+enum BleState {
+  CONNECTED
+  OUT_OF_RANGE
+  DISCONNECTED
+}
+
+enum BusType {
+  J1939
+  J1708
+  OBD_II
+}
+
+enum FuelType {
+  DIESEL
+  GASOLINE
+  CNG
+  LNG
+  ELECTRIC
+}
+
+enum AppPlatform {
+  IOS
+  ANDROID
+}
+
+enum EditorType {
+  DRIVER
+  USER
+  SYSTEM
+}
+
+enum DutyStatus {
+  OFF
+  SB
+  D
+  ON
+}
+
+enum ViolationType {
+  DRIVING_11
+  SHIFT_14
+  BREAK_30
+  CYCLE_70
+  CYCLE_60
+  FORM_MANNER
+}
+
+enum ViolationStatus {
+  OPEN
+  RESOLVED
+  AUTO_CLEARED
+}
+
+enum UnidentifiedStatus {
+  PENDING
+  ASSIGNED
+  REJECTED
+  ANNOTATED
+}
+
+enum DvirType {
+  PRE_TRIP
+  POST_TRIP
+  INTERMEDIATE
+}
+
+enum DvirCondition {
+  SATISFACTORY
+  DEFECTS_FOUND
+}
+
+enum RepairStatus {
+  NOT_REQUIRED
+  PENDING
+  REPAIRED
+  DEFERRED
+}
+
+enum DefectPart {
+  TRUCK
+  TRAILER
+}
+
+enum DefectSeverity {
+  MINOR
+  MAJOR
+  CRITICAL
+}
+
+enum DefectStatus {
+  OPEN
+  IN_PROGRESS
+  REPAIRED
+  DEFERRED
+}
+
+enum WorkOrderPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+enum WorkOrderStatus {
+  OPEN
+  IN_PROGRESS
+  DONE
+  CANCELLED
+}
+
+enum TripStatus {
+  PLANNED
+  ASSIGNED
+  IN_PROGRESS
+  DELIVERED
+  CANCELLED
+}
+
+enum StopType {
+  PICKUP
+  DELIVERY
+  FUEL
+  REST
+  CHECKPOINT
+}
+
+enum StopStatus {
+  PENDING
+  ARRIVED
+  COMPLETED
+  SKIPPED
+}
+
+enum GeofenceType {
+  CIRCLE
+  POLYGON
+}
+
+enum SafetyEventType {
+  HARSH_BRAKING
+  HARSH_ACCEL
+  HARSH_TURN
+  SPEEDING
+  SEATBELT
+}
+
+enum CoachingStatus {
+  NEW
+  REVIEWED
+  COACHED
+  DISMISSED
+}
+
+enum ConversationType {
+  DIRECT
+  GROUP
+  BROADCAST
+}
+
+enum AlertSeverity {
+  CRITICAL
+  WARNING
+  INFO
+}
+
+enum DeliveryStatus {
+  QUEUED
+  SENT
+  FAILED
+  SUPPRESSED
+}
+
+enum ReportType {
+  IFTA
+  ACTIVITY
+  DVIR
+  FMCSA_PACK
+  UNIDENTIFIED
+  SAFETY
+}
+
+enum ReportFormat {
+  PDF
+  CSV
+  XLSX
+}
+
+enum ReportStatus {
+  QUEUED
+  RUNNING
+  READY
+  FAILED
+}
+
+enum TransferMethod {
+  WEB_SERVICES
+  EMAIL
+}
+
+enum TransferStatus {
+  QUEUED
+  TEST_ONLY
+  SENT
+  ACCEPTED
+  REJECTED
+  FAILED
+}
+
+enum IntegrationStatus {
+  DISCONNECTED
+  CONNECTED
+  ERROR
+}
+
+enum TicketPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
