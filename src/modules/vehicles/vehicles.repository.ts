@@ -71,4 +71,17 @@ export class VehiclesRepository extends BaseRepository<
   listAll(): Promise<Vehicle[]> {
     return this.prisma.vehicle.findMany({ orderBy: { unitNumber: 'asc' } });
   }
+
+  /**
+   * TZ §5.10 hard rule support — ids of OPEN + CRITICAL defects on this unit. Queried directly
+   * against the `Defect` table (not via `DefectsRepository`) to avoid a `VehiclesModule <->
+   * ServiceModule` import cycle; `VehiclesModule` stays the leaf the same way it already is for
+   * `DriversModule`.
+   */
+  findOpenCriticalDefectIds(vehicleId: string): Promise<Array<{ id: string }>> {
+    return this.prisma.defect.findMany({
+      where: { vehicleId, status: 'OPEN', severity: 'CRITICAL' },
+      select: { id: true },
+    });
+  }
 }

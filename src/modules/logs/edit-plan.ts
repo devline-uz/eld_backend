@@ -64,6 +64,18 @@ export interface ProposalInput {
 
 const DUTY = 1;
 
+/**
+ * bugs.md B-048 — the NEUTRALIZE record fills the gap `[original instant, proposed start)` with
+ * the status that preceded the original. That gap only exists when the proposal starts LATER.
+ * When it starts EARLIER there is no gap: the proposal already covers the original instant, and
+ * a neutraliser there would cut the corrected interval short — for an accepted "driving began
+ * earlier" request it re-stated the prior status over the whole driving interval, i.e. it
+ * REDUCED driving time (49 CFR §395.30(c)(2)).
+ */
+function needsNeutralizer(target: EditTarget, proposal: ProposalInput): boolean {
+  return Boolean(proposal.statusBeforeTarget) && proposal.startAt.getTime() > target.eventDateTime.getTime();
+}
+
 /** §9.1 step 2 — the carrier's proposal. Inert until the driver accepts (recordStatus = 3). */
 export function planEditRequest(target: EditTarget, proposal: ProposalInput): AppendRow[] {
   return [
@@ -99,11 +111,11 @@ export function planAcceptEdit(
     },
   ];
 
-  if (proposal.startAt.getTime() !== target.eventDateTime.getTime() && proposal.statusBeforeTarget) {
+  if (needsNeutralizer(target, proposal)) {
     rows.push({
       kind: 'NEUTRALIZE',
       eventType: DUTY,
-      eventCode: DUTY_CODE_BY_STATUS[proposal.statusBeforeTarget],
+      eventCode: DUTY_CODE_BY_STATUS[proposal.statusBeforeTarget as DutyStatus],
       at: target.eventDateTime,
       recordStatus: 1,
       recordOrigin: 3,
@@ -176,11 +188,11 @@ export function planDriverSelfEdit(proposal: ProposalInput, target?: EditTarget)
       supersedesId: target.id,
       annotation: proposal.annotation,
     });
-    if (proposal.startAt.getTime() !== target.eventDateTime.getTime() && proposal.statusBeforeTarget) {
+    if (needsNeutralizer(target, proposal)) {
       rows.push({
         kind: 'NEUTRALIZE',
         eventType: DUTY,
-        eventCode: DUTY_CODE_BY_STATUS[proposal.statusBeforeTarget],
+        eventCode: DUTY_CODE_BY_STATUS[proposal.statusBeforeTarget as DutyStatus],
         at: target.eventDateTime,
         recordStatus: 1,
         recordOrigin: 2,

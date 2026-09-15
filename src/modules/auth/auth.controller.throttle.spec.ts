@@ -6,7 +6,7 @@ const TTL_KEY = 'THROTTLER:TTLdefault';
 
 /** TZ §6.5 — "login 5/daq/IP". Asserts the `@Throttle()` metadata on every login-family route. */
 describe('AuthController — login rate limiting (TZ §6.5)', () => {
-  it.each(['login', 'loginDriver', 'google', 'verifyTwoFactor'])('%s is limited to 5 requests / 60s', (method) => {
+  it.each(['login', 'loginDriver', 'google'])('%s is limited to 5 requests / 60s', (method) => {
     const handler = (AuthController.prototype as unknown as Record<string, () => void>)[method];
     expect(Reflect.getMetadata(LIMIT_KEY, handler)).toBe(5);
     expect(Reflect.getMetadata(TTL_KEY, handler)).toBe(60_000);

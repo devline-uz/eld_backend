@@ -40,9 +40,10 @@ import {
 } from './dto/logs.dto';
 import { LogsRepository } from './logs.repository';
 import { RodsEventWriter } from './rods-event-writer';
-import { activeRecords, buildRodsDay, drivingIntervals, statusInEffectAt, type RodsEvent } from './rods';
+import { affectedHeaderRange, buildDailyLogHeaders, RODS_HEADER_LOOKBACK_DAYS } from './daily-log-header';
+import { activeRecords, drivingIntervals, statusInEffectAt, type RodsEvent } from './rods';
 
-/** History pulled in before the first requested day so the status at midnight is known. */
+/** History pulled in around an edited instant so the edit rules see the neighbouring records. */
 const LOOKBACK_DAYS = 2;
 /** A range query may never walk a year (§19 — bounded work per request). */
 const MAX_RANGE_DAYS = 62;
@@ -142,7 +143,9 @@ export class LogsService {
     const timezone = driver.homeTerminalTimezone;
     const keys = dayKeyRange(fromKey, toKey);
 
-    const windowStart = dayStart(timezone, addDays(fromKey, -LOOKBACK_DAYS));
+    // B-059 — the same lookback as `hos.recalc`, so a status carried for several days is counted
+    // identically by the log view and by the recalculation that rebuilds the same header.
+    const windowStart = dayStart(timezone, addDays(fromKey, -RODS_HEADER_LOOKBACK_DAYS));
     const windowEnd = dayEnd(timezone, toKey);
     const events = await this.repo.findEvents(driverId, windowStart, windowEnd);
     const vehicleIds = await this.repo.findVehicleIdsForDriver(driverId, windowStart, windowEnd);
@@ -154,29 +157,23 @@ export class LogsService {
     );
     const headers = await this.repo.findDailyLogs(driverId, utcDate(fromKey), utcDate(toKey));
 
-    const out = [];
-    for (const key of keys) {
-      const day = buildRodsDay(events, timezone, key, now);
-      const dayViolations = violations.filter((row) => dayKey('UTC', row.logDate) === key);
-      const hasUnassigned = segments.some(
-        (segment) =>
-          segment.status === 'PENDING' &&
-          segment.startAt.getTime() < day.endAt.getTime() &&
-          segment.endAt.getTime() > day.startAt.getTime(),
-      );
+    const built = buildDailyLogHeaders({
+      events,
+      timezone,
+      fromKey,
+      toKey: keys[keys.length - 1],
+      now,
+      segments,
+      previousHasEdits: new Map(headers.map((h) => [dayKey('UTC', h.logDate), h.hasEdits])),
+      maxDays: MAX_RANGE_DAYS,
+    });
 
-      const header = await this.repo.upsertDailyLog({
-        driverId,
-        logDate: utcDate(key),
-        timezone,
-        offDutySec: day.offDutySec,
-        sleeperSec: day.sleeperSec,
-        drivingSec: day.drivingSec,
-        onDutySec: day.onDutySec,
-        totalDistanceMi: day.totalDistanceMi,
-        hasUnassigned,
-        hasEdits: day.hasEdits || headers.find((h) => dayKey('UTC', h.logDate) === key)?.hasEdits === true,
-      });
+    const out = [];
+    for (const { day, header: totals } of built) {
+      const key = totals.logDate;
+      const dayViolations = violations.filter((row) => dayKey('UTC', row.logDate) === key);
+      const { logDate: _logDate, ...headerTotals } = totals;
+      const header = await this.repo.upsertDailyLog({ driverId, logDate: utcDate(key), ...headerTotals });
 
       const dayEvents = events.filter(
         (event) =>
@@ -697,8 +694,31 @@ export class LogsService {
     for (const key of keys) {
       await this.repo.invalidateCertification(driverId, utcDate(key), timezone);
     }
+    // B-059 — the touched days' totals, plus the next day for a status carried over midnight.
+    // `hos.recalc` then rebuilds everything forward to today.
+    const sorted = [...instants].sort((a, b) => a.getTime() - b.getTime());
+    await this.rebuildDailyLogsForSpan(driverId, sorted[0], sorted[sorted.length - 1]);
     await this.enqueueRecalc(driverId, keys[0]);
     await this.events.publish('log.changed', { driverId, dates: keys });
+  }
+
+  /**
+   * B-059 — rebuilds the `DailyLog` totals of every RODS day a record change in `[from, to]`
+   * can alter: the day of `from` through the day after `to`, never past today, in the driver's
+   * HOME TERMINAL zone. Certification is never touched. Best effort: the records are already
+   * committed and `hos.recalc` rebuilds the same headers, so a failure is logged, not thrown.
+   */
+  async rebuildDailyLogsForSpan(driverId: string, from: Date, to: Date, now: Date = new Date()): Promise<number> {
+    try {
+      const driver = await this.requireDriver(driverId);
+      const range = affectedHeaderRange(driver.homeTerminalTimezone, from, to, now);
+      if (!range) return 0;
+      const days = await this.buildDays(driverId, range.fromKey, range.toKey, now);
+      return days.length;
+    } catch (err) {
+      this.logger.error({ err, driverId }, 'Failed to rebuild the DailyLog headers after a record change');
+      return 0;
+    }
   }
 
   private async enqueueRecalc(driverId: string, fromDate: string): Promise<void> {

@@ -6,14 +6,7 @@ import { PermissionMatrix } from '../../common/decorators/permission.types';
 import { FirebaseService } from '../../core/firebase/firebase.service';
 import { AppConfigService } from '../../core/config/config.service';
 import { hashPassword, verifyPassword } from './lib/password.util';
-import { sha256 } from './lib/hash.util';
-import {
-  generateRecoveryCodes,
-  generateTotpSecret,
-  randomOpaqueToken,
-  totpKeyUri,
-  verifyTotp,
-} from './lib/totp.util';
+import { randomOpaqueToken, sha256 } from './lib/hash.util';
 import { TokenService } from './token.service';
 import { DriverAuthRepository } from './repositories/driver-auth.repository';
 import { DriverSessionRepository } from './repositories/driver-session.repository';
@@ -31,12 +24,7 @@ export interface AccessTokenPair {
   tokenType: 'Bearer';
 }
 
-export interface PendingTwoFactor {
-  twoFactorRequired: true;
-  pendingTwoFactorToken: string;
-}
-
-export type LoginResult = AccessTokenPair | PendingTwoFactor;
+export type LoginResult = AccessTokenPair;
 
 const REFRESH_TTL_MS: Record<'user' | 'driver', number> = {
   user: 30 * 24 * 60 * 60 * 1000,
@@ -44,9 +32,9 @@ const REFRESH_TTL_MS: Record<'user' | 'driver', number> = {
 };
 
 /**
- * TZ §6 — password + Google login for `User`, password login for `Driver`, 2FA
- * enrolment/verification, and refresh-token rotation. Controllers stay thin; every rule
- * from §6.1/§6.2/§6.5 lives here so it is exercised identically from both entry points.
+ * TZ §6 — password + Google login for `User`, password login for `Driver`, and
+ * refresh-token rotation. Controllers stay thin; every rule from §6.1/§6.5 lives here so
+ * it is exercised identically from both entry points.
  */
 @Injectable()
 export class AuthService {
@@ -104,7 +92,7 @@ export class AuthService {
   }
 
   // ---------------------------------------------------------------------
-  // Google Sign-In — User only (TZ §6.2). NEVER bypasses 2FA.
+  // Google Sign-In — User only (TZ §6.2).
   // ---------------------------------------------------------------------
 
   async loginGoogle(idToken: string, meta: RequestMeta): Promise<LoginResult> {
@@ -143,54 +131,12 @@ export class AuthService {
       await this.users.setGoogleUid(user.id, decoded.uid);
     }
 
-    // Rule 2 (TZ §6.2) — Google NEVER bypasses 2FA. Exactly the same gate as password login:
-    // completeUserLogin() below decides pendingTwoFactorToken vs. full tokens purely from
-    // `user.twoFactorEnabled` / `role.key === 'ADMIN'`, never from the login method used.
     return this.completeUserLogin(user, meta);
   }
 
-  /** Shared 2FA gate (TZ §6.2 table) — identical for password and Google logins. */
   private async completeUserLogin(user: UserWithRole, meta: RequestMeta): Promise<LoginResult> {
-    if (user.twoFactorEnabled) {
-      return { twoFactorRequired: true, pendingTwoFactorToken: this.tokens.signPendingTwoFactorToken(user.id) };
-    }
     await this.users.touchLastActive(user.id);
     return this.issueUserTokens(user, meta);
-  }
-
-  // ---------------------------------------------------------------------
-  // 2FA verification
-  // ---------------------------------------------------------------------
-
-  async verifyTwoFactor(pendingToken: string, code: string, meta: RequestMeta): Promise<AccessTokenPair> {
-    const userId = this.tokens.verifyPendingTwoFactorToken(pendingToken);
-    const user = await this.users.findByIdWithRole(userId);
-    if (!user || user.status !== 'ACTIVE') {
-      throw new AppException(ERROR_CODES.UNAUTHORIZED, 'User no longer exists.', 401);
-    }
-    if (!user.twoFactorEnabled || !user.twoFactorSecret) {
-      throw new AppException(ERROR_CODES.TWO_FACTOR_INVALID, '2FA is not enabled for this account.', 400);
-    }
-
-    const validTotp = verifyTotp(code, user.twoFactorSecret);
-    const recoveryMatch = validTotp ? null : await this.matchRecoveryCode(user, code);
-    if (!validTotp && !recoveryMatch) {
-      throw new AppException(ERROR_CODES.TWO_FACTOR_INVALID, 'Invalid 2FA code.', 401);
-    }
-    if (recoveryMatch) {
-      await this.users.consumeRecoveryCode(
-        user.id,
-        user.recoveryCodes.filter((h) => h !== recoveryMatch),
-      );
-    }
-
-    await this.users.touchLastActive(user.id);
-    return this.issueUserTokens(user, meta);
-  }
-
-  private async matchRecoveryCode(user: UserWithRole, code: string): Promise<string | null> {
-    const hash = sha256(code.trim().toUpperCase());
-    return user.recoveryCodes.includes(hash) ? hash : null;
   }
 
   private async issueUserTokens(user: UserWithRole, meta: RequestMeta): Promise<AccessTokenPair> {
@@ -198,7 +144,6 @@ export class AuthService {
       id: user.id,
       roleKey: user.role.key,
       permissions: user.role.permissions as PermissionMatrix,
-      twoFactorEnabled: user.twoFactorEnabled,
     });
     const refreshToken = randomOpaqueToken();
     await this.sessions.create({
@@ -209,34 +154,6 @@ export class AuthService {
       expiresAt: new Date(Date.now() + REFRESH_TTL_MS.user),
     });
     return { accessToken, refreshToken, tokenType: 'Bearer' };
-  }
-
-  // ---------------------------------------------------------------------
-  // 2FA enrolment (self-service, TwoFactorExempt so a 2FA-less ADMIN can reach it)
-  // ---------------------------------------------------------------------
-
-  async enrollTwoFactor(userId: string): Promise<{ secret: string; otpauthUrl: string }> {
-    const user = await this.users.findByIdWithRole(userId);
-    if (!user) throw new AppException(ERROR_CODES.UNAUTHORIZED, 'User not found.', 401);
-    const secret = generateTotpSecret();
-    await this.users.setTwoFactorSecret(userId, secret);
-    return { secret, otpauthUrl: totpKeyUri(user.email, secret) };
-  }
-
-  async enableTwoFactor(userId: string, code: string): Promise<{ recoveryCodes: string[] }> {
-    const user = await this.users.findByIdWithRole(userId);
-    if (!user?.twoFactorSecret) {
-      throw new AppException(ERROR_CODES.TWO_FACTOR_INVALID, 'Call /auth/2fa/enroll first.', 400);
-    }
-    if (!verifyTotp(code, user.twoFactorSecret)) {
-      throw new AppException(ERROR_CODES.TWO_FACTOR_INVALID, 'Invalid TOTP code.', 401);
-    }
-    const recoveryCodes = generateRecoveryCodes();
-    await this.users.enableTwoFactor(
-      userId,
-      recoveryCodes.map((c) => sha256(c)),
-    );
-    return { recoveryCodes };
   }
 
   // ---------------------------------------------------------------------
@@ -279,7 +196,6 @@ export class AuthService {
       id: user.id,
       roleKey: user.role.key,
       permissions: user.role.permissions as PermissionMatrix,
-      twoFactorEnabled: user.twoFactorEnabled,
     });
     return { accessToken, refreshToken: newRefreshToken, tokenType: 'Bearer' };
   }

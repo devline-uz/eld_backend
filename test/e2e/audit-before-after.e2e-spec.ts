@@ -8,7 +8,6 @@
  */
 import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
-import { authenticator } from 'otplib';
 import { PrismaClient } from '@prisma/client';
 import request from 'supertest';
 import { AppModule } from '../../src/app.module';
@@ -64,12 +63,7 @@ describe('AuditLog before/after (e2e, TZ §18 / D-002)', () => {
     const login = await request(server())
       .post('/api/auth/login')
       .send({ email: 'sarah.chen@universal-logistics.example', password: 'Onebook2026' });
-    const sarah = await prisma.user.findUnique({ where: { email: 'sarah.chen@universal-logistics.example' } });
-    const code = authenticator.generate(sarah!.twoFactorSecret!);
-    const verified = await request(server())
-      .post('/api/auth/2fa/verify')
-      .send({ pendingTwoFactorToken: login.body.data.pendingTwoFactorToken, code });
-    return verified.body.data.accessToken as string;
+    return login.body.data.accessToken as string;
   }
 
   it('PATCH /roles/:id writes a diff-only before/after showing exactly the changed field', async () => {

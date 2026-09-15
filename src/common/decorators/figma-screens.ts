@@ -121,6 +121,8 @@ export const FIGMA_UNMAPPED_ROUTES: Record<string, string> = {
   'POST /api/reports/schedules': 'Reports — "New schedule" action, not a distinct role-guide page.',
   'PATCH /api/reports/schedules/{id}': 'Reports — edit schedule, not a distinct role-guide page.',
   'GET /api/reports/activity': 'Reports — Activity tab; role-guide export only captured the IFTA/FMCSA tabs (p.20/p.21).',
+  'GET /api/reports/activity/summary':
+    'Reports — Activity tab JSON aggregate (gap B-46) feeding W-13/W-15/dashboard; same Activity tab as GET /api/reports/activity above, not a distinct role-guide page.',
   'GET /api/reports/dvir': 'Reports — DVIR tab; role-guide export only captured the IFTA/FMCSA tabs (p.20/p.21).',
   'GET /api/reports/{id}': 'Reports — job status polling, not a distinct role-guide page.',
   'GET /api/reports/{id}/download': 'Reports — download action shared by every report tab, not a distinct role-guide page.',

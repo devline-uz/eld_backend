@@ -25,6 +25,6 @@ import { TokenService } from './token.service';
     SessionRepository,
     DriverSessionRepository,
   ],
-  exports: [TokenService, AuthService],
+  exports: [TokenService, AuthService, TokenVerifier],
 })
 export class AuthModule {}

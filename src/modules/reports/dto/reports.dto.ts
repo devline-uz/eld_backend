@@ -28,6 +28,15 @@ export const IftaReportParamsDto = z.object({
 });
 export type IftaReportParamsDto = z.infer<typeof IftaReportParamsDto>;
 
+/** `GET /reports/ifta/summary` params (gap B-46, web/tz.md §20) — same `quarter`/`vehicleId`
+ * shape as the CSV export params above; kept as a separate schema since the two routes evolve
+ * independently (JSON summary vs queued CSV). */
+export const IftaSummaryParamsDto = z.object({
+  quarter: z.string().regex(/^\d{4}-Q[1-4]$/),
+  vehicleId: z.string().uuid().optional(),
+});
+export type IftaSummaryParamsDto = z.infer<typeof IftaSummaryParamsDto>;
+
 /**
  * §22 DoS control — a report window is attacker-chosen and every day in it costs RODS queries
  * plus a rendered page. Without a ceiling, `from=1900-01-01&to=2999-12-31` is a single cheap
@@ -62,6 +71,46 @@ export const ActivityReportParamsDto = boundedRange(
   MAX_REPORT_RANGE_DAYS,
 );
 export type ActivityReportParamsDto = z.infer<typeof ActivityReportParamsDto>;
+
+/** `GET /reports/activity/summary` sort keys (gap B-46, web `web/backend-gaps.md`) — the raw
+ * SQL repository maps each to a whitelisted column expression; never interpolate `sort` itself
+ * into SQL. */
+export const ACTIVITY_SUMMARY_SORT_FIELDS = [
+  'name',
+  'days',
+  'offSec',
+  'sbSec',
+  'drivingSec',
+  'onSec',
+  'distanceMi',
+  'violations',
+  'certifiedDays',
+] as const;
+export type ActivitySummarySortField = (typeof ACTIVITY_SUMMARY_SORT_FIELDS)[number];
+
+/**
+ * `GET /reports/activity/summary` params (gap B-46) — JSON per-driver aggregate over a date
+ * range, so the web stops fanning out one `GET /logs/:driverId/range` call per driver (W-13,
+ * W-15, dashboard — WD-039). Same `from`/`to`/range-cap shape as the CSV export params above
+ * plus pagination/filter/sort, since this is a paged list endpoint, not a queued report.
+ */
+export const ActivitySummaryQueryDto = boundedRange(
+  z.object({
+    from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    driverId: z.string().uuid().optional(),
+    terminal: z.string().min(1).optional(),
+    status: z.enum(['ACTIVE', 'INACTIVE', 'TERMINATED']).optional(),
+    sort: z
+      .string()
+      .regex(/^(name|days|offSec|sbSec|drivingSec|onSec|distanceMi|violations|certifiedDays):(asc|desc)$/)
+      .default('name:asc'),
+    page: z.coerce.number().int().min(1).default(1),
+    limit: z.coerce.number().int().min(1).max(200).default(25),
+  }),
+  MAX_REPORT_RANGE_DAYS,
+);
+export type ActivitySummaryQueryDto = z.infer<typeof ActivitySummaryQueryDto>;
 
 export const DvirReportParamsDto = boundedRange(
   z.object({

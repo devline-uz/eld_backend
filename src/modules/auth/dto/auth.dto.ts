@@ -17,13 +17,6 @@ export const GoogleLoginDto = z.object({
 });
 export type GoogleLoginDto = z.infer<typeof GoogleLoginDto>;
 
-export const VerifyTwoFactorDto = z.object({
-  pendingTwoFactorToken: z.string().min(1),
-  /** TOTP code (6 digits) or one of the 8 recovery codes (XXXXX-XXXXX). */
-  code: z.string().min(1),
-});
-export type VerifyTwoFactorDto = z.infer<typeof VerifyTwoFactorDto>;
-
 export const RefreshTokenDto = z.object({
   refreshToken: z.string().min(1),
   subjectType: z.enum(['user', 'driver']),
@@ -45,8 +38,3 @@ export const ResetPasswordDto = z.object({
   newPassword: z.string().min(8),
 });
 export type ResetPasswordDto = z.infer<typeof ResetPasswordDto>;
-
-export const EnableTwoFactorDto = z.object({
-  code: z.string().min(1),
-});
-export type EnableTwoFactorDto = z.infer<typeof EnableTwoFactorDto>;

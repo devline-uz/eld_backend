@@ -80,7 +80,7 @@ export class VehiclesController {
   @Audit({ object: 'Vehicle', action: 'UPDATE' })
   @ApiOperation({ summary: 'Edits a unit.' })
   @ApiOkResponse({ schema: { example: { id: 'veh_1', unitNumber: '101', status: 'ACTIVE', licensePlate: 'PQR-4821', licenseState: 'OH' } } })
-  @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.VEHICLE_NOT_FOUND, 'Vehicle not found.')] })
+  @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.VEHICLE_NOT_FOUND, 'Vehicle not found.'), apiError.conflict(ERROR_CODES.VEHICLE_HAS_OPEN_CRITICAL_DEFECTS, 'Unit has open critical defects and cannot leave OUT_OF_SERVICE.')] })
   update(@Param('id') id: string, @Body(zodBody(UpdateVehicleDto)) dto: UpdateVehicleDto) {
     return this.vehicles.update(id, dto);
   }

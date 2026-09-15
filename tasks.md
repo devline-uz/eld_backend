@@ -16,7 +16,7 @@ Skeleton, both DBs, auth, and audit so every later phase has a base.
 - [x] `common/` (guards, interceptors, filters, `ZodValidationPipe`, `units/`) and `core/` (prisma, config, logger, queue, storage, firebase, events)
 - [x] Prisma schema bootstrap + initial migration, applied to **dev and prod** DBs
 - [x] Seed tool producing data matching Figma
-- [x] Auth: password login, Google Sign-In (Firebase), 2FA
+- [x] Auth: password login, Google Sign-In (Firebase) — 2FA removed 2026-09-13 at user request (D-050)
 - [x] Roles module: 22-key permission matrix
 - [x] Audit module + `AuditInterceptor`, `AuditLog` append-only at DB level (`REVOKE`)
 - [x] Error envelope (§20) + `common/errors/codes.ts` (append-only codes)
@@ -224,7 +224,7 @@ From TZ §23 — authoritative wording lives in `tz.md` §23.
 - [x] Output file name follows Appendix A §4.8.2.2, unit tested
 - [x] `eldIdentifier` and `eldRegistrationId` are exactly 4 characters
 - [x] Email transfer is encrypted and restricted to `fmcsa.dot.gov`
-- [x] Google Sign-In never bypasses 2FA
+- [x] ~~Google Sign-In never bypasses 2FA~~ — moot: 2FA removed 2026-09-13 at user request (D-050)
 - [x] Dart and TypeScript engines match 100% on shared fixtures
 - [x] Recalculation never duplicates violation records (`upsert` + `AUTO_CLEARED`)
 - [x] Driver can edit their own log but cannot touch the `D` segment

@@ -20,8 +20,8 @@ export class UsersModule implements OnModuleInit {
   ) {}
 
   /** TZ §18 — lets `AuditInterceptor` fetch `before`/`after` for `@Audit({ object: 'User' })`.
-   * `passwordHash`/`twoFactorSecret`/`recoveryCodes` are redacted downstream, not filtered
-   * here, so the snapshot loader can stay a plain read. */
+   * `passwordHash` is redacted downstream, not filtered here, so the snapshot loader can
+   * stay a plain read. */
   onModuleInit(): void {
     this.snapshots.register('User', (id) => this.repo.findByIdWithRole(id));
   }

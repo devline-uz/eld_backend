@@ -244,7 +244,7 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": "Access+refresh tokens, or a pendingTwoFactorToken when 2FA is enabled.",
+            "description": "Access+refresh tokens.",
             "content": {
               "application/json": {
                 "schema": {
@@ -455,7 +455,7 @@
             }
           }
         },
-        "summary": "Back-office password login (TZ §6.1). May return a pendingTwoFactorToken.",
+        "summary": "Back-office password login (TZ §6.1).",
         "tags": [
           "auth"
         ],
@@ -638,7 +638,7 @@
             }
           }
         },
-        "summary": "Driver password login (TZ §6.1) — no 2FA for drivers.",
+        "summary": "Driver password login (TZ §6.1).",
         "tags": [
           "auth"
         ],
@@ -662,8 +662,9 @@
               "application/json": {
                 "schema": {
                   "example": {
-                    "twoFactorRequired": true,
-                    "pendingTwoFactorToken": "eyJ..."
+                    "accessToken": "eyJ...",
+                    "refreshToken": "a1b2...",
+                    "tokenType": "Bearer"
                   }
                 }
               }
@@ -820,143 +821,7 @@
             }
           }
         },
-        "summary": "Google Sign-In via Firebase (TZ §6.2). Never bypasses 2FA; no auto-registration.",
-        "tags": [
-          "auth"
-        ],
-        "x-figma-screens": [
-          {
-            "id": "web/sign-in",
-            "title": "Sign in",
-            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.3"
-          }
-        ]
-      }
-    },
-    "/api/auth/2fa/verify": {
-      "post": {
-        "operationId": "AuthController_verifyTwoFactor",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "example": {
-                    "accessToken": "eyJ...",
-                    "refreshToken": "a1b2...",
-                    "tokenType": "Bearer"
-                  }
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "TOKEN_EXPIRED — The pendingTwoFactorToken has expired — sign in again.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "statusCode",
-                    "code",
-                    "message",
-                    "traceId",
-                    "timestamp"
-                  ],
-                  "properties": {
-                    "statusCode": {
-                      "type": "number"
-                    },
-                    "code": {
-                      "type": "string",
-                      "description": "Stable code from common/errors/codes.ts (append-only)."
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "type": "object",
-                      "additionalProperties": true
-                    },
-                    "traceId": {
-                      "type": "string"
-                    },
-                    "timestamp": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  },
-                  "example": {
-                    "statusCode": 401,
-                    "code": "TOKEN_EXPIRED",
-                    "message": "The pendingTwoFactorToken has expired — sign in again.",
-                    "traceId": "01J8X3QK9Z0000000000000000",
-                    "timestamp": "2026-09-11T15:41:00.000Z"
-                  }
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "VALIDATION_FAILED — Request validation failed.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "statusCode",
-                    "code",
-                    "message",
-                    "traceId",
-                    "timestamp"
-                  ],
-                  "properties": {
-                    "statusCode": {
-                      "type": "number"
-                    },
-                    "code": {
-                      "type": "string",
-                      "description": "Stable code from common/errors/codes.ts (append-only)."
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "type": "object",
-                      "additionalProperties": true
-                    },
-                    "traceId": {
-                      "type": "string"
-                    },
-                    "timestamp": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  },
-                  "example": {
-                    "statusCode": 422,
-                    "code": "VALIDATION_FAILED",
-                    "message": "Request validation failed.",
-                    "details": {
-                      "issues": [
-                        {
-                          "path": "field",
-                          "code": "invalid_type",
-                          "message": "Required"
-                        }
-                      ]
-                    },
-                    "traceId": "01J8X3QK9Z0000000000000000",
-                    "timestamp": "2026-09-11T15:41:00.000Z"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "summary": "Completes login after a pendingTwoFactorToken (TZ §6.2).",
+        "summary": "Google Sign-In via Firebase (TZ §6.2). No auto-registration.",
         "tags": [
           "auth"
         ],
@@ -1736,382 +1601,6 @@
           }
         ],
         "summary": "The authenticated principal (TZ §6.3 token claims, minus signature).",
-        "tags": [
-          "auth"
-        ],
-        "x-figma-screens": [
-          {
-            "id": "web/my-profile",
-            "title": "My profile · Active sessions",
-            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.4"
-          }
-        ]
-      }
-    },
-    "/api/auth/2fa/enroll": {
-      "post": {
-        "operationId": "AuthController_enrollTwoFactor",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "example": {
-                    "secret": "JBSWY3DPEHPK3PXP",
-                    "otpauthUrl": "otpauth://totp/..."
-                  }
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "UNAUTHORIZED — Authentication required.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "statusCode",
-                    "code",
-                    "message",
-                    "traceId",
-                    "timestamp"
-                  ],
-                  "properties": {
-                    "statusCode": {
-                      "type": "number"
-                    },
-                    "code": {
-                      "type": "string",
-                      "description": "Stable code from common/errors/codes.ts (append-only)."
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "type": "object",
-                      "additionalProperties": true
-                    },
-                    "traceId": {
-                      "type": "string"
-                    },
-                    "timestamp": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  },
-                  "example": {
-                    "statusCode": 401,
-                    "code": "UNAUTHORIZED",
-                    "message": "Authentication required.",
-                    "traceId": "01J8X3QK9Z0000000000000000",
-                    "timestamp": "2026-09-11T15:41:00.000Z"
-                  }
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "FORBIDDEN — Insufficient permissions for this action.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "statusCode",
-                    "code",
-                    "message",
-                    "traceId",
-                    "timestamp"
-                  ],
-                  "properties": {
-                    "statusCode": {
-                      "type": "number"
-                    },
-                    "code": {
-                      "type": "string",
-                      "description": "Stable code from common/errors/codes.ts (append-only)."
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "type": "object",
-                      "additionalProperties": true
-                    },
-                    "traceId": {
-                      "type": "string"
-                    },
-                    "timestamp": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  },
-                  "example": {
-                    "statusCode": 403,
-                    "code": "FORBIDDEN",
-                    "message": "Insufficient permissions for this action.",
-                    "traceId": "01J8X3QK9Z0000000000000000",
-                    "timestamp": "2026-09-11T15:41:00.000Z"
-                  }
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "VALIDATION_FAILED — Request validation failed.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "statusCode",
-                    "code",
-                    "message",
-                    "traceId",
-                    "timestamp"
-                  ],
-                  "properties": {
-                    "statusCode": {
-                      "type": "number"
-                    },
-                    "code": {
-                      "type": "string",
-                      "description": "Stable code from common/errors/codes.ts (append-only)."
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "type": "object",
-                      "additionalProperties": true
-                    },
-                    "traceId": {
-                      "type": "string"
-                    },
-                    "timestamp": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  },
-                  "example": {
-                    "statusCode": 422,
-                    "code": "VALIDATION_FAILED",
-                    "message": "Request validation failed.",
-                    "details": {
-                      "issues": [
-                        {
-                          "path": "field",
-                          "code": "invalid_type",
-                          "message": "Required"
-                        }
-                      ]
-                    },
-                    "traceId": "01J8X3QK9Z0000000000000000",
-                    "timestamp": "2026-09-11T15:41:00.000Z"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "summary": "Starts TOTP enrolment — returns the secret + otpauth:// URI for a QR code.",
-        "tags": [
-          "auth"
-        ],
-        "x-figma-screens": [
-          {
-            "id": "web/my-profile",
-            "title": "My profile · Active sessions",
-            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.4"
-          }
-        ]
-      }
-    },
-    "/api/auth/2fa/enable": {
-      "post": {
-        "operationId": "AuthController_enableTwoFactor",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "example": {
-                    "recoveryCodes": [
-                      "ABCDE-FGHJK",
-                      "..."
-                    ]
-                  }
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "TWO_FACTOR_INVALID — The 6-digit code is wrong — enrolment is not confirmed.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "statusCode",
-                    "code",
-                    "message",
-                    "traceId",
-                    "timestamp"
-                  ],
-                  "properties": {
-                    "statusCode": {
-                      "type": "number"
-                    },
-                    "code": {
-                      "type": "string",
-                      "description": "Stable code from common/errors/codes.ts (append-only)."
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "type": "object",
-                      "additionalProperties": true
-                    },
-                    "traceId": {
-                      "type": "string"
-                    },
-                    "timestamp": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  },
-                  "example": {
-                    "statusCode": 401,
-                    "code": "TWO_FACTOR_INVALID",
-                    "message": "The 6-digit code is wrong — enrolment is not confirmed.",
-                    "traceId": "01J8X3QK9Z0000000000000000",
-                    "timestamp": "2026-09-11T15:41:00.000Z"
-                  }
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "FORBIDDEN — Insufficient permissions for this action.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "statusCode",
-                    "code",
-                    "message",
-                    "traceId",
-                    "timestamp"
-                  ],
-                  "properties": {
-                    "statusCode": {
-                      "type": "number"
-                    },
-                    "code": {
-                      "type": "string",
-                      "description": "Stable code from common/errors/codes.ts (append-only)."
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "type": "object",
-                      "additionalProperties": true
-                    },
-                    "traceId": {
-                      "type": "string"
-                    },
-                    "timestamp": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  },
-                  "example": {
-                    "statusCode": 403,
-                    "code": "FORBIDDEN",
-                    "message": "Insufficient permissions for this action.",
-                    "traceId": "01J8X3QK9Z0000000000000000",
-                    "timestamp": "2026-09-11T15:41:00.000Z"
-                  }
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "VALIDATION_FAILED — Request validation failed.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "statusCode",
-                    "code",
-                    "message",
-                    "traceId",
-                    "timestamp"
-                  ],
-                  "properties": {
-                    "statusCode": {
-                      "type": "number"
-                    },
-                    "code": {
-                      "type": "string",
-                      "description": "Stable code from common/errors/codes.ts (append-only)."
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "type": "object",
-                      "additionalProperties": true
-                    },
-                    "traceId": {
-                      "type": "string"
-                    },
-                    "timestamp": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  },
-                  "example": {
-                    "statusCode": 422,
-                    "code": "VALIDATION_FAILED",
-                    "message": "Request validation failed.",
-                    "details": {
-                      "issues": [
-                        {
-                          "path": "field",
-                          "code": "invalid_type",
-                          "message": "Required"
-                        }
-                      ]
-                    },
-                    "traceId": "01J8X3QK9Z0000000000000000",
-                    "timestamp": "2026-09-11T15:41:00.000Z"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "summary": "Confirms enrolment with a TOTP code; returns 8 recovery codes (shown once).",
         "tags": [
           "auth"
         ],
@@ -3841,7 +3330,6 @@
                     "firstName": "Sarah",
                     "lastName": "Chen",
                     "status": "ACTIVE",
-                    "twoFactorEnabled": true,
                     "role": {
                       "key": "ADMIN",
                       "name": "Administrator"
@@ -4912,7 +4400,6 @@
                     "firstName": "Sarah",
                     "lastName": "Chen",
                     "phone": "+13347654888",
-                    "twoFactorEnabled": true,
                     "role": {
                       "key": "ADMIN",
                       "name": "Administrator"
@@ -7524,6 +7011,551 @@
           }
         ],
         "summary": "Exports all drivers as the same shape `POST /drivers/import` accepts (round-trips without loss, minus passwords).",
+        "tags": [
+          "drivers"
+        ],
+        "x-figma-screens": [
+          {
+            "id": "web/drivers",
+            "title": "Drivers",
+            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.11"
+          },
+          {
+            "id": "web/driver-add",
+            "title": "Add driver",
+            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.12"
+          }
+        ]
+      }
+    },
+    "/api/drivers/roster": {
+      "get": {
+        "operationId": "DriversController_roster",
+        "parameters": [
+          {
+            "name": "exempt",
+            "required": false,
+            "in": "query",
+            "description": "Filters on `eldExempt`.",
+            "schema": {
+              "enum": [
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "hasOpenViolation",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "terminal",
+            "required": false,
+            "in": "query",
+            "description": "Exact home terminal name (case-insensitive).",
+            "schema": {}
+          },
+          {
+            "name": "status",
+            "required": false,
+            "in": "query",
+            "schema": {}
+          },
+          {
+            "name": "q",
+            "required": false,
+            "in": "query",
+            "schema": {}
+          },
+          {
+            "name": "sort",
+            "required": false,
+            "in": "query",
+            "schema": {}
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "in": "query",
+            "schema": {}
+          },
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "schema": {}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "items": [
+                      {
+                        "driver": {
+                          "id": "drv_1",
+                          "username": "jsmith",
+                          "firstName": "John",
+                          "lastName": "Smith",
+                          "homeTerminalName": "Columbus, OH",
+                          "appVersion": "v2.24",
+                          "email": "john@example.com",
+                          "eldExempt": false,
+                          "allowPersonalConveyance": true,
+                          "allowYardMove": true,
+                          "shortHaulException": false,
+                          "splitSleeperEnabled": false
+                        },
+                        "dutyStatus": "DRIVING",
+                        "unit": {
+                          "id": "veh_1",
+                          "unitNumber": "101"
+                        },
+                        "hos": {
+                          "driveRemainingSec": 16200,
+                          "shiftRemainingSec": 20400,
+                          "cycleRemainingSec": 252000
+                        },
+                        "openViolations": 0,
+                        "emailVerified": null
+                      }
+                    ],
+                    "page": 1,
+                    "limit": 25,
+                    "total": 1,
+                    "totalPages": 1
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHORIZED — Authentication required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 401,
+                    "code": "UNAUTHORIZED",
+                    "message": "Authentication required.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN — Insufficient permissions for this action.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 403,
+                    "code": "FORBIDDEN",
+                    "message": "Insufficient permissions for this action.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "VALIDATION_FAILED — Request validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 422,
+                    "code": "VALIDATION_FAILED",
+                    "message": "Request validation failed.",
+                    "details": {
+                      "issues": [
+                        {
+                          "path": "field",
+                          "code": "invalid_type",
+                          "message": "Required"
+                        }
+                      ]
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "W-06 roster: per driver the HOS engine clocks, current duty status, assigned unit and open violation count.",
+        "tags": [
+          "drivers"
+        ],
+        "x-figma-screens": [
+          {
+            "id": "web/drivers",
+            "title": "Drivers",
+            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.11"
+          },
+          {
+            "id": "web/driver-add",
+            "title": "Add driver",
+            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.12"
+          }
+        ]
+      }
+    },
+    "/api/drivers/{id}/hos": {
+      "get": {
+        "operationId": "DriversController_hos",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "driveRemainingSec": 16200,
+                    "shiftRemainingSec": 20400,
+                    "cycleRemainingSec": 180000,
+                    "breakInSec": 7440,
+                    "onDutySince": "2026-09-12T14:26:00.000Z",
+                    "cycleLimitSec": 252000,
+                    "shiftLimitSec": 50400,
+                    "driveLimitSec": 39600,
+                    "breakLimitSec": 28800,
+                    "dutyStatus": "DRIVING",
+                    "statusSince": "2026-09-12T18:00:00.000Z",
+                    "computedAt": "2026-09-12T20:00:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHORIZED — Authentication required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 401,
+                    "code": "UNAUTHORIZED",
+                    "message": "Authentication required.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN — Insufficient permissions for this action.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 403,
+                    "code": "FORBIDDEN",
+                    "message": "Insufficient permissions for this action.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "DRIVER_NOT_FOUND — Driver not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 404,
+                    "code": "DRIVER_NOT_FOUND",
+                    "message": "Driver not found.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "VALIDATION_FAILED — Request validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 422,
+                    "code": "VALIDATION_FAILED",
+                    "message": "Request validation failed.",
+                    "details": {
+                      "issues": [
+                        {
+                          "path": "field",
+                          "code": "invalid_type",
+                          "message": "Required"
+                        }
+                      ]
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "The four HOS clocks for one driver, computed now by the HOS engine (never from daily totals).",
         "tags": [
           "drivers"
         ],
@@ -20490,6 +20522,520 @@
         ]
       }
     },
+    "/api/violations": {
+      "get": {
+        "operationId": "ViolationsController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "items": [
+                      {
+                        "id": "vio_1",
+                        "driverId": "drv_1",
+                        "dailyLogId": "dl_1",
+                        "logDate": "2026-09-14",
+                        "type": "DRIVING_11",
+                        "occurredAt": "2026-09-14T14:26:00.000Z",
+                        "exceededBySec": 1560,
+                        "detail": "Driving 11h26m",
+                        "status": "OPEN",
+                        "resolvedAt": null,
+                        "resolvedById": null,
+                        "resolutionNote": null,
+                        "severity": "VIOLATION",
+                        "driverName": "John Smith",
+                        "vehicleId": "veh_1",
+                        "unitNumber": "101",
+                        "event": "11-hour driving limit exceeded",
+                        "locationLabel": "1.04 mi W of Harrisburg, OH",
+                        "date": "2026-09-14"
+                      }
+                    ],
+                    "total": 1,
+                    "page": 1,
+                    "limit": 25,
+                    "totalPages": 1
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHORIZED — Authentication required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 401,
+                    "code": "UNAUTHORIZED",
+                    "message": "Authentication required.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN — Insufficient permissions for this action.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 403,
+                    "code": "FORBIDDEN",
+                    "message": "Insufficient permissions for this action.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "VALIDATION_FAILED — Request validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 422,
+                    "code": "VALIDATION_FAILED",
+                    "message": "Request validation failed.",
+                    "details": {
+                      "issues": [
+                        {
+                          "path": "field",
+                          "code": "invalid_type",
+                          "message": "Required"
+                        }
+                      ]
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Fleet HOS violation list (default status=OPEN) with driver name and unit.",
+        "tags": [
+          "violations"
+        ],
+        "x-figma-screens": [
+          {
+            "id": "web/fleet-dashboard",
+            "title": "Fleet Dashboard",
+            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.5"
+          },
+          {
+            "id": "web/hos-logs",
+            "title": "Hours of Service · Driver log",
+            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.13"
+          }
+        ]
+      }
+    },
+    "/api/violations/{id}/resolve": {
+      "post": {
+        "operationId": "ViolationsController_resolve",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "id": "vio_1",
+                    "status": "RESOLVED",
+                    "resolvedAt": "2026-09-14T15:41:00.000Z",
+                    "resolutionNote": "Adverse weather, dispatcher confirmed"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHORIZED — Authentication required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 401,
+                    "code": "UNAUTHORIZED",
+                    "message": "Authentication required.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN — Insufficient permissions for this action.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 403,
+                    "code": "FORBIDDEN",
+                    "message": "Insufficient permissions for this action.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NOT_FOUND — Violation not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 404,
+                    "code": "NOT_FOUND",
+                    "message": "Violation not found.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "CONFLICT — Only an OPEN violation can be resolved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 409,
+                    "code": "CONFLICT",
+                    "message": "Only an OPEN violation can be resolved.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "VALIDATION_FAILED — Request validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 422,
+                    "code": "VALIDATION_FAILED",
+                    "message": "Request validation failed.",
+                    "details": {
+                      "issues": [
+                        {
+                          "path": "field",
+                          "code": "invalid_type",
+                          "message": "Required"
+                        }
+                      ]
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Resolves an OPEN violation with a 4-60 char note. Audited as VIOLATION_RESOLVED; RODS records are never changed.",
+        "tags": [
+          "violations"
+        ],
+        "x-figma-screens": [
+          {
+            "id": "web/fleet-dashboard",
+            "title": "Fleet Dashboard",
+            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.5"
+          },
+          {
+            "id": "web/hos-logs",
+            "title": "Hours of Service · Driver log",
+            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.13"
+          }
+        ]
+      }
+    },
     "/api/transfers": {
       "post": {
         "operationId": "TransfersController_create",
@@ -21452,7 +21998,7 @@
                 "schema": {
                   "example": {
                     "accepted": true,
-                    "engineVersion": "1.0.0",
+                    "engineVersion": "1.0.1",
                     "versionMismatch": false,
                     "drift": false,
                     "server": {
@@ -21637,7 +22183,7 @@
                 "schema": {
                   "example": {
                     "serverTime": "2026-09-11T15:41:00.000Z",
-                    "hosEngineVersion": "1.0.0",
+                    "hosEngineVersion": "1.0.1",
                     "driver": {
                       "id": "drv_1",
                       "firstName": "John",
@@ -21856,7 +22402,7 @@
                     ],
                     "serverChanges": [],
                     "serverTime": "2026-09-11T15:41:00.000Z",
-                    "hosEngineVersion": "1.0.0",
+                    "hosEngineVersion": "1.0.1",
                     "nextSyncAfterSec": 60
                   }
                 }
@@ -36714,6 +37260,218 @@
         ]
       }
     },
+    "/api/live/fleet": {
+      "get": {
+        "operationId": "LiveFleetController_fleet",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "items": [
+                      {
+                        "vehicleId": "veh_1",
+                        "unitNumber": "101",
+                        "driverId": "drv_1",
+                        "driverName": "John Smith",
+                        "driverPhone": "+1 334 765 4888",
+                        "dutyStatus": "ON_DUTY",
+                        "speedMph": 0,
+                        "headingDeg": 274,
+                        "odometerMi": 993589,
+                        "lat": 38.99,
+                        "lon": -84.63,
+                        "locationLabel": "0.64 mi N of Florence, KY",
+                        "lastSeenAt": "2026-09-12T15:39:00.000Z",
+                        "driveRemainingSec": 0,
+                        "shiftEndsAt": "2026-09-12T15:59:34.000Z",
+                        "eldSerial": "PT30_A86E",
+                        "bleState": "CONNECTED"
+                      }
+                    ],
+                    "generatedAt": "2026-09-12T15:39:10.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHORIZED — Authentication required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 401,
+                    "code": "UNAUTHORIZED",
+                    "message": "Authentication required.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN — Insufficient permissions for this action.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 403,
+                    "code": "FORBIDDEN",
+                    "message": "Insufficient permissions for this action.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "VALIDATION_FAILED — Request validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 422,
+                    "code": "VALIDATION_FAILED",
+                    "message": "Request validation failed.",
+                    "details": {
+                      "issues": [
+                        {
+                          "path": "field",
+                          "code": "invalid_type",
+                          "message": "Required"
+                        }
+                      ]
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Current snapshot of every unit: last known position, speed, driver, duty status, HOS clocks, ELD link.",
+        "tags": [
+          "live"
+        ],
+        "x-figma-screens": [
+          {
+            "id": "web/live-fleet",
+            "title": "Live Fleet",
+            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.7"
+          },
+          {
+            "id": "web/fleet-dashboard",
+            "title": "Fleet Dashboard",
+            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.5"
+          }
+        ]
+      }
+    },
     "/api/reports/generate": {
       "post": {
         "operationId": "ReportsController_generate",
@@ -37856,6 +38614,219 @@
         ]
       }
     },
+    "/api/reports/ifta/summary": {
+      "get": {
+        "operationId": "ReportsController_iftaSummary",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "quarter": "2026-Q3",
+                    "unitCount": 12,
+                    "kpis": {
+                      "totalMiles": 48213,
+                      "taxableMiles": 48213,
+                      "taxablePct": 100,
+                      "fuelGal": 6021.4,
+                      "receiptCount": 312,
+                      "fleetMpg": 8.01,
+                      "fleetMpgPrev": 7.86
+                    },
+                    "rows": [
+                      {
+                        "jurisdiction": "CA",
+                        "totalMiles": 9120,
+                        "taxableMiles": 9120,
+                        "fuelGal": 1138.9,
+                        "mpg": 8.01,
+                        "taxDueUsd": null
+                      }
+                    ],
+                    "totals": {
+                      "totalMiles": 48213,
+                      "taxableMiles": 48213,
+                      "fuelGal": 6021.4,
+                      "mpg": 8.01,
+                      "taxDueUsd": null
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHORIZED — Authentication required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 401,
+                    "code": "UNAUTHORIZED",
+                    "message": "Authentication required.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN — Insufficient permissions for this action.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 403,
+                    "code": "FORBIDDEN",
+                    "message": "Insufficient permissions for this action.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "VALIDATION_FAILED — quarter must look like 2026-Q3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 422,
+                    "code": "VALIDATION_FAILED",
+                    "message": "quarter must look like 2026-Q3.",
+                    "details": {
+                      "issues": [
+                        {
+                          "path": "field",
+                          "code": "invalid_type",
+                          "message": "Required"
+                        }
+                      ]
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "JSON IFTA quarter summary for the W-12 screen (gap B-46) — jurisdiction totals, fleet MPG and the vs-prev-quarter chip, read directly from the same IftaSegment/FuelPurchase totals the CSV export uses. Declared before GET /reports/:id so it is never swallowed by the id param route.",
+        "tags": [
+          "reports"
+        ],
+        "x-figma-screens": [
+          {
+            "id": "web/reports-ifta",
+            "title": "Reports · IFTA",
+            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.20"
+          }
+        ]
+      }
+    },
     "/api/reports/activity": {
       "get": {
         "operationId": "ReportsController_activity",
@@ -38031,6 +39002,210 @@
           }
         ],
         "summary": "Shortcut: queues an activity report for a date range.",
+        "tags": [
+          "reports"
+        ]
+      }
+    },
+    "/api/reports/activity/summary": {
+      "get": {
+        "operationId": "ReportsController_activitySummary",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "kpis": {
+                      "drivingSec": 412200,
+                      "drivingDeltaPct": 4.2,
+                      "onDutySec": 88200,
+                      "distanceMi": 18412,
+                      "violations": 3,
+                      "violationsDelta": -1
+                    },
+                    "items": [
+                      {
+                        "driverId": "drv_1",
+                        "name": "Doe, John",
+                        "days": 8,
+                        "offSec": 172800,
+                        "sbSec": 28800,
+                        "drivingSec": 39600,
+                        "onSec": 7200,
+                        "distanceMi": 512,
+                        "violations": 0,
+                        "certifiedDays": 8
+                      }
+                    ],
+                    "page": 1,
+                    "limit": 25,
+                    "total": 264,
+                    "totalPages": 11
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHORIZED — Authentication required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 401,
+                    "code": "UNAUTHORIZED",
+                    "message": "Authentication required.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN — Insufficient permissions for this action.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 403,
+                    "code": "FORBIDDEN",
+                    "message": "Insufficient permissions for this action.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "VALIDATION_FAILED — from/to must be YYYY-MM-DD and the range must not exceed 366 days.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 422,
+                    "code": "VALIDATION_FAILED",
+                    "message": "from/to must be YYYY-MM-DD and the range must not exceed 366 days.",
+                    "details": {
+                      "issues": [
+                        {
+                          "path": "field",
+                          "code": "invalid_type",
+                          "message": "Required"
+                        }
+                      ]
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "JSON per-driver activity aggregate for W-13/W-15/dashboard (gap B-46) — the web previously fanned out one GET /logs/:driverId/range call per driver (308 calls, 3s→15s in QA). Computed in SQL from DailyLog + HosViolation, never per-driver RODS rebuilds, and never loads EldEvent rows. Declared before GET /reports/:id so it is never swallowed by the id param route.",
         "tags": [
           "reports"
         ]

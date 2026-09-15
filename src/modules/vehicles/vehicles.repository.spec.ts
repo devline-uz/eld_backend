@@ -14,11 +14,13 @@ function makeDelegate() {
 
 describe('VehiclesRepository', () => {
   let vehicle: ReturnType<typeof makeDelegate>;
+  let defect: { findMany: jest.Mock };
   let repo: VehiclesRepository;
 
   beforeEach(() => {
     vehicle = makeDelegate();
-    const prisma = { vehicle } as never;
+    defect = { findMany: jest.fn().mockResolvedValue([]) };
+    const prisma = { vehicle, defect } as never;
     repo = new VehiclesRepository(prisma);
   });
 
@@ -59,5 +61,15 @@ describe('VehiclesRepository', () => {
   it('listAll orders by unitNumber', async () => {
     await repo.listAll();
     expect(vehicle.findMany).toHaveBeenCalledWith({ orderBy: { unitNumber: 'asc' } });
+  });
+
+  it('findOpenCriticalDefectIds queries the Defect table for OPEN + CRITICAL rows on this unit', async () => {
+    defect.findMany.mockResolvedValue([{ id: 'def_1' }]);
+    const result = await repo.findOpenCriticalDefectIds('v1');
+    expect(defect.findMany).toHaveBeenCalledWith({
+      where: { vehicleId: 'v1', status: 'OPEN', severity: 'CRITICAL' },
+      select: { id: true },
+    });
+    expect(result).toEqual([{ id: 'def_1' }]);
   });
 });

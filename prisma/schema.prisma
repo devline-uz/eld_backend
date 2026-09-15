@@ -79,9 +79,6 @@ model User {
   phone            String?
   roleId           String
   status           UserStatus   @default(INVITED)
-  twoFactorSecret  String?
-  twoFactorEnabled Boolean      @default(false)
-  recoveryCodes    String[]     @default([])
   lastActiveAt     DateTime?
   invitedById      String?
   invitedAt        DateTime?

@@ -10,11 +10,6 @@ export interface ContextUser {
   type: 'user' | 'driver' | 'api-key';
   role?: string;
   permissions?: Readonly<Record<string, 'NONE' | 'READ' | 'FULL'>>;
-  /**
-   * TZ §6.2 — carried in the access token so the TwoFactorSetupGuard can enforce
-   * "ADMIN without 2FA may only reach /me/*" without a DB round-trip per request.
-   */
-  twoFactorEnabled?: boolean;
 }
 
 /**

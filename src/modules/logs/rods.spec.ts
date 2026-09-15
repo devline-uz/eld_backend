@@ -128,3 +128,48 @@ describe('statusInEffectAt / drivingIntervals', () => {
     expect(intervals[1].endAt.toISOString()).toBe('2026-06-01T17:00:00.000Z');
   });
 });
+
+describe('B-059 — whole-second grid', () => {
+  it('a finished day of millisecond-stamped records totals exactly 86 400 s', () => {
+    const start = Date.parse('2026-06-01T04:00:00Z');
+    const events: RodsEvent[] = [];
+    // ~900 alternating ON / D records 96.1234 s apart: rounding each duration alone drifts ~30 s.
+    for (let i = 0; i < 900; i += 1) {
+      events.push(event({ at: new Date(start + 499 + Math.round(i * 96_123.4)).toISOString(), code: i % 2 ? 3 : 4 }));
+    }
+    const day = buildRodsDay(events, TZ, '2026-06-01', new Date('2026-06-05T00:00:00Z'));
+    expect(day.offDutySec + day.sleeperSec + day.drivingSec + day.onDutySec).toBe(86400);
+    expect(day.accountedSec).toBe(day.dayLengthSec);
+    expect(day.segments.every((segment) => segment.durationSec > 0)).toBe(true);
+  });
+
+  it('records under 0.5 s apart (dropped by the segment builder) leave no hole in the day', () => {
+    const start = Date.parse('2026-09-11T04:00:00Z');
+    const events: RodsEvent[] = [];
+    // 300 pairs: ON then OFF 0.3 s later, every 4 minutes — each ON segment rounds to 0 s and is dropped.
+    for (let i = 0; i < 300; i += 1) {
+      const t = start + 1_386 + i * 240_000;
+      events.push(event({ at: new Date(t).toISOString(), code: 4 }));
+      events.push(event({ at: new Date(t + 300).toISOString(), code: 1 }));
+    }
+    const day = buildRodsDay(events, TZ, '2026-09-11', new Date('2026-09-13T00:00:00Z'));
+    expect(day.offDutySec + day.sleeperSec + day.drivingSec + day.onDutySec).toBe(86400);
+    expect(day.accountedSec).toBe(86400);
+    for (let i = 1; i < day.segments.length; i += 1) {
+      expect(day.segments[i].startAt.getTime()).toBe(day.segments[i - 1].endAt.getTime());
+    }
+  });
+
+  it('a sub-second status blip never breaks the day total', () => {
+    const events = [
+      event({ at: '2026-06-01T12:00:00.400Z', code: 4 }),
+      event({ at: '2026-06-01T12:00:00.700Z', code: 3 }),
+      event({ at: '2026-06-01T13:00:00.200Z', code: 1 }),
+    ];
+    const day = buildRodsDay(events, TZ, '2026-06-01', new Date('2026-06-05T00:00:00Z'));
+    expect(day.offDutySec + day.sleeperSec + day.drivingSec + day.onDutySec).toBe(86400);
+    // The 0.3 s ON blip may be coalesced by normalization; the hour of duty time is kept to the second.
+    expect(day.drivingSec + day.onDutySec).toBeGreaterThanOrEqual(3599);
+    expect(day.drivingSec + day.onDutySec).toBeLessThanOrEqual(3600);
+  });
+});

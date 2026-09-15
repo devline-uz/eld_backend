@@ -3,7 +3,8 @@ import { ApiBearerAuth, ApiCreatedResponse, ApiOkResponse, ApiOperation, ApiQuer
 import { Audit } from '../../common/decorators/audit.decorator';
 import { Perm } from '../../common/decorators/perm.decorator';
 import { zodBody } from '../../common/pipes/zod-validation.pipe';
-import { CreateDriverDto, DriverListQueryDto, ImportDriversDto, UpdateDriverDto } from './dto/drivers.dto';
+import { CreateDriverDto, DriverListQueryDto, DriverRosterQueryDto, ImportDriversDto, UpdateDriverDto } from './dto/drivers.dto';
+import { DriverRosterService } from './driver-roster.service';
 import { DriversService } from './drivers.service';
 import { apiError, ApiStandardErrors, ERROR_CODES } from '../../common/errors';
 import { FigmaScreen } from '../../common/decorators/figma-screen.decorator';
@@ -14,7 +15,10 @@ import { FigmaScreen } from '../../common/decorators/figma-screen.decorator';
 @ApiBearerAuth()
 @Controller('drivers')
 export class DriversController {
-  constructor(private readonly drivers: DriversService) {}
+  constructor(
+    private readonly drivers: DriversService,
+    private readonly roster$: DriverRosterService,
+  ) {}
 
   @Get()
   @Perm('drivers', 'READ')
@@ -37,6 +41,33 @@ export class DriversController {
   @ApiStandardErrors()
   export() {
     return this.drivers.exportAll();
+  }
+
+  // Static `roster` MUST stay above `:id`, or Express matches it as a driver id (404 DRIVER_NOT_FOUND).
+  @Get('roster')
+  @Perm('drivers', 'READ')
+  @ApiQuery({ name: 'page', required: false })
+  @ApiQuery({ name: 'limit', required: false })
+  @ApiQuery({ name: 'sort', required: false })
+  @ApiQuery({ name: 'q', required: false })
+  @ApiQuery({ name: 'status', required: false })
+  @ApiQuery({ name: 'terminal', required: false, description: 'Exact home terminal name (case-insensitive).' })
+  @ApiQuery({ name: 'hasOpenViolation', required: false, enum: ['true', 'false'] })
+  @ApiQuery({ name: 'exempt', required: false, enum: ['true', 'false'], description: 'Filters on `eldExempt`.' })
+  @ApiOperation({ summary: 'W-06 roster: per driver the HOS engine clocks, current duty status, assigned unit and open violation count.' })
+  @ApiOkResponse({ schema: { example: { items: [{ driver: { id: 'drv_1', username: 'jsmith', firstName: 'John', lastName: 'Smith', homeTerminalName: 'Columbus, OH', appVersion: 'v2.24', email: 'john@example.com', eldExempt: false, allowPersonalConveyance: true, allowYardMove: true, shortHaulException: false, splitSleeperEnabled: false }, dutyStatus: 'DRIVING', unit: { id: 'veh_1', unitNumber: '101' }, hos: { driveRemainingSec: 16200, shiftRemainingSec: 20400, cycleRemainingSec: 252000 }, openViolations: 0, emailVerified: null }], page: 1, limit: 25, total: 1, totalPages: 1 } } })
+  @ApiStandardErrors()
+  roster(@Query(zodBody(DriverRosterQueryDto)) query: DriverRosterQueryDto) {
+    return this.roster$.roster(query);
+  }
+
+  @Get(':id/hos')
+  @Perm('hos', 'READ')
+  @ApiOperation({ summary: 'The four HOS clocks for one driver, computed now by the HOS engine (never from daily totals).' })
+  @ApiOkResponse({ schema: { example: { driveRemainingSec: 16200, shiftRemainingSec: 20400, cycleRemainingSec: 180000, breakInSec: 7440, onDutySince: '2026-09-12T14:26:00.000Z', cycleLimitSec: 252000, shiftLimitSec: 50400, driveLimitSec: 39600, breakLimitSec: 28800, dutyStatus: 'DRIVING', statusSince: '2026-09-12T18:00:00.000Z', computedAt: '2026-09-12T20:00:00.000Z' } } })
+  @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.')] })
+  hos(@Param('id') id: string) {
+    return this.roster$.clocks(id);
   }
 
   @Get(':id')

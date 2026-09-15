@@ -9,7 +9,6 @@
 import { INestApplication } from '@nestjs/common';
 import { getQueueToken } from '@nestjs/bullmq';
 import { Test } from '@nestjs/testing';
-import { authenticator } from 'otplib';
 import { PrismaClient } from '@prisma/client';
 import type { Queue } from 'bullmq';
 import request from 'supertest';
@@ -36,12 +35,7 @@ describe('Reports (e2e, tz.md §11.6/§15)', () => {
     const login = await request(server())
       .post('/api/auth/login')
       .send({ email: 'sarah.chen@universal-logistics.example', password: 'Onebook2026' });
-    const sarah = await prisma.user.findUnique({ where: { email: 'sarah.chen@universal-logistics.example' } });
-    const code = authenticator.generate(sarah!.twoFactorSecret!);
-    const verified = await request(server())
-      .post('/api/auth/2fa/verify')
-      .send({ pendingTwoFactorToken: login.body.data.pendingTwoFactorToken, code });
-    token = verified.body.data.accessToken as string;
+    token = login.body.data.accessToken as string;
     expect(token).toEqual(expect.any(String));
   });
 

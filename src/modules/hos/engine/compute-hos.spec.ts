@@ -330,6 +330,20 @@ describe('cycle, restart and recap in the assembled state', () => {
     expect(of(state, 'CYCLE_70')?.occurredAt.toISOString()).toBe('2025-01-14T19:00:00.000Z');
   });
 
+  it('B-054: raises no cycle violation on a day with no on-duty time', () => {
+    const state = run([[13 * H, 'OFF']], { previousDays: [{ date: '2025-01-13', onDutySec: 71 * H }] });
+    expect(state.cycleRemainingSec).toBe(0);
+    expect(of(state, 'CYCLE_70')).toBeUndefined();
+  });
+
+  it('B-054: never stamps a cycle violation after now', () => {
+    const state = run([[13 * H, 'OFF']], { previousDays: [{ date: '2025-01-13', onDutySec: 66 * H }, { date: '2025-01-14', onDutySec: 5 * H }] });
+    const violation = of(state, 'CYCLE_70');
+    expect(violation?.exceededBySec).toBe(1 * H);
+    expect(violation?.occurredAt.getTime()).toBeLessThanOrEqual(state.statusSince.getTime() + 13 * H * 1000);
+    expect(violation?.occurredAt.toISOString()).toBe('2025-01-14T18:00:00.000Z');
+  });
+
   it('caps driveRemainingSec by the cycle', () => {
     const state = run([[10 * H, 'OFF'], [1 * H, 'ON']], { previousDays: [{ date: '2025-01-13', onDutySec: 67 * H }] });
     expect(state.driveRemainingSec).toBe(2 * H);

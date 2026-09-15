@@ -107,7 +107,7 @@ export function computeHos(input: HosInput): HosState {
 
   // --- cycle violations, day by day (§8.2 rules 4/6) ---
   const todayKey = dayKey(timezone, now);
-  collectCycleViolations(segments, totalsByDay, timezone, todayKey, limits.cycleDays, limits.cycleLimitSec, limits.cycleViolationType, restartDay, violations);
+  collectCycleViolations(segments, totalsByDay, timezone, todayKey, limits.cycleDays, limits.cycleLimitSec, limits.cycleViolationType, restartDay, violations, now);
 
   const cycleUsed = cycleUsedOn(totalsByDay, todayKey, limits.cycleDays, restartDay);
   const cycleRemainingSec = Math.max(0, limits.cycleLimitSec - cycleUsed);
@@ -294,14 +294,21 @@ function collectCycleViolations(
   type: 'CYCLE_70' | 'CYCLE_60',
   restartDay: string | null,
   violations: ViolationCollector,
+  now: Date,
 ): void {
   const keys = segments.length ? dayKeysBetween(timezone, segments[0].start, new Date(Math.max(segments[segments.length - 1].end.getTime() - 1, segments[0].start.getTime()))) : [];
   if (!keys.includes(todayKey)) keys.push(todayKey);
   for (const key of keys) {
     const used = cycleUsedOn(totals, key, cycleDays, restartDay);
     if (used <= cycleLimitSec) continue;
-    const base = used - (totals.get(key) ?? 0);
-    const at = crossingInstant(segments, timezone, key, cycleLimitSec - base) ?? dayEnd(timezone, key);
+    // §395.3(b) — the cycle is violated by being on duty past it. A day with no on-duty time only
+    // carries the overrun forward; flagging it invented a violation on a rest day (B-054).
+    const today = totals.get(key) ?? 0;
+    if (today <= 0) continue;
+    const base = used - today;
+    // No crossing inside the segments (the day's hours came from `previousDays`): stamp the day's
+    // end, but never later than `now` — a violation cannot occur in the future (B-054).
+    const at = crossingInstant(segments, timezone, key, cycleLimitSec - base) ?? new Date(Math.min(dayEnd(timezone, key).getTime(), now.getTime()));
     violations.add(
       type,
       key,

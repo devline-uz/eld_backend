@@ -37,8 +37,8 @@ import {
   EditorType,
 } from '@prisma/client';
 import { hashPassword } from '../src/modules/auth/lib/password.util';
-import { sha256 } from '../src/modules/auth/lib/hash.util';
-import { generateRecoveryCodes, generateTotpSecret } from '../src/modules/auth/lib/totp.util';
+import { coarsenLocation } from '../src/common/units/location';
+import { seedFixTime } from '../src/modules/live/live-fleet.seed';
 
 const prisma = new PrismaClient();
 
@@ -198,13 +198,6 @@ async function main(): Promise<void> {
   ];
   const users: Record<string, string> = {};
   for (const u of userSeeds) {
-    // ADMIN accounts are seeded with 2FA already enabled (TZ §6.2 — mandatory for ADMIN) and a
-    // real TOTP secret + hashed recovery codes, so the seed never produces a locked-out admin
-    // (login → pendingTwoFactorToken → /auth/2fa/verify works out of the box for QA/e2e, which
-    // can read `twoFactorSecret` straight from the dev DB to compute a valid code).
-    const isAdmin = u.role === 'ADMIN';
-    const twoFactorSecret = isAdmin ? generateTotpSecret() : null;
-    const recoveryCodes = isAdmin ? generateRecoveryCodes().map((c) => sha256(c)) : [];
     const user = await prisma.user.upsert({
       where: { email: u.email },
       create: {
@@ -216,14 +209,10 @@ async function main(): Promise<void> {
         jobTitle: u.jobTitle,
         roleId: roleIds[u.role],
         status: UserStatus.ACTIVE,
-        twoFactorEnabled: isAdmin,
-        twoFactorSecret,
-        recoveryCodes,
       },
       update: {
         roleId: roleIds[u.role],
         passwordHash: DEMO_PASSWORD_HASH,
-        ...(isAdmin && { twoFactorEnabled: true, twoFactorSecret, recoveryCodes }),
       },
     });
     users[u.email] = user.id;
@@ -309,6 +298,51 @@ async function main(): Promise<void> {
       update: {},
     });
     genericDeviceCount++;
+  }
+
+  // ---- Last-known positions for ELD-equipped units (web/tz.md §20 B-3, D-053) ----
+  // `GET /live/fleet` reads the latest TelemetryPoint per vehicle. A fresh DB has none, so the
+  // W-01/W-02 map would be empty. One coarse fix per device-equipped unit, written ONLY when the
+  // unit has no telemetry at all: idempotent on any day and never shadows real ingested data.
+  // Coordinates go through `coarsenLocation` (1 mi) like the ingest path — never a raw fix.
+  const SEED_POSITIONS: Array<{ lat: number; lon: number; heading: number }> = [
+    { lat: 38.9989, lon: -84.6266, heading: 274 }, // Florence, KY (Figma #101)
+    { lat: 39.9612, lon: -82.9988, heading: 88 }, // Columbus, OH
+    { lat: 39.1031, lon: -84.512, heading: 180 }, // Cincinnati, OH
+    { lat: 41.4993, lon: -81.6944, heading: 45 }, // Cleveland, OH
+    { lat: 39.7589, lon: -84.1916, heading: 0 }, // Dayton, OH
+    { lat: 41.6528, lon: -83.5379, heading: 315 }, // Toledo, OH
+    { lat: 38.2527, lon: -85.7585, heading: 200 }, // Louisville, KY
+    { lat: 39.7684, lon: -86.1581, heading: 270 }, // Indianapolis, IN
+    { lat: 40.4406, lon: -79.9959, heading: 90 }, // Pittsburgh, PA
+    { lat: 38.0406, lon: -84.5037, heading: 135 }, // Lexington, KY
+  ];
+  await prisma.$executeRawUnsafe(`SELECT create_monthly_partition('TelemetryPoint', $1::date)`, ANCHOR.startOf('month').toISODate());
+  const equippedUnits = await prisma.device.findMany({
+    where: { vehicleId: { not: null } },
+    select: { vehicleId: true },
+    orderBy: { serial: 'asc' },
+  });
+  const seededPositions: Array<{ time: Date; vehicleId: string; latitude: number; longitude: number; speedMph: number; headingDeg: number; engineOn: boolean }> = [];
+  for (const [idx, { vehicleId }] of equippedUnits.entries()) {
+    if (!vehicleId) continue;
+    if (await prisma.telemetryPoint.findFirst({ where: { vehicleId }, select: { vehicleId: true } })) continue;
+    const base = vehicleId === unit101Id ? SEED_POSITIONS[0] : SEED_POSITIONS[(idx % (SEED_POSITIONS.length - 1)) + 1];
+    // Spread units sharing a city ~2-3 mi apart so markers do not stack on one pixel.
+    const coarse = coarsenLocation({ lat: base.lat + (idx % 3) * 0.03, lon: base.lon + (idx % 4) * 0.03 }, 'ONE_MILE');
+    seededPositions.push({
+      // B-044: never after real now — Live Fleet hides future-dated fixes.
+      time: seedFixTime(ANCHOR.toJSDate(), new Date(), 2 + idx),
+      vehicleId,
+      latitude: Number(coarse.lat.toFixed(6)),
+      longitude: Number(coarse.lon.toFixed(6)),
+      speedMph: 0,
+      headingDeg: base.heading,
+      engineOn: vehicleId === unit101Id,
+    });
+  }
+  if (seededPositions.length) {
+    await prisma.telemetryPoint.createMany({ data: seededPositions, skipDuplicates: true });
   }
 
   // ---- Drivers (58) --------------------------------------------------------

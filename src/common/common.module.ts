@@ -3,7 +3,6 @@ import { AllExceptionsFilter } from './filters/all-exceptions.filter';
 import { DriverGuard } from './guards/driver.guard';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { PermissionGuard } from './guards/permission.guard';
-import { TwoFactorSetupGuard } from './guards/two-factor-setup.guard';
 import { NotImplementedTokenVerifier, TokenVerifier } from './guards/token-verifier.port';
 import { ApiKeyVerifier, NotImplementedApiKeyVerifier } from './guards/api-key-verifier.port';
 import { AuditInterceptor } from './interceptors/audit.interceptor';
@@ -25,7 +24,6 @@ import { AuditSnapshotRegistry } from './audit/audit-snapshot.registry';
     { provide: ApiKeyVerifier, useClass: NotImplementedApiKeyVerifier },
     JwtAuthGuard,
     PermissionGuard,
-    TwoFactorSetupGuard,
     DriverGuard,
     TransformInterceptor,
     AuditInterceptor,
@@ -37,7 +35,6 @@ import { AuditSnapshotRegistry } from './audit/audit-snapshot.registry';
     ApiKeyVerifier,
     JwtAuthGuard,
     PermissionGuard,
-    TwoFactorSetupGuard,
     DriverGuard,
     TransformInterceptor,
     AuditInterceptor,

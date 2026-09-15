@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { LogsModule } from '../logs/logs.module';
 import { TransfersModule } from '../transfers/transfers.module';
 import { ActivityReportGenerator } from './generators/activity-report.generator';
+import { ActivitySummaryGenerator } from './generators/activity-summary.generator';
 import { DvirReportGenerator } from './generators/dvir-report.generator';
 import { FmcsaPackGenerator } from './generators/fmcsa-pack.generator';
 import { IftaReportGenerator } from './generators/ifta-report.generator';
@@ -27,6 +28,7 @@ import { ReportsService } from './reports.service';
     ReportSchedulesRepository,
     IftaReportGenerator,
     ActivityReportGenerator,
+    ActivitySummaryGenerator,
     DvirReportGenerator,
     FmcsaPackGenerator,
     IftaSegmentsService,
@@ -38,6 +40,7 @@ import { ReportsService } from './reports.service';
     ReportSchedulesRepository,
     IftaReportGenerator,
     ActivityReportGenerator,
+    ActivitySummaryGenerator,
     DvirReportGenerator,
     FmcsaPackGenerator,
     IftaSegmentsService,

@@ -52,6 +52,16 @@ export const DriverListQueryDto = z.object({
 });
 export type DriverListQueryDto = z.infer<typeof DriverListQueryDto>;
 
+const QueryBool = z.enum(['true', 'false']).transform((value) => value === 'true');
+
+/** `GET /drivers/roster` (web gap B-1) — the list params plus the W-06 11.23 filter groups (gap B-55). */
+export const DriverRosterQueryDto = DriverListQueryDto.extend({
+  terminal: z.string().max(120).optional(),
+  hasOpenViolation: QueryBool.optional(),
+  exempt: QueryBool.optional(),
+});
+export type DriverRosterQueryDto = z.infer<typeof DriverRosterQueryDto>;
+
 export const ImportDriversDto = z.object({
   drivers: z.array(CreateDriverDto).min(1).max(1000),
 });

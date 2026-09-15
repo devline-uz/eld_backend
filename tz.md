@@ -410,9 +410,7 @@ model User {
   phone         String?
   roleId        String
   status        UserStatus @default(INVITED)
-  twoFactorSecret  String?
-  twoFactorEnabled Boolean @default(false)
-  recoveryCodes    String[] @default([])
+  // twoFactorSecret/twoFactorEnabled/recoveryCodes removed 2026-09-13 (D-050, 2FA deleted)
   lastActiveAt  DateTime?
   invitedById   String?
   invitedAt     DateTime?
@@ -1517,6 +1515,13 @@ enum TicketStatus    { OPEN IN_PROGRESS RESOLVED CLOSED }
 
 ### 6.2. Google Sign-In (Firebase)
 
+> **⚠️ 2026-09-13 — 2FA/TOTP butunlay olib tashlandi, foydalanuvchining aniq buyrug'i bilan
+> (D-050, `backend/decisions.md`).** Quyidagi bo'limda tilga olingan `pendingTwoFactorToken`,
+> `POST /auth/2fa/verify`, `TwoFactorSetupGuard`, "Admin uchun 2FA majburiy" qoidasi va
+> `twoFactorEnabled`/`twoFactorSecret`/`recoveryCodes` maydonlari **kod bazasida mavjud emas**.
+> `POST /auth/login` va `POST /auth/google` endi har doim to'g'ridan-to'g'ri access+refresh
+> tokenlarni qaytaradi. Qolgan matn faqat tarixiy kontekst uchun saqlanmoqda.
+
 Repoda `firebase-service-account.json` allaqachon bor.
 
 ```
@@ -2234,7 +2239,8 @@ TEST rejimida email **haqiqatan yuboriladi** (test manziliga), lekin `status = T
 Prefiks `/v1`. Ro'yxatlar `?page&limit&sort&q`.
 
 ### 11.1. Auth
-`POST /auth/login` · `/auth/login/driver` · `/auth/google` · `/auth/2fa/verify` · `/auth/refresh` · `/auth/logout` · `/auth/password/forgot` · `/auth/password/reset` · `GET /auth/me`
+`POST /auth/login` · `/auth/login/driver` · `/auth/google` · `/auth/refresh` · `/auth/logout` · `/auth/password/forgot` · `/auth/password/reset` · `GET /auth/me`
+(`/auth/2fa/verify`, `/auth/2fa/enroll`, `/auth/2fa/enable` removed 2026-09-13 — D-050, 2FA deleted.)
 
 ### 11.2. Ingest
 `POST /ingest/events` · `/ingest/telemetry` · `/ingest/ble-state` · `/ingest/device-status`
@@ -2910,7 +2916,7 @@ Reverse proxy — **Caddy** (repoda allaqachon bor).
 - [ ] Output fayl nomi Appendix A 4.8.2.2 bo'yicha, unit test bilan qoplangan
 - [ ] `eldIdentifier` va `eldRegistrationId` — aynan 4 belgi
 - [ ] Email uzatish shifrlangan va faqat `fmcsa.dot.gov` domeniga
-- [ ] Google Sign-In 2FA ni chetlab o'tmaydi
+- [ ] ~~Google Sign-In 2FA ni chetlab o'tmaydi~~ — 2FA butunlay olib tashlandi (D-050), band emas
 - [ ] Dart va TypeScript dvigatellari umumiy fikstyuralarda 100% mos
 - [ ] Qayta hisoblash buzilish yozuvlarini ko'paytirmaydi (`upsert` + `AUTO_CLEARED`)
 - [ ] Drayver o'z jurnalini tuzata oladi, lekin `D` segmentiga tegolmaydi

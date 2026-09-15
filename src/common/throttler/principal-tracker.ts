@@ -5,7 +5,7 @@
  * request is not authenticated yet (`ThrottlerGuard` is registered before `JwtAuthGuard`
  * in `app.module.ts`, on purpose: an unauthenticated flood must be shed before any token
  * verification happens). The ingest bucket ("ingest 300/daq/driver") is keyed by the
- * DRIVER instead — see `decisions.md` D-051 and B-033: every `/v1/ingest/*` call comes from
+ * DRIVER instead — see `decisions.md` D-047 and B-033: every `/v1/ingest/*` call comes from
  * the app with a driver JWT (§3.1, §7.1) and a whole fleet legitimately shares one depot /
  * carrier-NAT egress IP, so an IP bucket punishes the fleet for one misbehaving device.
  */

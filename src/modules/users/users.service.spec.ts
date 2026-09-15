@@ -14,8 +14,6 @@ function makeUser(overrides: Partial<Record<string, unknown>> = {}) {
     phone: null,
     status: 'ACTIVE',
     passwordHash: 'hash',
-    twoFactorSecret: null,
-    recoveryCodes: [],
     role: { id: 'role_1', key: 'ADMIN' },
     ...overrides,
   };
@@ -45,8 +43,6 @@ describe('UsersService', () => {
     users.listWithRoles.mockResolvedValue([makeUser()] as never);
     const result = await service.list();
     expect(result[0]).not.toHaveProperty('passwordHash');
-    expect(result[0]).not.toHaveProperty('twoFactorSecret');
-    expect(result[0]).not.toHaveProperty('recoveryCodes');
   });
 
   describe('get', () => {

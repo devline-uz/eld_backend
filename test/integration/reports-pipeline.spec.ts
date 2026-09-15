@@ -243,7 +243,14 @@ describe('ReportSchedulerProcessor (real ReportSchedule row — runs without a m
   it('creates a real queued Report and advances nextRunAt for a due schedule', async () => {
     const schedulesRepo = new ReportSchedulesRepository(prismaService);
     const reportsRepo = new ReportsRepository(prismaService);
-    const reportsService = new ReportsService(reportsRepo, schedulesRepo, storage, { add: jest.fn(async () => undefined) } as never);
+    const reportsService = new ReportsService(
+      reportsRepo,
+      schedulesRepo,
+      undefined as never, // IFTA generator not exercised by this test
+      undefined as never, // Activity summary generator not exercised by this test
+      storage,
+      { add: jest.fn(async () => undefined) } as never,
+    );
 
     const schedule = await prisma.reportSchedule.create({
       data: {

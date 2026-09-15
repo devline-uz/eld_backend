@@ -14,8 +14,10 @@
  *           build carrying the old engine still reports 1.0.0, so keeping the server at 1.0.0
  *           would have made a real engine disagreement look like unexplained drift instead of
  *           HOS_ENGINE_VERSION_MISMATCH.
+ *   1.0.2 — B-054: no cycle violation on a RODS day with zero on-duty time, and a cycle violation
+ *           with no crossing instant is stamped at min(day end, now) — never in the future.
  */
-export const HOS_ENGINE_VERSION = '1.0.1';
+export const HOS_ENGINE_VERSION = '1.0.2';
 
 export function hosEngineVersion(): string {
   return HOS_ENGINE_VERSION;

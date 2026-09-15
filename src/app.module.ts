@@ -5,7 +5,6 @@ import { CommonModule } from './common/common.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { PermissionGuard } from './common/guards/permission.guard';
-import { TwoFactorSetupGuard } from './common/guards/two-factor-setup.guard';
 import { TokenVerifier } from './common/guards/token-verifier.port';
 import { ApiKeyVerifier } from './common/guards/api-key-verifier.port';
 import { AuditInterceptor } from './common/interceptors/audit.interceptor';
@@ -43,6 +42,7 @@ import { IntegrationsModule } from './modules/integrations/integrations.module';
 import { WebhooksModule } from './modules/webhooks/webhooks.module';
 import { LogsModule } from './modules/logs/logs.module';
 import { UnidentifiedModule } from './modules/unidentified/unidentified.module';
+import { ViolationsModule } from './modules/violations/violations.module';
 import { TransfersModule } from './modules/transfers/transfers.module';
 import { MobileModule } from './modules/mobile/mobile.module';
 import { TripsModule } from './modules/trips/trips.module';
@@ -54,6 +54,7 @@ import { RealtimeModule } from './modules/realtime/realtime.module';
 import { DtcModule } from './modules/dtc/dtc.module';
 import { ServiceModule } from './modules/service/service.module';
 import { ReportsModule } from './modules/reports/reports.module';
+import { LiveFleetModule } from './modules/live/live-fleet.module';
 
 /**
  * Module tree per TZ §3.4. Feature modules are added by their owning phase.
@@ -94,6 +95,8 @@ import { ReportsModule } from './modules/reports/reports.module';
     // depends on its append-only `RodsEventWriter`.
     LogsModule,
     UnidentifiedModule,
+    // B-6 (web/tz.md §20) — fleet HosViolation list + audited manual resolve.
+    ViolationsModule,
     // Phase 9 — eRODS (TZ §10). Appendix A output file generation, validation, download and
     // the domain-restricted, encrypted email transfer. TEST mode by default (§10.1).
     TransfersModule,
@@ -125,6 +128,8 @@ import { ReportsModule } from './modules/reports/reports.module';
     MessagingModule,
     NotificationsModule,
     RealtimeModule,
+    // web/tz.md §20 B-3 — `GET /live/fleet` snapshot for W-01/W-02 (D-053).
+    LiveFleetModule,
     // Phase 8 — Reports (TZ §15). IFTA/activity/DVIR/FMCSA-pack generation (async, queued),
     // the report scheduler (`ReportSchedule` cron rows) and S3-backed download. Owned by
     // eld-reports-jobs.
@@ -163,7 +168,6 @@ import { ReportsModule } from './modules/reports/reports.module';
     { provide: ApiKeyVerifier, useExisting: ApiKeysAuthAdapter },
     { provide: APP_GUARD, useClass: PrincipalThrottlerGuard },
     { provide: APP_GUARD, useClass: JwtAuthGuard },
-    { provide: APP_GUARD, useClass: TwoFactorSetupGuard },
     { provide: APP_GUARD, useClass: PermissionGuard },
   ],
 })

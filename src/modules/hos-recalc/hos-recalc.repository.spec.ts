@@ -6,8 +6,10 @@ describe('HosRecalcRepository', () => {
   const prisma = {
     driver: { findUnique: jest.fn() },
     eldEvent: { findMany: jest.fn() },
-    dailyLog: { findMany: jest.fn(), updateMany: jest.fn() },
+    dailyLog: { findMany: jest.fn(), updateMany: jest.fn(), upsert: jest.fn() },
+    unidentifiedSegment: { findMany: jest.fn() },
     hosViolation: { findMany: jest.fn(), upsert: jest.fn(), update: jest.fn() },
+    $queryRaw: jest.fn(),
   };
 
   /** Typed view of a recorded call, so the assertions below stay free of `any`. */
@@ -32,9 +34,74 @@ describe('HosRecalcRepository', () => {
     });
   });
 
+  it('B-059: reads RODS records of every status (markers retire superseded records), in order', async () => {
+    const from = new Date('2025-01-05T00:00:00Z');
+    const to = new Date('2025-01-14T00:00:00Z');
+    await repo.findRodsEvents('driver-1', from, to);
+    const args = lastArgs(prisma.eldEvent.findMany);
+    expect(args.where).toEqual({ driverId: 'driver-1', eventDateTime: { gte: from, lte: to } });
+    expect(args.orderBy).toEqual([{ eventDateTime: 'asc' }, { eventSequenceId: 'asc' }]);
+    expect(args.select).toMatchObject({ recordStatus: true, recordOrigin: true, supersedesId: true, totalVehicleMiles: true, vehicleId: true });
+  });
+
+  it('B-059: reads only PENDING segments on the given units, and nothing without units', async () => {
+    expect(await repo.findUnidentifiedSegments([], new Date(), new Date())).toEqual([]);
+    expect(prisma.unidentifiedSegment.findMany).not.toHaveBeenCalled();
+    const from = new Date('2025-01-05T00:00:00Z');
+    const to = new Date('2025-01-14T00:00:00Z');
+    await repo.findUnidentifiedSegments(['veh-1'], from, to);
+    expect(lastArgs(prisma.unidentifiedSegment.findMany).where).toEqual({
+      vehicleId: { in: ['veh-1'] },
+      status: 'PENDING',
+      startAt: { lte: to },
+      endAt: { gte: from },
+    });
+  });
+
+  it('B-059: upserts header totals on (driverId, logDate) and never a certification column', async () => {
+    const logDate = new Date('2025-01-14T00:00:00Z');
+    await repo.upsertDailyLogTotals({
+      driverId: 'driver-1', logDate, timezone: 'America/New_York', offDutySec: 1, sleeperSec: 2, drivingSec: 3, onDutySec: 4,
+      totalDistanceMi: 5, hasUnassigned: false, hasEdits: true,
+    });
+    const args = lastArgs(prisma.dailyLog.upsert);
+    expect(args.where).toEqual({ driverId_logDate: { driverId: 'driver-1', logDate } });
+    for (const part of [args.create, args.update]) {
+      expect(Object.keys(part).some((k) => k.startsWith('certif') || k === 'signatureUrl')).toBe(false);
+    }
+    expect(args.update).toMatchObject({ onDutySec: 4, drivingSec: 3, hasEdits: true, recalcVersion: { increment: 1 } });
+  });
+
   it('reads the daily log history in date order', async () => {
     await repo.findDailyLogs('driver-1', new Date('2025-01-05T00:00:00Z'), new Date('2025-01-14T00:00:00Z'));
     expect(prisma.dailyLog.findMany).toHaveBeenCalledWith(expect.objectContaining({ orderBy: { logDate: 'asc' } }));
+  });
+
+  it('B-055: the batched event read issues no query for no windows', async () => {
+    await expect(repo.findEventsForDrivers([], new Date(), 10)).resolves.toEqual([]);
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
+  });
+
+  it('B-055: the batched event read applies a per-driver window, slim columns and a per-driver LIMIT', async () => {
+    prisma.$queryRaw.mockResolvedValue([]);
+    const to = new Date('2025-01-15T03:00:00Z');
+    await repo.findEventsForDrivers(
+      [{ driverId: 'a', from: new Date('2025-01-05T05:00:00Z') }, { driverId: 'b', from: new Date('2025-01-05T08:00:00Z') }],
+      to,
+      2001,
+    );
+    const sql = (prisma.$queryRaw.mock.calls[0] as unknown[])[0] as { sql: string; values: unknown[] };
+    expect(sql.sql).toContain('unnest(');
+    expect(sql.sql).toContain('CROSS JOIN LATERAL');
+    expect(sql.sql).toMatch(/"eventType" IN \(1, 3\)/);
+    expect(sql.sql).toMatch(/LIMIT \?::int/);
+    expect(sql.sql).not.toMatch(/SELECT \*/);
+    expect(sql.values).toEqual([['a', 'b'], ['2025-01-05T05:00:00.000Z', '2025-01-05T08:00:00.000Z'], to, 2001]);
+  });
+
+  it('B-055: the batched daily-log read selects only the recap columns', async () => {
+    await repo.findDailyLogsForDrivers(['a'], new Date('2025-01-05T00:00:00Z'), new Date('2025-01-14T00:00:00Z'));
+    expect(lastArgs(prisma.dailyLog.findMany).select).toEqual({ driverId: true, logDate: true, onDutySec: true, drivingSec: true });
   });
 
   it('reads existing violations for the range', async () => {

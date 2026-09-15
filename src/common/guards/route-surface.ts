@@ -24,7 +24,6 @@ export interface RouteInfo {
   isPublic: boolean;
   driverOnly: boolean;
   audited: boolean;
-  twoFactorExempt: boolean;
 }
 
 const HTTP_DECORATORS = new Set(['Get', 'Post', 'Put', 'Patch', 'Delete', 'Head', 'Options']);
@@ -175,7 +174,6 @@ export function parseController(source: string, file: string): RouteInfo[] {
       isPublic: all.some((d) => decoratorName(d) === 'Public'),
       driverOnly: all.some((d) => decoratorName(d) === 'UseGuards' && d.includes('DriverGuard')),
       audited: all.some((d) => decoratorName(d) === 'Audit'),
-      twoFactorExempt: all.some((d) => decoratorName(d) === 'TwoFactorExempt'),
     });
   }
 

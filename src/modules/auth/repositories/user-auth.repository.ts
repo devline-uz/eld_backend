@@ -28,26 +28,4 @@ export class UserAuthRepository {
   updatePasswordHash(id: string, passwordHash: string): Promise<User> {
     return this.prisma.user.update({ where: { id }, data: { passwordHash } });
   }
-
-  setTwoFactorSecret(id: string, twoFactorSecret: string | null): Promise<User> {
-    return this.prisma.user.update({ where: { id }, data: { twoFactorSecret } });
-  }
-
-  enableTwoFactor(id: string, recoveryCodeHashes: string[]): Promise<User> {
-    return this.prisma.user.update({
-      where: { id },
-      data: { twoFactorEnabled: true, recoveryCodes: recoveryCodeHashes },
-    });
-  }
-
-  disableTwoFactor(id: string): Promise<User> {
-    return this.prisma.user.update({
-      where: { id },
-      data: { twoFactorEnabled: false, twoFactorSecret: null, recoveryCodes: [] },
-    });
-  }
-
-  consumeRecoveryCode(id: string, remainingHashes: string[]): Promise<User> {
-    return this.prisma.user.update({ where: { id }, data: { recoveryCodes: remainingHashes } });
-  }
 }

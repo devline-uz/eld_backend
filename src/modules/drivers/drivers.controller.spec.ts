@@ -14,12 +14,23 @@ describe('DriversController permissions', () => {
     ['list', 'READ'],
     ['export', 'READ'],
     ['get', 'READ'],
+    ['roster', 'READ'],
     ['create', 'FULL'],
     ['import', 'FULL'],
     ['update', 'FULL'],
     ['remove', 'FULL'],
   ] as const)('%s requires drivers:%s', (method, level) => {
     expect(permOf(method)).toEqual({ key: 'drivers', level });
+  });
+
+  it('hos requires hos:READ (same key as GET /logs)', () => {
+    expect(permOf('hos')).toEqual({ key: 'hos', level: 'READ' });
+  });
+
+  it('declares GET roster and GET :id/hos before GET :id so the static path is not swallowed', () => {
+    const order = Object.getOwnPropertyNames(DriversController.prototype);
+    expect(order.indexOf('roster')).toBeLessThan(order.indexOf('get'));
+    expect(order.indexOf('hos')).toBeLessThan(order.indexOf('get'));
   });
 });
 
@@ -33,7 +44,22 @@ describe('DriversController — delegates to DriversService', () => {
     update: jest.fn().mockResolvedValue({ id: 'drv_1' }),
     remove: jest.fn().mockResolvedValue({ id: 'drv_1' }),
   };
-  const controller = new DriversController(service as never);
+  const rosterService = {
+    roster: jest.fn().mockResolvedValue({ items: [], page: 1, limit: 25, total: 0, totalPages: 1 }),
+    clocks: jest.fn().mockResolvedValue({ driveRemainingSec: 0 }),
+  };
+  const controller = new DriversController(service as never, rosterService as never);
+
+  it('roster', async () => {
+    const query = { page: 2, limit: 10, q: 'smith' } as never;
+    await controller.roster(query);
+    expect(rosterService.roster).toHaveBeenCalledWith(query);
+  });
+
+  it('hos', async () => {
+    await controller.hos('drv_1');
+    expect(rosterService.clocks).toHaveBeenCalledWith('drv_1');
+  });
 
   it('list', async () => {
     const query = { page: 1, limit: 25 } as never;

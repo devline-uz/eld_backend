@@ -108,12 +108,33 @@ export function buildRodsDay(
   const normalized = normalizeEvents(mapEldEventsToNormalized(active), bound);
   const raw = buildSegments(normalized, bound);
 
+  // B-059 — seconds are counted on a whole-second grid: each segment is `round(end) - round(start)`
+  // rather than `round(end - start)`. Rounding every sub-second duration on its own let a day of
+  // millisecond-stamped ingest records drift by tens of seconds; on the grid the durations
+  // telescope, so a finished day always totals exactly `dayLengthSec` (86 400 s, or 23 h / 25 h
+  // on a DST day).
+  const onGrid = (at: Date): number => Math.round(at.getTime() / 1000);
+  // B-059 — `buildSegments` drops a record whose segment rounds to 0 s (two records < 0.5 s apart),
+  // which left an uncounted hole of up to 0.5 s per dropped record: ~900 ingest records made a
+  // finished day 31 s short. The grid is contiguous by definition, so each segment runs to the
+  // start of the next one (the later record at that instant wins, as in the engine).
+  const contiguous = raw.map((segment, i) =>
+    i + 1 < raw.length && raw[i + 1].start.getTime() > segment.end.getTime()
+      ? { ...segment, end: raw[i + 1].start }
+      : segment,
+  );
   const segments: RodsSegment[] = [];
-  for (const segment of raw) {
+  for (const segment of contiguous) {
     const from = segment.start.getTime() < startAt.getTime() ? startAt : segment.start;
     const to = segment.end.getTime() > bound.getTime() ? bound : segment.end;
-    const durationSec = Math.round((to.getTime() - from.getTime()) / 1000);
+    const durationSec = onGrid(to) - onGrid(from);
     if (durationSec <= 0) continue;
+    const last = segments[segments.length - 1];
+    if (last && last.status === segment.status && last.effective === segment.effective && last.special === segment.special && last.endAt.getTime() === from.getTime()) {
+      last.endAt = to;
+      last.durationSec += durationSec;
+      continue;
+    }
     segments.push({
       status: segment.status,
       effective: segment.effective,
@@ -126,9 +147,9 @@ export function buildRodsDay(
 
   // §395.8(a) — a day with no record at all is a full off-duty day, not an empty grid.
   const coveredSec = segments.reduce((sum, s) => sum + s.durationSec, 0);
-  const spanSec = Math.max(0, Math.round((bound.getTime() - startAt.getTime()) / 1000));
+  const spanSec = Math.max(0, onGrid(bound) - onGrid(startAt));
   const leadingGapSec = segments.length
-    ? Math.max(0, Math.round((segments[0].startAt.getTime() - startAt.getTime()) / 1000))
+    ? Math.max(0, onGrid(segments[0].startAt) - onGrid(startAt))
     : spanSec;
 
   const totals = { OFF: leadingGapSec, SB: 0, D: 0, ON: 0 } as Record<DutyStatus, number>;

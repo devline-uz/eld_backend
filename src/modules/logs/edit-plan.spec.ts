@@ -44,6 +44,19 @@ describe('planAcceptEdit', () => {
     expect(rows[3]).toMatchObject({ recordStatus: 1, eventCode: 4, at: new Date('2026-06-01T15:00:00Z') });
   });
 
+  it('skips the neutraliser when the proposal starts EARLIER — driving extended earlier stays driving (§395.30(c)(2))', () => {
+    const drivingTarget = { id: 10n, eventType: 1, eventCode: 3, eventDateTime: new Date('2026-06-01T12:00:00Z') };
+    const earlier = new Date('2026-06-01T11:50:00Z');
+    const rows = planAcceptEdit(
+      { id: 20n, eventType: 1, eventCode: 3, eventDateTime: earlier },
+      drivingTarget,
+      { status: 'D', startAt: earlier, annotation: 'ECM shows earlier departure', statusBeforeTarget: 'ON' },
+    );
+    // A neutraliser at 12:00 would re-state ON over the whole driving interval.
+    expect(rows.map((row) => row.kind)).toEqual(['INACTIVE_MARKER', 'NEW_ACTIVE']);
+    expect(rows[1]).toMatchObject({ eventCode: 3, at: earlier, recordStatus: 1 });
+  });
+
   it('skips the neutraliser when the proposal keeps the original instant', () => {
     const rows = planAcceptEdit(
       { ...request, eventDateTime: target.eventDateTime },
@@ -74,6 +87,19 @@ describe('planDriverSelfEdit', () => {
     expect(rows.map((row) => row.kind)).toEqual(['NEW_ACTIVE', 'RESTORE']);
     expect(rows[0]).toMatchObject({ recordStatus: 1, recordOrigin: 2, eventCode: 4, supersedesId: null });
     expect(rows[1]).toMatchObject({ recordStatus: 1, recordOrigin: 2, eventCode: 1 });
+  });
+
+  it('does not neutralise when the driver moves a record EARLIER', () => {
+    const rows = planDriverSelfEdit(
+      {
+        status: 'ON',
+        startAt: new Date('2026-06-01T11:40:00Z'),
+        annotation: 'Pre-trip started earlier',
+        statusBeforeTarget: 'OFF',
+      },
+      target,
+    );
+    expect(rows.map((row) => row.kind)).toEqual(['INACTIVE_MARKER', 'NEW_ACTIVE']);
   });
 
   it('retires the corrected record when one is named', () => {

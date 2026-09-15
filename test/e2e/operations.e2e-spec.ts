@@ -5,7 +5,6 @@
  */
 import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
-import { authenticator } from 'otplib';
 import { PrismaClient } from '@prisma/client';
 import request from 'supertest';
 import { AppModule } from '../../src/app.module';
@@ -32,12 +31,7 @@ describe('Operations — trips / geofences / alert-rules / notifications (e2e)',
     const login = await request(server())
       .post('/api/auth/login')
       .send({ email: 'sarah.chen@universal-logistics.example', password: 'Onebook2026' });
-    const sarah = await prisma.user.findUnique({ where: { email: 'sarah.chen@universal-logistics.example' } });
-    const code = authenticator.generate(sarah!.twoFactorSecret!);
-    const verified = await request(server())
-      .post('/api/auth/2fa/verify')
-      .send({ pendingTwoFactorToken: login.body.data.pendingTwoFactorToken, code });
-    token = verified.body.data.accessToken as string;
+    token = login.body.data.accessToken as string;
     expect(token).toEqual(expect.any(String));
 
     // Deliberately NOT johnsmith — B-023 / seed-shape.spec.ts pins his exact RODS shape.

@@ -29,7 +29,7 @@ export class UsersController {
   @Get(':id')
   @Perm('users', 'READ')
   @ApiOperation({ summary: 'Gets one back-office user.' })
-  @ApiOkResponse({ schema: { example: { id: 'usr_1', email: 'sarah.chen@universal-logistics.com', firstName: 'Sarah', lastName: 'Chen', status: 'ACTIVE', twoFactorEnabled: true, role: { key: 'ADMIN', name: 'Administrator' } } } })
+  @ApiOkResponse({ schema: { example: { id: 'usr_1', email: 'sarah.chen@universal-logistics.com', firstName: 'Sarah', lastName: 'Chen', status: 'ACTIVE', role: { key: 'ADMIN', name: 'Administrator' } } } })
   @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.NOT_FOUND, 'User not found.')] })
   get(@Param('id') id: string) {
     return this.users.get(id);

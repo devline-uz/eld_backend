@@ -60,7 +60,27 @@ export class VehiclesService {
 
   async update(id: string, dto: UpdateVehicleDto): Promise<Vehicle> {
     await this.get(id);
+    await this.assertStatusChangeAllowed(id, dto.status);
     return this.vehicles.update({ id }, this.toUpdateInput(dto));
+  }
+
+  /**
+   * TZ §5.10 hard rule — an OPEN + CRITICAL defect forces `Vehicle.status = OUT_OF_SERVICE` and
+   * keeps it there; nothing may move the unit to a non-OOS status while one remains open. Covers
+   * every caller of `toUpdateInput` (plain update, bulk import) so a `PATCH /vehicles/:id
+   * { status: 'ACTIVE' }` can't silently undo what `MobileDvirService` / `DefectsService` enforce
+   * (see bugs.md — unit 101 regression). Bug: B-063. Decision: D-034.
+   */
+  private async assertStatusChangeAllowed(vehicleId: string, nextStatus: UpdateVehicleDto['status']): Promise<void> {
+    if (nextStatus === undefined || nextStatus === 'OUT_OF_SERVICE') return;
+    const blocking = await this.vehicles.findOpenCriticalDefectIds(vehicleId);
+    if (blocking.length === 0) return;
+    throw new AppException(
+      ERROR_CODES.VEHICLE_HAS_OPEN_CRITICAL_DEFECTS,
+      'Vehicle has open critical defects and cannot leave OUT_OF_SERVICE status.',
+      409,
+      { vehicleId, blockingDefectIds: blocking.map((d) => d.id) },
+    );
   }
 
   /**
@@ -72,6 +92,7 @@ export class VehiclesService {
    */
   async remove(id: string): Promise<Vehicle> {
     await this.get(id);
+    await this.assertStatusChangeAllowed(id, 'INACTIVE');
     const driver = await this.drivers.findOne({ assignedVehicleId: id });
     if (driver) await this.drivers.update({ id: driver.id }, { assignedVehicle: { disconnect: true } });
     return this.vehicles.update({ id }, { status: 'INACTIVE' });
@@ -141,6 +162,7 @@ export class VehiclesService {
       try {
         const existing = (await this.vehicles.findByUnitNumber(row.unitNumber)) ?? (await this.vehicles.findByVin(row.vin));
         if (existing) {
+          await this.assertStatusChangeAllowed(existing.id, (row as UpdateVehicleDto).status);
           await this.vehicles.update({ id: existing.id }, this.toUpdateInput(row));
           summary.updated += 1;
         } else {

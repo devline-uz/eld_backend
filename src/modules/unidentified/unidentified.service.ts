@@ -12,6 +12,7 @@ import { AuditRepository } from '../audit/audit.repository';
 import { dayKey } from '../hos/engine/timezone';
 import { RECORD_ORIGIN, RECORD_STATUS } from '../ingest/event-codes';
 import type { AppendRow } from '../logs/edit-plan';
+import { LogsService } from '../logs/logs.service';
 import { RodsEventWriter } from '../logs/rods-event-writer';
 import {
   AnnotateUnidentifiedDto,
@@ -43,6 +44,7 @@ export class UnidentifiedService {
     private readonly audit: AuditRepository,
     private readonly events: EventBusService,
     @InjectQueue(QUEUES.HOS_RECALC) private readonly hosRecalcQueue: Queue,
+    private readonly logs: LogsService,
   ) {}
 
   async list(query: UnidentifiedListQueryDto) {
@@ -198,6 +200,9 @@ export class UnidentifiedService {
       },
       detail: 'Unidentified driving assigned; recordOrigin stays 1 (TZ §23, §7.4).',
     });
+    // B-059 — the attributed driving changes the driver's day totals (and the next day's when it
+    // runs past midnight); `hasUnassigned` drops now that the segment is no longer PENDING.
+    await this.logs.rebuildDailyLogsForSpan(driver.id, segment.startAt, segment.endAt);
     await this.enqueueRecalc(driver.id, dayKey(timezone, segment.startAt));
     await this.events.publish('unidentified.assigned', {
       segmentId: id,
@@ -299,6 +304,8 @@ export class UnidentifiedService {
       after: { status: 'REJECTED', assignedDriverId: null, recordOrigin: RECORD_ORIGIN.UNIDENTIFIED },
       detail: 'Assignment rejected; records returned to the unidentified pool (recordOrigin 4, driverId null).',
     });
+    // B-059 — the driving leaves this driver's log again: rebuild the same span's totals.
+    await this.logs.rebuildDailyLogsForSpan(driverId, segment.startAt, segment.endAt);
     await this.enqueueRecalc(driverId, dayKey(timezone, segment.startAt));
     await this.events.publish('unidentified.rejected', { segmentId: id, driverId });
 

@@ -2,10 +2,13 @@ import { AppException } from '../../common/errors/app.exception';
 import { AuthService } from './auth.service';
 import { sha256 } from './lib/hash.util';
 import * as passwordUtil from './lib/password.util';
-import * as totpUtil from './lib/totp.util';
+import * as hashUtil from './lib/hash.util';
 
 jest.mock('./lib/password.util');
-jest.mock('./lib/totp.util');
+jest.mock('./lib/hash.util', () => {
+  const actual: object = jest.requireActual('./lib/hash.util');
+  return { ...actual, randomOpaqueToken: jest.fn() };
+});
 
 type MockRepo = Record<string, jest.Mock>;
 
@@ -24,9 +27,6 @@ describe('AuthService', () => {
     email: 'a@b.com',
     passwordHash: 'hash',
     status: 'ACTIVE',
-    twoFactorEnabled: false,
-    twoFactorSecret: null,
-    recoveryCodes: [] as string[],
     googleUid: null,
     role: { key: 'ADMIN', permissions: {} },
   };
@@ -39,9 +39,6 @@ describe('AuthService', () => {
       setGoogleUid: jest.fn(),
       touchLastActive: jest.fn(),
       updatePasswordHash: jest.fn(),
-      setTwoFactorSecret: jest.fn(),
-      enableTwoFactor: jest.fn(),
-      consumeRecoveryCode: jest.fn(),
     };
     drivers = {
       findByUsername: jest.fn(),
@@ -64,21 +61,15 @@ describe('AuthService', () => {
     tokens = {
       signUserAccessToken: jest.fn().mockReturnValue('access'),
       signDriverAccessToken: jest.fn().mockReturnValue('daccess'),
-      signPendingTwoFactorToken: jest.fn().mockReturnValue('pending'),
-      verifyPendingTwoFactorToken: jest.fn().mockReturnValue('u1'),
       signPasswordResetToken: jest.fn().mockReturnValue('reset-token'),
       verifyPasswordResetToken: jest.fn().mockReturnValue({ userId: 'u1', passwordVersion: 'ver' }),
     };
-    firebase = { enabled: true, verifyIdToken: jest.fn() };
-    config = { get: jest.fn(), isProduction: false };
+    firebase = { enabled: true, verifyIdToken: jest.fn() } as unknown as MockRepo & { enabled: boolean };
+    config = { get: jest.fn(), isProduction: false } as unknown as MockRepo & { isProduction: boolean };
 
     (passwordUtil.verifyPassword as jest.Mock).mockResolvedValue(true);
     (passwordUtil.hashPassword as jest.Mock).mockResolvedValue('newhash');
-    (totpUtil.generateTotpSecret as jest.Mock).mockReturnValue('SECRET');
-    (totpUtil.generateRecoveryCodes as jest.Mock).mockReturnValue(['CODE1', 'CODE2']);
-    (totpUtil.randomOpaqueToken as jest.Mock).mockReturnValue('opaque-refresh');
-    (totpUtil.totpKeyUri as jest.Mock).mockReturnValue('otpauth://totp/x');
-    (totpUtil.verifyTotp as jest.Mock).mockReturnValue(true);
+    (hashUtil.randomOpaqueToken as jest.Mock).mockReturnValue('opaque-refresh');
 
     service = new AuthService(
       users as never,
@@ -113,19 +104,13 @@ describe('AuthService', () => {
       await expect(service.loginUser('a@b.com', 'wrong', {})).rejects.toThrow(AppException);
     });
 
-    it('returns tokens on success (no 2FA)', async () => {
+    it('returns tokens on success', async () => {
       users.findByEmailWithRole.mockResolvedValue(activeUser);
       sessions.create.mockResolvedValue({});
       users.touchLastActive.mockResolvedValue({});
       const result = await service.loginUser('a@b.com', 'pw', { ip: '1.1.1.1' });
       expect(result).toEqual({ accessToken: 'access', refreshToken: 'opaque-refresh', tokenType: 'Bearer' });
       expect(users.touchLastActive).toHaveBeenCalledWith('u1');
-    });
-
-    it('returns pendingTwoFactorToken when 2FA enabled', async () => {
-      users.findByEmailWithRole.mockResolvedValue({ ...activeUser, twoFactorEnabled: true });
-      const result = await service.loginUser('a@b.com', 'pw', {});
-      expect(result).toEqual({ twoFactorRequired: true, pendingTwoFactorToken: 'pending' });
     });
   });
 
@@ -246,80 +231,6 @@ describe('AuthService', () => {
       sessions.create.mockResolvedValue({});
       await service.loginGoogle('tok', {});
       expect(users.setGoogleUid).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('verifyTwoFactor', () => {
-    const twoFaUser = { ...activeUser, twoFactorEnabled: true, twoFactorSecret: 'SEC', recoveryCodes: ['h1'] };
-
-    it('throws UNAUTHORIZED when user missing', async () => {
-      users.findByIdWithRole.mockResolvedValue(null);
-      await expect(service.verifyTwoFactor('pending', '123456', {})).rejects.toThrow(AppException);
-    });
-
-    it('throws UNAUTHORIZED when user inactive', async () => {
-      users.findByIdWithRole.mockResolvedValue({ ...twoFaUser, status: 'SUSPENDED' });
-      await expect(service.verifyTwoFactor('pending', '123456', {})).rejects.toThrow(AppException);
-    });
-
-    it('throws TWO_FACTOR_INVALID when 2FA not enabled', async () => {
-      users.findByIdWithRole.mockResolvedValue({ ...twoFaUser, twoFactorEnabled: false });
-      await expect(service.verifyTwoFactor('pending', '123456', {})).rejects.toThrow(AppException);
-    });
-
-    it('throws TWO_FACTOR_INVALID on bad totp and no recovery match', async () => {
-      users.findByIdWithRole.mockResolvedValue(twoFaUser);
-      (totpUtil.verifyTotp as jest.Mock).mockReturnValue(false);
-      await expect(service.verifyTwoFactor('pending', 'BADCODE', {})).rejects.toThrow(AppException);
-    });
-
-    it('accepts a valid totp code', async () => {
-      users.findByIdWithRole.mockResolvedValue(twoFaUser);
-      sessions.create.mockResolvedValue({});
-      const result = await service.verifyTwoFactor('pending', '123456', {});
-      expect(result.accessToken).toBe('access');
-    });
-
-    it('accepts a valid recovery code and consumes it', async () => {
-      const hash = sha256('RECOVER1');
-      users.findByIdWithRole.mockResolvedValue({ ...twoFaUser, recoveryCodes: [hash, 'other'] });
-      (totpUtil.verifyTotp as jest.Mock).mockReturnValue(false);
-      sessions.create.mockResolvedValue({});
-      const result = await service.verifyTwoFactor('pending', 'recover1', {});
-      expect(result.accessToken).toBe('access');
-      expect(users.consumeRecoveryCode).toHaveBeenCalledWith('u1', ['other']);
-    });
-  });
-
-  describe('enrollTwoFactor / enableTwoFactor', () => {
-    it('enrollTwoFactor throws UNAUTHORIZED when user missing', async () => {
-      users.findByIdWithRole.mockResolvedValue(null);
-      await expect(service.enrollTwoFactor('u1')).rejects.toThrow(AppException);
-    });
-
-    it('enrollTwoFactor returns secret + otpauthUrl', async () => {
-      users.findByIdWithRole.mockResolvedValue(activeUser);
-      users.setTwoFactorSecret.mockResolvedValue({});
-      const result = await service.enrollTwoFactor('u1');
-      expect(result).toEqual({ secret: 'SECRET', otpauthUrl: 'otpauth://totp/x' });
-    });
-
-    it('enableTwoFactor throws TWO_FACTOR_INVALID when no secret', async () => {
-      users.findByIdWithRole.mockResolvedValue({ ...activeUser, twoFactorSecret: null });
-      await expect(service.enableTwoFactor('u1', '123456')).rejects.toThrow(AppException);
-    });
-
-    it('enableTwoFactor throws TWO_FACTOR_INVALID on wrong code', async () => {
-      users.findByIdWithRole.mockResolvedValue({ ...activeUser, twoFactorSecret: 'SEC' });
-      (totpUtil.verifyTotp as jest.Mock).mockReturnValue(false);
-      await expect(service.enableTwoFactor('u1', 'bad')).rejects.toThrow(AppException);
-    });
-
-    it('enableTwoFactor returns recovery codes on success', async () => {
-      users.findByIdWithRole.mockResolvedValue({ ...activeUser, twoFactorSecret: 'SEC' });
-      users.enableTwoFactor.mockResolvedValue({});
-      const result = await service.enableTwoFactor('u1', '123456');
-      expect(result).toEqual({ recoveryCodes: ['CODE1', 'CODE2'] });
     });
   });
 

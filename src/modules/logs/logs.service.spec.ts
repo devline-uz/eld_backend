@@ -432,6 +432,88 @@ describe('§9.2 — certification', () => {
   });
 });
 
+describe('B-059 — every applied record change rebuilds the DailyLog headers it can alter', () => {
+  const headerKeys = (repo: FakeRepo) =>
+    repo.upsertDailyLog.mock.calls.map((call) => ((call[0] as { logDate: Date }).logDate).toISOString().slice(0, 10));
+
+  it('a driver self-edit rebuilds the edited day and the next day, after invalidating certification', async () => {
+    const { service, repo, hosQueue } = build();
+    repo.events = [evt({ id: 1n, at: '2026-06-01T12:00:00Z', code: 1 })];
+    repo.dailyLogs.set('2026-06-01T00:00:00.000Z', { id: 'log-1', certified: true, certificationCount: 1, hasEdits: false, logDate: new Date('2026-06-01T00:00:00Z') });
+
+    await service.createLogEntry(
+      DRIVER,
+      { status: 'ON', startAt: new Date('2026-06-01T18:00:00Z'), endAt: new Date('2026-06-01T18:45:00Z'), annotation: 'Loading at shipper #4821' },
+      driver,
+    );
+
+    expect(headerKeys(repo)).toEqual(['2026-06-01', '2026-06-02']);
+    expect(repo.upsertDailyLog.mock.invocationCallOrder[0]).toBeGreaterThan(repo.invalidateCertification.mock.invocationCallOrder[0]);
+    expect(repo.upsertDailyLog.mock.invocationCallOrder[0]).toBeLessThan(hosQueue.add.mock.invocationCallOrder[0]);
+    // The rebuild never re-certifies and keeps the §9.2 edit mark.
+    expect(repo.dailyLogs.get('2026-06-01T00:00:00.000Z')).toMatchObject({ certified: false, hasEdits: true });
+    for (const call of repo.upsertDailyLog.mock.calls) {
+      expect(Object.keys(call[0] as object).some((k) => k.startsWith('certif'))).toBe(false);
+    }
+  });
+
+  it('an accepted carrier edit rebuilds the touched day and the next day', async () => {
+    const { service, repo } = build();
+    repo.events = [
+      evt({ id: 1n, at: '2026-06-01T12:00:00Z', code: 4 }),
+      evt({ id: 2n, at: '2026-06-01T14:00:00Z', code: 1 }),
+      evt({ id: 5n, at: '2026-06-01T12:00:00Z', code: 2, recordStatus: 3, recordOrigin: 3, supersedesId: 1n }),
+    ];
+    await service.acceptEditRequest('5', driver, {});
+    expect(headerKeys(repo)).toEqual(['2026-06-01', '2026-06-02']);
+  });
+
+  it('a rejected carrier edit changes nothing, so rebuilds nothing', async () => {
+    const { service, repo } = build();
+    repo.events = [
+      evt({ id: 1n, at: '2026-06-01T12:00:00Z', code: 4 }),
+      evt({ id: 5n, at: '2026-06-01T12:00:00Z', code: 2, recordStatus: 3, recordOrigin: 3, supersedesId: 1n }),
+    ];
+    await service.rejectEditRequest('5', driver, {});
+    expect(repo.upsertDailyLog).not.toHaveBeenCalled();
+  });
+
+  it('a header rebuild failure never fails the committed change; hos.recalc is still queued', async () => {
+    const { service, repo, hosQueue } = build();
+    repo.events = [evt({ id: 1n, at: '2026-06-01T12:00:00Z', code: 1 })];
+    repo.upsertDailyLog.mockRejectedValueOnce(new Error('db blip'));
+    await expect(
+      service.createLogEntry(
+        DRIVER,
+        { status: 'ON', startAt: new Date('2026-06-01T18:00:00Z'), endAt: new Date('2026-06-01T18:45:00Z'), annotation: 'Fuel stop' },
+        driver,
+      ),
+    ).resolves.toMatchObject({ applied: true });
+    expect(hosQueue.add).toHaveBeenCalledWith('hos.recalc', expect.objectContaining({ driverId: DRIVER, fromDate: '2026-06-01' }));
+  });
+
+  it('rebuildDailyLogsForSpan never writes a day after today', async () => {
+    const { service, repo } = build();
+    const now = new Date('2026-06-01T20:00:00Z');
+    expect(await service.rebuildDailyLogsForSpan(DRIVER, new Date('2026-06-01T14:00:00Z'), new Date('2026-06-01T15:00:00Z'), now)).toBe(1);
+    expect(headerKeys(repo)).toEqual(['2026-06-01']);
+    expect(await service.rebuildDailyLogsForSpan(DRIVER, new Date('2026-06-03T14:00:00Z'), new Date('2026-06-03T15:00:00Z'), now)).toBe(0);
+  });
+
+  it('rebuildDailyLogsForSpan returns 0 for an unknown driver instead of throwing', async () => {
+    const { service, repo } = build();
+    repo.driver = null;
+    await expect(service.rebuildDailyLogsForSpan('ghost', new Date(), new Date())).resolves.toBe(0);
+  });
+
+  it('the log view counts a sleeper berth carried over several midnights as SB (same lookback as hos.recalc)', async () => {
+    const { service, repo } = build();
+    repo.events = [evt({ id: 1n, at: '2026-05-28T12:00:00Z', code: 2 })];
+    const day = await service.getDay(DRIVER, '2026-06-01', new Date('2026-06-10T00:00:00Z'));
+    expect(day.summary).toMatchObject({ sleeperSec: 86400, offDutySec: 0 });
+  });
+});
+
 describe('daily log generation', () => {
   it('persists the day header split by the home terminal timezone', async () => {
     const { service, repo } = build();

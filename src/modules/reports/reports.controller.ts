@@ -9,11 +9,13 @@ import { zodBody } from '../../common/pipes/zod-validation.pipe';
 import type { ContextUser } from '../../core/context/request-context';
 import {
   ActivityReportParamsDto,
+  ActivitySummaryQueryDto,
   CreateReportScheduleDto,
   DvirReportParamsDto,
   FmcsaPackParamsDto,
   GenerateReportDto,
   IftaReportParamsDto,
+  IftaSummaryParamsDto,
   ReportListQueryDto,
   UpdateReportScheduleDto,
 } from './dto/reports.dto';
@@ -102,6 +104,29 @@ export class ReportsController {
     return { reportId: report.id, status: report.status };
   }
 
+  @Get('ifta/summary')
+  @FigmaScreen('web/reports-ifta')
+  @Perm('reports', 'READ')
+  @ApiOperation({
+    summary:
+      'JSON IFTA quarter summary for the W-12 screen (gap B-46) — jurisdiction totals, fleet MPG and the vs-prev-quarter chip, read directly from the same IftaSegment/FuelPurchase totals the CSV export uses. Declared before GET /reports/:id so it is never swallowed by the id param route.',
+  })
+  @ApiStandardErrors({ errors: [apiError.validation('quarter must look like 2026-Q3.')] })
+  @ApiOkResponse({
+    schema: {
+      example: {
+        quarter: '2026-Q3',
+        unitCount: 12,
+        kpis: { totalMiles: 48213, taxableMiles: 48213, taxablePct: 100, fuelGal: 6021.4, receiptCount: 312, fleetMpg: 8.01, fleetMpgPrev: 7.86 },
+        rows: [{ jurisdiction: 'CA', totalMiles: 9120, taxableMiles: 9120, fuelGal: 1138.9, mpg: 8.01, taxDueUsd: null }],
+        totals: { totalMiles: 48213, taxableMiles: 48213, fuelGal: 6021.4, mpg: 8.01, taxDueUsd: null },
+      },
+    },
+  })
+  iftaSummary(@Query(zodBody(IftaSummaryParamsDto)) params: IftaSummaryParamsDto) {
+    return this.reports.iftaSummary(params);
+  }
+
   @Get('activity')
   @Perm('reports', 'READ')
   @ApiOperation({ summary: 'Shortcut: queues an activity report for a date range.' })
@@ -111,6 +136,42 @@ export class ReportsController {
   async activity(@Query(zodBody(ActivityReportParamsDto)) params: ActivityReportParamsDto, @CurrentUser() actor: ContextUser) {
     const report = await this.reports.generate({ type: 'ACTIVITY', format: 'CSV', params }, actor);
     return { reportId: report.id, status: report.status };
+  }
+
+  @Get('activity/summary')
+  @Perm('reports', 'READ')
+  @ApiOperation({
+    summary:
+      'JSON per-driver activity aggregate for W-13/W-15/dashboard (gap B-46) — the web previously fanned out one GET /logs/:driverId/range call per driver (308 calls, 3s→15s in QA). Computed in SQL from DailyLog + HosViolation, never per-driver RODS rebuilds, and never loads EldEvent rows. Declared before GET /reports/:id so it is never swallowed by the id param route.',
+  })
+  @ApiStandardErrors({ errors: [apiError.validation('from/to must be YYYY-MM-DD and the range must not exceed 366 days.')] })
+  @ApiOkResponse({
+    schema: {
+      example: {
+        kpis: { drivingSec: 412200, drivingDeltaPct: 4.2, onDutySec: 88200, distanceMi: 18412, violations: 3, violationsDelta: -1 },
+        items: [
+          {
+            driverId: 'drv_1',
+            name: 'Doe, John',
+            days: 8,
+            offSec: 172800,
+            sbSec: 28800,
+            drivingSec: 39600,
+            onSec: 7200,
+            distanceMi: 512,
+            violations: 0,
+            certifiedDays: 8,
+          },
+        ],
+        page: 1,
+        limit: 25,
+        total: 264,
+        totalPages: 11,
+      },
+    },
+  })
+  activitySummary(@Query(zodBody(ActivitySummaryQueryDto)) params: ActivitySummaryQueryDto) {
+    return this.reports.activitySummary(params);
   }
 
   @Get('dvir')

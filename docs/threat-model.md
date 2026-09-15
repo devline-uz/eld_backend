@@ -28,7 +28,7 @@ Trust boundaries, in order of exposure:
    pair, `/unidentified/:id/confirm`. The device itself is assumed hostile: a rooted phone can
    read its own token and craft any payload.
 3. **Back-office browser → permission-gated routes** — every route carries `@Perm(key, level)`.
-4. **Machine caller → API key** (`obk_…`, TZ §6.5) — a scoped bearer token with no 2FA and no
+4. **Machine caller → API key** (`obk_…`, TZ §6.5) — a scoped bearer token with no
    human behind it; treated as the most dangerous *authenticated* principal.
 5. **Worker/queue plane** — BullMQ jobs carry data already accepted at the edge; a job payload is
    trusted, so anything that can enqueue is a privilege.
@@ -41,8 +41,7 @@ Trust boundaries, in order of exposure:
 | JWT | `src/common/guards/jwt-auth.guard.ts` requires `Authorization: Bearer`; verification is delegated to `TokenService` (one verification path, also used by the WS gateway) | A leaked signing key; rotation is an ops control |
 | API key | Same guard routes an `obk_`-prefixed token to `ApiKeysAuthAdapter`; `ApiKeysService.verify` looks the key up by SHA-256 hash and rejects revoked/expired keys with no cache in front of the DB, so revocation is effective on the next call | A key's `scopes` may name **any** permission key, including `apiKeys` — an API key with `apiKeys: FULL` can mint another key and survive its own revocation. Treat `apiKeys` as a scope that should never be granted to a key (policy, not code, today) |
 | Prefix confusion | A JWT can never start with `obk_` (base64url header always begins `eyJ`), so the prefix test cannot be steered by the attacker | — |
-| 2FA | `TwoFactorSetupGuard` runs after JWT and **before** `PermissionGuard`, so a 2FA-less ADMIN gets `TWO_FACTOR_SETUP_REQUIRED` and not a permission-shaped 403; only `@TwoFactorExempt()` routes (`/me/*`, enrolment, logout) are reachable | — |
-| Google Sign-In | `AuthService.loginWithGoogle` verifies `firebase.sign_in_provider === 'google.com'`, `aud`, `email_verified === true` and that the user exists (invited); the 2FA decision is then read from `user.twoFactorEnabled`, never from the login method | — |
+| Google Sign-In | `AuthService.loginGoogle` verifies `firebase.sign_in_provider === 'google.com'`, `aud`, `email_verified === true` and that the user exists (invited); no auto-registration | — |
 | Refresh replay | Refresh tokens stored as SHA-256, rotated on every use; a reused token revokes the whole session family (`auth.service.ts`) | — |
 | API key is not a driver | `DriverGuard` requires `type === 'driver'`, so an API key can never post §395 events | — |
 
@@ -58,9 +57,8 @@ on-behalf and must hold the permission.
 - The WS CORS config was `origin: true` (reflect any Origin, with credentials). It now reads the
   same `CORS_ORIGINS` allowlist the REST app uses and fails closed (no origins) when unset.
 - Log redaction: `req.headers.authorization`, `cookie`, `body.password`, `body.token`,
-  `body.refreshToken`, `body.totp` (`src/core/logger/logger.module.ts`); audit snapshots redact
-  `passwordHash`, `twoFactorSecret`, `recoveryCodes`, `refreshHash`, `keyHash`
-  (`src/common/audit/redact.ts`).
+  `body.refreshToken` (`src/core/logger/logger.module.ts`); audit snapshots redact
+  `passwordHash`, `refreshHash`, `keyHash` (`src/common/audit/redact.ts`).
 - Residual: a token is still valid until expiry if stolen from device storage. Mitigated by short
   access-token TTL + session revocation, not eliminated.
 

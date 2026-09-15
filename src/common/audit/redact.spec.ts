@@ -6,13 +6,9 @@ describe('redactSecrets (TZ §18 / §6.5 — never log secrets)', () => {
       id: 'usr_1',
       email: 'a@b.com',
       passwordHash: '$argon2id$v=19$...',
-      twoFactorSecret: 'JBSWY3DPEHPK3PXP',
-      recoveryCodes: ['abc123', 'def456'],
     };
     const redacted = redactSecrets(raw);
     expect(redacted.passwordHash).toBe('[REDACTED]');
-    expect(redacted.twoFactorSecret).toBe('[REDACTED]');
-    expect(redacted.recoveryCodes).toBe('[REDACTED]');
     expect(redacted.email).toBe('a@b.com');
     expect(redacted.id).toBe('usr_1');
   });
@@ -47,9 +43,7 @@ describe('redactSecrets (TZ §18 / §6.5 — never log secrets)', () => {
 
   it('covers every secret field the schema actually defines', () => {
     // A drift check: if this ever shrinks without a schema review, something leaked.
-    expect([...AUDIT_REDACTED_FIELDS].sort()).toEqual(
-      ['keyHash', 'passwordHash', 'recoveryCodes', 'refreshHash', 'twoFactorSecret'].sort(),
-    );
+    expect([...AUDIT_REDACTED_FIELDS].sort()).toEqual(['keyHash', 'passwordHash', 'refreshHash'].sort());
   });
 });
 

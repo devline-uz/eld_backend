@@ -20,7 +20,6 @@ const PUBLIC_ROUTES = new Set([
   'POST /auth/login',
   'POST /auth/login/driver',
   'POST /auth/google',
-  'POST /auth/2fa/verify',
   'POST /auth/refresh',
   'POST /auth/password/forgot',
   'POST /auth/password/reset',
@@ -38,8 +37,6 @@ const PUBLIC_ROUTES = new Set([
 const SELF_SCOPED_ROUTES = new Map<string, string>([
   ['POST /auth/logout', 'Revokes the caller\'s own session family.'],
   ['GET /auth/me', 'Echoes the caller\'s own token claims.'],
-  ['POST /auth/2fa/enroll', 'Enrols 2FA for the caller (§6.2 lock-out escape).'],
-  ['POST /auth/2fa/enable', 'Enables 2FA for the caller (§6.2 lock-out escape).'],
   ['GET /me/profile', 'Caller own profile, id taken from the token claims.'],
   ['PATCH /me/profile', 'Caller\'s own name/phone only — never role.'],
   ['GET /me/sessions', 'Caller\'s own sessions.'],
@@ -60,6 +57,7 @@ const SERVICE_AUDITED_ROUTES = new Set([
   'POST /unidentified/:id/assign',
   'POST /unidentified/:id/annotate',
   'POST /unidentified/:id/reject',
+  'POST /violations/:id/resolve',
   'POST /integrations/webhook/test',
 ]);
 

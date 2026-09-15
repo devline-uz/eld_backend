@@ -10,14 +10,20 @@ import { QUEUES } from '../../core/queue/queue.constants';
 import { STORAGE_PORT, StoragePort } from '../../core/storage/storage.port';
 import {
   ActivityReportParamsDto,
+  ActivitySummaryQueryDto,
   CreateReportScheduleDto,
   DvirReportParamsDto,
   FmcsaPackParamsDto,
   GenerateReportDto,
   IftaReportParamsDto,
+  IftaSummaryParamsDto,
   ReportListQueryDto,
   UpdateReportScheduleDto,
 } from './dto/reports.dto';
+import type { ActivitySummaryResult } from './generators/activity-summary.generator';
+import { ActivitySummaryGenerator } from './generators/activity-summary.generator';
+import type { IftaSummary } from './generators/ifta-report.generator';
+import { IftaReportGenerator } from './generators/ifta-report.generator';
 import { ReportSchedulesRepository, ReportsRepository } from './reports.repository';
 
 /** TZ §15 — presigned GET for a generated report is valid 7 days (longer than the generic
@@ -36,9 +42,25 @@ export class ReportsService {
   constructor(
     private readonly repo: ReportsRepository,
     private readonly schedules: ReportSchedulesRepository,
+    private readonly iftaReportGenerator: IftaReportGenerator,
+    private readonly activitySummaryGenerator: ActivitySummaryGenerator,
     @Inject(STORAGE_PORT) private readonly storage: StoragePort,
     @InjectQueue(QUEUES.REPORT) private readonly queue: Queue<ReportJobData>,
   ) {}
+
+  /** JSON IFTA quarter summary for W-12 (gap B-46) — reads the same persisted
+   * `IftaSegment`/`FuelPurchase` totals as the queued CSV, never generated inside a request
+   * in the §15 "report" sense since this is a direct read, not a `Report` job. */
+  iftaSummary(params: IftaSummaryParamsDto): Promise<IftaSummary> {
+    return this.iftaReportGenerator.summary(params);
+  }
+
+  /** JSON activity summary for W-13/W-15/dashboard (gap B-46) — see
+   * `activity-summary.generator.ts` for why this is a bounded SQL GROUP BY over `DailyLog`/
+   * `HosViolation` rather than the per-driver `LogsService.getRange` fan-out it replaces. */
+  activitySummary(params: ActivitySummaryQueryDto): Promise<ActivitySummaryResult> {
+    return this.activitySummaryGenerator.summary(params);
+  }
 
   /** TZ §15 — "a report is NEVER generated inside a request": enqueue and return 202. */
   async generate(dto: GenerateReportDto, actor: ContextUser): Promise<Report> {

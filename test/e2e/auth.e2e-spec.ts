@@ -8,7 +8,6 @@
  */
 import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
-import { authenticator } from 'otplib';
 import { PrismaClient } from '@prisma/client';
 import request from 'supertest';
 import { AppModule } from '../../src/app.module';
@@ -61,60 +60,24 @@ describe('Auth / Roles / Users / Audit / API keys (e2e)', () => {
       expect(res.body.code).toBe('VALIDATION_FAILED');
     });
 
-    it('happy path (2FA off — DISPATCHER): returns access + refresh tokens directly', async () => {
+    it('happy path (DISPATCHER): returns access + refresh tokens directly', async () => {
       const res = await request(server())
         .post(path)
         .send({ email: 'carlos.ramirez@universal-logistics.example', password: 'Onebook2026' });
       expect(res.status).toBe(201);
       expect(res.body.data.accessToken).toEqual(expect.any(String));
       expect(res.body.data.refreshToken).toEqual(expect.any(String));
-      expect(res.body.data.twoFactorRequired).toBeUndefined();
     });
 
-    it('happy path (2FA on — ADMIN): returns a pendingTwoFactorToken, not real tokens', async () => {
+    it('happy path (ADMIN): returns access + refresh tokens directly', async () => {
       const res = await request(server())
         .post(path)
         .send({ email: 'sarah.chen@universal-logistics.example', password: 'Onebook2026' });
       expect(res.status).toBe(201);
-      expect(res.body.data.twoFactorRequired).toBe(true);
-      expect(res.body.data.pendingTwoFactorToken).toEqual(expect.any(String));
-      expect(res.body.data.accessToken).toBeUndefined();
-    });
-  });
-
-  // -----------------------------------------------------------------------
-  // 2FA verify + the "ADMIN locked to /me/* until 2FA" gate
-  // -----------------------------------------------------------------------
-  describe('POST /auth/2fa/verify + TwoFactorSetupGuard (TZ §6.2)', () => {
-    it('rejects a wrong TOTP code with 401 TWO_FACTOR_INVALID', async () => {
-      const login = await request(server())
-        .post('/api/auth/login')
-        .send({ email: 'sarah.chen@universal-logistics.example', password: 'Onebook2026' });
-      const res = await request(server())
-        .post('/api/auth/2fa/verify')
-        .send({ pendingTwoFactorToken: login.body.data.pendingTwoFactorToken, code: '000000' });
-      expect(res.status).toBe(401);
-      expect(res.body.code).toBe('TWO_FACTOR_INVALID');
-    });
-
-    it('happy path: correct TOTP code (computed from the DB secret) completes login', async () => {
-      const login = await request(server())
-        .post('/api/auth/login')
-        .send({ email: 'sarah.chen@universal-logistics.example', password: 'Onebook2026' });
-
-      const sarah = await prisma.user.findUnique({
-        where: { email: 'sarah.chen@universal-logistics.example' },
-      });
-      const code = authenticator.generate(sarah!.twoFactorSecret!);
-
-      const res = await request(server())
-        .post('/api/auth/2fa/verify')
-        .send({ pendingTwoFactorToken: login.body.data.pendingTwoFactorToken, code });
-      expect(res.status).toBe(201);
       expect(res.body.data.accessToken).toEqual(expect.any(String));
+      expect(res.body.data.refreshToken).toEqual(expect.any(String));
 
-      // The resulting token carries twoFactorEnabled=true, so /users (an ADMIN-only,
-      // non-exempt route) is reachable — the TwoFactorSetupGuard does NOT block it.
+      // /users (an ADMIN-only route) is reachable immediately.
       const users = await request(server())
         .get('/api/users')
         .set('Authorization', `Bearer ${res.body.data.accessToken as string}`);
@@ -123,9 +86,9 @@ describe('Auth / Roles / Users / Audit / API keys (e2e)', () => {
   });
 
   // -----------------------------------------------------------------------
-  // Google Sign-In never bypasses 2FA (TZ §6.2, hard rule)
+  // Google Sign-In (TZ §6.2, no auto-registration)
   // -----------------------------------------------------------------------
-  describe('POST /auth/google (TZ §6.2 — never bypasses 2FA, no auto-registration)', () => {
+  describe('POST /auth/google (TZ §6.2 — no auto-registration)', () => {
     it('rejects an invalid/unverifiable ID token with 401 or 503 — never with real tokens', async () => {
       const res = await request(server()).post('/api/auth/google').send({ idToken: 'not-a-real-firebase-token' });
       expect([401, 503]).toContain(res.status);
@@ -148,7 +111,7 @@ describe('Auth / Roles / Users / Audit / API keys (e2e)', () => {
       expect(res.body.code).toBe('INVALID_CREDENTIALS');
     });
 
-    it('happy path: driver gets access + refresh tokens, no 2FA involved', async () => {
+    it('happy path: driver gets access + refresh tokens', async () => {
       const res = await request(server()).post('/api/auth/login/driver').send({ username: 'johnsmith', password: 'Onebook2026' });
       expect(res.status).toBe(201);
       expect(res.body.data.accessToken).toEqual(expect.any(String));
@@ -257,12 +220,7 @@ describe('Auth / Roles / Users / Audit / API keys (e2e)', () => {
       const login = await request(server())
         .post('/api/auth/login')
         .send({ email: 'sarah.chen@universal-logistics.example', password: 'Onebook2026' });
-      const sarah = await prisma.user.findUnique({ where: { email: 'sarah.chen@universal-logistics.example' } });
-      const code = authenticator.generate(sarah!.twoFactorSecret!);
-      const verified = await request(server())
-        .post('/api/auth/2fa/verify')
-        .send({ pendingTwoFactorToken: login.body.data.pendingTwoFactorToken, code });
-      return verified.body.data.accessToken as string;
+      return login.body.data.accessToken as string;
     }
 
     it('GET /roles lists all 4 seeded roles, ADMIN is isSystem', async () => {

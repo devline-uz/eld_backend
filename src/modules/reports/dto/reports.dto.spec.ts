@@ -5,6 +5,7 @@
  */
 import {
   ActivityReportParamsDto,
+  ActivitySummaryQueryDto,
   DvirReportParamsDto,
   FmcsaPackParamsDto,
   MAX_FMCSA_PACK_RANGE_DAYS,
@@ -44,5 +45,52 @@ describe('report range caps', () => {
     expect(
       ActivityReportParamsDto.safeParse({ from: '2026-05-01', to: '2026-05-02', driverId: 'not-a-uuid' }).success,
     ).toBe(false);
+  });
+});
+
+describe('ActivitySummaryQueryDto (gap B-46 — GET /reports/activity/summary)', () => {
+  it('defaults page/limit/sort and shares the 366-day range cap', () => {
+    const parsed = ActivitySummaryQueryDto.safeParse({ from: '2026-09-01', to: '2026-09-08' });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.page).toBe(1);
+      expect(parsed.data.limit).toBe(25);
+      expect(parsed.data.sort).toBe('name:asc');
+    }
+    expect(ActivitySummaryQueryDto.safeParse({ from: '2026-01-01', to: '2027-12-31' }).success).toBe(false);
+  });
+
+  it('accepts driverId/terminal/status filters and rejects a bad status', () => {
+    expect(
+      ActivitySummaryQueryDto.safeParse({
+        from: '2026-09-01',
+        to: '2026-09-08',
+        driverId: '11111111-1111-1111-1111-111111111111',
+        terminal: 'Columbus, OH',
+        status: 'ACTIVE',
+      }).success,
+    ).toBe(true);
+    expect(ActivitySummaryQueryDto.safeParse({ from: '2026-09-01', to: '2026-09-08', status: 'RETIRED' }).success).toBe(false);
+  });
+
+  it('only accepts a whitelisted sort field:direction pair', () => {
+    expect(ActivitySummaryQueryDto.safeParse({ from: '2026-09-01', to: '2026-09-08', sort: 'drivingSec:desc' }).success).toBe(
+      true,
+    );
+    expect(ActivitySummaryQueryDto.safeParse({ from: '2026-09-01', to: '2026-09-08', sort: 'drivingSec' }).success).toBe(false);
+    expect(
+      ActivitySummaryQueryDto.safeParse({ from: '2026-09-01', to: '2026-09-08', sort: '"; DROP TABLE "DailyLog";--:asc' })
+        .success,
+    ).toBe(false);
+  });
+
+  it('coerces page/limit from query-string values and caps limit at 200', () => {
+    const parsed = ActivitySummaryQueryDto.safeParse({ from: '2026-09-01', to: '2026-09-08', page: '2', limit: '50' });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.page).toBe(2);
+      expect(parsed.data.limit).toBe(50);
+    }
+    expect(ActivitySummaryQueryDto.safeParse({ from: '2026-09-01', to: '2026-09-08', limit: '500' }).success).toBe(false);
   });
 });

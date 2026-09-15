@@ -1,14 +1,11 @@
 /**
  * TZ §18 / §6.5 — an `AuditLog.before`/`after` snapshot must never leak a secret. Every field
  * name here is a hash or secret that exists somewhere in the schema (`prisma/schema.prisma`):
- * `passwordHash`/`twoFactorSecret`/`recoveryCodes` (User), `refreshHash` (Session,
- * DriverSession), `keyHash` (ApiKey). Add to this set, never remove from it without checking
- * the schema first.
+ * `passwordHash` (User), `refreshHash` (Session, DriverSession), `keyHash` (ApiKey). Add to
+ * this set, never remove from it without checking the schema first.
  */
 export const AUDIT_REDACTED_FIELDS: ReadonlySet<string> = new Set([
   'passwordHash',
-  'twoFactorSecret',
-  'recoveryCodes',
   'refreshHash',
   'keyHash',
 ]);

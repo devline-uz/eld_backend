@@ -18,7 +18,7 @@ function makeVehicle(overrides: Partial<Record<string, unknown>> = {}) {
 }
 
 describe('VehiclesService', () => {
-  let vehiclesRepo: jest.Mocked<Pick<VehiclesRepository, 'findById' | 'update' | 'findByUnitNumber' | 'findByVin' | 'list' | 'listAll' | 'create' | 'delete'>>;
+  let vehiclesRepo: jest.Mocked<Pick<VehiclesRepository, 'findById' | 'update' | 'findByUnitNumber' | 'findByVin' | 'list' | 'listAll' | 'create' | 'delete' | 'findOpenCriticalDefectIds'>>;
   let driversRepo: jest.Mocked<Pick<DriversRepository, 'findById' | 'update' | 'findOne'>>;
   let service: VehiclesService;
 
@@ -32,6 +32,7 @@ describe('VehiclesService', () => {
       listAll: jest.fn(),
       create: jest.fn(),
       delete: jest.fn(),
+      findOpenCriticalDefectIds: jest.fn().mockResolvedValue([]),
     };
     driversRepo = {
       findById: jest.fn(),
@@ -165,6 +166,53 @@ describe('VehiclesService', () => {
     });
   });
 
+  describe('update — VEHICLE_HAS_OPEN_CRITICAL_DEFECTS hard rule (bugs.md: unit 101 regression)', () => {
+    it('blocks PATCH to ACTIVE while an open critical defect exists', async () => {
+      vehiclesRepo.findById.mockResolvedValue(makeVehicle({ status: 'OUT_OF_SERVICE' }) as never);
+      vehiclesRepo.findOpenCriticalDefectIds.mockResolvedValue([{ id: 'def_1' }] as never);
+
+      await expect(service.update('veh_1', { status: 'ACTIVE' } as never)).rejects.toThrow(AppException);
+      expect(vehiclesRepo.update).not.toHaveBeenCalled();
+    });
+
+    it('blocks PATCH to INACTIVE while an open critical defect exists', async () => {
+      vehiclesRepo.findById.mockResolvedValue(makeVehicle({ status: 'OUT_OF_SERVICE' }) as never);
+      vehiclesRepo.findOpenCriticalDefectIds.mockResolvedValue([{ id: 'def_1' }] as never);
+
+      await expect(service.update('veh_1', { status: 'INACTIVE' } as never)).rejects.toThrow(AppException);
+    });
+
+    it('allows PATCH to ACTIVE when defects are resolved or non-critical', async () => {
+      vehiclesRepo.findById.mockResolvedValue(makeVehicle({ status: 'OUT_OF_SERVICE' }) as never);
+      vehiclesRepo.findOpenCriticalDefectIds.mockResolvedValue([]);
+      vehiclesRepo.update.mockResolvedValue(makeVehicle({ status: 'ACTIVE' }) as never);
+
+      await service.update('veh_1', { status: 'ACTIVE' } as never);
+
+      expect(vehiclesRepo.update).toHaveBeenCalledWith({ id: 'veh_1' }, { status: 'ACTIVE' });
+    });
+
+    it('allows PATCH to OUT_OF_SERVICE regardless of open defects (never itself blocked)', async () => {
+      vehiclesRepo.findById.mockResolvedValue(makeVehicle({ status: 'ACTIVE' }) as never);
+      vehiclesRepo.update.mockResolvedValue(makeVehicle({ status: 'OUT_OF_SERVICE' }) as never);
+
+      await service.update('veh_1', { status: 'OUT_OF_SERVICE' } as never);
+
+      expect(vehiclesRepo.findOpenCriticalDefectIds).not.toHaveBeenCalled();
+      expect(vehiclesRepo.update).toHaveBeenCalledWith({ id: 'veh_1' }, { status: 'OUT_OF_SERVICE' });
+    });
+
+    it('allows non-status edits without checking defects', async () => {
+      vehiclesRepo.findById.mockResolvedValue(makeVehicle({ status: 'OUT_OF_SERVICE' }) as never);
+      vehiclesRepo.update.mockResolvedValue(makeVehicle({ make: 'Volvo' }) as never);
+
+      await service.update('veh_1', { make: 'Volvo' });
+
+      expect(vehiclesRepo.findOpenCriticalDefectIds).not.toHaveBeenCalled();
+      expect(vehiclesRepo.update).toHaveBeenCalled();
+    });
+  });
+
   describe('unassignDriver', () => {
     it('disconnects the current driver when one is assigned', async () => {
       vehiclesRepo.findById.mockResolvedValue(makeVehicle() as never);
@@ -226,6 +274,19 @@ describe('VehiclesService', () => {
       expect(summary.failed).toHaveLength(1);
       expect(summary.failed[0]).toEqual({ index: 2, error: 'boom' });
     });
+
+    it('importMany reports a per-row failure instead of reactivating a unit with open critical defects', async () => {
+      vehiclesRepo.findByUnitNumber.mockResolvedValue(makeVehicle({ status: 'OUT_OF_SERVICE' }) as never);
+      vehiclesRepo.findOpenCriticalDefectIds.mockResolvedValue([{ id: 'def_1' }] as never);
+
+      const summary = await service.importMany({
+        vehicles: [{ unitNumber: '#101', vin: 'VIN-A', status: 'ACTIVE', fuelType: 'DIESEL', sleeperBerth: false, odometerMi: 0 } as never],
+      });
+
+      expect(summary.updated).toBe(0);
+      expect(summary.failed).toHaveLength(1);
+      expect(vehiclesRepo.update).not.toHaveBeenCalled();
+    });
   });
 
   describe('trueOdometerMi', () => {
@@ -259,6 +320,14 @@ describe('VehiclesService', () => {
       await service.remove('veh_1');
 
       expect(driversRepo.update).toHaveBeenCalledWith({ id: 'drv_1' }, { assignedVehicle: { disconnect: true } });
+    });
+
+    it('refuses to soft-delete (status -> INACTIVE) an OOS unit with an open critical defect', async () => {
+      vehiclesRepo.findById.mockResolvedValue(makeVehicle({ status: 'OUT_OF_SERVICE' }) as never);
+      vehiclesRepo.findOpenCriticalDefectIds.mockResolvedValue([{ id: 'def_1' }] as never);
+
+      await expect(service.remove('veh_1')).rejects.toThrow(AppException);
+      expect(vehiclesRepo.update).not.toHaveBeenCalled();
     });
   });
 });

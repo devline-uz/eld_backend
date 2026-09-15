@@ -11,15 +11,12 @@ export interface UserTokenSubject {
   id: string;
   roleKey: string;
   permissions: PermissionMatrix;
-  twoFactorEnabled: boolean;
 }
 
 export interface DriverTokenSubject {
   id: string;
 }
 
-/** Distinguishes the pending-2FA token from a real access token so it can't be replayed. */
-const PENDING_2FA_TYP = 'pending_2fa';
 const PASSWORD_RESET_TYP = 'password_reset';
 
 interface AccessTokenClaims {
@@ -27,12 +24,6 @@ interface AccessTokenClaims {
   typ: 'user' | 'driver';
   rol?: string;
   per?: PermissionMatrix;
-  tfa?: boolean;
-}
-
-interface PendingTwoFactorClaims {
-  sub: string;
-  typ: typeof PENDING_2FA_TYP;
 }
 
 interface PasswordResetClaims {
@@ -60,7 +51,6 @@ export class TokenService extends TokenVerifier {
       typ: 'user',
       rol: user.roleKey,
       per: user.permissions,
-      tfa: user.twoFactorEnabled,
     };
     return jwt.sign(claims, this.secret, { expiresIn: this.config.get('JWT_ACCESS_TTL') } as jwt.SignOptions);
   }
@@ -70,21 +60,6 @@ export class TokenService extends TokenVerifier {
     return jwt.sign(claims, this.secret, {
       expiresIn: this.config.get('JWT_DRIVER_ACCESS_TTL'),
     } as jwt.SignOptions);
-  }
-
-  signPendingTwoFactorToken(userId: string): string {
-    const claims: PendingTwoFactorClaims = { sub: userId, typ: PENDING_2FA_TYP };
-    return jwt.sign(claims, this.secret, {
-      expiresIn: this.config.get('JWT_PENDING_2FA_TTL'),
-    } as jwt.SignOptions);
-  }
-
-  verifyPendingTwoFactorToken(token: string): string {
-    const claims = this.verifyRaw<PendingTwoFactorClaims>(token);
-    if (claims.typ !== PENDING_2FA_TYP) {
-      throw new AppException(ERROR_CODES.TOKEN_INVALID, 'Not a pending-2FA token.', 401);
-    }
-    return claims.sub;
   }
 
   signPasswordResetToken(userId: string, passwordVersion: string): string {
@@ -113,7 +88,6 @@ export class TokenService extends TokenVerifier {
       type: claims.typ,
       role: claims.rol,
       permissions: claims.per,
-      twoFactorEnabled: claims.tfa,
     };
   }
 

@@ -22,8 +22,42 @@ describe('ReportsService (TZ §15)', () => {
       presignGet: jest.fn(async () => 'https://minio.local/signed'),
     };
     const queue = { add: jest.fn(async () => undefined) };
-    const service = new ReportsService(repo as never, schedules as never, storage as never, queue as never);
-    return { service, repo, schedules, storage, queue };
+    const iftaReportGenerator = {
+      summary: jest.fn(async () => ({
+        quarter: '2026-Q3',
+        unitCount: 0,
+        kpis: {
+          totalMiles: 0,
+          taxableMiles: 0,
+          taxablePct: null,
+          fuelGal: null,
+          receiptCount: null,
+          fleetMpg: null,
+          fleetMpgPrev: null,
+        },
+        rows: [],
+        totals: { totalMiles: 0, taxableMiles: 0, fuelGal: null, mpg: null, taxDueUsd: null },
+      })),
+    };
+    const activitySummaryGenerator = {
+      summary: jest.fn(async () => ({
+        kpis: { drivingSec: 0, drivingDeltaPct: null, onDutySec: 0, distanceMi: 0, violations: 0, violationsDelta: null },
+        items: [],
+        page: 1,
+        limit: 25,
+        total: 0,
+        totalPages: 1,
+      })),
+    };
+    const service = new ReportsService(
+      repo as never,
+      schedules as never,
+      iftaReportGenerator as never,
+      activitySummaryGenerator as never,
+      storage as never,
+      queue as never,
+    );
+    return { service, repo, schedules, storage, queue, iftaReportGenerator, activitySummaryGenerator };
   }
 
   it('generate() persists a QUEUED Report row and enqueues report.generate — never runs inline (§15)', async () => {
@@ -91,6 +125,22 @@ describe('ReportsService (TZ §15)', () => {
   it('get() 404s for an unknown report id', async () => {
     const { service } = build();
     await expect(service.get('nope')).rejects.toThrow(AppException);
+  });
+
+  it('iftaSummary() delegates straight to IftaReportGenerator.summary() (gap B-46 — no separate computation)', async () => {
+    const { service, iftaReportGenerator } = build();
+    const result = await service.iftaSummary({ quarter: '2026-Q3' });
+    expect(iftaReportGenerator.summary).toHaveBeenCalledWith({ quarter: '2026-Q3' });
+    expect(result.quarter).toBe('2026-Q3');
+  });
+
+  it('activitySummary() delegates straight to ActivitySummaryGenerator.summary() (gap B-46 — no fan-out per driver)', async () => {
+    const { service, activitySummaryGenerator } = build();
+    const params = { from: '2026-09-01', to: '2026-09-08', sort: 'name:asc', page: 1, limit: 25 } as never;
+    const result = await service.activitySummary(params);
+    expect(activitySummaryGenerator.summary).toHaveBeenCalledWith(params);
+    expect(result.items).toEqual([]);
+    expect(result.kpis.drivingDeltaPct).toBeNull();
   });
 
   it('computeNextRun() rejects an invalid cron expression with INVALID_CRON_EXPRESSION', () => {

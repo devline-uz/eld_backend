@@ -5,11 +5,11 @@ import { RolesRepository } from '../roles/roles.repository';
 import { CreateUserDto, UpdateMyProfileDto, UpdateUserDto } from './dto/users.dto';
 import { UsersRepository, UserWithRole } from './users.repository';
 
-export type UserView = Omit<UserWithRole, 'passwordHash' | 'twoFactorSecret' | 'recoveryCodes'>;
+export type UserView = Omit<UserWithRole, 'passwordHash'>;
 
-/** Never let a password hash, TOTP secret, or recovery codes leave this module (TZ §6.5). */
+/** Never let a password hash leave this module (TZ §6.5). */
 function toView(user: UserWithRole): UserView {
-  const { passwordHash: _p, twoFactorSecret: _t, recoveryCodes: _r, ...view } = user;
+  const { passwordHash: _p, ...view } = user;
   return view;
 }
 

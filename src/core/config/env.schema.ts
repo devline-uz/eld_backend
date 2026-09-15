@@ -47,8 +47,6 @@ export const envSchema = z.object({
   /** Driver (mobile) tokens — TZ §6.1: access 24h / refresh 90 days. */
   JWT_DRIVER_ACCESS_TTL: z.string().default('24h'),
   JWT_DRIVER_REFRESH_TTL: z.string().default('90d'),
-  /** Short-lived token issued between password/Google login and `/auth/2fa/verify` (TZ §6.2). */
-  JWT_PENDING_2FA_TTL: z.string().default('5m'),
   /** Short-lived token for the `/auth/password/reset` flow. */
   JWT_PASSWORD_RESET_TTL: z.string().default('30m'),
   FIREBASE_PROJECT_ID: z.string().optional(),

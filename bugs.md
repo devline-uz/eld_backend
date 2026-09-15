@@ -14,6 +14,11 @@ keeps **B-013**; the `eld-hos-engine` pair was renumbered to **B-015** and **B-0
 pair were renumbered to **B-017** and **B-018**; the ingest entries keep B-010 and B-011. The next
 free number is **B-020**.
 
+2026-09-14: IDs renumbered to resolve parallel-agent collisions: old→new B-046 (`safety-comms`
+`DriverScore` period time zone) → **B-056**; B-047 (`safety-comms` coaching completed = assigned)
+→ **B-057**. The earliest-written entries keep B-046 (`fleet` out-of-service rule) and B-047
+(`core` cleanup order). Renumbered entries stay in place. The next free number is **B-058**.
+
 ---
 
 ## B-013 — worker boot crashed: `IntegrationsModule` could not resolve `AuditSnapshotRegistry` · FIXED
@@ -1076,3 +1081,647 @@ development — only the image build was verified.
 **Note:** the `.env`/`.env.*` exclusion is defence in depth. The Dockerfile never copied env
 files into a layer; compose mounts them at runtime via `env_file`. They simply have no
 business being in the build context.
+
+## B-043 — `RealtimeGateway` resolved `TokenVerifier` from `RealtimeModule`'s own injector, which never bound it, so every WebSocket handshake was rejected · FIXED
+**Found:** cross-referenced against the web panel's realtime bug log as WB-011 — the web
+team's finished, correct `web/src/shared/realtime/` layer reported every handshake failing
+with `connect` immediately followed by `disconnect` (`"io server disconnect"`) for tokens that
+worked fine on REST.
+**Cause:** `RealtimeGateway` (`src/modules/realtime/realtime.gateway.ts`) injects the
+`TokenVerifier` port, same as `JwtAuthGuard`. The real binding
+(`{ provide: TokenVerifier, useExisting: TokenService }`) lives in two places: `AuthModule`'s
+own providers (exported nowhere) and `AppModule`'s own `providers` array (added there
+specifically so the `APP_GUARD`-instantiated `JwtAuthGuard` picks it up ahead of `CommonModule`'s
+`@Global()` default). Neither binding reaches `RealtimeModule`, because `AppModule`'s own
+`providers` array is scoped to providers/guards declared directly in `AppModule`, not
+propagated to modules it merely imports — Nest resolves each provider from its *declaring*
+module's injector plus whatever that module imports, not from the root injector. Since
+`RealtimeModule` declared `providers: [RealtimeGateway, RealtimeRoomAuthorizer]` with no
+`imports` at all, `RealtimeGateway` fell through to `CommonModule`'s `@Global()`
+`NotImplementedTokenVerifier` stub, which rejects every token unconditionally
+(`AppException.notImplemented(...)`) — `handleConnection` caught that and disconnected the
+socket before `auth.ok`.
+**Severity:** Critical. Realtime is 100% of the product's live-update path (TZ §12) — every
+`fleet.position`, `hos.updated`, `violation.new`, message and DVIR-status push silently fell
+back to REST polling, unnoticed because REST auth (the actual `JwtAuthGuard` path) was never
+affected.
+**Fix:** exported `TokenVerifier` from `AuthModule` (it already provided the real
+`useExisting: TokenService` binding, just never exported it) and imported `AuthModule` into
+`RealtimeModule`, so `RealtimeGateway` resolves the same single JWT-verification path
+`JwtAuthGuard` uses — no duplicate verification logic, and `CommonModule`'s
+`NotImplementedTokenVerifier` default is untouched (still catches this exact class of mistake
+for any future module that forgets to import `AuthModule`).
+**Regression test:** `src/modules/realtime/realtime.module.spec.ts` compiles `RealtimeModule`
+in isolation (matching global modules only — no `CommonModule` import) and asserts the
+resolved `TokenVerifier` `instanceof TokenService` and actually attempts verification instead
+of rejecting `NOT_IMPLEMENTED`; confirmed it fails with a Nest DI resolution error against the
+pre-fix module (no binding reachable at all) and passes after the fix.
+**Verified live:** the pre-existing dev server on :3002 turned out not to be running in
+`--watch` mode (plain `node dist/main` with no watcher attached, `PPid 1`, no `pm2`/`nodemon`
+process using it) — restarting or killing it was out of scope per this task's own instructions,
+so it was left untouched, still serving the pre-fix binary. Verified end-to-end instead by
+launching a second, throwaway instance of the *fixed* build on port 3099 (same dev DB/Redis,
+`.env.development`), logging in as `mike.torres@universal-logistics.example`
+(FLEET_MANAGER), connecting `socket.io-client` to `/realtime` with that access token, and
+calling `emit('subscribe', 'fleet', cb)`: ack was `{"ok":true}`. A forged token
+(`'forged.invalid.token'`) on the same instance got `disconnect` / `"io server disconnect"`,
+confirming the rejection path still works for real forgeries. The throwaway instance (a
+process this task started) was then stopped; port 3002 was never touched.
+
+## B-044 — seed's new "coarse last-known position" step timestamps `TelemetryPoint.time` off `ANCHOR` (today 15:41 local), not real wall-clock `now`, so the fixes land in the future whenever the seed runs earlier in the day than 15:41 local · FIXED
+
+**Found:** running `npm run db:seed` against `onebook_eld_dev` on 2026-09-14 at 08:42 UTC
+(04:42 America/New_York — before the 15:41 anchor). The step (`prisma/seed.ts`, the "one
+coarse fix per device-equipped unit" block, `time: ANCHOR.minus({ minutes: 2 + idx })`)
+inserted 8 new `TelemetryPoint` rows (units 102, 107–113) with `time` between
+2026-09-14 19:28 and 19:38 UTC — about 11 hours *after* the real `now` at seed time.
+`GET /api/live/fleet` (`LiveFleetRepository.latestTelemetry`) filters
+`"time" <= ${until}` with `until` = real wall-clock now (device-clock-ahead guard), so all 8
+new fixes are invisible to Live Fleet until real time catches up to the anchor later the same
+day. The 12 pre-existing positioned units are unaffected because their fixes were seeded on
+an earlier calendar day, so `ANCHOR - idx minutes` for that day was already in the past by the
+time this seed ran.
+**Severity:** Low/Medium — data is correct and will self-resolve by 15:41 local same day, and
+does not violate any invariant (append-only, retention, partitions all fine); but it means
+"run the seed, then immediately check Live Fleet" silently shows fewer live pins than seeded
+whenever the seed is run in the early-morning window before ANCHOR's clock time, which is
+exactly what happened here (12/77 units with lat/lon in the API response vs 20/77 in the DB).
+**Not fixed by this task** — out of scope (data-only run, no code changes authorized here).
+Suggested fix for whoever owns `seed.ts`: clamp the coarse-fix `time` to
+`DateTime.min(ANCHOR.minus({minutes: 2 + idx}), DateTime.utc())` (or seed it relative to real
+`now` instead of `ANCHOR`), so the position step's effect is visible immediately regardless of
+what time of day the seed is run.
+**Resolution (2026-09-14, B-3 owner):** the fix time now comes from the pure
+`seedFixTime(anchor, now, offsetMin)` in `src/modules/live/live-fleet.seed.ts`, which uses
+`min(ANCHOR, now)` minus the per-unit offset, so it is never in the future. `prisma/seed.ts` calls it, and the step
+stays idempotent (it still only writes for units with no telemetry at all). The unit spec
+`live-fleet.seed.spec.ts` covers the before-anchor, after-anchor and never-after-now cases. The dev data was repaired with
+a one-off transactional UPDATE on `onebook_eld_dev` only. It touched the 8 rows (units 102, 107–113),
+scoped to `time > now()`, 0 mph, no odometer/rpm/driver, a device-equipped unit and exactly one telemetry row. Each row moved to
+`now - (19:41 UTC - time)`, keeping its per-unit offset, and 0 future-dated rows remain. No other table and no
+`onebook_eld` row was touched.
+
+## B-045 — `prisma/mock/generators/users.ts` calls `prisma.auditLog.deleteMany()` for idempotent cleanup, which Postgres rejects with "permission denied for table AuditLog" · FIXED
+**Found:** running `npm run db:mock -- core users` while building the `safety-comms` mock
+generator (`safety-comms.ts` mock-data pass) — the `users` generator aborted before finishing, so `core users`
+never got past the users step.
+**Severity:** Medium — blocks `npm run db:mock -- core users …` chains entirely; does not affect
+`core` or `safety-comms`, which do not depend on `users` output existing in the DB (only on
+seeded/real `User` rows, which already exist). `AuditLog` is append-only by design (same DB-role
+REVOKE pattern as `EldEvent`, see B-009) — any `deleteMany`/`updateMany`/hard-delete against it is
+expected to fail under the app DB role, by design; the generator needs to either skip it or use
+whatever mock-AuditLog cleanup path the append-only design intends.
+**Fix (eld-auth-rbac, owner of `users.ts`):** removed the `auditLog.deleteMany()` call entirely —
+this table is never deleted from, mock rows or not. Each of the 4 000 mock audit rows now gets a
+deterministic id (`9_000_000_000n + planIndex`, stable across re-runs because `AUDIT_COUNT` and
+`buildAuditPlans`' iteration order are fixed) and `createMany` is called with
+`skipDuplicates: true`, so a re-run inserts 0 new rows instead of erroring or duplicating. The id
+base is far above anything the real autoincrement sequence reaches in a dev DB's lifetime, so it
+can never collide with a genuinely-written row. Verified: with `core`'s 200 mock drivers / 170
+mock vehicles already in place, ran the `users` generator directly (via `buildContext()` +
+`run(ctx)`, bypassing the orchestrator so `core` was never re-invoked — re-running `core` deletes
+and recreates every other generator's mock drivers/vehicles/devices with new ids) twice in a row:
+first run inserted 4 000 audit rows, second run inserted 0 and left the table at exactly 4 000.
+
+---
+
+## B-046 — `prisma/mock/generators/fleet.ts` could leave a vehicle ACTIVE despite having an OPEN CRITICAL defect · FIXED
+**Found:** self-review of my own `fleet` mock generator, then confirmed against the dev DB — 53 of
+170 mock vehicles carried an `OPEN`+`CRITICAL` `Defect` row while `Vehicle.status` stayed `ACTIVE`.
+**Severity:** High — directly violates the out-of-service rule (`backend/tz.md` — an OPEN CRITICAL
+defect must force `Vehicle.status = OUT_OF_SERVICE` and block driver assignment). Root cause: the
+pre-trip DVIR defect branch picked `severity` and `status` independently — `status` was drawn from
+a list that included `OPEN` regardless of whether the vehicle had been pre-selected to actually go
+out of service, so a `CRITICAL` severity could land on `OPEN` for any vehicle, but only the
+pre-selected "OOS target" vehicles had their `Vehicle.status` updated to match.
+**Fix:** `status` is now only ever `OPEN` for a `CRITICAL` defect when the vehicle is one of the
+pre-selected OOS-target vehicles (`canBeOpenCritical`); every other `CRITICAL` defect is forced
+into `REPAIRED`/`IN_PROGRESS`/`DEFERRED`. `isOos` is then derived directly from
+`severity === CRITICAL && status === OPEN`, so the two can never disagree, and the final
+`vehicle.updateMany({ status: OUT_OF_SERVICE })` step (keyed off the same `defectRows` array) always
+covers every vehicle with an open critical defect. Re-verified: 0 mismatches after the fix.
+
+---
+
+## B-047 — `prisma/mock/generators/core.ts`'s cleanup deletes `CoDriverPairing`/`Device` rows before `Driver.deleteMany()` fails on a `Dvir` FK, leaving core mid-cleanup · FIXED
+**Found:** running `npm run db:mock -- core users` once (before the orchestrator's "core must be
+named on every invocation" contract was understood to mean "re-run core every time", and before
+the coordinator's warning to never re-run `core` once other generators depend on its ids).
+`core.ts`'s cleanup ran `coDriverPairing.deleteMany` and `device.deleteMany` successfully, then
+`driver.deleteMany` threw `P2003 Foreign key constraint violated: Dvir_driverId_fkey` (a
+downstream generator — `compliance`/`fleet` — had since written `Dvir` rows referencing the mock
+drivers `core` was trying to delete-then-recreate) and the process exited. `core`'s own
+`Driver`/`Vehicle` mock rows were confirmed still present afterward (200/170, unchanged), but
+`Device`/`CoDriverPairing` mock rows were deleted and not re-created in that run (the process
+died before reaching the insert step).
+**Severity:** High if untreated — any later `core` re-run will hit the same FK error the moment any
+downstream generator (`compliance`, `fleet`, `hos`, `ingest`, `safety-comms`) has run once, making
+`core` effectively un-rerunnable after the first full pipeline pass. Not the reporting agent's
+generator to fix (owned by `core.ts`'s author) — flagged here, and the coordinator was notified
+immediately per the incident so other agents could check/restore their `Device`/`CoDriverPairing`
+mock rows if their own generator depends on them being present.
+**Workaround used:** stopped invoking the orchestrator for `users`; call `buildContext()` +
+`generators/users.run(ctx)` directly instead, which never touches `core`'s tables.
+**Resolution (2026-09-14, core.ts owner, same-day):** `core.ts` no longer deletes and recreates
+Driver/Vehicle/Trailer/Device on every run at all — it UPSERTs each by natural unique key
+(`username`/`unitNumber`/`number`/`serial`), so the normal-case run never issues a `Driver`/
+`Vehicle`/`Device` DELETE in the first place (see D-055). The end-of-run "remove extras no longer
+in the generated set" step (only relevant if a future change shrinks `DRIVERS_TOTAL`/etc.) is
+wrapped per-table in try/catch: a `P2003` FK violation is caught, logged as a warning, and the
+stale row is left in place instead of crashing the whole generator — `core` now always completes.
+**Verified:** re-ran `npm run db:mock -- core` against the live DB with 24,577 `Dvir` rows and 164
+`Device`/10 `CoDriverPairing` mock rows already written by `compliance`/`fleet`/`users` — the run
+completed cleanly (170 vehicles, 140 trailers, 164 devices, 200 drivers, 10 pairings, no crash),
+and every id was confirmed unchanged (see D-055's two-run id diff).
+
+## B-048 — accepting a "driving began earlier" §395.30 edit (or any edit/self-edit that moves a record EARLIER) re-stated the prior status over the corrected interval, reducing driving time · FIXED
+**Found:** 2026-09-14, eld-compliance-rods, while building the `compliance` mock generator — a property test that applies `planAcceptEdit` to synthetic timelines and compares driving seconds before/after.
+**Severity:** High — 49 CFR §395.30(c)(2): driving time may never be reduced. `checkEditProposal` correctly ALLOWS extending a driving record earlier, but `planAcceptEdit` / `planDriverSelfEdit` emitted the NEUTRALIZE record whenever `proposal.startAt !== target.eventDateTime`. For an earlier start that record lands at the original instant with the status that preceded the original (e.g. ON), and because the original driving record is retired, the whole original driving interval became ON. Same defect for a non-driving record moved earlier (the corrected status was cut off at the original instant).
+**Resolution:** `src/modules/logs/edit-plan.ts` — `needsNeutralizer()` emits NEUTRALIZE only when the proposal starts LATER than the original (the only case with a gap to back-fill). Regression tests in `edit-plan.spec.ts` (carrier accept with an earlier driving start; driver self-edit moved earlier). `logs`/`transfers`/`unidentified` unit suites: 19 suites, 235 tests pass.
+
+## B-049 — a driver self-edit that moves an ON record LATER right after DRIVING back-fills the gap with driving time · OPEN
+**Found:** 2026-09-14, eld-compliance-rods, same property test (driver self-edit variant: driving seconds increased by 360 s).
+**Severity:** Medium — TZ §9.3 / §395.26(b): a driver may never create driving time manually. `checkDriverSelfEdit` only checks that the proposed interval does not overlap driving; the NEUTRALIZE record that `planDriverSelfEdit` writes at the original instant re-states `statusBeforeTarget`, which is `D` when the edited record immediately follows driving, so `POST /mobile/log-entries` can extend driving by the size of the shift.
+**Not fixed here** (needs a rule change + API contract decision): suggested fix — in `LogsService.createLogEntry`, refuse with `422 DRIVING_TIME_IMMUTABLE` (`MANUAL_DRIVING`) when `statusBeforeTarget === 'D'` and `startAt > target.eventDateTime`. The same shape on a carrier request is an EXTENSION of driving, which §395.30 permits once the driver accepts. The mock generator avoids producing it.
+
+## B-050 — assigning/rejecting unidentified driving changes a driver's RODS day but does not invalidate that day's certification · OPEN
+**Found:** 2026-09-14, eld-compliance-rods, while mirroring `UnidentifiedService.assign/reject` in the mock generator.
+**Severity:** Medium — hard rule "any change to a log requires re-certification" (TZ §9.2, §23). `LogsService` calls `invalidateCertification` for every applied change (`afterLogChange`), but `UnidentifiedService.assign` and `.reject` append driving records to (or remove them from) a driver's timeline and only enqueue `hos.recalc`; the day stays `certified = true`.
+**Not fixed here** (outside this task's scope): suggested fix — call the same invalidation for every RODS day `[segment.startAt, segment.endAt]` touches after assign/reject. The mock data already follows the rule (touched days are invalidated and usually re-certified).
+
+## B-056 — `safety-comms.ts` mock generator computed `DriverScore.periodStart/periodEnd` in the host's local time zone, shifting the stored `@db.Date` by a day whenever the host runs ahead of UTC · FIXED
+**Found:** validating `GET /safety/scorecard` with no query params (the frontend's default call)
+against freshly generated mock data — it came back `items: []` even though 1,600 `DriverScore`
+rows existed. The generator built its calendar-month/rolling-30-day period boundaries with
+`DateTime.fromJSDate(date)` (no `zone` argument), which defaults to the *host process's* local
+zone — this sandbox runs CEST (UTC+2). `.startOf('day')` in CEST for e.g. 2026-09-14 is
+`2026-09-13T22:00:00Z`, and Postgres truncates that to the `@db.Date` column as `2026-09-13`, one
+day earlier than intended — so every period boundary the generator wrote was off by a day
+relative to what `SafetyService.scorecard()`'s default `periodStart`/`periodEnd` (built from a
+plain `new Date()`, i.e. UTC-instant-based) would ever exactly match.
+**Severity:** Medium, scoped to this one generator's own output — no other domain's dev data is
+affected (no other generator was found doing the same local-zone-dependent `@db.Date` truncation
+at review time), and the only user-visible effect was the safety scorecard screen looking empty
+against otherwise-correct-looking mock data.
+**Fix:** pinned the generator's two top-level `DateTime` anchors (`nowDt`, `fromDt`) to
+`{ zone: 'utc' }` before any `.startOf('day')` / period-boundary arithmetic, so the calendar date
+written matches the UTC calendar date regardless of host time zone. Re-ran the generator and
+confirmed `GET /safety/scorecard` (no params) now returns a populated, ranked list.
+
+## B-051 — mock `ingest` generator: one shared PRNG stream made re-runs non-reproducible · FIXED
+
+**Found:** 2026-09-14, during the `MOCK_INGEST_UNITS=M11002,M11122` idempotency re-run of
+`prisma/mock/generators/ingest.ts`. Row counts matched and nothing duplicated, but the MD5 of
+M11122's telemetry older than one day differed between two runs, while M11002's (early in the
+iteration order) matched.
+**Severity:** Low. Dev mock data only, no compliance impact. It broke the "same seed, same dataset"
+contract of `prisma/mock/README.md`, and subset re-runs could not reproduce the full run.
+**Cause:** all vehicles drew from one `createRng(INGEST_SEED)` stream. How many draws a vehicle
+consumes depends on `now`: the live tail, the 14-day dense/sparse cadence boundary, and the
+"logged within 7 days" branch in `planCodes` all move with the clock. So every later vehicle got
+shifted values on each run.
+**Resolution:** an independent PRNG per (unit, scope), seeded with FNV-1a of
+`unit:dtc` / `unit:seg:<driverId>:<start>` / `unit:codes:<driverId>:<start>` / `unit:device` /
+`unit:stale`. The stale-unit pick is a hash order instead of a shuffle, and only units with a device
+are eligible. A segment's fixes now depend only on that segment (and on the clock, for the live
+edge).
+
+## B-052 — `test/integration/partitioning.spec.ts` permanently inserted a real `EldEvent` row dated 2099-01-15 into whatever DB it ran against, every run, with no way to clean it up · PARTIALLY FIXED (test fixed; dev-DB repair blocked pending explicit approval)
+
+**Found:** 2026-09-14, investigating a report of ~64 `EldEvent` rows dated 2099 in
+`onebook_eld_dev`. `prisma/seed.ts` (the file the original report pointed at) does not create
+any `EldEvent` rows at all and was not the source — grep for `2099` in `backend/` turned up
+only `test/integration/partitioning.spec.ts:58` (`farFuture = new Date(Date.UTC(2099, 0, 15))`,
+committed via `prisma.eldEvent.create`, never deleted) and two unrelated `2099` references
+(a validation-error fixture in `logs.service.spec.ts`, and `create_monthly_partition` DDL calls
+in the same spec). Actual DB state confirmed the real source: `EldEvent_default` held exactly
+64 rows, all `driverId IS NULL`, `eventType=1`/`eventCode=4`, `eventDateTime = 2099-01-15`,
+`createdAt` spread across many past test runs — i.e. one leftover row per historical run of this
+spec, not seed data, and not linked to `johnsmith` or any driver (no FK from any table to
+`EldEvent`, so no `DailyLog`/`HosViolation`/`DriverHosSnapshot` references them).
+**Severity:** Medium. `EldEvent` is append-only by design (`REVOKE UPDATE, DELETE`, tz.md
+§5.5/§18/§23 — see `20260910190500_append_only_revoke_hardening`), which means a test that
+commits a row into it can *never* clean that row up again; every run of this spec left one more
+permanent future-dated row behind. It does not corrupt any driver's HOS/violations data (rows
+are driver-less) but does sit in `EldEvent_default`, pollutes "no future data" invariants, and
+would eventually make `EldEvent_default` non-empty in a way retention tooling has to account for.
+**Fix (test, applied):** rewrote the spec so every test that inserts an `EldEvent`/`TelemetryPoint`
+row does so inside `prisma.$transaction(...)`, forcing an intentional rollback (a sentinel thrown
+from the callback) right after the partition-routing assertion. Partition routing is still
+exercised for real (Postgres physically routes the row before rollback), but nothing survives the
+test. The `create_monthly_partition('EldEvent', DATE '2099-02-01')` DDL call is unaffected (it
+creates an empty structural partition, not future-dated data, and tz.md's retention job relies on
+this same function pre-creating partitions ahead of need).
+**Dev-DB repair (not applied):** `eld_dev` has no UPDATE/DELETE grant on `EldEvent` (confirmed via
+`information_schema.role_table_grants`: only INSERT/SELECT/TRUNCATE/REFERENCES/TRIGGER), so the
+existing 64 rows cannot be fixed in place or deleted individually without violating the
+append-only guard. `TRUNCATE` **is** granted on `EldEvent` and its partitions (the hardening
+migration only revokes UPDATE/DELETE, never TRUNCATE), and `EldEvent_default` contains *only*
+these 64 orphan rows (verified: `count(*) from only "EldEvent_default"` = 64, all matching the bad
+signature, no legitimate row shares that partition) — so `TRUNCATE ONLY "EldEvent_default";` is
+the minimal, granted, guard-compliant way to remove them. The sandbox's auto-mode classifier
+blocked this specific command as a "Cloud Storage Mass Delete" action; per this agent's
+instructions it was not retried or worked around. Proposed for the team lead / a human operator
+to run directly: `TRUNCATE ONLY "EldEvent_default";` against `onebook_eld_dev` only. No John
+Smith HOS recalculation is needed as a follow-up — his real `HosViolation`/`DailyLog` rows were
+independently confirmed correct and untouched by these orphan rows.
+
+## B-055 — `HosRecalcService.computeCurrentStates` / `findEventsForDrivers` load an unbounded, whole-batch `EldEvent` window into memory on every `/api/live/fleet` and `/api/drivers/roster` call, causing an OOM kill of the API process · FIXED
+_(Logged by devops as B-054; renumbered to B-055 because the hos agent's CYCLE-violation fix took B-054 the same day.)_
+**Found:** live incident, 2026-09-14 15:17:47 — kernel OOM-killer killed the API process
+(`node dist/main`, PID 1244843, anon-rss ~1.1 GB) after mock data grew the dev DB to ~200 drivers,
+501k `EldEvent` rows and 508k `TelemetryPoint` rows. Log analysis of the rotated
+`api.oom-20260914.log` (scratchpad) showed `GET /api/live/fleet` (called 88 times through the day)
+had its `responseTime` climb steadily from ~1–2 s in the morning to 16 s by 15:15:12, just before
+the kill, tracking the mock-data growth curve — a clear compute/memory hot path, not a one-off
+spike.
+**Root cause:** `HosRecalcService.computeCurrentStates` (`src/modules/hos-recalc/hos-recalc.service.ts:155-182`,
+called from `driver-roster.service.ts:94` for `/drivers/roster` and transitively from
+`live-fleet.service.ts:47` for `/live/fleet`) computes a single `[min(eventsFrom) .. now]` window
+across the *entire batch* of drivers being paged, then calls
+`HosRecalcRepository.findEventsForDrivers` (`src/modules/hos-recalc/hos-recalc.repository.ts:53-58`)
+— a `prisma.eldEvent.findMany` with **no `take`/pagination limit** — with that one wide window and
+all driver ids `IN (...)`. With 200 drivers each needing a multi-day lookback, the queried window
+covers close to the full `EldEvent` table, so every call pulls the union of nearly everyone's
+history into a single in-memory array, then does an `O(events × drivers)` `.filter()` pass
+(`computeCurrentStates`, service.ts:174-179) to cut it back down per driver. Both the raw
+`findMany` result set and the JS filtering pass scale with total table size, not with the actual
+per-driver window needed, so RSS and latency grow unboundedly as `EldEvent` grows — exactly the
+climb observed in the log, ending in the OOM kill.
+**Severity:** High — this is a live-in-production correctness/availability bug, not a mock-data
+artifact: the same code runs against the real dev/prod `EldEvent` table and will hit the same wall
+as any fleet's event history grows, independent of whether the data came from mocks or genuine ELD
+ingest.
+**Proposed fix (not applied — feature code, left for the owning HOS/live-fleet agent):** query
+per-driver windows (e.g. batch `findEventsForDrivers` into one query per distinct `eventsFrom`
+value, or push the per-driver lower bound into SQL via a `driverId -> from` map / `UNION ALL`
+rather than a single global `min(...)`/`now` range), so each driver's rows are fetched once, sized
+to their own lookback, matching what `computeState`'s single-driver path already does at
+service.ts:141. Alternatively/also add a defensive `take` cap and alert if a single
+`findEventsForDrivers` call would return more than, say, 50k rows, so a future growth spike fails
+loudly (500) instead of exhausting process memory.
+**Operational mitigation applied (this incident):** capped `--max-old-space-size=768` and added a
+respawn loop in `start-api.sh`/`start-worker.sh` (see below) so a future memory blowup causes a
+fast V8 OOM/GC-pressure failure that self-restarts in ~2 s, instead of the kernel OOM-killer
+taking an unbounded amount of time to pick a victim and potentially hitting an unrelated process.
+**Corrected root cause (measured):** the per-driver window was already about 9 days; the global
+`min(from)` only added a few hours across the US zones. The 2026-09-14 window held 29 441 rows.
+The cost was materialising FULL `EldEvent` rows through Prisma: 455-byte rows with Decimal, BigInt
+and text fields took 4.1 s, against 0.3 s for the six columns the mapper reads. On top of that
+came the `O(events × drivers)` filter, and 7 of 14 event types that the mapper discards anyway.
+**Resolution (2026-09-14, hos agent, see D-073):**
+- `findEventsForDrivers(windows, to, limit)` is now one statement: an `unnest` of (driverId, from)
+  pairs, `CROSS JOIN LATERAL` onto the `(driverId, eventDateTime)` index. It has a per-driver
+  lower bound, selects only eventType/eventCode/eventDateTime/eventSequenceId/locationPrecisionMi,
+  keeps only `eventType IN (1, 3)` (the mapper ignores every other type), and applies a
+  per-driver `LIMIT`.
+- `findDailyLogsForDrivers` selects only the four recap columns.
+- The service groups rows by driver with a Map, processes drivers in chunks of
+  `HOS_BATCH_CHUNK_SIZE = 25`, and reads at most `HOS_BATCH_MAX_EVENTS_PER_DRIVER = 2000` (+1)
+  rows per driver.
+- A driver over the cap is logged at error level and left out of the map, never computed from a
+  truncated window. `/live/fleet` then omits its clocks. `GET /drivers/:id/hos` returns 503
+  `SERVICE_UNAVAILABLE`. The roster falls back to its existing "no state" entry.
+- HOS rule semantics, the single-driver `recalculate`/`computeCurrentState` path and stored data
+  are unchanged.
+**Measured** with a standalone script against the dev DB: 264 drivers (all `Driver` rows),
+501k+ `EldEvent`, `connection_limit=2`, fixed `now = 2026-09-14T18:00Z`, engine 1.0.2. Two runs each:
+
+| code | time | heap peak (sampled) | process RSS | under `--max-old-space-size=100` |
+|---|---|---|---|---|
+| old | 11.5 s / 9.6 s | 195 MB / 187 MB | 726 MB / 711 MB | V8 heap OOM, aborted |
+| new | 1.4 s / 1.2 s | 58 MB / 50 MB (+15–23 MB over baseline) | 226 MB / 200 MB | completes (60 MB) |
+
+Old and new `computeCurrentStates` output for all 264 drivers is byte-identical (155 KB JSON).
+Specs cover per-driver windows, long history, no recent restart, a mixed old-vs-single fixture,
+chunking, and exactly-at-cap vs over-cap. Suites run: hos-recalc, drivers, live, route-surface
+(10 suites, 146 tests, all pass).
+
+## B-053 — `reports` mock generator: re-running `generateAlertRules()` violated the `AlertDelivery_alertRuleId_fkey` constraint · FIXED
+**Found:** while proving idempotency for the `reports` mock generator (2026-09-14) via a
+subset re-run of just `generateAlertRules` + `generateAlertDeliveriesAndNotifications`
+(`prisma/mock/generators/reports.ts`). `generateAlertRules()` deleted its 10 `AlertRule` rows by
+`key` and immediately recreated them with fresh uuids; `AlertDelivery.alertRuleId` (and this
+domain's `Notification.type`, which stores the owning rule's id — see D-072) still pointed at the
+OLD rule ids from the previous run, because the code that deletes those children
+(`generateAlertDeliveriesAndNotifications`) only ran afterward, keyed off the NEW ids. Any second
+full `npm run db:mock -- reports` run — not just my subset check — would have hit the identical
+`P2003` foreign-key violation and aborted before writing a single fuel purchase, report, or
+integration row for that run.
+**Severity:** High for a "must be idempotent" generator — the first real re-run (whenever anyone
+next runs `db:mock -- reports` on this DB) would have failed outright with no mock reports/alerts
+data.
+**Fix:** `generateAlertRules()` now looks up the existing rule ids for its own keys first, deletes
+`AlertDelivery`/`Notification` rows referencing those OLD ids, THEN deletes/recreates the
+`AlertRule` rows. Verified fixed: ran the subset re-run twice more after the fix, both succeeded
+(`alert rules re-created: 10`, `deliveries=1908 notifications=1908`), and the full first run's
+counts (`alertDeliveries=1911 notifications=1911`) are close enough to the re-run's (1908) that
+the small delta is explained by the tiny `ctx.to` clock shift between runs (see D-072-adjacent
+future-timestamp note below), not duplication or loss.
+**Also fixed in the same pass (defensive, same file):** `addDelivery()` now clamps every
+`createdAt`/`sentAt`/`readAt` it writes through `clampToNow()`, and `WebhookDelivery.nextRetryAt`
+likewise — previously only some call sites (e.g. `mock_maintenance_due`) clamped their own
+timestamp before calling `addDelivery`, so a timestamp sourced from another domain's table
+(`HosViolation.occurredAt` et al., written by a generator that snapshotted a slightly later
+wall-clock `now`) could exceed this generator's own `ctx.to` and land in the future. Confirmed
+one such row existed (`mock_hos_violation` notification, `createdAt` = 2026-09-15 07:00, one day
+after the real `now` at generation time) before the fix, and confirmed 0 rows with
+`createdAt/sentAt/readAt/nextRetryAt > now()` across `Notification`/`AlertDelivery`/
+`WebhookDelivery` after the fix + re-run.
+
+## B-057 — `safety-comms.ts` emitted `safety.coaching_completed` for every `safety.coaching_assigned`, so no coaching ever showed as still-open · FIXED
+**Found:** coordinator review of the generated dev data — `Notification` grouped by `type` showed
+`safety.coaching_assigned` and `safety.coaching_completed` at exactly the same count (5,348 each).
+The generator set `coachedById`/`coachedAt`/`coachingNote` together as a single atomic step for
+every `COACHED` event, then unconditionally emitted both notifications off that one step — so
+every "assigned" was also, immediately, a "completed", with no pending/in-progress state at all
+(recent COACHED events included).
+**Severity:** Medium — mock-data-only defect (no application code involved), but it left the
+"assign coaching" / "pending coaching" flows on the Safety screen with nothing to show, and made
+the coaching funnel look unrealistically instantaneous.
+**Fix:** split the `COACHED` branch: a coach is always assigned (`coachedById` set), but
+`coachedAt`/`coachingNote` are now only filled in with probability `1 - pendingChance`, where
+`pendingChance` decays from 0.7 (age <= 3 days) to 0.3 (<= 14 days) to 0.05 (older) — so recent
+coaching skews open, older coaching is almost always resolved, with a small realistic backlog.
+`safety.coaching_assigned` now fires whenever `coachedById` is set (both pending and completed);
+`safety.coaching_completed` fires only when `coachedAt` AND `coachingNote` are both present.
+Re-ran and confirmed: 5,728 assigned vs. 5,379 completed (349 genuinely still open), and the
+9 COACHED events from the last 3 days are all pending. Also re-confirmed the cleanup's
+`type IN NOTIFICATION_TYPES` scoping never touches the reports agent's alert-rule notifications
+(those use `AlertRule.id`, a UUID, as `type` — grep-confirmed in `alert.processor.ts`).
+
+## B-054 — `computeHos` raised a CYCLE violation on a RODS day with no on-duty time and stamped it at that day's END, i.e. in the future · FIXED
+**Found:** 2026-09-14, mock `hos` data review — `HosViolation` for `mock_ericedwards26` (America/Los_Angeles), `CYCLE_70`, logDate 2026-09-14, `occurredAt` 2026-09-15T07:00Z while `now` was 2026-09-14T13:22Z. The driver was already at 86 h at local midnight and OFF all day. 47 mock CYCLE rows sat on zero on-duty days (12 OPEN, 12 RESOLVED, 23 AUTO_CLEARED).
+**Cause:** `collectCycleViolations` checked every day key whose 8-day sum exceeded the limit, including days the driver never worked, and fell back to `dayEnd(key)` when `crossingInstant` found no crossing in the segments. §395.3(b) is violated by being on duty past the limit — a rest day only carries the overrun forward — and a violation cannot occur after `now`.
+**Severity:** Medium — phantom violations on rest days and future `occurredAt` values (dashboard "last 24 h" windows, the B-6 list, the roster's open count).
+**Fix:** a day with zero on-duty seconds raises no cycle violation; a violation with no crossing instant is stamped at `min(dayEnd, now)`. Same change in the Dart mirror (`mobile/lib/hos/engine/compute_hos.dart`); `HOS_ENGINE_VERSION` 1.0.1 → 1.0.2 on both sides; fixtures `055-cycle-overrun-carried-into-a-rest-day.json` and `056-cycle-violation-never-stamped-after-now.json` added; two unit tests in `compute-hos.spec.ts`. The mock rows were deleted and those driver-days recalculated through `HosRecalcService`. The running API/worker keep 1.0.1 until restarted.
+
+## B-058 — worker respawn loop (`start-worker.sh`) was gone; a bare `node dist/worker` was running with no restart wrapper · FIXED
+**Found:** 2026-09-14, during the 1.0.2 deploy restart. `pgrep -af start-worker.sh` found nothing while `dist/worker` (PID 1244842) was running as a bare process with PPID from an already-exited shell — the loop shell that should have wrapped it had died earlier (root cause not established; possibly reaped when its parent Bash-tool subshell exited, since it was not started detached). Killing that PID to pick up the new build would have left the worker down permanently, with only the API's loop still alive.
+**Severity:** Medium — no immediate customer impact (worker was up), but the auto-restart/OOM-guard promised by B-054's runbook silently did not apply to the worker; a crash after this point would not have come back.
+**Fix:** killed the bare `dist/worker` (old engine 1.0.1) PID and started `start-worker.sh` again via `setsid nohup bash start-worker.sh … < /dev/null &`, which detaches it from the invoking shell (PPID 1, own session) exactly like the API's loop. Verified process tree: loop shell (PPID 1) → `node --max-old-space-size=768 dist/worker` for both API and worker after the restart.
+
+## B-048 — `safety-comms.ts` computed two `Notification.readAt` values as `createdAt + random hours` without clamping to `ctx.to`, producing future timestamps · FIXED
+**Found:** coordinator's data-integrity check — 16 `Notification` rows with `readAt` 1-4 days in
+the future (2026-09-15..09-18). All 16 were confirmed mine (`type` in
+`safety.new_event`/`safety.coaching_completed`); 0 belonged to the reports agent's alert-rule
+notifications (those use `AlertRule.id`, a UUID, as `type` — none had a future `readAt` either).
+Root cause: two `readAt` computations added a random 1-20h (`safety.new_event`) or 1-48h
+(`safety.coaching_completed`) offset on top of an already-`ctx.to`-clamped `createdAt`, without
+re-clamping the result — for events/coaching close to "now" at generation time, that offset
+pushed `readAt` past `ctx.to` into the future. Every other `readAt`/`lastReadAt` in the file was
+already derived from pre-clamped array timestamps, so this was isolated to these two sites.
+**Severity:** Medium — mock-data-only, but a future `readAt` is a plain data-integrity violation
+(a notification "read" before it could have been) and the brief's "no future timestamps, ever"
+rule (B-044-style) exists precisely to keep dev data trustworthy for downstream testing.
+**Fix:** added `readAtOrNull(candidate, createdAt, ctx)` — clamps to `ctx.to`, and returns `null`
+(unread) instead of a clamped time earlier than `createdAt`, rather than reporting a nonsensical
+read-before-created. Applied it to both offending sites (and, defensively, to the
+`coaching_assigned` site, which was already safe but is now guarded the same way). Repaired the
+15 still-future rows directly with a one-off `Notification.update` (not append-only, no schema
+change) using the same clamp-or-null rule; re-ran the generator once more and confirmed
+`notifFutureMine = 0`, plus 0 future values in `ConversationParticipant.lastReadAt`,
+`SafetyEvent.coachedAt`/`occurredAt`, `DriverScore.periodEnd`, `Message.sentAt`, and
+`Conversation.lastMessageAt`.
+
+## B-059 — `DailyLog` header totals went stale after every §395 record change, and `hos.recalc` fed those stale totals into the 70/8 recap · FIXED
+**Found:** 2026-09-14, devops' 1.0.2 full recalc flagged 6 "no on-duty, yet a violation" days whose `EldEvent` timeline did show ON/D. A full scan of every header against the real builder then found **1,270 stale completed-day headers** (1,208 mock, 62 seed; 262 of 264 drivers). By cause: 538 unidentified assignment in the day, 333 driver self-edit, 237 accepted carrier edit, 44 segment status only (`hasUnassigned`), 14 carry-over from a stale previous day (ON/SB running across several midnights), 104 other. Most of the "other" rows were seed-driver days whose header was written by a `GET /logs` while the day was still running and never rebuilt. The coordinator's integrity check separately found **8 completed days not totalling 86,400 s** (2026-09-10/11, −30 s to +1 s). The builder itself produced them. ~900 millisecond-stamped ingest records went through two defects. (a) The engine's `buildSegments` (`src/modules/hos/engine/normalize.ts:77-80`) drops a segment that rounds to 0 s (records < 0.5 s apart), and `buildRodsDay` never closed the resulting holes: 36 holes = 31 s on `danielgarcia8` 2026-09-11. (b) `buildRodsDay` rounded each duration on its own.
+**Cause (code):**
+- `src/modules/logs/logs.service.ts` — the only writer of header totals was `buildDays` (`GET /logs`, `/range`, inspection packet, certify). `afterLogChange` (edit accept, self-edit, mobile sync) only invalidated certification and enqueued `hos.recalc`.
+- `src/modules/unidentified/unidentified.service.ts` `assign`/`reject` appended records and enqueued `hos.recalc`, nothing else.
+- `src/modules/ingest/ingest.service.ts` `enqueueRecalc` — ingest has no path to `LogsService`.
+- `src/modules/hos-recalc/hos-recalc.service.ts` `recalculate` rebuilt no header; it only `updateMany`-ed the violation flags. `runEngine` builds `previousDays` from `DailyLog.onDutySec + drivingSec`, so a stale header is a wrong recap, not just a wrong grid.
+- `LogsService.buildDays` looked back only 2 days, so a status carried 3+ days read as off-duty on the grid while the engine (9 days) counted it.
+- `src/modules/logs/rods.ts` — per-segment `Math.round(duration)`, and no gap closing after `buildSegments` dropped a sub-second segment.
+- Mock: `prisma/mock/generators/compliance.ts` wrote edits, assignments and segment status without rebuilding totals. `hos.ts` generate mode used its own `dailyTotals`, not the builder.
+**Severity:** High — the recap (§395.3(b)) read wrong per-day on-duty time. The log grid, the roster/fleet clocks (`computeCurrentStates` reads the same headers) and eRODS headers showed totals that did not match the records.
+**Fix:**
+- New pure `src/modules/logs/daily-log-header.ts`: `buildDailyLogHeaders` and `affectedHeaderRange`, with a 9-day lookback. It is the only header derivation (D-076).
+- `HosRecalcService.recalculate` rebuilds `[fromDate − 1, today]` before reading the recap. New public `rebuildDailyLogs`. New repository methods `findRodsEvents`, `findUnidentifiedSegments`, `upsertDailyLogTotals`.
+- `LogsService.afterLogChange` and `UnidentifiedService.assign/reject` call the new `LogsService.rebuildDailyLogsForSpan`: touched days + the next day, capped at today, best effort.
+- `buildDays` uses the shared builder.
+- `buildRodsDay` makes the grid contiguous: each segment runs to the next one's start, and same-status neighbours are merged. It also counts on a whole-second grid (`round(end) − round(start)`). A finished day therefore totals exactly `dayLengthSec`. The HOS engine is unchanged (no `HOS_ENGINE_VERSION` bump, no Dart change).
+- The compliance generator rebuilds every mock driver's headers through `HosRecalcService.rebuildDailyLogs`. `hos.ts` needs no change: every header it writes is rewritten by its per-day `HosRecalcService.recalculate` calls, which now rebuild headers.
+- Certification is never written by a rebuild; B-050 remains OPEN.
+- Tests: `daily-log-header.spec.ts` (new), plus `rods`, `hos-recalc.service`, `hos-recalc.repository`, `logs.service` and `unidentified.service` specs.
+**Dev data:** the stale headers were upserted through `HosRecalcService.rebuildDailyLogs`, then recalculated one RODS day at a time (D-071) for each stale day plus the 8 following recap days. `EldEvent` was not touched.
+- Pass 1: 1,156 stale (the count drifted from 1,270 while the old API rewrote headers); 1,126 rebuilt; 8,077 recalc calls; 573 violations upserted; 9 refreshed; 0 failures.
+- Pass 2, after the gap fix: 9 stale incl. the 6 remaining not-24 h days; 48 recalc calls; 11 upserted.
+- **After:** 0 stale completed-day headers and 0 completed days not totalling `dayLengthSec` (was 8). A scratch scan still shows 3 `hasUnassigned` diffs, but that scan counts segments on any unit the driver ever used; the production builders only count units the driver has records on in the window, so these are not stale. 0 future timestamps on `DailyLog` (`recalculatedAt`, `certifiedAt`, `logDate`) and `HosViolation` (`occurredAt`, `resolvedAt`, `logDate`).
+- The running API/worker still run the old code. `GET /logs` there rewrites headers with the 2-day lookback, the holes and per-segment rounding until they are rebuilt.
+
+## B-060 — mock data: two odometer bases interleaved on the same trucks (EldEvent type-7 + TelemetryPoint from `ingest`, unidentified pools from `compliance`) · FIXED in `ingest`, OPEN in `compliance` / existing rows
+
+**Found:** 2026-09-14 by the coordinator's integrity check: 2,696 non-monotonic odometer/engine-hour
+steps in mock `EldEvent`. Example: M11156 (`5ee8e80f-…`) goes 452,535 -> 340,274 mi on 2026-04-08.
+**Severity:** High for the mock dataset. The DOT output file, the FMCSA pack, IFTA miles and §4.3's
+odometer-anomaly rule (diagnostic 3) all read `totalVehicleMiles`. Dev data only; no production code
+path is involved.
+
+**Attribution** (per vehicle, every non-hos row checked against the surrounding hos rows; hos rows alone
+have 0 backward steps):
+- `compliance` (uuid suffix `c0c0c0`, uuidv5): 5,151 of 7,200 rows out of bounds, 4,842 of them by
+  more than 1,000 mi. `addPoolEvents` sets
+  `odoEnd = vehicle.odometerMi - 210 mi/day x (ANCHOR + HORIZON - endAt)`: a linear back-cast from
+  today's odometer, while hos's real history on these trucks runs ~900 mi/day. The rows are
+  unidentified-driving pools (origin 4) plus their reassignment pairs (origin 4/status 2 +
+  origin 1/status 1).
+- `ingest` (`mock-md-*`, eventType 7): 1,050 of 3,703 rows out of bounds, 26 of them by more than
+  1,000 mi, and 796 with engine hours out of bounds. `buildCodeEvents` copied miles from the logging
+  segment's last waypoint (a stale step) and extrapolated engine hours by wall-clock time. A clear
+  logged hours or days later reused the logging segment's base.
+- `ingest` TelemetryPoint: 128 of 170 vehicles had backward steps or > 2,000 mi jumps. Segments were
+  built from every record of a mock driver, including compliance's reassigned D/ON records on the
+  other base. Those overlapped hos segments on the same truck, so time-ordered fixes went backwards.
+  The final `Vehicle.odometerMi` was also raised to the contaminated value (M11156: 598,335 vs hos
+  max 485,852), and a later compliance re-run would back-cast from it.
+
+**Resolution (ingest, this entry):**
+- telemetry segments and the vehicle odometer/engine-hour timeline come only from hos-generator
+  records (`6d6f636b-` prefix)
+- `makeRow` refuses any fix that is not later than the vehicle's previous fix
+- eventType-7 miles/hours are interpolated on the vehicle's hos timeline, rounded down and clamped to
+  [previous, next] (`valueAt`)
+- spec covers overlapping segments and the interpolation bounds
+- mock TelemetryPoint was deleted, compacted and regenerated
+- `Vehicle.odometerMi` / `deviceOdometerMi` / `engineHours` were re-derived from the clean telemetry
+
+- Second cause, found while verifying: M11034 showed telemetry 34,578 mi above hos's own maximum.
+  hos has 10,072 pairs of simultaneous D intervals by two different drivers on the same truck
+  (26 team vehicles, 9,067 h, 2026-03-14 .. today). Every segment re-based its start onto the
+  running counter (`max(first waypoint, counter)`), so the second driver's leg miles were added on
+  top of the first driver's counter and the overshoot compounded. Legs are now anchored to each
+  waypoint's recorded miles and never re-based; `makeRow` plateaus instead of stepping back. The
+  spec asserts that an overlapping driver on another base cannot push the odometer past the
+  recorded maximum. The simultaneous-D records themselves are a hos-generator defect (only one
+  driver of a team can be in D): OPEN, owner hos.
+
+**Still open:**
+- the existing 1,050 `mock-md-*` rows and 5,151 compliance rows cannot be corrected, because
+  `EldEvent` is append-only (no UPDATE/DELETE for `eld_dev`)
+- `compliance.addPoolEvents` must take its odometer from the surrounding hos records on that vehicle
+  instead of the linear back-cast (owner: compliance generator)
+- repair options were handed to the coordinator; nothing was truncated
+
+---
+
+## B-061 — `prisma/mock/generators/users.ts`'s delete+recreate cycle for User/Role/Session/ApiKey orphaned thousands of AuditLog `actorId`/`objectId` references across re-runs · FIXED
+**Found:** dev-DB integrity check by the coordinator (2026-09-14) — 3,068 `AuditLog` rows with
+`actorType='USER'` pointed at 60 `User` ids that no longer existed, because every earlier run of
+this generator deleted all mock `User`/`Role`/`Session`/`ApiKey` rows and recreated them with fresh
+random (`uuid()`-default) ids. `AuditLog` is append-only (B-045), so once a row named an id, that
+id had to exist forever — but nothing kept it stable. A closer audit turned up the same defect for
+`objectId`: 54 stale `User`, 410 stale `Role`, and 557 stale `ApiKey` objectId references, all from
+the same root cause.
+**Severity:** High — `GET /audit-log` (W-23) is meant to page through thousands of real-looking
+entries with resolvable actors/objects; every one of these showed as an unknown/broken reference.
+**Fix:** every row this generator owns now gets a deterministic id via `mockId(domain,
+naturalKey)` (User: email; Role: key; Session: `email:planIndex`; ApiKey: `email:planIndex`) and
+is `upsert`ed on that id — never deleted and recreated. A stable id across re-runs means an
+`AuditLog` row written on run N still resolves correctly on run N+1, N+2, etc. Existing orphans
+(already-written, unfixable `AuditLog` rows) were repaired instead of the ids being invented
+retroactively (impossible — the old id → email mapping was never recorded anywhere recoverable, so
+option (a) in the coordinator's instructions was rejected; see decisions.md D-077): every distinct
+stale `actorId`/`objectId` gets a minimal placeholder row created **directly on that exact
+pre-existing id** — a DISABLED placeholder `User` (`deleted-<id8>@mock.onebook.example`), an
+all-`NONE`-permission placeholder `Role`, or a pre-revoked placeholder `ApiKey` — so the id
+resolves without ever touching the (immutable) `AuditLog` row itself. Self-healing: the repair
+step runs every time and is a no-op once nothing is orphaned (verified — a third run reported zero
+repairs). Also cleaned up the transient side-effect of the id-stability fix's first application
+(one generation of pre-fix `Session`/`ApiKey` rows, still on old random ids, now duplicated
+alongside the newly-upserted deterministic-id rows): `Session` rows are deleted outright (nothing
+else ever references `Session.id`); `ApiKey` rows are deleted only when no `AuditLog` row's
+`objectId` still points at them (checked individually, to avoid re-creating the exact bug just
+fixed).
+**Verified:** ran the generator three times in a row against the live dev DB
+(`connection_limit=2`, bypassing the orchestrator so `core` was never touched) — run 1 repaired 60
+actor + 49 more object orphans, 103 Role and 76 ApiKey object orphans, and removed 85 leftover
+Session rows + 6 leftover ApiKey rows; run 2 and run 3 reported zero repairs, zero removals, and
+identical row counts (40 users, 5 custom roles, 59 sessions, 6 api keys, 4000 audit rows). Final
+integrity query — `AuditLog` rows with an `actorId`/`objectId` that doesn't resolve to an existing
+row, across `User` (actor and object), `Role`, and `ApiKey` — returned 0 in every case.
+
+## B-061 — `reports` mock generator: 49 of 59 READY `Report` rows had `fileKey = NULL`, breaking the panel's download button · FIXED
+**Found:** integrity check flagged 49/59 READY `Report` rows with no `fileKey` (e.g. `fae55f26-…`,
+DVIR/CSV) — `GET /reports/:id/download` 409s (`REPORT_NOT_READY`) for any of them, so a real
+`GET /api/reports` list showing "READY" would have a Download button that fails for most rows.
+Root cause: `prisma/mock/generators/reports.ts` originally only patched a *handful* of READY
+rows (3 IFTA + 2 DVIR + 1 ACTIVITY) with real files and left every other READY row's `fileKey`
+`null`, intending that as the "unavailable" fallback the brief allowed — too coarse a fallback
+once the actual panel behaviour (409 on download) was checked.
+**Fix:** extracted the file-attachment step into its own exported, idempotent
+`ensureReadyReportFiles(ctx)`, now run over **every** READY row (`where: { status: 'READY',
+fileKey: null }`, so a re-run only touches rows still missing a file): `IFTA`/`DVIR` use the
+real, standalone-runnable `IftaReportGenerator`/`DvirReportGenerator` (same code the worker
+uses); `FMCSA_PACK` gets a hand-built but genuinely spec-valid single-page PDF
+(`buildMinimalPdf()` — verified with `file(1)`: "PDF document, version 1.4, 1 page(s)");
+`ACTIVITY`/`SAFETY`/`UNIDENTIFIED` (no standalone-runnable real generator — `ACTIVITY` needs
+`LogsService`'s full DI graph, `SAFETY`/`UNIDENTIFIED` aren't wired into `ReportProcessor` at
+all yet) get a minimal, valid, type-shaped CSV. Any row that still can't produce a file (should
+be rare) is downgraded to `FAILED` with a real error message instead of staying READY with
+nothing to download — this path was exercised for real once, by a transient
+"too many database connections" error under the `connection_limit=2` constraint, then retried
+successfully on its own.
+**Second bug found while fixing the first:** the file-attach step originally re-filtered READY
+rows by `requestedById IN (<requesterIds>)`, and `requesterIds` was rebuilt on each standalone
+repair run via `prisma.user.findMany({ where: {...}, take: 30 })` with **no `orderBy`** — an
+unstable/arbitrary 30-of-200 sample of mock users, different across runs. A repair run's sample
+missed the specific mock users who had originally been assigned as `requestedById` on the still-
+broken rows, so the first repair attempt only fixed 28/49 rows. Fixed by dropping the
+`requestedById` filter from `ensureReadyReportFiles` entirely — `Report` is exclusively this
+generator's table (confirmed against `prisma/mock/README.md`'s ownership list; no other mock
+domain writes to it), so no user-identity filter was ever needed there.
+**Verified:** `select status, count(*) filter (where "fileKey" is null) from "Report" group by
+status` → READY: 59 total, 0 with a null `fileKey` (QUEUED/RUNNING/FAILED correctly still have
+none). `GET /api/reports/:id/download` on 3 random READY ids all returned a working 7-day
+presigned MinIO URL; one fetched file (`SAFETY` CSV) downloaded real content (200, correct
+`Content-Type: text/csv`, 2 rows).
+
+## B-062 — 21 `Notification`/`AlertDelivery` rows referenced a `HosViolation` id deleted by a later `hos` mock-generator re-run — NOT a `src/` bug, self-healed in `reports.ts`
+**Found:** integrity check flagged 11 (later reconfirmed as 21 once `hos` had re-run again
+concurrently) `Notification` rows with `objectType='HosViolation'` pointing at `objectId`s with
+no matching `HosViolation` row (e.g. `ca875d40-…`, `e342ecba-…`), plus the matching
+`AlertDelivery.subjectId`s.
+**Investigated, per instruction, whether the fault is in the real recalc or the real
+notifications module — it is neither:**
+- `src/modules/hos-recalc/hos-recalc.repository.ts:149` ("§8.4 rule 2 — gone from the fresh
+  result but still OPEN: cleared, never deleted") and `src/modules/hos/hos-violation-plan.ts:9`
+  ("never deleted — the audit trail stays") — the real `HosRecalcService` always `upsert`s
+  `HosViolation` by its stable `@@unique([driverId, logDate, type])` key
+  (`hos-recalc.repository.ts:142`) and only ever resolves/auto-clears a row, never deletes one.
+  A violation's id is stable across every real recalc.
+- `src/modules/notifications/notifications.service.ts` / `notifications.repository.ts` return
+  `Notification.objectId` completely unmodified — there is no FK on that column (schema:
+  `Notification.objectId String?`, no `@relation`) and no join-then-404 logic anywhere in the
+  read path, so a stale `objectId` never breaks the API; it only silently fails a UI deep-link.
+  Nothing to fix here.
+- **Actual root cause:** `prisma/mock/generators/hos.ts:238`,
+  `prisma.hosViolation.deleteMany(...)` on that generator's own GENERATE (re-run) path — a
+  cross-generator ordering issue (this generator's `reports` step links to `hos`'s violations,
+  then `hos` re-runs standalone afterward and hard-deletes+recreates them with fresh ids), not a
+  `src/` defect. Not fixed there — `prisma/mock/generators/hos.ts` belongs to another agent and
+  the mock framework's rule is "never touch other agents' generator files."
+**Fix (data + self-healing code, this generator only):** added
+`repairOrphanedHosViolationLinks(ctx)` to `reports.ts`, run at the end of `run()` every time.
+Least-destructive repair: for each orphaned `Notification`/`AlertDelivery`, look up a same-
+`driverId`, same-calendar-day `HosViolation` (preferring `OPEN` over `RESOLVED`/`AUTO_CLEARED`)
+and repoint `objectId`/`subjectId` to it; if none exists, the row is left as-is (already API-
+tolerant, per above). Ran standalone: repointed 1, left 20 dangling (no same-day replacement
+existed for those — `hos.ts` had regenerated a different violation mix for that driver/day, or
+none at all). Re-verified after every generator run going forward, so this never silently grows.
+**No `src` change** — nothing here required touching `hos-recalc` or `notifications`.
+
+---
+
+## B-062 — `fleet.ts` computed `Defect.resolvedAt`/`Dvir.mechanicSignedAt`/`Dvir.nextDriverReviewedAt`/`WorkOrder.closedAt` as `baseTime + random offset` with no upper-bound check, and the vehicle out-of-service rule was not bidirectionally idempotent across re-runs · FIXED
+**Found:** dev-DB integrity check by the coordinator (2026-09-14) — 13 `Defect.resolvedAt`, 8
+`Dvir.mechanicSignedAt`, 10 `Dvir.nextDriverReviewedAt` and 4 `WorkOrder.closedAt` rows landed
+1–4 days after `now` (2026-09-15..09-18). Separately: seed unit 101 carried 6 `OPEN`+`CRITICAL`
+`Brakes` defects while `Vehicle.status` stayed `ACTIVE`, and ~13-14 mock vehicles were
+`OUT_OF_SERVICE` with no open critical defect and no reason.
+**Severity:** High — future timestamps break any "as of now" report/RODS-style view over mock
+data; the OOS gaps are a direct violation of the documented out-of-service invariant.
+
+Root causes, three distinct bugs:
+1. Every one of the four fields above drew `preSubmittedAt`/`postSubmittedAt`/`openedAt` (already
+   clamped to `ctx.to`) plus a random positive offset (hours/days) with **no check** that the
+   result stayed `<= ctx.to` — a fast-forward step (repair finished, mechanic signed, driver
+   reviewed, work order closed) could land in the future relative to "now".
+2. Unit 101's defects were **not** created by this generator or by `seed.ts` — driver `johnsmith`
+   (real seed driver, not `mock_...`) and a `signatures/<driverId>/<uuid>.png` key (the real mobile
+   upload path, not `mock/signatures/...` or seed's hardcoded `s3://onebook-dev/...`) point to the
+   real `POST /mobile/dvir` endpoint (`src/modules/mobile/mobile-dvir.service.ts:43-78`), which
+   **does** enforce the OOS rule correctly on create (`outOfService: severity==='CRITICAL'` at
+   line 55, `markVehicleOutOfService` called at line 77 when any defect has it). The gap is
+   elsewhere: `VehiclesService.update()` (`src/modules/vehicles/vehicles.service.ts:61-64`, via
+   `toUpdateInput()` at `:174-188`) lets a plain `PATCH` set `status` back to `ACTIVE` with **no
+   check** for open critical defects — that generic update path is how unit 101 (or a test
+   exercising it) got reactivated without repairing anything. Reported here as a real code bug,
+   file:line above; not fixed as part of this mock-data task (out of `eld-fleet-ops`'s mock-data
+   scope — flagging for whoever owns `VehiclesService`).
+3. This generator's own out-of-service enforcement only ever escalated a vehicle to
+   `OUT_OF_SERVICE` (`vehicle.updateMany` keyed off the current run's `defectRows`); since defects
+   are deleted and fully regenerated every run, a vehicle that was `OUT_OF_SERVICE` because of a
+   critical defect in a *previous* run could lose that defect on a re-run (different RNG draw) and
+   stay stuck `OUT_OF_SERVICE` forever with no defect to justify it and no reason recorded.
+**Fix:**
+1. `fleet.ts`: the four resolve/sign/review/close computations now check the candidate timestamp
+   against `ctx.to` before using it; if it would land in the future, the step has not actually
+   happened yet — the field is left `null` and the owning row's status is downgraded instead
+   (`REPAIRED`→`IN_PROGRESS`, work order `DONE`→`IN_PROGRESS`) rather than clamping the timestamp
+   to "now" (which would falsely claim the step finished at the exact instant `db:mock` ran).
+   `mechanicSignedAt`/`WorkOrder.closedAt` now reuse the same resolved timestamp as the matching
+   `Defect.resolvedAt` instead of drawing independent (and independently future-risking) offsets.
+2. Unit 101: corrected the live row — `Vehicle.status` set to `OUT_OF_SERVICE` (data fix only; the
+   defects are real, not mock, so left in place per "mock data must not touch seed vehicles" —
+   there was no mock data to move here).
+3. `fleet.ts` now reconciles every mock `OUT_OF_SERVICE` vehicle with no current `OPEN`+`CRITICAL`
+   defect at the end of each run: if it has no `[mock] Administrative hold` marker yet, it gets one
+   (rotating reason, `Vehicle.notes`) so the state is intentional and stable across re-runs instead
+   of an unexplained, possibly stale flag. Applied the same reason to the then-current 6 affected
+   mock vehicles directly (targeted `UPDATE`, not a full generator re-run, to avoid re-inserting
+   ~37k `Dvir` rows while other mock generators were mid-run under memory pressure).
+Re-verified after the fix: 0 future timestamps in all four columns; both out-of-service directions
+hold (every `OPEN`+`CRITICAL` defect ⇒ `OUT_OF_SERVICE`, and every `OUT_OF_SERVICE` mock vehicle
+either has one or carries an admin-hold reason) except seed unit 110, a pre-existing seed-owned
+exception (an `IN_PROGRESS`, not `OPEN`, critical brake defect from `seed.ts` itself).
