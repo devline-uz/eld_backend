@@ -26,6 +26,7 @@
     "migrate:deploy": "prisma migrate deploy",
     "db:seed": "ts-node prisma/seed.ts",
     "db:mock": "ts-node prisma/mock/index.ts",
+    "db:mock:live": "ts-node prisma/mock/simulator/index.ts",
     "db:reset:dev": "bash scripts/db-reset-dev.sh",
     "db:check-drift": "bash scripts/check-drift.sh",
     "migrate:test-updown": "bash scripts/migrate-updown-dev.sh",

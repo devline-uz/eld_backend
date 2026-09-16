@@ -17,7 +17,8 @@ export type DrivingImmutabilityReason =
   | 'SHORTEN_DRIVING'
   | 'DELETE_DRIVING'
   | 'OVERLAPS_DRIVING'
-  | 'MANUAL_DRIVING';
+  | 'MANUAL_DRIVING'
+  | 'EXTENDS_DRIVING';
 
 export interface Interval {
   startAt: Date;
@@ -30,6 +31,12 @@ export interface TargetEvent {
   eventDateTime: Date;
   /** End of the interval the record owns — the next active record, or `now`. */
   intervalEndAt: Date;
+  /**
+   * Status in force immediately before the record (what a NEUTRALIZE row would re-state over
+   * `[eventDateTime, proposedStart)` when the record is moved later). Optional: only
+   * `checkDriverSelfEdit` needs it (bugs.md B-049).
+   */
+  statusBefore?: DutyStatus | null;
 }
 
 export interface EditProposal {
@@ -101,6 +108,13 @@ export function checkDriverSelfEdit(
 ): DrivingImmutabilityReason | null {
   if (proposal.status === 'D') return 'MANUAL_DRIVING';
   if (target && isDrivingRecord(target)) return 'RESTATUS_DRIVING';
+  // bugs.md B-049 — moving the record that FOLLOWS driving later would leave the gap
+  // `[original, proposed start)` on the status that preceded it, i.e. driving. §395.26(b):
+  // driving time is ELD-recorded only; a driver edit may never add or extend it. The driver
+  // can still insert an OFF/SB/ON interval starting at the original instant instead.
+  if (target?.statusBefore === 'D' && proposal.startAt.getTime() > target.eventDateTime.getTime()) {
+    return 'EXTENDS_DRIVING';
+  }
 
   const proposed: Interval = {
     startAt: proposal.startAt,
@@ -124,4 +138,6 @@ export const IMMUTABILITY_DETAIL: Record<DrivingImmutabilityReason, string> = {
   DELETE_DRIVING: 'A driving record cannot be deleted (49 CFR §395.30(c)(2)).',
   OVERLAPS_DRIVING: 'The proposed interval would overwrite recorded driving time (49 CFR §395.30(c)(2)).',
   MANUAL_DRIVING: 'Driving time is recorded automatically and cannot be entered manually (49 CFR §395.26(b)).',
+  EXTENDS_DRIVING:
+    'Moving this record later would extend the preceding driving time; driving time is recorded automatically and cannot be added by a driver edit (49 CFR §395.26(b), §395.30). Insert an OFF/SB/ON interval starting at the original time instead.',
 };

@@ -85,7 +85,7 @@ function jitter(rng: MockContext['rng'], value: number, spread: number): number 
 }
 
 /**
- * Clamps a candidate `readAt` to `ctx.to` (never a future timestamp — B-048) and, if the
+ * Clamps a candidate `readAt` to `ctx.to` (never a future timestamp — B-065) and, if the
  * clamped result would land before `createdAt` (i.e. the random "read N hours later" offset got
  * entirely clamped away), leaves the notification unread (`null`) instead of reporting a read
  * that happened before the notification existed.

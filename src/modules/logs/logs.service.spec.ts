@@ -86,7 +86,7 @@ class FakeRepo {
   findVehicleIdsForDriver = jest.fn(async () => ['veh-1']);
   findDailyLog = jest.fn(async (_id: string, date: Date) => this.dailyLogs.get(date.toISOString()) ?? null);
   findDailyLogs = jest.fn(async () => [...this.dailyLogs.values()]);
-  findUncertifiedDates = jest.fn(async () => []);
+  findUncertifiedDates = jest.fn(async (): Promise<Date[]> => []);
 
   upsertDailyLog = jest.fn(async (args: Record<string, unknown>) => {
     const key = (args.logDate as Date).toISOString();
@@ -375,6 +375,29 @@ describe('§9.3 — the driver edits their own log but never the D segment', () 
       ),
     ).rejects.toMatchObject({ code: 'DRIVING_TIME_IMMUTABLE' });
   });
+
+  // bugs.md B-049 — ON at 15:00 follows D at 12:00; moving ON to 15:06 must not make 15:00-15:06 driving.
+  it('refuses moving the record right after driving LATER (would back-fill the gap with driving)', async () => {
+    const { service, repo, writer } = build();
+    repo.events = [
+      evt({ id: 1n, at: '2026-06-01T12:00:00Z', code: 3 }),
+      evt({ id: 2n, at: '2026-06-01T15:00:00Z', code: 4 }),
+    ];
+
+    await expect(
+      service.createLogEntry(
+        DRIVER,
+        {
+          status: 'ON',
+          startAt: new Date('2026-06-01T15:06:00Z'),
+          annotation: 'Actually started yard work at 15:06',
+          originalEventId: '2',
+        },
+        driver,
+      ),
+    ).rejects.toMatchObject({ code: 'DRIVING_TIME_IMMUTABLE', status: 422, details: { reason: 'EXTENDS_DRIVING' } });
+    expect(writer.rows.filter((row) => row.eventType === 1 && row.eventCode === 3)).toHaveLength(0);
+  });
 });
 
 describe('§9.2 — certification', () => {
@@ -429,6 +452,48 @@ describe('§9.2 — certification', () => {
     const fired = await service.checkUncertifiedAlert(DRIVER, TZ, new Date('2026-06-01T12:00:00Z'));
     expect(fired).toBe(true);
     expect(alertQueue.add).toHaveBeenCalledWith('alert.uncertified_logs', expect.objectContaining({ thresholdDays: 8 }));
+  });
+});
+
+describe('B-050 — recordLogChange: the shared "records changed" hook voids certification (§9.2)', () => {
+  it('voids every RODS day in the span, including the next day when it runs past midnight', async () => {
+    const { service, repo, events } = build();
+    for (const key of ['2026-06-01', '2026-06-02']) {
+      repo.dailyLogs.set(`${key}T00:00:00.000Z`, {
+        id: `log-${key}`,
+        logDate: new Date(`${key}T00:00:00.000Z`),
+        certified: true,
+        certifiedAt: new Date('2026-06-03T12:00:00Z'),
+        certificationCount: 1,
+        hasEdits: false,
+      });
+    }
+
+    // 23:30 → 00:30 New York = 03:30Z → 04:30Z on 2026-06-02.
+    const keys = await service.recordLogChange(
+      DRIVER,
+      TZ,
+      new Date('2026-06-02T03:30:00Z'),
+      new Date('2026-06-02T04:30:00Z'),
+    );
+
+    expect(keys).toEqual(['2026-06-01', '2026-06-02']);
+    expect(repo.invalidated).toEqual(['2026-06-01T00:00:00.000Z', '2026-06-02T00:00:00.000Z']);
+    expect(repo.dailyLogs.get('2026-06-01T00:00:00.000Z')).toMatchObject({ certified: false, hasEdits: true });
+    expect(repo.dailyLogs.get('2026-06-02T00:00:00.000Z')).toMatchObject({ certified: false, hasEdits: true });
+    expect(events.publish).toHaveBeenCalledWith('log.changed', { driverId: DRIVER, dates: ['2026-06-01', '2026-06-02'] });
+  });
+
+  it('voids the days BETWEEN the span ends too (a multi-day interval)', async () => {
+    const { service, repo } = build();
+    const keys = await service.recordLogChange(
+      DRIVER,
+      TZ,
+      new Date('2026-06-01T12:00:00Z'),
+      new Date('2026-06-03T12:00:00Z'),
+    );
+    expect(keys).toEqual(['2026-06-01', '2026-06-02', '2026-06-03']);
+    expect(repo.invalidated).toHaveLength(3);
   });
 });
 

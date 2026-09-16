@@ -55,6 +55,7 @@ import { DtcModule } from './modules/dtc/dtc.module';
 import { ServiceModule } from './modules/service/service.module';
 import { ReportsModule } from './modules/reports/reports.module';
 import { LiveFleetModule } from './modules/live/live-fleet.module';
+import { DashboardModule } from './modules/dashboard/dashboard.module';
 
 /**
  * Module tree per TZ §3.4. Feature modules are added by their owning phase.
@@ -130,6 +131,8 @@ import { LiveFleetModule } from './modules/live/live-fleet.module';
     RealtimeModule,
     // web/tz.md §20 B-3 — `GET /live/fleet` snapshot for W-01/W-02 (D-053).
     LiveFleetModule,
+    // Perf plan item 3 — `GET /dashboard/summary`, the W-01 open-screen aggregate.
+    DashboardModule,
     // Phase 8 — Reports (TZ §15). IFTA/activity/DVIR/FMCSA-pack generation (async, queued),
     // the report scheduler (`ReportSchedule` cron rows) and S3-backed download. Owned by
     // eld-reports-jobs.

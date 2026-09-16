@@ -39,10 +39,11 @@ describe('UsersService', () => {
     service = new UsersService(users as unknown as UsersRepository, roles as unknown as RolesRepository, auth as unknown as AuthService);
   });
 
-  it('list strips sensitive fields from every row', async () => {
-    users.listWithRoles.mockResolvedValue([makeUser()] as never);
+  it('list passes through the lean rows the repository already selected (perf: no passwordHash/permissions round-trip)', async () => {
+    const lean = { id: 'usr_1', email: 'a@b.com', firstName: 'Sarah', lastName: 'Chen', status: 'ACTIVE', role: { id: 'role_1', key: 'ADMIN', name: 'Administrator' } };
+    users.listWithRoles.mockResolvedValue([lean] as never);
     const result = await service.list();
-    expect(result[0]).not.toHaveProperty('passwordHash');
+    expect(result).toEqual([lean]);
   });
 
   describe('get', () => {

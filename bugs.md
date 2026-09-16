@@ -6,7 +6,7 @@ Companion to `decisions.md` (design choices) and `tasks.md` (roadmap progress).
 Status legend: **FIXED** · **OPEN** · **NOT A BUG** (investigated, no defect — recorded so the
 same thing is not chased twice).
 
-Last updated: 2026-09-11, Phase 11.
+Last updated: 2026-09-15 (B-049, B-050 fixed).
 
 Numbering note: running agents concurrently produced three collisions. `eld-qa-test`'s entry
 keeps **B-013**; the `eld-hos-engine` pair was renumbered to **B-015** and **B-016**. The
@@ -18,6 +18,15 @@ free number is **B-020**.
 `DriverScore` period time zone) → **B-056**; B-047 (`safety-comms` coaching completed = assigned)
 → **B-057**. The earliest-written entries keep B-046 (`fleet` out-of-service rule) and B-047
 (`core` cleanup order). Renumbered entries stay in place. The next free number is **B-058**.
+
+2026-09-15 (second pass): three more collisions from the same parallel batch, resolved the same way
+(earliest entry by file order keeps its ID, later duplicate moves, entries stay in place): old→new
+B-048 (`safety-comms` `Notification.readAt` future timestamps) → **B-065**; B-061 (`reports` READY
+rows without `fileKey`) → **B-066**; B-062 (`fleet` future `resolvedAt`/`mechanicSignedAt`/
+`closedAt` + out-of-service idempotency) → **B-067**. Kept: B-048 (`edit-plan` earlier-start
+neutralizer), B-061 (`users` `AuditLog` orphans, D-077), B-062 (`reports` `HosViolation` orphans,
+B-064). Cross-references updated: B-063 "flagged inside B-067's writeup",
+`prisma/mock/generators/safety-comms.ts` `readAtOrNull` comment. The next free number is **B-068**.
 
 ---
 
@@ -1239,15 +1248,27 @@ and every id was confirmed unchanged (see D-055's two-run id diff).
 **Severity:** High — 49 CFR §395.30(c)(2): driving time may never be reduced. `checkEditProposal` correctly ALLOWS extending a driving record earlier, but `planAcceptEdit` / `planDriverSelfEdit` emitted the NEUTRALIZE record whenever `proposal.startAt !== target.eventDateTime`. For an earlier start that record lands at the original instant with the status that preceded the original (e.g. ON), and because the original driving record is retired, the whole original driving interval became ON. Same defect for a non-driving record moved earlier (the corrected status was cut off at the original instant).
 **Resolution:** `src/modules/logs/edit-plan.ts` — `needsNeutralizer()` emits NEUTRALIZE only when the proposal starts LATER than the original (the only case with a gap to back-fill). Regression tests in `edit-plan.spec.ts` (carrier accept with an earlier driving start; driver self-edit moved earlier). `logs`/`transfers`/`unidentified` unit suites: 19 suites, 235 tests pass.
 
-## B-049 — a driver self-edit that moves an ON record LATER right after DRIVING back-fills the gap with driving time · OPEN
+## B-049 — a driver self-edit that moves an ON record LATER right after DRIVING back-fills the gap with driving time · FIXED
 **Found:** 2026-09-14, eld-compliance-rods, same property test (driver self-edit variant: driving seconds increased by 360 s).
 **Severity:** Medium — TZ §9.3 / §395.26(b): a driver may never create driving time manually. `checkDriverSelfEdit` only checks that the proposed interval does not overlap driving; the NEUTRALIZE record that `planDriverSelfEdit` writes at the original instant re-states `statusBeforeTarget`, which is `D` when the edited record immediately follows driving, so `POST /mobile/log-entries` can extend driving by the size of the shift.
-**Not fixed here** (needs a rule change + API contract decision): suggested fix — in `LogsService.createLogEntry`, refuse with `422 DRIVING_TIME_IMMUTABLE` (`MANUAL_DRIVING`) when `statusBeforeTarget === 'D'` and `startAt > target.eventDateTime`. The same shape on a carrier request is an EXTENSION of driving, which §395.30 permits once the driver accepts. The mock generator avoids producing it.
+**Not fixed at first** (needed a rule change + API contract decision): suggested fix — in `LogsService.createLogEntry`, refuse with `422 DRIVING_TIME_IMMUTABLE` (`MANUAL_DRIVING`) when `statusBeforeTarget === 'D'` and `startAt > target.eventDateTime`. The same shape on a carrier request is an EXTENSION of driving, which §395.30 permits once the driver accepts. The mock generator avoids producing it.
+**Resolution (2026-09-15, eld-compliance-rods, D-080):** root cause `src/modules/logs/edit-plan.ts` `planDriverSelfEdit` (the NEUTRALIZE row at the original instant carried `DUTY_CODE_BY_STATUS[statusBeforeTarget]`, i.e. eventCode 3 with `recordOrigin = 2` — driver-entered driving time) and `src/modules/logs/edit-rules.ts` `checkDriverSelfEdit` (only checked overlap, never what the gap would be filled with).
+- `edit-rules.ts`: new reason `EXTENDS_DRIVING`; `TargetEvent.statusBefore` (optional); `checkDriverSelfEdit` returns `EXTENDS_DRIVING` when `target.statusBefore === 'D'` and `proposal.startAt > target.eventDateTime`. Detail text tells the driver to insert an OFF/SB/ON interval starting at the original instant instead (that path never emits a driving record).
+- `logs.service.ts` `createLogEntry`: the target now carries `statusBefore = statusInEffectAt(events, original.eventDateTime)` and passes it both to the check and to the planner → `422 DRIVING_TIME_IMMUTABLE { reason: 'EXTENDS_DRIVING' }`.
+- `edit-plan.ts` `planDriverSelfEdit`: invariant — throws before emitting a NEUTRALIZE with status `D` (defence in depth for any other caller). `planAcceptEdit` (carrier request, origin 3) is unchanged: extending driving on an accepted carrier edit is permitted by §395.30(c)(2).
+- Moving such a record EARLIER stays allowed (no gap; `OVERLAPS_DRIVING` still guards the driving interval). HOS engine untouched.
+- Tests: `edit-rules.spec.ts` (+2), `edit-plan.spec.ts` (+1), `logs.service.spec.ts` (+1, asserts no `eventCode 3` row is written). Reproduced red first, then green.
 
-## B-050 — assigning/rejecting unidentified driving changes a driver's RODS day but does not invalidate that day's certification · OPEN
+## B-050 — assigning/rejecting unidentified driving changes a driver's RODS day but does not invalidate that day's certification · FIXED
 **Found:** 2026-09-14, eld-compliance-rods, while mirroring `UnidentifiedService.assign/reject` in the mock generator.
 **Severity:** Medium — hard rule "any change to a log requires re-certification" (TZ §9.2, §23). `LogsService` calls `invalidateCertification` for every applied change (`afterLogChange`), but `UnidentifiedService.assign` and `.reject` append driving records to (or remove them from) a driver's timeline and only enqueue `hos.recalc`; the day stays `certified = true`.
-**Not fixed here** (outside this task's scope): suggested fix — call the same invalidation for every RODS day `[segment.startAt, segment.endAt]` touches after assign/reject. The mock data already follows the rule (touched days are invalidated and usually re-certified).
+**Not fixed at first** (outside that task's scope): suggested fix — call the same invalidation for every RODS day `[segment.startAt, segment.endAt]` touches after assign/reject. The mock data already follows the rule (touched days are invalidated and usually re-certified).
+**Resolution (2026-09-15, eld-compliance-rods, D-080):** root cause `src/modules/unidentified/unidentified.service.ts` `assign` / `reject` — after B-059 they called `LogsService.rebuildDailyLogsForSpan` + `hos.recalc` only; `LogsService.afterLogChange` (the edit/self-edit path) was private and the only caller of `repo.invalidateCertification`.
+- `src/modules/logs/logs.service.ts`: new public `recordLogChange(driverId, timezone, from, to)` — THE hook for "records in `[from, to]` changed": voids certification of every RODS day in the span (home-terminal zone, `dayKeyRange`, so a segment running past midnight voids both days and a multi-day span voids the days between), rebuilds the headers (B-059) and publishes `log.changed`; returns the day keys. `afterLogChange` now delegates to it and queues `hos.recalc`.
+- `unidentified.service.ts` `assign`/`reject` call `this.logs.recordLogChange(driverId, timezone, segment.startAt, segment.endAt)` in place of `rebuildDailyLogsForSpan`, then `hos.recalc` as before. Rejecting a never-assigned (PENDING) segment touches no driver's log and voids nothing.
+- Driver notification: unchanged mechanism — `certified = false` surfaces in the mobile uncertified-days list and `alert.uncertified_logs` (8 days); `log.changed` is published for connected clients.
+- Tests: `unidentified.service.spec.ts` (+2 B-050, B-059 assertions moved to the new hook), `logs.service.spec.ts` (+2: midnight carry-over, multi-day span). Reproduced red first.
+**Dev data:** 874 assign/reject audit rows; 201 are PENDING→REJECTED (no driver, correctly untouched). 523 certified `DailyLog` rows were touched by an assign/reject at some point; **53** of them were certified BEFORE the change (stale certification). Voided through the real writer `LogsRepository.invalidateCertification` (scratch script, `connection_limit=2`, 53/53 → re-check 0). `EldEvent`, headers and `hos.recalc` untouched (records did not change).
 
 ## B-056 — `safety-comms.ts` mock generator computed `DriverScore.periodStart/periodEnd` in the host's local time zone, shifting the stored `@db.Date` by a day whenever the host runs ahead of UTC · FIXED
 **Found:** validating `GET /safety/scorecard` with no query params (the frontend's default call)
@@ -1461,7 +1482,7 @@ Re-ran and confirmed: 5,728 assigned vs. 5,379 completed (349 genuinely still op
 **Severity:** Medium — no immediate customer impact (worker was up), but the auto-restart/OOM-guard promised by B-054's runbook silently did not apply to the worker; a crash after this point would not have come back.
 **Fix:** killed the bare `dist/worker` (old engine 1.0.1) PID and started `start-worker.sh` again via `setsid nohup bash start-worker.sh … < /dev/null &`, which detaches it from the invoking shell (PPID 1, own session) exactly like the API's loop. Verified process tree: loop shell (PPID 1) → `node --max-old-space-size=768 dist/worker` for both API and worker after the restart.
 
-## B-048 — `safety-comms.ts` computed two `Notification.readAt` values as `createdAt + random hours` without clamping to `ctx.to`, producing future timestamps · FIXED
+## B-065 — `safety-comms.ts` computed two `Notification.readAt` values as `createdAt + random hours` without clamping to `ctx.to`, producing future timestamps · FIXED
 **Found:** coordinator's data-integrity check — 16 `Notification` rows with `readAt` 1-4 days in
 the future (2026-09-15..09-18). All 16 were confirmed mine (`type` in
 `safety.new_event`/`safety.coaching_completed`); 0 belonged to the reports agent's alert-rule
@@ -1510,7 +1531,7 @@ change) using the same clamp-or-null rule; re-ran the generator once more and co
 - **After:** 0 stale completed-day headers and 0 completed days not totalling `dayLengthSec` (was 8). A scratch scan still shows 3 `hasUnassigned` diffs, but that scan counts segments on any unit the driver ever used; the production builders only count units the driver has records on in the window, so these are not stale. 0 future timestamps on `DailyLog` (`recalculatedAt`, `certifiedAt`, `logDate`) and `HosViolation` (`occurredAt`, `resolvedAt`, `logDate`).
 - The running API/worker still run the old code. `GET /logs` there rewrites headers with the 2-day lookback, the holes and per-segment rounding until they are rebuilt.
 
-## B-060 — mock data: two odometer bases interleaved on the same trucks (EldEvent type-7 + TelemetryPoint from `ingest`, unidentified pools from `compliance`) · FIXED in `ingest`, OPEN in `compliance` / existing rows
+## B-060 — mock data: two odometer bases interleaved on the same trucks (EldEvent type-7 + TelemetryPoint from `ingest`, unidentified pools from `compliance`) · FIXED in `ingest`, `compliance` and `hos` (generators) — existing bad rows accepted as-is
 
 **Found:** 2026-09-14 by the coordinator's integrity check: 2,696 non-monotonic odometer/engine-hour
 steps in mock `EldEvent`. Example: M11156 (`5ee8e80f-…`) goes 452,535 -> 340,274 mi on 2026-04-08.
@@ -1556,12 +1577,45 @@ have 0 backward steps):
   recorded maximum. The simultaneous-D records themselves are a hos-generator defect (only one
   driver of a team can be in D): OPEN, owner hos.
 
-**Still open:**
-- the existing 1,050 `mock-md-*` rows and 5,151 compliance rows cannot be corrected, because
-  `EldEvent` is append-only (no UPDATE/DELETE for `eld_dev`)
-- `compliance.addPoolEvents` must take its odometer from the surrounding hos records on that vehicle
-  instead of the linear back-cast (owner: compliance generator)
-- repair options were handed to the coordinator; nothing was truncated
+**Resolution (compliance, 2026-09-15):**
+- `addPoolEvents` no longer back-casts from `Vehicle.odometerMi`. Every record the generator
+  appends (pool D/ON pairs, their reassignment copies, edit chains, certifications) reads
+  `totalVehicleMiles` and — new — `totalEngineHours` off the truck's hos timeline
+  (`6d6f636b-` records only, `P.buildVehicleTimeline` = sorted + running max) with
+  `P.readingAt`: interpolated between the prev/next hos record by `eventDateTime`, rounded down and
+  clamped to them (`valueAt`); before/after the history the nearest record; a truck with no hos
+  record at all gets nulls, never odometer arithmetic. A segment's end reading is floored at its
+  start reading. The segment's `distanceMi` for login/yard pools is now the delta of its own two
+  records (inside an idle gap that is 0 — the hos records leave no room), so the segment and its
+  records agree (D-081).
+- Dry run on M11003 / M11034 / M11156 (rows the generator would write, inserted into a temp table
+  inside a rolled-back transaction, checked with the B-060 lag query over hos rows + new rows):
+  backward odometer steps = 0 / 0 / 0, backward engine-hour steps = 0 / 0 / 0; every new reading
+  sits between its hos neighbours (e.g. M11156 yard#0: prev 468,310 -> 468,317..468,332 -> next
+  468,367, where the old back-cast gave 482,084).
+- `compliance.plan.spec.ts` covers ordering/running max, interpolation bounds, flat gaps, edges
+  and the empty timeline.
+
+**Resolution (hos, 2026-09-15) — the simultaneous-D records:** the 10,072 overlapping D
+intervals had TWO causes, attributed on the dev DB:
+- 9,693 of them on 21 trucks with no pairing at all: `hos.ts` hands the 21 spare units to the 51
+  unassigned drivers round-robin (2-3 drivers per unit), each planned independently. `PlanInput`
+  now takes `busy` (the earlier occupants' ON/D instants on that unit); assigned drivers are
+  planned first, then the unassigned ones in order, each reserving the unit for the next. The
+  planner refuses to start a shift that would run into a reservation (it rests until the
+  reservation ends and re-plans), and drops a live tail that would.
+- 372 on 5 real team trucks: `teamBlock` anchored its 10.5 h legs at the driver's own cursor, so a
+  co-driver whose plan started after the pairing (hired 2026-06-02 for a pairing from 04-20) drove
+  legs offset from the partner's. The timetable is now absolute (`teamTimetable(team.start)`):
+  both roles derive the same leg/restart slots and a late joiner steps into the current slot.
+- `hos-schedule.spec.ts`: late-joining co-driver never overlaps the partner's D on the truck and
+  is resting whenever the partner drives; a spare shared by two drivers has no D overlap and the
+  same seed without `busy` does collide (the guard is what prevents it).
+
+**Accepted, not repaired:** the existing 1,050 `mock-md-*` rows, 5,151 compliance rows and the
+hos records with simultaneous D on 26 trucks stay as they are — `EldEvent` is append-only (no
+UPDATE/DELETE for `eld_dev`) and the coordinator chose not to regenerate. A future full GENERATE
+run (fresh dataset) produces none of them.
 
 ---
 
@@ -1601,7 +1655,7 @@ identical row counts (40 users, 5 custom roles, 59 sessions, 6 api keys, 4000 au
 integrity query — `AuditLog` rows with an `actorId`/`objectId` that doesn't resolve to an existing
 row, across `User` (actor and object), `Role`, and `ApiKey` — returned 0 in every case.
 
-## B-061 — `reports` mock generator: 49 of 59 READY `Report` rows had `fileKey = NULL`, breaking the panel's download button · FIXED
+## B-066 — `reports` mock generator: 49 of 59 READY `Report` rows had `fileKey = NULL`, breaking the panel's download button · FIXED
 **Found:** integrity check flagged 49/59 READY `Report` rows with no `fileKey` (e.g. `fae55f26-…`,
 DVIR/CSV) — `GET /reports/:id/download` 409s (`REPORT_NOT_READY`) for any of them, so a real
 `GET /api/reports` list showing "READY" would have a Download button that fails for most rows.
@@ -1673,7 +1727,7 @@ none at all). Re-verified after every generator run going forward, so this never
 
 ---
 
-## B-062 — `fleet.ts` computed `Defect.resolvedAt`/`Dvir.mechanicSignedAt`/`Dvir.nextDriverReviewedAt`/`WorkOrder.closedAt` as `baseTime + random offset` with no upper-bound check, and the vehicle out-of-service rule was not bidirectionally idempotent across re-runs · FIXED
+## B-067 — `fleet.ts` computed `Defect.resolvedAt`/`Dvir.mechanicSignedAt`/`Dvir.nextDriverReviewedAt`/`WorkOrder.closedAt` as `baseTime + random offset` with no upper-bound check, and the vehicle out-of-service rule was not bidirectionally idempotent across re-runs · FIXED
 **Found:** dev-DB integrity check by the coordinator (2026-09-14) — 13 `Defect.resolvedAt`, 8
 `Dvir.mechanicSignedAt`, 10 `Dvir.nextDriverReviewedAt` and 4 `WorkOrder.closedAt` rows landed
 1–4 days after `now` (2026-09-15..09-18). Separately: seed unit 101 carried 6 `OPEN`+`CRITICAL`
@@ -1725,3 +1779,100 @@ Re-verified after the fix: 0 future timestamps in all four columns; both out-of-
 hold (every `OPEN`+`CRITICAL` defect ⇒ `OUT_OF_SERVICE`, and every `OUT_OF_SERVICE` mock vehicle
 either has one or carries an admin-hold reason) except seed unit 110, a pre-existing seed-owned
 exception (an `IN_PROGRESS`, not `OPEN`, critical brake defect from `seed.ts` itself).
+
+## B-063 — `PATCH /vehicles/:id` (and the same code path via `POST /vehicles/import`) could reactivate a unit out of `OUT_OF_SERVICE` while it still had an OPEN + CRITICAL defect · FIXED
+**Found:** fleet mock agent, 2026-09-14 (flagged inside B-067's writeup, filed separately here since
+it is a real `src/` code bug, not a mock-data issue). Seed unit 101 had 6 OPEN + CRITICAL "Brakes"
+defects raised through the real `POST /mobile/dvir` flow (driver `johnsmith`) but `status: ACTIVE`.
+`MobileDvirService.submit()` (`src/modules/mobile/mobile-dvir.service.ts:55,75-77`) correctly flips
+the vehicle to `OUT_OF_SERVICE` on submission, and `DefectsService.resolve()` correctly restores
+`ACTIVE` once the last OPEN CRITICAL defect clears — but nothing stopped a plain
+`VehiclesService.update()` (`src/modules/vehicles/vehicles.service.ts:61-64`, `toUpdateInput()`)
+from setting `status: 'ACTIVE'` directly, regardless of open defects. That generic update path
+(used by both `PATCH /vehicles/:id` and the upsert-by-unit-number branch of
+`POST /vehicles/import`) is how unit 101 got back to `ACTIVE` without any repair happening.
+`VehiclesService.remove()` (soft-delete to `INACTIVE`) had the same hole.
+**Severity:** CRITICAL — DOT out-of-service rule (49 CFR §396.9) can be silently bypassed from the
+web panel or a bulk import, defeating the hard rule in CLAUDE.md ("an OPEN defect with
+severity=CRITICAL forces `Vehicle.status = OUT_OF_SERVICE` and blocks driver assignment").
+**Fix:** added `VehiclesService.assertStatusChangeAllowed()`, called from `update()`, `remove()`
+and the existing-row branch of `importMany()`, guarding every transition to a non-`OUT_OF_SERVICE`
+status (`ACTIVE` or `INACTIVE`). It queries `VehiclesRepository.findOpenCriticalDefectIds()` (new
+repo method, queries the `Defect` table directly — kept in `VehiclesRepository` rather than
+importing `DefectsRepository` to avoid a `VehiclesModule <-> ServiceModule` import cycle, same
+one-directional-module pattern already used for `DriversModule`) and throws
+`VEHICLE_HAS_OPEN_CRITICAL_DEFECTS` (409, new error code) listing the blocking defect ids when any
+remain open. Transitions *to* `OUT_OF_SERVICE`, and any update that does not touch `status`, skip
+the check entirely (no extra query). `WorkOrdersService`/`DefectsService` were audited and do not
+need the same fix: work orders never write `Vehicle.status` directly, and `DefectsService.resolve()`
+already only *restores* — it does not offer an unguarded path to set an arbitrary status.
+**Files:** `src/common/errors/codes.ts`, `src/modules/vehicles/vehicles.repository.ts`,
+`src/modules/vehicles/vehicles.service.ts`, `src/modules/vehicles/vehicles.controller.ts`.
+**Tests:** `src/modules/vehicles/vehicles.service.spec.ts` (PATCH→ACTIVE/INACTIVE blocked with an
+open critical defect, allowed once resolved, `OUT_OF_SERVICE` itself never blocked, non-status
+edits skip the check, `remove()` blocked, `importMany()` reports a per-row failure instead of
+reactivating), `src/modules/vehicles/vehicles.repository.spec.ts` (new repo method). Full
+vehicles/defects/work-orders/mobile/route-surface suites re-run green (13 suites, 130 tests).
+
+## B-064 — `hos` mock generator hard-deleted `HosViolation` rows on its GENERATE path, giving every violation a new id per re-run and orphaning `Notification`/`AuditLog` references · FIXED
+**Found:** 2026-09-14/15, reported by the reports agent (root cause of B-062's orphans).
+`prisma/mock/generators/hos.ts` ran `hosViolation.deleteMany({ driverId in mock, type in ENGINE_TYPES })`
+before re-running the real `HosRecalcService`. Production never does this: `HosRecalcRepository.upsertViolation`
+writes on the stable key `@@unique([driverId, logDate, type])` and `hos-violation-plan.ts` AUTO_CLEARs
+instead of deleting. Effects of the delete: (1) new ids → `Notification.objectId` /
+`AlertDelivery.subjectId` (`objectType='HosViolation'`) and append-only `AuditLog` rows about a resolve
+point at nothing (10–21 orphans observed in dev); (2) human/compliance `RESOLVED` state was wiped and
+re-rolled from a single RNG stream over the current OPEN list, so even the mock "resolved" set differed
+between runs.
+**Severity:** Medium (dev-data integrity only; `src/` unaffected).
+**Fix (`prisma/mock/generators/hos.ts`):**
+1. The `deleteMany` is gone. Both GENERATE and REFRESH leave every `HosViolation` row to the real
+   recalc's upsert / auto-clear / refresh-resolved path; the generator only detaches `dailyLogId`
+   (headers are rebuilt) and `finish()` re-links it.
+2. The manager-resolve step is now `resolveOlderViolations()`: the 30 % draw is seeded per stable key
+   `(driverId, logDate, type)` and written with `updateMany` by that key with `status: 'OPEN'` in the
+   predicate — a re-run makes the same decision, never touches RESOLVED / AUTO_CLEARED rows, creates
+   nothing.
+3. `MOCK_HOS_DRIVERS=mock_a,mock_b` refreshes only those drivers (refused in GENERATE mode, which plans
+   all drivers together) so idempotency can be checked without a 500k-event pass.
+**Verified:** `hos.violations.spec.ts` (6 tests, fake prisma: no delete/create calls in `hos.ts`,
+second run = 0 changes, RESOLVED/AUTO_CLEARED untouched, keyed draw stable under reordering). Live dev
+DB, 3 drivers (`MOCK_HOS_DRIVERS`): two consecutive `db:mock hos` runs → 49 rows, identical ids,
+statuses, `exceededBySec`, `resolvedById`, `resolutionNote`; all 21 RESOLVED rows preserved; orphan
+notification count unchanged at 10 (those pre-existing orphans are left for
+`reports.repairOrphanedHosViolationLinks`). `hos-schedule.spec.ts` still passes; the three mock files
+type-check clean under the project tsconfig.
+
+## B-068 — `GET /dvir` cold ~4.7s: no index on `Dvir.submittedAt`, unfiltered default listing forced a full seq scan + in-memory sort of the whole table · FIXED
+**Found:** 2026-09-16, web perf audit (`GET /api/dvir` measured 4.77s cold / ~0.4s warm on a
+37k-row / 47MB `Dvir` table).
+**Root cause:** `DvirAdminService.list()` defaults to `orderBy: { submittedAt: 'desc' }` with no
+filter. The existing indexes (`[vehicleId, submittedAt]`, `[driverId, submittedAt]`,
+`[repairStatus]`) don't help an unfiltered scan/sort — `EXPLAIN ANALYZE` showed `Seq Scan on
+"Dvir"` (cost ~4298) feeding a `Sort` node. Cheap once the table's pages are in Postgres's buffer
+cache, expensive (multi-second) the first time they have to come from disk.
+**Fix:** added a plain `@@index([submittedAt])` (`prisma/schema.prisma`, migration
+`20260916070000_dvir_submitted_at_index`). `EXPLAIN ANALYZE` after the index: `Index Scan using
+Dvir_submittedAt_idx` (cost ~8.9), execution time 61ms → 0.7ms for the same default page query.
+**Verified:** cold curl against a freshly booted API instance measured 461ms (first request,
+includes app/Prisma warm-up) then 42ms on the second — well under the 500ms target. Migration
+applied to the dev DB via `prisma migrate resolve --applied` (see decisions.md D-083 for why
+`prisma migrate dev` itself couldn't be used) and `prisma migrate status` reports "Database schema
+is up to date".
+
+## B-069 — `GET /users` shipped every role's full `permissions` JSON blob (plus `passwordHash`, `googleUid`, `invitedById`, …) on every row of the W-18 Users list · FIXED
+**Found:** 2026-09-16, web perf audit (`GET /api/users` measured 162 KB for 161 rows).
+**Root cause:** `UsersRepository.listWithRoles()` used `include: { role: true }`, which pulls
+`Role.permissions` (a ~20-key JSON object) in full for every user row, duplicated per row. The
+W-18 `UsersPage.tsx` table/detail only reads `id, email, firstName, lastName, jobTitle, phone,
+status, lastActiveAt, invitedAt, createdAt, role.{id,key,name}`.
+**Fix:** `UsersRepository.listWithRoles()` now uses a Prisma `select` (see `LIST_SELECT`) instead
+of `include`, returning exactly those fields; `UsersService.list()` passes the rows straight
+through (no `passwordHash` to strip anymore — it was never selected). `GET /users/:id` is
+unchanged and still returns the full row (incl. role permissions) for the edit view.
+**Verified:** `src/modules/users/users.{service,repository}.spec.ts` updated and green. Live
+measurement against a freshly booted API: 58.6 KB for the same 161-row dev-mock dataset (down
+from 162 KB, -64%). Note: 161 rows is this DB's `db:mock` dataset (200-driver mock plus
+deleted-user placeholders), not the "small user list" the brief pictured — <20 KB is not reachable
+for 161 real, human-legible rows without pagination or response compression (this backend has no
+`compression()` middleware on any route; flagged as a follow-up, out of scope here).

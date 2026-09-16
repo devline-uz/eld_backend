@@ -200,9 +200,11 @@ export class UnidentifiedService {
       },
       detail: 'Unidentified driving assigned; recordOrigin stays 1 (TZ §23, §7.4).',
     });
-    // B-059 — the attributed driving changes the driver's day totals (and the next day's when it
-    // runs past midnight); `hasUnassigned` drops now that the segment is no longer PENDING.
-    await this.logs.rebuildDailyLogsForSpan(driver.id, segment.startAt, segment.endAt);
+    // B-050 / B-059 — the attributed driving changes the driver's RODS: every day the segment
+    // touches loses its certification (§395.8(f), re-certification required), the day totals are
+    // rebuilt (plus the next day's when it runs past midnight) and `hasUnassigned` drops now that
+    // the segment is no longer PENDING. Same hook as an accepted edit (`LogsService`).
+    await this.logs.recordLogChange(driver.id, timezone, segment.startAt, segment.endAt);
     await this.enqueueRecalc(driver.id, dayKey(timezone, segment.startAt));
     await this.events.publish('unidentified.assigned', {
       segmentId: id,
@@ -304,8 +306,9 @@ export class UnidentifiedService {
       after: { status: 'REJECTED', assignedDriverId: null, recordOrigin: RECORD_ORIGIN.UNIDENTIFIED },
       detail: 'Assignment rejected; records returned to the unidentified pool (recordOrigin 4, driverId null).',
     });
-    // B-059 — the driving leaves this driver's log again: rebuild the same span's totals.
-    await this.logs.rebuildDailyLogsForSpan(driverId, segment.startAt, segment.endAt);
+    // B-050 / B-059 — the driving leaves this driver's log again: void the same span's
+    // certification and rebuild its totals.
+    await this.logs.recordLogChange(driverId, timezone, segment.startAt, segment.endAt);
     await this.enqueueRecalc(driverId, dayKey(timezone, segment.startAt));
     await this.events.publish('unidentified.rejected', { segmentId: id, driverId });
 

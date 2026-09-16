@@ -9,9 +9,24 @@ describe('UsersRepository', () => {
     repo = new UsersRepository({ user } as never);
   });
 
-  it('listWithRoles includes role and orders by createdAt desc', async () => {
+  it('listWithRoles selects the lean W-18 fields (no passwordHash/permissions) and orders by createdAt desc', async () => {
     await repo.listWithRoles();
-    expect(user.findMany).toHaveBeenCalledWith({ include: { role: true }, orderBy: { createdAt: 'desc' } });
+    expect(user.findMany).toHaveBeenCalledWith({
+      select: {
+        id: true,
+        email: true,
+        firstName: true,
+        lastName: true,
+        jobTitle: true,
+        phone: true,
+        status: true,
+        lastActiveAt: true,
+        invitedAt: true,
+        createdAt: true,
+        role: { select: { id: true, key: true, name: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
   });
 
   it('findByIdWithRole queries by id with role included', async () => {

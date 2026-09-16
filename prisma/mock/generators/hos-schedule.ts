@@ -122,8 +122,19 @@ export interface PlanInput {
   now: number;
   vehicleId: string | null;
   teams: TeamWindow[];
+  /**
+   * Instants when `vehicleId` is already taken by another driver's plan (sorted, non-overlapping).
+   * A solo shift is never placed across one of them: a spare unit shared by several unassigned
+   * drivers can only be driven by one of them at a time (B-060).
+   */
+  busy?: Interval[];
   tail: TailTarget | null;
   rates: InjectRates;
+}
+
+export interface Interval {
+  start: number;
+  end: number;
 }
 
 export interface Plan {
@@ -366,6 +377,18 @@ export class Planner {
         : this.normalShift();
     }
 
+    // Shared unit guard (B-060): the whole shift must fit before the next reservation on the
+    // truck; otherwise keep resting until that reservation is over and plan again from there.
+    const span = parts.reduce((sum, p) => sum + p.dur, 0);
+    if (this.vehicleFor(at) === this.input.vehicleId) {
+      const clash = this.busyClash(at, at + span);
+      if (clash) {
+        const rest = this.lastRestStatusBefore(at);
+        this.restUntil(clash.end + 15 * M, rest.status, rest.tag);
+        return false;
+      }
+    }
+
     // Cycle guard (§395.3(b)) — conservative: the planned on-duty time is billed against a
     // window one day wider than the engine's, so a shift that crosses midnight still fits.
     const need = parts.reduce((sum, p) => sum + (effective(p.status, p.special) === 'ON' || effective(p.status, p.special) === 'D' ? p.dur : 0), 0);
@@ -574,7 +597,11 @@ export class Planner {
 
   /**
    * Team driving: 10.5 h legs alternate between the two co-drivers while the other is in the
-   * berth; a 34 h restart for both after ten legs. Deterministic (no rng) so both roles agree.
+   * berth; a 34 h restart for both after ten legs. The timetable is ABSOLUTE — anchored at
+   * `team.start`, not at this driver's cursor — so a co-driver whose plan begins later (hired after
+   * the pairing started, back from vacation) joins the same legs instead of a shifted copy of them
+   * that would have both drivers in D on one truck (B-060). Deterministic (no rng), so both roles
+   * agree.
    */
   private teamBlock(team: TeamWindow): void {
     this.restUntil(team.start, 'OFF', 'HOME');
@@ -586,25 +613,36 @@ export class Planner {
       { status: 'ON', special: 'NONE', dur: 30 * M, tag: 'POST_TRIP' },
     ];
     const limit = Math.min(team.end, this.input.end);
-    let t = team.start;
-    for (let leg = 0; t < limit; leg += 1) {
+    for (const slot of teamTimetable(team.start, limit)) {
       // A window ending at a millisecond instant (e.g. `now`) can leave a sub-second remainder that
-      // `pushSeg` rounds away — stop instead of spinning on a leg that cannot advance the cursor.
+      // `pushSeg` rounds away — stop instead of spinning on a slot that cannot advance the cursor.
       if (limit - this.cursor < 1000) break;
+      if (slot.end <= this.cursor) continue;
       const before = this.cursor;
-      if (leg > 0 && leg % 10 === 0) {
-        this.pushSeg('OFF', 'NONE', Math.min(34 * H, limit - t), 'RESTART', true);
-        t = this.cursor;
-        if (t >= limit) break;
+      if (slot.kind === 'RESTART') {
+        this.pushSeg('OFF', 'NONE', slot.end - this.cursor, 'RESTART', true);
+      } else if (slot.driver === team.role) {
+        // Legs are placed inside their own slot: even a late-joining driver's D stays within the
+        // slot the other driver spends in the berth.
+        this.placeParts(work, slot.end, true);
+        this.lastWorkEnd = this.cursor;
+      } else {
+        this.pushSeg('SB', 'NONE', slot.end - this.cursor, 'TEAM_SB', true);
       }
-      const working = (leg % 2 === 0) === (team.role === 'A');
-      if (working) this.placeParts(work, limit, true);
-      else this.pushSeg('SB', 'NONE', Math.min(10.5 * H, limit - t), 'TEAM_SB', true);
-      if (working) this.lastWorkEnd = this.cursor;
-      t = this.cursor;
       if (this.cursor === before) break;
     }
     this.cursor = Math.max(this.cursor, limit);
+  }
+
+  /** The busy interval on the solo unit that [from, to) runs into, or null. */
+  private busyClash(from: number, to: number): Interval | null {
+    const busy = this.input.busy;
+    if (!busy?.length) return null;
+    for (const b of busy) {
+      if (b.start >= to) break;
+      if (b.end > from) return b;
+    }
+    return null;
   }
 
   // ---- tail: the driver's state right now ----------------------------------------------------
@@ -649,7 +687,7 @@ export class Planner {
       const restStatus: DutyStatus = status === 'SB' ? 'SB' : 'OFF';
       this.tailRest = { status: restStatus, tag: tail.nearLimit ? 'HOME' : 'REST' };
     }
-    const blocked = teams.some((w) => w.end > this.tailStart - 40 * H);
+    const blocked = teams.some((w) => w.end > this.tailStart - 40 * H) || this.busyClash(this.tailStart, now + H) !== null;
     if (this.tailStart < start + 3 * DAY || blocked) {
       this.tailStart = Infinity;
       this.tailParts = [];
@@ -750,6 +788,36 @@ export class Planner {
     }
     return out;
   }
+}
+
+export interface TeamSlot {
+  kind: 'LEG' | 'RESTART';
+  start: number;
+  end: number;
+  /** LEG only — the role that drives this leg; the other role is in the berth. */
+  driver: 'A' | 'B' | null;
+}
+
+/**
+ * The shared team timetable from `teamStart` up to `limit`: ten 10.5 h legs (A drives the even
+ * ones, B the odd ones), then a 34 h restart for both, repeated. Both co-drivers derive their
+ * slots from the same anchor, so their driving can never overlap on the truck.
+ */
+export function teamTimetable(teamStart: number, limit: number): TeamSlot[] {
+  const out: TeamSlot[] = [];
+  let t = teamStart;
+  for (let leg = 0; t < limit; leg += 1) {
+    if (leg > 0 && leg % 10 === 0) {
+      const end = Math.min(t + 34 * H, limit);
+      out.push({ kind: 'RESTART', start: t, end, driver: null });
+      t = end;
+      if (t >= limit) break;
+    }
+    const end = Math.min(t + 10.5 * H, limit);
+    out.push({ kind: 'LEG', start: t, end, driver: leg % 2 === 0 ? 'A' : 'B' });
+    t = end;
+  }
+  return out;
 }
 
 export function planDriver(rng: MockRng, input: PlanInput): Plan {

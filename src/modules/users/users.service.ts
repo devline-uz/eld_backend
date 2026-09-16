@@ -3,7 +3,7 @@ import { AppException } from '../../common/errors/app.exception';
 import { AuthService } from '../auth/auth.service';
 import { RolesRepository } from '../roles/roles.repository';
 import { CreateUserDto, UpdateMyProfileDto, UpdateUserDto } from './dto/users.dto';
-import { UsersRepository, UserWithRole } from './users.repository';
+import { UserListItem, UsersRepository, UserWithRole } from './users.repository';
 
 export type UserView = Omit<UserWithRole, 'passwordHash'>;
 
@@ -27,8 +27,10 @@ export class UsersService {
     private readonly auth: AuthService,
   ) {}
 
-  async list(): Promise<UserView[]> {
-    return (await this.users.listWithRoles()).map(toView);
+  /** W-18 Users table — trimmed payload (TZ perf plan item 2): no `passwordHash`, no
+   * `Role.permissions` blob. Full detail (incl. role permissions) is `GET /users/:id`. */
+  async list(): Promise<UserListItem[]> {
+    return this.users.listWithRoles();
   }
 
   async get(id: string): Promise<UserView> {

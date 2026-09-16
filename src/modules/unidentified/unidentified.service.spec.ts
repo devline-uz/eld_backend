@@ -103,7 +103,7 @@ function build() {
   const audit = { insert: jest.fn(async () => ({})) };
   const events = { publish: jest.fn(async () => undefined) };
   const hosQueue = { add: jest.fn(async () => ({})) };
-  const logs = { rebuildDailyLogsForSpan: jest.fn(async () => 2) };
+  const logs = { recordLogChange: jest.fn(async () => ['2026-06-01']) };
   const service = new UnidentifiedService(
     repo as unknown as UnidentifiedRepository,
     writer as unknown as RodsEventWriter,
@@ -112,7 +112,7 @@ function build() {
     hosQueue as never,
     logs as unknown as LogsService,
   );
-  return { service, repo, writer, audit, hosQueue, logs };
+  return { service, repo, writer, audit, events, hosQueue, logs };
 }
 
 const actor = { id: 'user-1', type: 'user' as const };
@@ -177,22 +177,41 @@ describe('assignment', () => {
   it('B-059: rebuilds the driver day headers over the segment span after the records are written', async () => {
     const { service, writer, repo, logs } = build();
     await service.assign('seg-1', { driverId: DRIVER }, actor);
-    expect(logs.rebuildDailyLogsForSpan).toHaveBeenCalledWith(
+    // B-050 — the rebuild is now part of `LogsService.recordLogChange` (void + rebuild + publish).
+    expect(logs.recordLogChange).toHaveBeenCalledWith(
       DRIVER,
+      'America/New_York',
       new Date('2026-06-01T12:00:00Z'),
       new Date('2026-06-01T13:00:00Z'),
     );
     // After both appends and after the segment left PENDING, so hasUnassigned is rebuilt correctly.
-    const rebuildOrder = logs.rebuildDailyLogsForSpan.mock.invocationCallOrder[0];
+    const rebuildOrder = logs.recordLogChange.mock.invocationCallOrder[0];
     expect(rebuildOrder).toBeGreaterThan(writer.append.mock.invocationCallOrder[1]);
     expect(rebuildOrder).toBeGreaterThan(repo.updateSegment.mock.invocationCallOrder[0]);
+  });
+
+  // bugs.md B-050 — the attributed driving changes a (possibly certified) RODS day: §395.8(f)/§9.2
+  // require re-certification, through the same hook an accepted edit uses (`LogsService`).
+  it('B-050: voids the certification of every day the assigned segment touches', async () => {
+    const { service, writer, repo, logs, events } = build();
+    await service.assign('seg-1', { driverId: DRIVER }, actor);
+    expect(logs.recordLogChange).toHaveBeenCalledWith(
+      DRIVER,
+      'America/New_York',
+      new Date('2026-06-01T12:00:00Z'),
+      new Date('2026-06-01T13:00:00Z'),
+    );
+    const order = logs.recordLogChange.mock.invocationCallOrder[0];
+    expect(order).toBeGreaterThan(writer.append.mock.invocationCallOrder[1]);
+    expect(order).toBeGreaterThan(repo.updateSegment.mock.invocationCallOrder[0]);
+    expect(events.publish).toHaveBeenCalledWith('unidentified.assigned', expect.objectContaining({ driverId: DRIVER }));
   });
 
   it('B-059: a refused assignment rebuilds nothing', async () => {
     const { service, repo, logs } = build();
     repo.segment = { ...repo.segment, status: 'ASSIGNED', assignedDriverId: DRIVER };
     await expect(service.assign('seg-1', { driverId: DRIVER }, actor)).rejects.toMatchObject({ status: 409 });
-    expect(logs.rebuildDailyLogsForSpan).not.toHaveBeenCalled();
+    expect(logs.recordLogChange).not.toHaveBeenCalled();
   });
 
   it('refuses to assign a segment twice', async () => {
@@ -239,8 +258,21 @@ describe('rejection', () => {
     const { service, repo, logs } = build();
     repo.segment = { ...repo.segment, status: 'ASSIGNED', assignedDriverId: DRIVER };
     await service.reject('seg-1', { reason: 'Not this driver' }, actor);
-    expect(logs.rebuildDailyLogsForSpan).toHaveBeenCalledWith(
+    expect(logs.recordLogChange).toHaveBeenCalledWith(
       DRIVER,
+      'America/New_York',
+      new Date('2026-06-01T12:00:00Z'),
+      new Date('2026-06-01T13:00:00Z'),
+    );
+  });
+
+  it('B-050: voids the certification of every day the rejected segment touched', async () => {
+    const { service, repo, logs } = build();
+    repo.segment = { ...repo.segment, status: 'ASSIGNED', assignedDriverId: DRIVER };
+    await service.reject('seg-1', { reason: 'Not this driver' }, actor);
+    expect(logs.recordLogChange).toHaveBeenCalledWith(
+      DRIVER,
+      'America/New_York',
       new Date('2026-06-01T12:00:00Z'),
       new Date('2026-06-01T13:00:00Z'),
     );
@@ -250,7 +282,7 @@ describe('rejection', () => {
     const { service, writer, audit, logs } = build();
     const view = await service.reject('seg-1', {}, actor);
     expect(view.status).toBe('REJECTED');
-    expect(logs.rebuildDailyLogsForSpan).not.toHaveBeenCalled();
+    expect(logs.recordLogChange).not.toHaveBeenCalled();
     expect(writer.rows).toHaveLength(0);
     expect(audit.insert).toHaveBeenCalledWith(expect.objectContaining({ action: 'UNIDENTIFIED_REJECTED' }));
   });

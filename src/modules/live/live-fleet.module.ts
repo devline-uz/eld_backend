@@ -9,5 +9,6 @@ import { LiveFleetService } from './live-fleet.service';
   imports: [HosRecalcModule],
   controllers: [LiveFleetController],
   providers: [LiveFleetService, LiveFleetRepository],
+  exports: [LiveFleetService],
 })
 export class LiveFleetModule {}

@@ -87,6 +87,9 @@ export const envSchema = z.object({
   /** Worker container has no HTTP stack of its own (§3.3) — this is its own health/metrics
    * listener, separate from the API's PORT, so both containers can be probed independently. */
   WORKER_HEALTH_PORT: z.coerce.number().int().positive().default(3002),
+  /** Bind address for the worker's bare-http health/metrics listener; default keeps
+   * prior behaviour (all interfaces) but ops can pin it to loopback behind a proxy. */
+  WORKER_HEALTH_HOST: z.string().min(1).default('0.0.0.0'),
 
   // --- misc ----------------------------------------------------------------
   SEED_ANCHOR_DATE: z.string().optional(),

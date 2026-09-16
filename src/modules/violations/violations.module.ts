@@ -9,5 +9,6 @@ import { ViolationsService } from './violations.service';
   imports: [AuditModule],
   controllers: [ViolationsController],
   providers: [ViolationsService, ViolationsRepository],
+  exports: [ViolationsService],
 })
 export class ViolationsModule {}

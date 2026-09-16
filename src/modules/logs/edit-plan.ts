@@ -189,6 +189,12 @@ export function planDriverSelfEdit(proposal: ProposalInput, target?: EditTarget)
       annotation: proposal.annotation,
     });
     if (needsNeutralizer(target, proposal)) {
+      // bugs.md B-049 — a driver-entered (origin 2) driving record is manual driving time
+      // (§395.26(b)). `checkDriverSelfEdit` refuses this shape with EXTENDS_DRIVING before the
+      // planner runs; this is the invariant that keeps any other caller honest.
+      if (proposal.statusBeforeTarget === 'D') {
+        throw new Error('planDriverSelfEdit: a driver edit cannot back-fill a gap with driving time (B-049)');
+      }
       rows.push({
         kind: 'NEUTRALIZE',
         eventType: DUTY,

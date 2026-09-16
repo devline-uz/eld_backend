@@ -224,3 +224,64 @@ describe('outcomes', () => {
     }
   });
 });
+
+describe('vehicle odometer timeline for appended records (B-060)', () => {
+  const t0 = new Date('2026-05-01T00:00:00Z');
+  const at = (h: number): Date => new Date(t0.getTime() + h * HOUR);
+  // hos records: parked (flat) 0-6 h, a 200 mi leg 6-10 h, parked again, a later leg 20-24 h
+  const hos = [
+    { at: at(0), miles: 100_000, engineHours: 5_000 },
+    { at: at(6), miles: 100_000, engineHours: 5_000.5 },
+    { at: at(10), miles: 100_200, engineHours: 5_005.75 },
+    { at: at(20), miles: 100_200, engineHours: 5_006 },
+    { at: at(24), miles: 100_450, engineHours: 5_011.2 },
+  ];
+
+  it('sorts unordered rows and never lets a reading step back', () => {
+    const tl = P.buildVehicleTimeline([hos[3], hos[0], { at: at(12), miles: 99_000, engineHours: 4_000 }, hos[2], hos[1], hos[4]]);
+    expect(tl.mi.map((p) => p.value)).toEqual([100_000, 100_000, 100_200, 100_200, 100_200, 100_450]);
+    expect(tl.eh.map((p) => p.value)).toEqual([5_000, 5_000.5, 5_005.75, 5_005.75, 5_006, 5_011.2]);
+    for (let i = 1; i < tl.mi.length; i += 1) expect(tl.mi[i].at).toBeGreaterThanOrEqual(tl.mi[i - 1].at);
+  });
+
+  it('interpolates between the surrounding hos records and stays inside them', () => {
+    const tl = P.buildVehicleTimeline(hos);
+    const mid = P.readingAt(tl, at(8));
+    expect(mid.totalVehicleMiles).toBe(100_100);
+    expect(mid.totalEngineHours).toBeCloseTo(5_003.12, 2);
+    // inside an idle gap the reading is flat: a pool there cannot push the odometer past the next record
+    const gapStart = P.readingAt(tl, at(14));
+    const gapEnd = P.readingAt(tl, at(15), gapStart);
+    expect(gapStart.totalVehicleMiles).toBe(100_200);
+    expect(gapEnd.totalVehicleMiles).toBe(100_200);
+    // a sweep of instants never decreases and is always bracketed by the neighbours
+    let prev = -Infinity;
+    for (let h = -2; h <= 26; h += 0.25) {
+      const r = P.readingAt(tl, at(h));
+      expect(r.totalVehicleMiles).toBeGreaterThanOrEqual(prev);
+      prev = r.totalVehicleMiles as number;
+      const lo = [...hos].reverse().find((x) => x.at.getTime() <= at(h).getTime())?.miles ?? hos[0].miles;
+      const hi = hos.find((x) => x.at.getTime() >= at(h).getTime())?.miles ?? hos[hos.length - 1].miles;
+      expect(r.totalVehicleMiles).toBeGreaterThanOrEqual(lo);
+      expect(r.totalVehicleMiles).toBeLessThanOrEqual(hi);
+    }
+  });
+
+  it('uses the nearest record outside the history and nulls without any', () => {
+    const tl = P.buildVehicleTimeline(hos);
+    expect(P.readingAt(tl, at(-48)).totalVehicleMiles).toBe(100_000);
+    expect(P.readingAt(tl, at(200)).totalVehicleMiles).toBe(100_450);
+    expect(P.readingAt(tl, at(200)).totalEngineHours).toBe(5_011.2);
+    expect(P.readingAt(P.buildVehicleTimeline([]), at(5))).toEqual({ totalVehicleMiles: null, totalEngineHours: null });
+    const milesOnly = P.buildVehicleTimeline([{ at: at(0), miles: 10, engineHours: null }]);
+    expect(P.readingAt(milesOnly, at(1))).toEqual({ totalVehicleMiles: 10, totalEngineHours: null });
+  });
+
+  it('the floor keeps a segment\'s own end at or above its start', () => {
+    const tl = P.buildVehicleTimeline(hos);
+    const start = { totalVehicleMiles: 100_150, totalEngineHours: 5_004 };
+    const end = P.readingAt(tl, at(7), start);
+    expect(end.totalVehicleMiles).toBe(100_150);
+    expect(end.totalEngineHours).toBe(5_004);
+  });
+});

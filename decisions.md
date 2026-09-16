@@ -13,6 +13,10 @@ append-only `AuditLog`) → **D-075**. The earliest-written entries keep D-016 (
 prefix filter) and D-057 (`safety-comms` mock generator). Renumbered entries stay in place. The
 next free number is **D-076**.
 
+2026-09-15 (second pass): re-parsed every `## D-0NN` heading — no new collisions (D-076..D-079 are
+each used once; the "Superseded — original D-048" sub-heading is part of the single D-048 entry).
+The next free number is **D-083** (D-080..D-082 used once each).
+
 ---
 
 ## D-057 — `safety-comms` mock generator: coaching = `SafetyEvent` fields, ticket replies = inline text, notification identity by `type`
@@ -1839,3 +1843,132 @@ id-instability bug (in this generator or another) gets the same automatic repair
 **Dashboard/FMCSA batch equivalent:** the FMCSA pack screen (W-15) and the fleet dashboard both need this same per-driver/date-range shape (they already appear in the brief's contract as consumers), so no separate endpoint was added — `GET /reports/activity/summary` with `driverId` omitted (all drivers) and a 1-day `from=to=today` range covers "today's duty-status totals across the fleet" for the dashboard; `/drivers/roster` and `/live/fleet` answer *current* duty status/position, not day-level totals, so they are not substitutes. Nothing beyond `activity/summary` was built, per the brief's "don't build more than the activity summary unless it's trivial."
 **Measured (dev DB, 200+ mock drivers, `connection_limit=2`):** 14-day range ≈ 210–260 ms warm (a lone 714 ms first/cold call, still < 1 s); 90-day range ≈ 52–57 ms warm. `EXPLAIN ANALYZE` on the `DailyLog` scan shows a bitmap index scan on the existing `DailyLog_logDate_idx` (~7 ms execution for a 14-day/3,483-row scan) — no new index needed.
 **Why:** matches the brief's explicit instruction ("compute in SQL from DailyLog... do not load events into memory"), stays consistent with the one place headers are derived (D-076), and keeps the KPI/period-delta contract exact (`web/backend-gaps.md` B-46) without adding a second, drifting aggregation path alongside the CSV export.
+
+## D-079 — Where to enforce "no non-OOS status while an OPEN CRITICAL defect exists", and whether `INACTIVE` counts (2026-09-15)
+**Problem:** B-063 — `VehiclesService.update()` let a plain `PATCH { status: 'ACTIVE' }` undo the
+out-of-service hard rule. Needed one place to enforce "no transition off `OUT_OF_SERVICE` while an
+OPEN + CRITICAL defect remains" across every caller (`update`, `remove`, `importMany`), plus a
+decision on whether the soft-delete target status (`INACTIVE`) is exempt.
+**Options for where the check lives:**
+1. Duplicate the open-critical-defect check inside each of `update`/`remove`/`importMany`. Rejected
+   — exactly the kind of drift that let this bug in in the first place (one path enforced it,
+   another didn't); a single private guard called from all three is the only way to guarantee they
+   stay in sync as the module evolves.
+2. Put the check in `DefectsService` and have `VehiclesService` depend on it. Rejected — would
+   create a `VehiclesModule -> ServiceModule -> VehiclesModule` cycle (`ServiceModule` already
+   imports `VehiclesModule` one-directionally for the restore-on-resolve flow). Chose instead to add
+   `VehiclesRepository.findOpenCriticalDefectIds()`, a direct (but narrow, read-only, single-purpose)
+   query against the `Defect` table from inside `VehiclesRepository` — the same "repo can read a
+   related table without owning it" shape already used by `DefectsService`/`WorkOrdersService`
+   reading `VehiclesRepository` from the other side.
+3. Auto-restore `ACTIVE` when the last critical defect clears, versus require an explicit `PATCH`.
+   **No change** — `DefectsService.resolve()` already auto-restores (pre-existing, correct); this
+   task only closes the *reverse* hole (manual override), it does not add a second auto-restore
+   path.
+**Decision on `INACTIVE`:** treat it the same as `ACTIVE` — blocked while an OPEN CRITICAL defect
+exists. Reasoning: `VehiclesService.assignDriver()`'s out-of-service check only tests
+`status === 'OUT_OF_SERVICE'`; if `INACTIVE` were allowed as an escape hatch, flipping a unit to
+`INACTIVE` and back to `ACTIVE` later would still be blocked by this same guard, but *anything else
+in the codebase that treats `INACTIVE` as "not currently in the fleet, no need to check"* (e.g. a
+future report or dispatch view) would misrepresent a unit that is actually unsafe to drive as merely
+"paused" rather than "must not move." Keeping the enum's only non-OOS states symmetric under this
+rule is simpler to reason about and to audit than carving out an exception. Applied to
+`VehiclesService.remove()` (soft-delete to `INACTIVE`, bugs.md B-009) as well, for the same reason.
+**Error contract:** new code `VEHICLE_HAS_OPEN_CRITICAL_DEFECTS` (409), payload
+`{ vehicleId, blockingDefectIds: string[] }`, appended to `ERROR_CODES` (§20 registry, append-only)
+next to `VEHICLE_OUT_OF_SERVICE`. Rejected attempts are not separately audited — consistent with
+`assignDriver()`'s existing `VEHICLE_OUT_OF_SERVICE` refusal, which also isn't audited on failure
+(`AuditInterceptor` only fires on the success branch of `next.handle()`); adding one-off audit-on-
+reject logic here would be the odd one out, not the consistent one.
+**Why:** closes the exact regression path B-063 documents, without introducing a module cycle or a
+second, inconsistent enforcement point.
+
+## D-080 — B-049 / B-050: refuse "extends driving" self-edits outright, and one `recordLogChange` hook for every writer of §395 records (2026-09-15)
+**Problem (B-049):** a driver self-edit moving the record that follows DRIVING later left the gap `[original, proposed start)` on the status before the original — `D`, written with `recordOrigin = 2`. §395.26(b)/§395.30: driver edits never add driving time; driving is ELD-recorded (the assumed-unidentified path is the only exception).
+**Options:** (a) refuse with `422 DRIVING_TIME_IMMUTABLE`; (b) silently fill the gap with the record's own status (a no-op edit that lies about what was applied); (c) fill the gap with OFF (invents a status the driver never asserted). **Choice: (a)**, new reason `EXTENDS_DRIVING`, checked in the pure `checkDriverSelfEdit` (via `TargetEvent.statusBefore`) and guarded by an invariant in `planDriverSelfEdit`. The driver still has a compliant path: insert an OFF/SB/ON interval starting at the original instant (`RESTORE` re-states the following status; no driving row is ever emitted). The carrier request path (`planAcceptEdit`, origin 3) is deliberately unchanged — an accepted carrier edit may EXTEND driving under §395.30(c)(2). Moving the record EARLIER remains allowed (no gap; `OVERLAPS_DRIVING` still protects the driving interval).
+**Problem (B-050):** `UnidentifiedService.assign/reject` changed a driver's records without voiding certification; `afterLogChange` was private to `LogsService`.
+**Options:** (a) call `repo.invalidateCertification` from the unidentified module (a second, drifting copy of the §9.2 rule); (b) make `afterLogChange` public with its `AppendRow[]` signature (leaks the edit-plan shape); (c) one public span-based hook. **Choice: (c)** `LogsService.recordLogChange(driverId, timezone, from, to)`: void every RODS day in the span (home-terminal zone; a span past midnight voids both days, days in between too), rebuild headers (B-059), publish `log.changed`, return the keys. `afterLogChange` delegates to it; each caller queues `hos.recalc` itself. Voiding is by span, not by the instants of the appended rows, which also fixes a multi-day self-edit interval leaving the days in between certified.
+**Why:** one rule, one writer, same behaviour for edit acceptance, self-edit, mobile sync and unidentified assign/reject; no HOS engine change, no `prisma/mock` change. `hasEdits` stays sticky. `recertificationRequired` on the day view already derives from `hasEdits && !certified`.
+
+
+## D-081 — B-060: compliance pool records take the truck's hos odometer, even when that leaves the segment with 0 mi (2026-09-15)
+
+**Problem.** `compliance` invents unidentified-driving pools (login-forgotten moves, yard moves)
+at instants the hos generator planned as idle. Their two records need `totalVehicleMiles`; the
+old back-cast from `Vehicle.odometerMi` was on an unrelated base and produced 5,151 backward
+odometer steps. Interpolating on the hos timeline is monotone by construction, but inside an idle
+gap prev == next, so the pool's records cannot carry the planned 20-110 mi without making the
+next hos record step backwards.
+
+**Options.** (a) interpolate and keep the planned `distanceMi` on the segment (records say 0 mi,
+segment says 40 mi); (b) interpolate and derive `distanceMi` from the records (mostly 0 mi for
+login/yard pools, real values for hos-sourced pools); (c) shift the following hos records — not
+possible, `EldEvent` is append-only and those rows are not this generator's.
+
+**Choice.** (b). Rationale: `totalVehicleMiles` is what the DOT output file, IFTA and the
+§4.3 odometer diagnostic read, so it must be monotone; a segment whose header disagrees with its
+own records would be a second, subtler inconsistency. The demo loses road-length unidentified
+segments only for the invented pools; the hos-sourced pools (origin 4 episodes with real leg
+miles) keep their distances. `totalEngineHours` is now written on the same basis (it was null).
+
+## D-082 — Dev live simulator (`db:mock:live`) drives the fleet through the real HTTP ingest path with locally minted driver JWTs, not through table writes (2026-09-15)
+
+**Problem.** The mock dataset (D-055) is a snapshot; `/live/fleet` reads "last seen 2 h ago"
+within an hour and nothing moves, so manual testing of the map, HOS clocks and the realtime feed
+cannot see the live behaviour. Something has to keep producing telemetry and duty changes for the
+`mock_*` fleet in dev.
+
+**Options.** (a) write `TelemetryPoint`/`EldEvent` rows directly (fast, but skips validation,
+sequence allocation, checksum/odometer/drift checks, `hos.recalc` and the Socket.IO push — which
+is in-process (`EventBusService`), so nothing would ever reach a browser); (b) boot a Nest
+application context and call `IngestService` in-process (exercises the service, still no push to
+the API's sockets, and a second app instance doubles the DB/Redis footprint); (c) act as the
+mobile app: driver JWT + `POST /ingest/*` against the running dev API. Sub-choice for the JWT:
+(c1) `/auth/login/driver` per driver — throttled 5/min per IP (§6.5), ~30 min to log 130 drivers
+in; (c2) sign `{ sub, typ: 'driver' }` with `JWT_SECRET` from `.env.development`, identical to
+`TokenService.signDriverAccessToken`.
+
+**Choice.** (c) + (c2). One process, DB read once at startup (`connection_limit=2`) for the
+association the API verifies anyway (driver -> assigned ACTIVE `M1…` unit -> paired `MOCKPT30-*`
+device) and for continuity (last raw odometer/engine hours/position), then HTTP only. Requests
+are paced across the interval (~1/s for the default 60 drivers) so the API's RSS stays flat.
+Timestamps are the send instant (never future, never outside the 10-minute drift window); event
+uuids are deterministic under a dedicated `6c697665-` ("live") prefix so retries are duplicates.
+Dataset states are taken at face value (no back-dated "catch-up" records: those would trip
+malfunction `T`, and `EldEvent` is append-only) — the README says to re-run `db:mock -- hos` when
+the snapshot is a day old. `--tempo=N` compresses planned status durations for demos without
+touching motion. No `backend/src` change was needed.
+
+**Why.** The purpose is to see the *real* pipeline behave — a direct write would make the map
+move while hiding exactly the code paths under test. The local JWT is the only deviation from the
+app's path, and it is limited to dev by the `onebook_eld_dev` guard and the dev secret; the
+resulting request is indistinguishable from an app login token to the API.
+
+---
+
+## D-083 — `Dvir.submittedAt` index applied by hand-writing the migration + `prisma migrate resolve`, not `prisma migrate dev`
+**Date:** 2026-09-16 · **Phase:** perf plan (item 1)
+
+**Problem.** Fixing `GET /dvir`'s 4.7s cold read (B-068) needs a new index
+(`@@index([submittedAt])` on `Dvir`). The project rule is "never `db push`, always a proper
+migration," normally `npm run migrate:dev` / `prisma migrate dev`. That command refused to run
+here: it reported migration `20260911140000_eldevent_drop_foreign_keys` as "modified after it was
+applied" and wanted to reset the whole `public` schema (`prisma migrate reset`, i.e. drop the dev
+DB) before it would proceed — pre-existing drift between `_prisma_migrations`'s recorded checksum
+and the on-disk file, unrelated to this change (the file has no uncommitted diff; `prisma migrate
+status` reports "Database schema is up to date" with no complaint). Resetting would destroy the
+`db:mock` dataset (200 drivers / 6 months) other agents/the user depend on — explicitly against
+"no destructive git/DB ops."
+
+**Options.** (a) Run `migrate reset` anyway to unblock `migrate dev`. (b) `db push` the index
+directly (against the explicit house rule). (c) Write the migration folder by hand (`migration.sql`
++ `down.sql`, matching the existing convention — see `20260911170000_ifta_segment_locked`), apply
+the raw SQL with `psql`, then tell Prisma's own migration history about it with `prisma migrate
+resolve --applied <name>` — no shadow-database diff involved, so the pre-existing drift never
+enters the picture.
+
+**Chosen: (c).** It is a real migration file, versioned, `up`/`down` scripted, and it leaves
+`prisma migrate status` reporting "up to date" and `npx prisma generate` clean afterwards — same
+end state `migrate dev` would have produced, without touching the unrelated drift or the mock
+dataset. The drift on `eldevent_drop_foreign_keys` is left exactly as found for whoever owns that
+migration to investigate; nothing here masks or resolves it.

@@ -65,6 +65,7 @@ import {
   M,
   planDriver,
   type EditPlan,
+  type Interval,
   type Plan,
   type PlanInput,
   type Profile,
@@ -250,7 +251,7 @@ async function generate(
   const driverIds = drivers.map((d) => d.id);
 
   // Derived, non-append-only leftovers of an earlier attempt. `HosViolation` rows are NEVER
-  // deleted (B-063): the real recalculation below upserts them on (driverId, logDate, type), so
+  // deleted (B-064): the real recalculation below upserts them on (driverId, logDate, type), so
   // ids stay stable for Notification/AuditLog references, RESOLVED rows keep their resolution,
   // and a row that no longer applies is AUTO_CLEARED by the engine's own path. Only the
   // dailyLog link is detached, because the headers are rebuilt; `finish()` re-links it.
@@ -288,13 +289,31 @@ async function generate(
   const spares = vehicles.filter((v) => !assigned.has(v.id)).map((v) => v.id);
   let spareIndex = 0;
 
-  const works: DriverWork[] = drivers.map((driver) => {
+  // Drivers with a unit of their own are planned first, unconstrained. Unassigned drivers share
+  // the spare units round-robin (up to three per unit), so each of them is planned AFTER the
+  // earlier occupants of its unit and receives their on-duty instants as reservations: the
+  // planner never puts two drivers in D on one truck (B-060).
+  const busyByVehicle = new Map<string, Interval[]>();
+  const reserve = (plan: Plan): void => {
+    for (const s of plan.segments) {
+      const eff = effective(s.status, s.special);
+      if (!s.vehicleId || (eff !== 'D' && eff !== 'ON')) continue;
+      const list = busyByVehicle.get(s.vehicleId) ?? [];
+      const last = list[list.length - 1];
+      if (last && s.start <= last.end) last.end = Math.max(last.end, s.end);
+      else list.push({ start: s.start, end: s.end });
+      busyByVehicle.set(s.vehicleId, list);
+    }
+  };
+  const ordered = [...drivers.filter((d) => d.assignedVehicleId), ...drivers.filter((d) => !d.assignedVehicleId)];
+  const works: DriverWork[] = ordered.map((driver) => {
     const rng = createRng(hashSeed(`hos:${driver.username}`));
     const tz = driver.homeTerminalTimezone;
     const teams = teamsByDriver.get(driver.id) ?? [];
     const soloVehicle =
       driver.assignedVehicleId ??
       (spares.length ? spares[spareIndex++ % spares.length] : (teams[0]?.vehicleId ?? null));
+    const busy = soloVehicle ? [...(busyByVehicle.get(soloVehicle) ?? [])].sort((a, b) => a.start - b.start) : [];
 
     let profile: Profile;
     if (driver.shortHaulException) profile = 'LOCAL';
@@ -338,10 +357,12 @@ async function generate(
       now,
       vehicleId: soloVehicle,
       teams,
+      busy,
       tail,
       rates: DEFAULT_RATES,
     };
     const plan = planDriver(rng, input);
+    reserve(plan);
     return {
       driver,
       rng,
@@ -730,7 +751,7 @@ async function generate(
 /**
  * A share of older violations resolved by a fleet manager (the B-6 resolve flow's end state).
  *
- * Idempotent (B-063): the draw for each row comes from its stable key (driverId, logDate, type),
+ * Idempotent (B-064): the draw for each row comes from its stable key (driverId, logDate, type),
  * not from one stream over the current OPEN list — so a re-run makes the same decision for the
  * same violation, never re-rolls or re-resolves, and writes by that key. RESOLVED and
  * AUTO_CLEARED rows are never touched; nothing is created or deleted.

@@ -41,6 +41,7 @@ import {
   H,
   M,
   planDriver,
+  teamTimetable,
   toEngineEvents,
   type Plan,
   type PlanInput,
@@ -318,6 +319,50 @@ describe('hos mock planner — team driving', () => {
     }
     expect(dailyViolations(a.segments, input())).toEqual([]);
     expect(dailyViolations(b.segments, input())).toEqual([]);
+  });
+
+  it('a co-driver whose plan starts after the pairing joins the same legs — no overlapping D on the truck (B-060)', () => {
+    // B was hired 2 days 7 h 20 min after the pairing started: an offset that is not a multiple
+    // of a leg, so a cursor-anchored timetable would put both drivers in D for hours every day.
+    const team = { start: START + 20 * DAY + 3 * H, end: START + 60 * DAY };
+    const lateStart = dayStart(TZ, addDays(dayKey(TZ, new Date(team.start)), 3)).getTime();
+    const a = planDriver(createRng(11), input({ teams: [{ ...team, role: 'A', vehicleId: 'veh-team' }] }));
+    const b = planDriver(createRng(12), input({ start: lateStart, vehicleId: 'veh-b', teams: [{ ...team, role: 'B', vehicleId: 'veh-team' }] }));
+    const drivesA = a.segments.filter((s) => s.status === 'D' && s.vehicleId === 'veh-team');
+    const drivesB = b.segments.filter((s) => s.status === 'D' && s.vehicleId === 'veh-team');
+    expect(drivesA.length).toBeGreaterThan(20);
+    expect(drivesB.length).toBeGreaterThan(20);
+    const overlaps = drivesA.filter((x) => drivesB.some((y) => y.start < x.end && x.start < y.end));
+    expect(overlaps).toEqual([]);
+    // While one drives, the other is resting (SB/OFF) or on the same absolute restart.
+    for (const x of drivesB) {
+      const during = a.segments.filter((s) => s.start < x.end && x.start < s.end);
+      expect(during.every((s) => s.status === 'SB' || s.status === 'OFF')).toBe(true);
+    }
+    // The timetable is shared: every restart slot is a single OFF for both.
+    const slots = teamTimetable(team.start, team.end);
+    expect(slots.filter((sl) => sl.kind === 'RESTART').length).toBeGreaterThan(1);
+    expect(dailyViolations(b.segments, input({ start: lateStart }))).toEqual([]);
+  });
+
+  it('a spare unit shared by unassigned drivers is never driven by two of them at once (B-060)', () => {
+    const first = planDriver(createRng(21), input({ vehicleId: 'veh-spare', tail: { status: 'D', nearLimit: false } }));
+    const busy = first.segments
+      .filter((s) => s.vehicleId === 'veh-spare' && (effective(s.status, s.special) === 'D' || effective(s.status, s.special) === 'ON'))
+      .map((s) => ({ start: s.start, end: s.end }));
+    const inp = input({ vehicleId: 'veh-spare', busy, tail: { status: 'D', nearLimit: false } });
+    const second = planDriver(createRng(22), inp);
+    assertContiguous(second, inp);
+    const drivesA = first.segments.filter((s) => s.status === 'D');
+    const drivesB = second.segments.filter((s) => s.status === 'D');
+    expect(drivesA.length).toBeGreaterThan(50);
+    expect(drivesB.length).toBeGreaterThan(30);
+    expect(drivesB.filter((x) => busy.some((b) => b.start < x.end && x.start < b.end))).toEqual([]);
+    expect(drivesB.filter((x) => drivesA.some((y) => y.start < x.end && x.start < y.end))).toEqual([]);
+    // Without the reservations the two plans would collide — the guard is doing the work.
+    const unguarded = planDriver(createRng(22), input({ vehicleId: 'veh-spare' })).segments.filter((s) => s.status === 'D');
+    expect(unguarded.some((x) => drivesA.some((y) => y.start < x.end && x.start < y.end))).toBe(true);
+    expect(dailyViolations(second.segments, inp)).toEqual([]);
   });
 });
 

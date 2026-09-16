@@ -138,6 +138,41 @@ describe('checkDriverSelfEdit — the driver may not touch the D segment (§9.3)
       checkDriverSelfEdit({ status: 'SB', startAt: new Date('2026-06-01T16:00:00Z') }, driving),
     ).toBeNull();
   });
+
+  // bugs.md B-049 — moving the record that FOLLOWS driving later would back-fill the gap with D.
+  it('refuses moving the record right after driving LATER (would extend driving, §395.26(b))', () => {
+    const onAfterDriving = {
+      eventType: 1,
+      eventCode: 4,
+      eventDateTime: drivingTarget.intervalEndAt,
+      intervalEndAt: new Date('2026-06-01T18:00:00Z'),
+      statusBefore: 'D' as const,
+    };
+    expect(
+      checkDriverSelfEdit(
+        { status: 'ON', startAt: new Date('2026-06-01T15:06:00Z') },
+        driving,
+        onAfterDriving,
+      ),
+    ).toBe('EXTENDS_DRIVING');
+  });
+
+  it('allows moving the record right after driving EARLIER only when it does not overlap driving', () => {
+    const onAfterDriving = {
+      eventType: 1,
+      eventCode: 4,
+      eventDateTime: drivingTarget.intervalEndAt,
+      intervalEndAt: new Date('2026-06-01T18:00:00Z'),
+      statusBefore: 'D' as const,
+    };
+    expect(
+      checkDriverSelfEdit(
+        { status: 'SB', startAt: drivingTarget.intervalEndAt },
+        driving,
+        onAfterDriving,
+      ),
+    ).toBeNull();
+  });
 });
 
 describe('helpers', () => {

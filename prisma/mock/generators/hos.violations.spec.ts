@@ -1,5 +1,5 @@
 /**
- * B-063 — the hos mock generator must never delete/recreate `HosViolation` rows: ids stay stable
+ * B-064 — the hos mock generator must never delete/recreate `HosViolation` rows: ids stay stable
  * across re-runs (Notification/AuditLog references), RESOLVED rows survive, and the manager
  * resolve step is idempotent per stable key (driverId, logDate, type).
  */
@@ -73,7 +73,7 @@ const drivers = [
 const users = [{ id: 'u-1' }, { id: 'u-2' }];
 const snapshot = (rows: Row[]) => JSON.stringify(rows);
 
-describe('hos mock generator — violation idempotency (B-063)', () => {
+describe('hos mock generator — violation idempotency (B-064)', () => {
   it('never calls hosViolation.deleteMany anywhere in hos.ts', () => {
     const src = readFileSync(join(__dirname, 'hos.ts'), 'utf8');
     expect(src).not.toMatch(/hosViolation\s*\.\s*(deleteMany|delete|create|createMany)\s*\(/);

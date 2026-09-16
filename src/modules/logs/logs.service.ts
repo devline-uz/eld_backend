@@ -459,7 +459,14 @@ export class LogsService {
     const context = await this.loadEditContext(driverId, timezone, dto.startAt, now);
 
     let target:
-      | { id: bigint; eventType: number; eventCode: number; eventDateTime: Date; intervalEndAt: Date }
+      | {
+          id: bigint;
+          eventType: number;
+          eventCode: number;
+          eventDateTime: Date;
+          intervalEndAt: Date;
+          statusBefore: DutyStatus | null;
+        }
       | undefined;
     if (dto.originalEventId) {
       const original = await this.repo.findEventById(BigInt(dto.originalEventId));
@@ -472,6 +479,8 @@ export class LogsService {
         eventCode: original.eventCode,
         eventDateTime: original.eventDateTime,
         intervalEndAt: this.intervalEndOf(context.events, original, now),
+        // B-049 — what the NEUTRALIZE row would re-state; `checkDriverSelfEdit` refuses 'D'.
+        statusBefore: statusInEffectAt(context.events, original.eventDateTime),
       };
     }
 
@@ -489,7 +498,7 @@ export class LogsService {
         startAt: dto.startAt,
         endAt: dto.endAt ?? null,
         annotation: dto.annotation,
-        statusBeforeTarget: target ? statusInEffectAt(context.events, target.eventDateTime) : null,
+        statusBeforeTarget: target?.statusBefore ?? null,
         statusAfterInterval: dto.endAt ? statusInEffectAt(context.events, dto.endAt) : null,
       },
       target,
@@ -689,17 +698,31 @@ export class LogsService {
     rows: AppendRow[],
     earliest: Date,
   ): Promise<void> {
-    const instants = [earliest, ...rows.map((row) => row.at)];
-    const keys = [...new Set(instants.map((at) => dayKey(timezone, at)))].sort();
+    const instants = [earliest, ...rows.map((row) => row.at)].sort((a, b) => a.getTime() - b.getTime());
+    const keys = await this.recordLogChange(driverId, timezone, instants[0], instants[instants.length - 1]);
+    await this.enqueueRecalc(driverId, keys[0]);
+  }
+
+  /**
+   * §395.8(f) / TZ §9.2 — the ONE hook for "this driver's §395 records in `[from, to]` changed",
+   * whoever wrote them (an accepted carrier edit, a driver self-edit, a mobile sync, and — bugs.md
+   * B-050 — an unidentified-driving assignment or rejection). It voids the certification of every
+   * RODS day in the span (home-terminal zone; the next day is included when the span runs past
+   * midnight, so a certified day can never keep its certification after its records changed),
+   * rebuilds the day headers (B-059), and publishes `log.changed` so the driver's clients refresh.
+   * Returns the voided day keys, ascending. The caller queues `hos.recalc`.
+   */
+  async recordLogChange(driverId: string, timezone: string, from: Date, to: Date): Promise<string[]> {
+    const [start, end] = from.getTime() <= to.getTime() ? [from, to] : [to, from];
+    const keys = dayKeyRange(dayKey(timezone, start), dayKey(timezone, end));
     for (const key of keys) {
       await this.repo.invalidateCertification(driverId, utcDate(key), timezone);
     }
     // B-059 — the touched days' totals, plus the next day for a status carried over midnight.
     // `hos.recalc` then rebuilds everything forward to today.
-    const sorted = [...instants].sort((a, b) => a.getTime() - b.getTime());
-    await this.rebuildDailyLogsForSpan(driverId, sorted[0], sorted[sorted.length - 1]);
-    await this.enqueueRecalc(driverId, keys[0]);
+    await this.rebuildDailyLogsForSpan(driverId, start, end);
     await this.events.publish('log.changed', { driverId, dates: keys });
+    return keys;
   }
 
   /**

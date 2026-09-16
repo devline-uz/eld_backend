@@ -13,6 +13,7 @@ import { certificationEventCode } from '../../../src/modules/logs/certification'
 import { checkEditProposal, isDrivingRecord, type Interval } from '../../../src/modules/logs/edit-rules';
 import { activeRecords, drivingIntervals, DUTY_STATUS_BY_CODE, type RodsEvent } from '../../../src/modules/logs/rods';
 import { isFmcsaRecipient } from '../../../src/modules/transfers/fmcsa-recipient';
+import { valueAt, type TimelinePoint } from './ingest.helpers';
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -171,6 +172,65 @@ export function drivingSeconds(events: RodsEvent[], now: Date): number {
 
 export function overlapsAny(startAt: Date, endAt: Date, intervals: Interval[]): boolean {
   return intervals.some((i) => i.startAt.getTime() < endAt.getTime() && startAt.getTime() < i.endAt.getTime());
+}
+
+// ---------------------------------------------------------------------------------------------
+// Vehicle odometer / engine hours for records appended between hos records (B-060)
+// ---------------------------------------------------------------------------------------------
+
+/** The hos generator's odometer/engine-hour readings on one truck, sorted by instant. */
+export interface VehicleTimeline {
+  mi: TimelinePoint[];
+  eh: TimelinePoint[];
+}
+
+export interface OdometerReading {
+  totalVehicleMiles: number | null;
+  totalEngineHours: number | null;
+}
+
+/**
+ * Builds a truck's timeline from its hos records (any order). Readings are made monotone by
+ * running maximum, so a later interpolation can never return a value below an earlier record.
+ */
+export function buildVehicleTimeline(rows: Array<{ at: Date; miles: number | null; engineHours: number | null }>): VehicleTimeline {
+  const sorted = [...rows].sort((a, b) => a.at.getTime() - b.at.getTime());
+  const mi: TimelinePoint[] = [];
+  const eh: TimelinePoint[] = [];
+  let maxMi = -Infinity;
+  let maxEh = -Infinity;
+  for (const r of sorted) {
+    if (r.miles !== null && Number.isFinite(r.miles)) {
+      maxMi = Math.max(maxMi, r.miles);
+      mi.push({ at: r.at.getTime(), value: maxMi });
+    }
+    if (r.engineHours !== null && Number.isFinite(r.engineHours)) {
+      maxEh = Math.max(maxEh, r.engineHours);
+      eh.push({ at: r.at.getTime(), value: maxEh });
+    }
+  }
+  return { mi, eh };
+}
+
+/**
+ * Odometer and engine hours for a record at `at`, interpolated between the surrounding hos
+ * records of the same truck and clamped to them (before the first / after the last record the
+ * nearest reading is used). A truck with no hos record at all yields nulls — never a value
+ * derived from `Vehicle.odometerMi`, whose base is unrelated to the hos history (B-060).
+ * `floor` is a lower bound (the segment's own earlier record) so a segment's records never step
+ * back among themselves either.
+ */
+export function readingAt(tl: VehicleTimeline, at: Date, floor: OdometerReading | null = null): OdometerReading {
+  const t = at.getTime();
+  const miles = valueAt(tl.mi, t, 0);
+  // `valueAt` floors to 2 digits in binary; re-express the result as the Decimal(10,2) the column
+  // stores, so the value compared later is exactly the one written.
+  const raw = valueAt(tl.eh, t, 2);
+  const hours = raw === null ? null : Number(raw.toFixed(2));
+  return {
+    totalVehicleMiles: miles === null ? null : Math.max(miles, floor?.totalVehicleMiles ?? -Infinity),
+    totalEngineHours: hours === null ? null : Math.max(hours, floor?.totalEngineHours ?? -Infinity),
+  };
 }
 
 // ---------------------------------------------------------------------------------------------

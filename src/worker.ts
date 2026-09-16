@@ -84,7 +84,8 @@ function startHealthServer(
     })();
   });
   const port = config.get('WORKER_HEALTH_PORT');
-  server.listen(port, '0.0.0.0', () => logger.log(`Worker health/metrics listening on :${port}`));
+  const host = config.get('WORKER_HEALTH_HOST');
+  server.listen(port, host, () => logger.log(`Worker health/metrics listening on ${host}:${port}`));
 }
 
 async function bootstrap(): Promise<void> {

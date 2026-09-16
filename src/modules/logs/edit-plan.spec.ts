@@ -116,4 +116,19 @@ describe('planDriverSelfEdit', () => {
     expect(rows[0]).toMatchObject({ recordStatus: 2, recordOrigin: 2, supersedesId: 10n });
     expect(rows[2]).toMatchObject({ recordStatus: 1, recordOrigin: 2, supersedesId: 10n });
   });
+
+  // bugs.md B-049 — a driver plan must never contain a driving NEUTRALIZE row.
+  it('never emits a driving NEUTRALIZE (driver edits cannot create driving time, §395.26(b))', () => {
+    expect(() =>
+      planDriverSelfEdit(
+        {
+          status: 'ON',
+          startAt: new Date('2026-06-01T12:06:00Z'),
+          annotation: 'Started later',
+          statusBeforeTarget: 'D',
+        },
+        target,
+      ),
+    ).toThrow(/driving/i);
+  });
 });

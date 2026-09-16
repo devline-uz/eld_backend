@@ -80,6 +80,7 @@ interface PlannedEvent {
   lon?: number | null;
   locationName?: string | null;
   totalVehicleMiles?: number | null;
+  totalEngineHours?: number | null;
   wasStoredOnDevice?: boolean;
   /** Changes the driver's duty timeline → `hos.recalc`. */
   affectsDuty?: boolean;
@@ -125,6 +126,7 @@ interface PoolRecord {
   lon: number | null;
   locationName: string | null;
   totalVehicleMiles: number | null;
+  totalEngineHours: number | null;
 }
 
 interface DriverState {
@@ -137,9 +139,12 @@ interface DriverState {
 
 const EVENT_SELECT = {
   id: true, uuid: true, vehicleId: true, eventType: true, eventCode: true, eventDateTime: true, recordStatus: true, recordOrigin: true,
-  eventSequenceId: true, supersedesId: true, totalVehicleMiles: true, annotation: true, comment: true, locationName: true, latitude: true,
+  eventSequenceId: true, supersedesId: true, totalVehicleMiles: true, totalEngineHours: true, annotation: true, comment: true, locationName: true, latitude: true,
   longitude: true, wasStoredOnDevice: true,
 } as const;
+
+/** The hos generator's uuid group — the only records a truck's odometer timeline is read from. */
+const HOS_UUID_PREFIX = '6d6f636b-';
 
 const CITY_COORDS: Record<string, [number, number]> = {
   'Columbus, OH': [39.9612, -82.9988], 'Denver, CO': [39.7392, -104.9903], 'Atlanta, GA': [33.749, -84.388],
@@ -193,6 +198,9 @@ export async function run(ctx: MockContext): Promise<Record<string, number>> {
   if (!drivers.length || !vehicles.length) throw new Error('compliance: no mock drivers/vehicles — run `core` first.');
   const vehicleById = new Map(vehicles.map((v) => [v.id, v]));
   const driverByVehicle = new Map(drivers.filter((d) => d.assignedVehicleId).map((d) => [d.assignedVehicleId as string, d]));
+  // Odometer/engine-hour timeline per truck from the hos records only (B-060): every record this
+  // generator appends reads its miles/hours off this timeline, between its hos neighbours.
+  const timelines = await loadVehicleTimelines(ctx, vehicles.map((v) => v.id), now);
 
   const users = await prisma.user.findMany({ include: { role: true }, orderBy: { email: 'asc' } });
   const perm = (u: (typeof users)[number], key: string): string => String((u.role.permissions as Record<string, unknown> | null)?.[key] ?? 'NONE');
@@ -325,12 +333,12 @@ export async function run(ctx: MockContext): Promise<Record<string, number>> {
         : cityOf(driver.homeTerminalName, seed);
       const startPt = offsetPoint(origin.lat, origin.lon, miles, bearing);
       const poolCreated = minDate(new Date(endAt.getTime() + (fromStored ? r.int(2, 30) * HOUR : r.int(1, 5) * MIN)), now);
-      const pool = addPoolEvents(stage1, seed, vehicleById.get(vehicleId) as Vehicle, tz, startAt, endAt, startPt, origin, miles, fromStored, poolCreated);
+      const pool = addPoolEvents(stage1, seed, vehicleById.get(vehicleId) as Vehicle, timelines.get(vehicleId) ?? EMPTY_TIMELINE, tz, startAt, endAt, startPt, origin, fromStored, poolCreated);
       pushInterval(vehicleUnid, vehicleId, { startAt, endAt });
       st.usedDays.add(dayKey(tz, R.eventDateTime));
       unidDone += 1;
 
-      const segment = newSegment(`seg:${seed}`, 'login', vehicleId, startAt, endAt, miles, `${road ? `near ${origin.name}` : `${origin.name} yard`} ${TAG}`, `${origin.name} ${TAG}`, pool.map((p) => p.ref), fromStored);
+      const segment = newSegment(`seg:${seed}`, 'login', vehicleId, startAt, endAt, poolMiles(pool), `${road ? `near ${origin.name}` : `${origin.name} yard`} ${TAG}`, `${origin.name} ${TAG}`, pool.map((p) => p.ref), fromStored);
       segments.push(segment);
       const assignedAt = new Date(Math.max(endAt.getTime() + assignDelay, poolCreated.getTime() + 5 * MIN));
       if (assignedAt.getTime() > now.getTime()) continue;
@@ -443,7 +451,7 @@ export async function run(ctx: MockContext): Promise<Record<string, number>> {
       const endName = [...ep.events].reverse().find((e) => e.locationName)?.locationName ?? startName;
       const pool: PoolRecord[] = ep.events.map((e) => ({
         ref: e.id, eventType: e.eventType, eventCode: e.eventCode, at: e.eventDateTime, lat: num(e.latitude), lon: num(e.longitude),
-        locationName: e.locationName, totalVehicleMiles: e.totalVehicleMiles,
+        locationName: e.locationName, totalVehicleMiles: e.totalVehicleMiles, totalEngineHours: num(e.totalEngineHours),
       }));
       const segment = newSegment(`seg:${seed}`, 'hos', vehicle.id, ep.startAt, ep.endAt, miles, `${startName} ${TAG}`, `${endName} ${TAG}`, pool.map((p) => p.ref), ep.events.some((e) => e.wasStoredOnDevice));
       segments.push(segment);
@@ -491,9 +499,9 @@ export async function run(ctx: MockContext): Promise<Record<string, number>> {
       const city = cityOf(home?.homeTerminalName, seed);
       const endPt = offsetPoint(city.lat, city.lon, miles, bearing);
       const poolCreated = minDate(new Date(endAt.getTime() + (fromStored ? 6 * HOUR : 3 * MIN)), now);
-      const pool = addPoolEvents(stage1, seed, vehicle, tz, startAt, endAt, { lat: city.lat, lon: city.lon }, { name: city.name, ...endPt }, miles, fromStored, poolCreated);
+      const pool = addPoolEvents(stage1, seed, vehicle, timelines.get(vehicle.id) ?? EMPTY_TIMELINE, tz, startAt, endAt, { lat: city.lat, lon: city.lon }, { name: city.name, ...endPt }, fromStored, poolCreated);
       const label = road ? city.name : `${city.name} yard`;
-      const segment = newSegment(`seg:${seed}`, 'yard', vehicle.id, startAt, endAt, miles, `${label} ${TAG}`, `${road ? `${miles} mi from ${city.name}` : label} ${TAG}`, pool.map((p) => p.ref), fromStored);
+      const segment = newSegment(`seg:${seed}`, 'yard', vehicle.id, startAt, endAt, poolMiles(pool), `${label} ${TAG}`, `${road ? `${miles} mi from ${city.name}` : label} ${TAG}`, pool.map((p) => p.ref), fromStored);
       segments.push(segment);
       const actedAt = decision.actedAt && decision.actedAt.getTime() > poolCreated.getTime() ? decision.actedAt : null;
       if (actedAt && (decision.status === 'ANNOTATED' || decision.status === 'REJECTED')) {
@@ -556,7 +564,7 @@ export async function run(ctx: MockContext): Promise<Record<string, number>> {
   const ids = new Map<string, bigint>();
   const recalcFrom = new Map<string, string>();
   for (const [name, rows] of [['stage1', stage1], ['stage2', stage2], ['stage3', stage3]] as const) {
-    const { inserted, skipped } = await writeStage(ctx, repo, rows, ids, recalcFrom);
+    const { inserted, skipped } = await writeStage(ctx, repo, rows, ids, recalcFrom, timelines);
     inc('eventsInserted', inserted);
     inc('eventsSkippedExisting', skipped);
     ctx.log(`compliance: ${name} rows=${rows.length} inserted=${inserted} skipped=${skipped}`);
@@ -624,20 +632,41 @@ function newSegment(
   };
 }
 
+const EMPTY_TIMELINE: P.VehicleTimeline = { mi: [], eh: [] };
+
+/** Miles a pool segment's own records account for (0 when the truck has no odometer history). */
+function poolMiles(pool: PoolRecord[]): number {
+  const first = pool[0]?.totalVehicleMiles;
+  const last = pool[pool.length - 1]?.totalVehicleMiles;
+  return first === null || first === undefined || last === null || last === undefined ? 0 : Math.max(0, last - first);
+}
+
+/**
+ * Two unidentified records (D at `startAt`, ON at `endAt`) on the vehicle's own odometer
+ * timeline: each reading is interpolated between the hos records surrounding its instant, so
+ * the pool never breaks the truck's monotonic odometer (B-060). The planned distance is not
+ * forced onto the odometer — inside an idle gap the hos records leave no room for it.
+ */
 function addPoolEvents(
-  stage: PlannedEvent[], seed: string, vehicle: Vehicle, tz: string, startAt: Date, endAt: Date, startPt: { lat: number; lon: number },
-  endPt: { name: string; lat: number; lon: number }, miles: number, fromStored: boolean, createdAt: Date,
+  stage: PlannedEvent[], seed: string, vehicle: Vehicle, tl: P.VehicleTimeline, tz: string, startAt: Date, endAt: Date, startPt: { lat: number; lon: number },
+  endPt: { name: string; lat: number; lon: number }, fromStored: boolean, createdAt: Date,
 ): PoolRecord[] {
-  const odoEnd = Math.max(0, vehicle.odometerMi - Math.round(((ANCHOR.getTime() + HORIZON_DAYS * DAY - endAt.getTime()) / DAY) * 210));
+  const startReading = P.readingAt(tl, startAt);
+  const endReading = P.readingAt(tl, endAt, startReading);
   const common = {
     driverId: null, sequenceKey: `unidentified:${vehicle.id}`, timezone: tz, vehicleId: vehicle.id, recordStatus: 1, recordOrigin: 4,
     supersedes: null, annotation: null, comment: null, editedById: null, editorType: null, editReason: null, createdAt, wasStoredOnDevice: fromStored,
   };
   const records: PoolRecord[] = [
-    { ref: `unid:${seed}:pool:0`, eventType: 1, eventCode: 3, at: startAt, lat: startPt.lat, lon: startPt.lon, locationName: null, totalVehicleMiles: Math.max(0, odoEnd - miles) },
-    { ref: `unid:${seed}:pool:1`, eventType: 1, eventCode: 4, at: endAt, lat: endPt.lat, lon: endPt.lon, locationName: endPt.name, totalVehicleMiles: odoEnd },
+    { ref: `unid:${seed}:pool:0`, eventType: 1, eventCode: 3, at: startAt, lat: startPt.lat, lon: startPt.lon, locationName: null, ...startReading },
+    { ref: `unid:${seed}:pool:1`, eventType: 1, eventCode: 4, at: endAt, lat: endPt.lat, lon: endPt.lon, locationName: endPt.name, ...endReading },
   ];
-  for (const rec of records) stage.push({ ...common, key: rec.ref as string, eventType: rec.eventType, eventCode: rec.eventCode, at: rec.at, lat: rec.lat, lon: rec.lon, locationName: rec.locationName, totalVehicleMiles: rec.totalVehicleMiles });
+  for (const rec of records) {
+    stage.push({
+      ...common, key: rec.ref as string, eventType: rec.eventType, eventCode: rec.eventCode, at: rec.at, lat: rec.lat, lon: rec.lon,
+      locationName: rec.locationName, totalVehicleMiles: rec.totalVehicleMiles, totalEngineHours: rec.totalEngineHours,
+    });
+  }
   return records;
 }
 
@@ -659,7 +688,7 @@ function assignSegment(
     const shared = {
       vehicleId: segment.vehicleId, timezone: st.tz, eventType: rec.eventType, eventCode: rec.eventCode, at: rec.at, supersedes, annotation,
       comment: null, editedById: actor.id, editorType: actor.type, editReason: annotation, createdAt: assignedAt, lat: rec.lat, lon: rec.lon,
-      locationName: rec.locationName, totalVehicleMiles: rec.totalVehicleMiles,
+      locationName: rec.locationName, totalVehicleMiles: rec.totalVehicleMiles, totalEngineHours: rec.totalEngineHours,
     };
     target.push({ ...shared, key: `${segment.id}:asg:mk:${i}`, driverId: null, sequenceKey: `unidentified:${segment.vehicleId}`, recordStatus: 2, recordOrigin: 4 });
     target.push({ ...shared, key: `${segment.id}:asg:cp:${i}`, driverId: st.driver.id, sequenceKey: st.driver.id, recordStatus: 1, recordOrigin: 1, affectsDuty: true });
@@ -737,6 +766,7 @@ function resolve(ids: Map<string, bigint>, key: string): bigint {
 
 async function writeStage(
   ctx: MockContext, repo: IngestRepository, rows: PlannedEvent[], ids: Map<string, bigint>, recalcFrom: Map<string, string>,
+  timelines: Map<string, P.VehicleTimeline>,
 ): Promise<{ inserted: number; skipped: number }> {
   const { prisma } = ctx;
   if (!rows.length) return { inserted: 0, skipped: 0 };
@@ -772,7 +802,7 @@ async function writeStage(
           await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`, `eldseq:${seqKey}`);
           await bumpCounterPastExisting(tx, seqKey);
           const seq = await repo.allocateSequenceIds(tx, seqKey, part.length);
-          const data = part.map((row, i) => toCreate(row, uuidOf.get(row.key) as string, seq[i], ids, byUuid, uuidOf));
+          const data = part.map((row, i) => toCreate(withReading(row, timelines), uuidOf.get(row.key) as string, seq[i], ids, byUuid, uuidOf));
           await tx.eldEvent.createMany({ data, skipDuplicates: true });
         },
         { timeout: 120_000, maxWait: 30_000 },
@@ -816,6 +846,39 @@ async function bumpCounterPastExisting(tx: Prisma.TransactionClient, key: string
   }
 }
 
+/**
+ * Rows planned without a reading (edit-request chains, certifications) get the truck's
+ * interpolated odometer/engine hours at their instant, like every other compliance record.
+ */
+function withReading(row: PlannedEvent, timelines: Map<string, P.VehicleTimeline>): PlannedEvent {
+  if (!row.vehicleId || (row.totalVehicleMiles !== undefined && row.totalEngineHours !== undefined)) return row;
+  const reading = P.readingAt(timelines.get(row.vehicleId) ?? EMPTY_TIMELINE, row.at);
+  return {
+    ...row,
+    totalVehicleMiles: row.totalVehicleMiles === undefined ? reading.totalVehicleMiles : row.totalVehicleMiles,
+    totalEngineHours: row.totalEngineHours === undefined ? reading.totalEngineHours : row.totalEngineHours,
+  };
+}
+
+/** hos readings per truck, ordered and made monotone (see `P.buildVehicleTimeline`). */
+async function loadVehicleTimelines(ctx: MockContext, vehicleIds: string[], now: Date): Promise<Map<string, P.VehicleTimeline>> {
+  const out = new Map<string, P.VehicleTimeline>();
+  for (const part of chunks(vehicleIds, 25)) {
+    const rows = await ctx.prisma.eldEvent.findMany({
+      where: { vehicleId: { in: part }, recordStatus: 1, uuid: { startsWith: HOS_UUID_PREFIX }, totalVehicleMiles: { not: null }, eventDateTime: { lte: now } },
+      select: { vehicleId: true, eventDateTime: true, totalVehicleMiles: true, totalEngineHours: true },
+    });
+    const byVehicle = new Map<string, Array<{ at: Date; miles: number | null; engineHours: number | null }>>();
+    for (const r of rows) {
+      const list = byVehicle.get(r.vehicleId as string) ?? [];
+      list.push({ at: r.eventDateTime, miles: r.totalVehicleMiles, engineHours: num(r.totalEngineHours) });
+      byVehicle.set(r.vehicleId as string, list);
+    }
+    for (const [vehicleId, list] of byVehicle) out.set(vehicleId, P.buildVehicleTimeline(list));
+  }
+  return out;
+}
+
 function toCreate(
   row: PlannedEvent, uuid: string, eventSequenceId: number, ids: Map<string, bigint>, byUuid: Map<string, bigint>, uuidOf: Map<string, string>,
 ): Prisma.EldEventCreateManyInput {
@@ -824,7 +887,7 @@ function toCreate(
   const longitude = row.lon ?? null;
   const base = {
     uuid, eventType: row.eventType, eventCode: row.eventCode, eventDateTime: row.at, timezoneOffset, recordStatus: row.recordStatus,
-    recordOrigin: row.recordOrigin, latitude, longitude, rawDeviceOdometerKm: null, totalEngineHours: null,
+    recordOrigin: row.recordOrigin, latitude, longitude, rawDeviceOdometerKm: null, totalEngineHours: row.totalEngineHours ?? null,
   };
   let supersedesId: bigint | null = null;
   if (typeof row.supersedes === 'bigint') supersedesId = row.supersedes;

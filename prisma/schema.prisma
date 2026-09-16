@@ -584,6 +584,7 @@ model Dvir {
   @@index([vehicleId, submittedAt])
   @@index([driverId, submittedAt])
   @@index([repairStatus])
+  @@index([submittedAt])
 }
 
 /// Out-of-service rule: an OPEN CRITICAL defect flips Vehicle.status to OUT_OF_SERVICE
