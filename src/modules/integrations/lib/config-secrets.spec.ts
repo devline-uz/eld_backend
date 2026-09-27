@@ -17,7 +17,9 @@ describe('config-secrets', () => {
     expect(isSecretConfigKey('accessToken')).toBe(true);
     expect(isSecretConfigKey('signingSecret')).toBe(true);
     expect(isSecretConfigKey('password')).toBe(true);
+    expect(isSecretConfigKey('webhookUrl')).toBe(true); // Slack incoming webhook — the URL is the credential
     expect(isSecretConfigKey('url')).toBe(false);
+    expect(isSecretConfigKey('baseUrl')).toBe(false);
     expect(isSecretConfigKey('enabled')).toBe(false);
     expect(isSecretConfigKey('syncFrequencyMin')).toBe(false);
   });

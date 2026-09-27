@@ -63,10 +63,13 @@ describe('IntegrationsService', () => {
   it('upsert() encrypts secret-looking config fields before persisting', async () => {
     repo.upsert.mockResolvedValue(makeIntegration() as never);
 
-    await service.upsert('mcleod', { enabled: true, config: { url: 'https://x.example.com', apiKey: 'sk_live_999' } });
+    await service.upsert('mcleod', {
+      enabled: true,
+      config: { baseUrl: 'https://x.example.com', username: 'ops', apiKey: 'sk_live_999' },
+    });
 
     const [, data] = repo.upsert.mock.calls[0];
-    expect(data.config).toMatchObject({ url: 'https://x.example.com' });
+    expect(data.config).toMatchObject({ baseUrl: 'https://x.example.com', username: 'ops' });
     expect((data.config as Record<string, unknown>).apiKey).not.toBe('sk_live_999');
     expect(String((data.config as Record<string, unknown>).apiKey)).toMatch(/^v1:/);
     expect(data.status).toBe('CONNECTED');
@@ -78,6 +81,80 @@ describe('IntegrationsService', () => {
     await service.upsert('slack', { enabled: false, config: {} });
 
     expect(repo.upsert.mock.calls[0][1].status).toBe('DISCONNECTED');
+  });
+
+  describe('required config (QA 2026-09-27 — Connect without credentials)', () => {
+    async function issuesOf(provider: string, config: Record<string, unknown>) {
+      try {
+        await service.upsert(provider, { enabled: true, config });
+      } catch (err) {
+        expect(err).toBeInstanceOf(AppException);
+        const e = err as AppException;
+        expect(e.getStatus()).toBe(422);
+        expect(e.code).toBe('VALIDATION_FAILED');
+        return (e.details as { issues: { path: string; message: string }[] }).issues;
+      }
+      throw new Error('expected upsert to reject');
+    }
+
+    it.each([
+      ['mcleod', ['config.baseUrl', 'config.username', 'config.apiKey']],
+      ['wex', ['config.accountNumber', 'config.apiKey']],
+      ['comdata', ['config.accountNumber', 'config.apiKey']],
+      ['quickbooks', ['config.realmId', 'config.clientId', 'config.clientSecret']],
+      ['slack', ['config.webhookUrl']],
+      ['webhook', ['config.url', 'config.secret']],
+    ])('connecting %s with config {} is a 422 naming every missing field, and nothing is stored', async (provider, paths) => {
+      const issues = await issuesOf(provider, {});
+      expect(issues.map((i) => i.path)).toEqual(paths);
+      expect(repo.upsert).not.toHaveBeenCalled();
+    });
+
+    it('treats blank / whitespace / non-string values as missing', async () => {
+      const issues = await issuesOf('wex', { accountNumber: '   ', apiKey: 42 });
+      expect(issues.map((i) => i.path)).toEqual(['config.accountNumber', 'config.apiKey']);
+      expect(issues[0].message).toBe('Account number is required.');
+    });
+
+    it('rejects a non-https McLeod base URL', async () => {
+      const issues = await issuesOf('mcleod', { baseUrl: 'http://tms.example.com', username: 'ops', apiKey: 'k' });
+      expect(issues).toEqual([expect.objectContaining({ path: 'config.baseUrl', code: 'invalid_string' })]);
+    });
+
+    it('rejects a Slack webhook URL that is not on hooks.slack.com', async () => {
+      const issues = await issuesOf('slack', { webhookUrl: 'https://evil.example.com/services/T/B/x' });
+      expect(issues).toEqual([expect.objectContaining({ path: 'config.webhookUrl' })]);
+    });
+
+    it('connects Slack with a hooks.slack.com URL, stores it encrypted and never echoes it', async () => {
+      repo.upsert.mockImplementation(async (provider, data) => makeIntegration({ provider, config: data.config }) as never);
+
+      const view = await service.upsert('slack', {
+        enabled: true,
+        config: { webhookUrl: 'https://hooks.slack.com/services/T000/B000/XXXX' },
+      });
+
+      const stored = repo.upsert.mock.calls[0][1].config as Record<string, unknown>;
+      expect(String(stored.webhookUrl)).toMatch(/^v1:/);
+      expect(view.config.webhookUrl).toBe('[REDACTED]');
+      expect(view.status).toBe('CONNECTED');
+    });
+
+    it('connects QuickBooks when every field is present; the client secret comes back redacted', async () => {
+      repo.upsert.mockImplementation(async (provider, data) => makeIntegration({ provider, config: data.config }) as never);
+
+      const view = await service.upsert('quickbooks', {
+        enabled: true,
+        config: { realmId: '123', clientId: 'ABC', clientSecret: 'shh' },
+      });
+
+      expect(view.config).toEqual({ realmId: '123', clientId: 'ABC', clientSecret: '[REDACTED]' });
+    });
+
+    it('does not require credentials when saving a provider as disabled', async () => {
+      repo.upsert.mockResolvedValue(makeIntegration({ enabled: false, status: 'DISCONNECTED' }) as never);
+      await expect(service.upsert('mcleod', { enabled: false, config: {} })).resolves.toBeDefined();
+    });
   });
 
   it('disconnect() 404s on an unconfigured provider', async () => {

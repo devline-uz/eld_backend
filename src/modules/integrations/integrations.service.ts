@@ -2,7 +2,13 @@ import { Injectable } from '@nestjs/common';
 import type { Integration } from '@prisma/client';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
-import { UpsertIntegrationDto, INTEGRATION_PROVIDERS, INTEGRATION_CATALOG, IntegrationCatalogEntry } from './dto/integrations.dto';
+import {
+  UpsertIntegrationDto,
+  INTEGRATION_PROVIDERS,
+  INTEGRATION_CATALOG,
+  IntegrationCatalogEntry,
+  validateIntegrationConfig,
+} from './dto/integrations.dto';
 import { IntegrationsRepository } from './integrations.repository';
 import { IntegrationCipherService } from './lib/integration-cipher.service';
 import { decryptConfigSecret, encryptConfigSecrets, redactConfigSecrets } from './lib/config-secrets';
@@ -46,6 +52,8 @@ export class IntegrationsService {
    * written; the response never echoes them back, even encrypted. */
   async upsert(provider: string, dto: UpsertIntegrationDto): Promise<IntegrationView> {
     this.assertKnownProvider(provider);
+    // QA 2026-09-27 — an empty `config` must never produce a CONNECTED row.
+    if (dto.enabled) this.assertRequiredConfig(provider, dto.config);
     const encryptedConfig = encryptConfigSecrets(dto.config, this.cipher);
     const integration = await this.repo.upsert(provider, {
       enabled: dto.enabled,
@@ -120,6 +128,16 @@ export class IntegrationsService {
         422,
       );
     }
+  }
+
+  private assertRequiredConfig(provider: string, config: Record<string, unknown>): void {
+    const issues = validateIntegrationConfig(provider, config);
+    if (issues.length === 0) return;
+    throw AppException.unprocessable(
+      ERROR_CODES.VALIDATION_FAILED,
+      `Integration '${provider}' is missing required settings: ${issues.map((i) => i.path).join(', ')}.`,
+      { issues },
+    );
   }
 
   private async findOrThrow(provider: string): Promise<Integration> {

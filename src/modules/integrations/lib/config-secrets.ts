@@ -7,7 +7,9 @@ export const REDACTED_PLACEHOLDER = '[REDACTED]';
  * JSON blob whose shape differs per provider — McLeod, WEX/Comdata, QuickBooks, Slack, the
  * generic outbound `webhook` provider). Every provider's credential fields (API key, OAuth
  * client secret, access/refresh token, signing secret, password) match one of these. */
-const SECRET_KEY_PATTERN = /secret|token|password|api[_-]?key|signing|private[_-]?key|access[_-]?key/i;
+// `webhookUrl` — a Slack incoming-webhook URL is itself the credential (anyone holding it can post
+// to the channel), so it is encrypted and redacted like a key. The generic webhook's `url` is not.
+const SECRET_KEY_PATTERN = /secret|token|password|api[_-]?key|signing|private[_-]?key|access[_-]?key|webhook[_-]?url/i;
 
 export function isSecretConfigKey(key: string): boolean {
   return SECRET_KEY_PATTERN.test(key);
