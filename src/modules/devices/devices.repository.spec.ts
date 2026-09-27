@@ -51,7 +51,7 @@ describe('DevicesRepository', () => {
   it('list omits optional filters when absent', async () => {
     await repo.list({}, 1, 20, { serial: 'asc' });
     const where = (device.findMany.mock.calls[0] as [{ where: Record<string, unknown> }])[0].where;
-    expect(where.status).toBeUndefined();
+    expect(where.status).toEqual({ not: 'RETIRED' });
     expect(where.bleState).toBeUndefined();
     expect(where.OR).toBeUndefined();
   });

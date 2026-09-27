@@ -55,8 +55,11 @@ export class DvirAdminRepository extends BaseRepository<
   /** §20 B-47 `GET /dvir/compliance` — active vehicles expected to submit a PRE_TRIP DVIR each
    * day in `[from, to]`; `submittedByVehicleAndDate` groups actual PRE_TRIP submissions the same
    * way so the service can diff the two sets without an N+1 per vehicle/day. */
-  activeVehicles(): Promise<Array<{ id: string; unitNumber: string }>> {
-    return this.prisma.vehicle.findMany({ where: { status: 'ACTIVE' }, select: { id: true, unitNumber: true } });
+  activeVehicles(): Promise<Array<{ id: string; unitNumber: string; createdAt?: Date }>> {
+    return this.prisma.vehicle.findMany({
+      where: { status: 'ACTIVE', deletedAt: null },
+      select: { id: true, unitNumber: true, createdAt: true },
+    });
   }
 
   submittedPreTrips(from: Date, to: Date): Promise<Array<{ vehicleId: string; submittedAt: Date }>> {

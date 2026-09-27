@@ -15,6 +15,9 @@ export class LiveFleetRepository {
 
   findVehicles() {
     return this.prisma.vehicle.findMany({
+      // A deleted unit (`DELETE /vehicles/:id` sets `deletedAt`) is hidden from every web read —
+      // Live Fleet and the Dashboard KPIs used to keep listing it as an "Inactive" unit.
+      where: { deletedAt: null },
       orderBy: { unitNumber: 'asc' },
       select: {
         id: true,

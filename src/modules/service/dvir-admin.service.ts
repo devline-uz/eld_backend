@@ -50,12 +50,17 @@ export class DvirAdminService {
     const days = enumerateDates(query.from, query.to);
     const submittedKeys = new Set(submissions.map((s) => `${s.vehicleId}:${toDateKey(s.submittedAt)}`));
 
-    const expected = vehicles.length * days.length;
+    let expected = 0;
     let submitted = 0;
     const missing: Array<{ vehicleId: string; unitNumber: string; date: string }> = [];
 
     for (const vehicle of vehicles) {
+      // A unit cannot owe a pre-trip for a day before it was added to the fleet — a unit created
+      // today used to show a "Missing pre-trip" row for every day of the range.
+      const firstDay = vehicle.createdAt ? toDateKey(vehicle.createdAt) : null;
       for (const date of days) {
+        if (firstDay && date < firstDay) continue;
+        expected += 1;
         if (submittedKeys.has(`${vehicle.id}:${date}`)) {
           submitted += 1;
         } else if (missing.length < 500) {

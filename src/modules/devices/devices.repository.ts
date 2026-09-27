@@ -52,7 +52,9 @@ export class DevicesRepository extends BaseRepository<
     orderBy: Record<string, 'asc' | 'desc'>,
   ): Promise<DeviceListPage> {
     const where: Prisma.DeviceWhereInput = {
-      ...(filter.status && { status: filter.status }),
+      // A retired device has left the inventory ("Retiring this device removes it from the device
+      // inventory") — it is listed only when asked for explicitly with `?status=RETIRED`.
+      status: filter.status ?? { not: 'RETIRED' },
       ...(filter.bleState && { bleState: filter.bleState }),
       ...(filter.vehicleId && { vehicleId: filter.vehicleId }),
       ...(filter.q && {
