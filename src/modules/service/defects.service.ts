@@ -100,6 +100,8 @@ export class DefectsService {
     // The defect just resolved is no longer `status: 'OPEN'`, so this count already excludes it.
     const remaining = await this.repo.count({ vehicleId, status: 'OPEN', severity: 'CRITICAL' });
     if (remaining > 0) return;
+    // An open work order flagged `Keep the unit out of service` still holds the unit.
+    if ((await this.repo.countOutOfServiceWorkOrders(vehicleId)) > 0) return;
     const vehicle = await this.vehicles.findById({ id: vehicleId });
     if (!vehicle || vehicle.status !== 'OUT_OF_SERVICE') return;
     await this.vehicles.update({ id: vehicleId }, { status: 'ACTIVE' });

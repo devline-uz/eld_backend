@@ -17,13 +17,20 @@ function makeDefect(overrides: Partial<Record<string, unknown>> = {}) {
 }
 
 describe('DefectsService (TZ §5.10 out-of-service rule)', () => {
-  let repo: jest.Mocked<Pick<DefectsRepository, 'findById' | 'update' | 'list' | 'count' | 'findByWorkOrder'>>;
+  let repo: jest.Mocked<Pick<DefectsRepository, 'findById' | 'update' | 'list' | 'count' | 'findByWorkOrder' | 'countOutOfServiceWorkOrders'>>;
   let vehicles: jest.Mocked<Pick<VehiclesRepository, 'findById' | 'update'>>;
   let events: jest.Mocked<Pick<EventBusService, 'publish'>>;
   let service: DefectsService;
 
   beforeEach(() => {
-    repo = { findById: jest.fn(), update: jest.fn(), list: jest.fn(), count: jest.fn(), findByWorkOrder: jest.fn() };
+    repo = {
+      findById: jest.fn(),
+      update: jest.fn(),
+      list: jest.fn(),
+      count: jest.fn(),
+      findByWorkOrder: jest.fn(),
+      countOutOfServiceWorkOrders: jest.fn().mockResolvedValue(0),
+    };
     vehicles = { findById: jest.fn(), update: jest.fn() };
     events = { publish: jest.fn().mockResolvedValue(undefined) };
     service = new DefectsService(repo as unknown as DefectsRepository, vehicles as unknown as VehiclesRepository, events as unknown as EventBusService);
@@ -45,6 +52,20 @@ describe('DefectsService (TZ §5.10 out-of-service rule)', () => {
 
     expect(vehicles.update).toHaveBeenCalledWith({ id: 'veh_1' }, { status: 'ACTIVE' });
     expect(events.publish).toHaveBeenCalledWith('vehicle.restored_from_out_of_service', { vehicleId: 'veh_1' });
+  });
+
+  it('does NOT restore the vehicle while an open work order still keeps it out of service', async () => {
+    const defect = makeDefect();
+    repo.findById.mockResolvedValue(defect as never);
+    repo.update.mockResolvedValue({ ...defect, status: 'REPAIRED' } as never);
+    repo.count.mockResolvedValue(0);
+    repo.countOutOfServiceWorkOrders.mockResolvedValue(1);
+    vehicles.findById.mockResolvedValue({ id: 'veh_1', status: 'OUT_OF_SERVICE' } as never);
+
+    await service.resolve('def_1', { resolutionType: 'REPAIRED' }, 'user_1');
+
+    expect(repo.countOutOfServiceWorkOrders).toHaveBeenCalledWith('veh_1');
+    expect(vehicles.update).not.toHaveBeenCalled();
   });
 
   it('does NOT restore the vehicle while another open CRITICAL defect remains', async () => {

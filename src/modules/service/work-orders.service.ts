@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { Prisma, WorkOrder } from '@prisma/client';
+import type { Prisma, VehicleStatus, WorkOrder } from '@prisma/client';
 import { OffsetPage, parseSort, toOffsetPage } from '../../common/dto/list-query.dto';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
@@ -50,7 +50,8 @@ export class WorkOrdersService {
     if (!vehicle) throw new AppException(ERROR_CODES.VEHICLE_NOT_FOUND, 'Vehicle not found.', 404, { vehicleId: dto.vehicleId });
 
     const number = await this.repo.nextNumber();
-    const workOrder = await this.repo.create({
+    // `Keep the unit out of service` is applied in the same transaction as the insert.
+    const { workOrder, vehicleStatus } = await this.repo.createSynced({
       number,
       vehicle: { connect: { id: dto.vehicleId } },
       title: dto.title,
@@ -65,13 +66,14 @@ export class WorkOrdersService {
       keepOutOfService: dto.keepOutOfService,
       notifyDriver: dto.notifyDriver,
       blockDispatchAssignment: dto.blockDispatchAssignment,
-    });
+    }, dto.vehicleId);
 
     if (dto.defectIds?.length) {
       await Promise.all(dto.defectIds.map((defectId) => this.attachDefect(workOrder.id, defectId)));
     }
 
     await this.events.publish('work_order.created', { workOrderId: workOrder.id, vehicleId: dto.vehicleId, defectCount: dto.defectIds?.length ?? 0 });
+    await this.publishVehicleStatus(dto.vehicleId, vehicleStatus);
     return workOrder;
   }
 
@@ -92,7 +94,9 @@ export class WorkOrdersService {
       ...(dto.notifyDriver !== undefined && { notifyDriver: dto.notifyDriver }),
       ...(dto.blockDispatchAssignment !== undefined && { blockDispatchAssignment: dto.blockDispatchAssignment }),
     };
-    return this.repo.update({ id }, data);
+    const { workOrder: updated, vehicleStatus } = await this.repo.updateSynced(workOrder, data);
+    await this.publishVehicleStatus(workOrder.vehicleId, vehicleStatus);
+    return updated;
   }
 
   async attachDefect(id: string, defectId: string): Promise<WorkOrder> {
@@ -116,15 +120,24 @@ export class WorkOrdersService {
         unresolvedDefectIds: unresolved.map((d) => d.id),
       });
     }
-    const closed = await this.repo.update({ id }, { status: 'DONE', closedAt: new Date() });
+    const { workOrder: closed, vehicleStatus } = await this.repo.updateSynced(workOrder, { status: 'DONE', closedAt: new Date() });
     await this.events.publish('work_order.closed', { workOrderId: id, vehicleId: workOrder.vehicleId });
+    await this.publishVehicleStatus(workOrder.vehicleId, vehicleStatus);
     return closed;
   }
 
   async cancel(id: string): Promise<WorkOrder> {
     const workOrder = await this.getOrThrow(id);
     this.assertOpen(workOrder);
-    return this.repo.update({ id }, { status: 'CANCELLED', closedAt: new Date() });
+    const { workOrder: cancelled, vehicleStatus } = await this.repo.updateSynced(workOrder, { status: 'CANCELLED', closedAt: new Date() });
+    await this.publishVehicleStatus(workOrder.vehicleId, vehicleStatus);
+    return cancelled;
+  }
+
+  /** Emitted only when the out-of-service hold actually changed the unit's status. */
+  private async publishVehicleStatus(vehicleId: string, status: VehicleStatus | null): Promise<void> {
+    if (!status) return;
+    await this.events.publish('vehicle.status_changed', { vehicleId, status, source: 'work_order' });
   }
 
   private assertOpen(workOrder: WorkOrder): void {

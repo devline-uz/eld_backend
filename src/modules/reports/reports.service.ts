@@ -146,7 +146,10 @@ export class ReportsService {
     if (dto.reportType && dto.format) this.assertFormatAllowed(dto.reportType, dto.format);
     const cron = dto.cron ?? existing.cron;
     const timezone = dto.timezone ?? existing.timezone;
-    const nextRunAt = dto.cron || dto.timezone ? this.computeNextRun(cron, timezone) : undefined;
+    // Resuming a paused schedule recomputes `nextRunAt` from now, so a stale past date does not
+    // make the scheduler fire a catch-up run the moment it is re-enabled.
+    const resuming = dto.enabled === true && !existing.enabled;
+    const nextRunAt = dto.cron || dto.timezone || resuming ? this.computeNextRun(cron, timezone) : undefined;
     return this.schedules.update(
       { id },
       {
@@ -160,6 +163,12 @@ export class ReportsService {
         ...(nextRunAt ? { nextRunAt } : {}),
       },
     );
+  }
+
+  async deleteSchedule(id: string): Promise<void> {
+    const existing = await this.schedules.findById({ id });
+    if (!existing) throw AppException.notFound('Report schedule not found.');
+    await this.schedules.delete({ id });
   }
 
   computeNextRun(cron: string, timezone: string, from: Date = new Date()): Date {

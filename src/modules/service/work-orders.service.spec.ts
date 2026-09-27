@@ -10,14 +10,14 @@ function makeWorkOrder(overrides: Partial<Record<string, unknown>> = {}) {
 }
 
 describe('WorkOrdersService (TZ §5.10 — defect resolution workflow tied to a work order)', () => {
-  let repo: jest.Mocked<Pick<WorkOrdersRepository, 'findById' | 'create' | 'update' | 'list' | 'nextNumber'>>;
+  let repo: jest.Mocked<Pick<WorkOrdersRepository, 'findById' | 'createSynced' | 'updateSynced' | 'list' | 'nextNumber'>>;
   let defects: jest.Mocked<Pick<DefectsRepository, 'findById' | 'update' | 'findByWorkOrder'>>;
   let vehicles: jest.Mocked<Pick<VehiclesRepository, 'findById'>>;
   let events: jest.Mocked<Pick<EventBusService, 'publish'>>;
   let service: WorkOrdersService;
 
   beforeEach(() => {
-    repo = { findById: jest.fn(), create: jest.fn(), update: jest.fn(), list: jest.fn(), nextNumber: jest.fn() };
+    repo = { findById: jest.fn(), createSynced: jest.fn(), updateSynced: jest.fn(), list: jest.fn(), nextNumber: jest.fn() };
     defects = { findById: jest.fn(), update: jest.fn(), findByWorkOrder: jest.fn() };
     vehicles = { findById: jest.fn() };
     events = { publish: jest.fn().mockResolvedValue(undefined) };
@@ -44,7 +44,7 @@ describe('WorkOrdersService (TZ §5.10 — defect resolution workflow tied to a 
       vehicles.findById.mockResolvedValue({ id: 'veh_1' } as never);
       repo.nextNumber.mockResolvedValue('WO-0002');
       const created = makeWorkOrder({ id: 'wo_2', number: 'WO-0002' });
-      repo.create.mockResolvedValue(created as never);
+      repo.createSynced.mockResolvedValue({ workOrder: created, vehicleStatus: null } as never);
       repo.findById.mockResolvedValue(created as never); // attachDefect -> getOrThrow
       defects.findById.mockResolvedValue({ id: 'def_1' } as never);
 
@@ -53,14 +53,14 @@ describe('WorkOrdersService (TZ §5.10 — defect resolution workflow tied to a 
         'user_1',
       );
 
-      expect(repo.create).toHaveBeenCalledWith(expect.objectContaining({ number: 'WO-0002', title: 'Brake service' }));
+      expect(repo.createSynced).toHaveBeenCalledWith(expect.objectContaining({ number: 'WO-0002', title: 'Brake service' }), 'veh_1');
       expect(defects.update).toHaveBeenCalledWith({ id: 'def_1' }, { workOrder: { connect: { id: 'wo_2' } } });
     });
 
     it('B-42 — persists estimatedLaborHours/keepOutOfService/notifyDriver/blockDispatchAssignment', async () => {
       vehicles.findById.mockResolvedValue({ id: 'veh_1' } as never);
       repo.nextNumber.mockResolvedValue('WO-0003');
-      repo.create.mockResolvedValue(makeWorkOrder({ id: 'wo_3', number: 'WO-0003' }) as never);
+      repo.createSynced.mockResolvedValue({ workOrder: makeWorkOrder({ id: 'wo_3', number: 'WO-0003' }), vehicleStatus: 'OUT_OF_SERVICE' } as never);
 
       await service.create(
         {
@@ -75,9 +75,12 @@ describe('WorkOrdersService (TZ §5.10 — defect resolution workflow tied to a 
         'user_1',
       );
 
-      expect(repo.create).toHaveBeenCalledWith(
+      expect(repo.createSynced).toHaveBeenCalledWith(
         expect.objectContaining({ estimatedLaborHours: 3.5, keepOutOfService: true, notifyDriver: false, blockDispatchAssignment: true }),
+        'veh_1',
       );
+      // The hold changed the unit's status → the change is announced.
+      expect(events.publish).toHaveBeenCalledWith('vehicle.status_changed', { vehicleId: 'veh_1', status: 'OUT_OF_SERVICE', source: 'work_order' });
     });
   });
 
@@ -87,17 +90,17 @@ describe('WorkOrdersService (TZ §5.10 — defect resolution workflow tied to a 
       defects.findByWorkOrder.mockResolvedValue([{ id: 'def_1', status: 'OPEN' }] as never);
 
       await expect(service.close('wo_1')).rejects.toMatchObject({ code: 'DEFECT_NOT_RESOLVED' });
-      expect(repo.update).not.toHaveBeenCalled();
+      expect(repo.updateSynced).not.toHaveBeenCalled();
     });
 
     it('closes once every attached defect is REPAIRED/DEFERRED', async () => {
       repo.findById.mockResolvedValue(makeWorkOrder() as never);
       defects.findByWorkOrder.mockResolvedValue([{ id: 'def_1', status: 'REPAIRED' }, { id: 'def_2', status: 'DEFERRED' }] as never);
-      repo.update.mockResolvedValue(makeWorkOrder({ status: 'DONE' }) as never);
+      repo.updateSynced.mockResolvedValue({ workOrder: makeWorkOrder({ status: 'DONE' }), vehicleStatus: null } as never);
 
       await service.close('wo_1');
 
-      expect(repo.update).toHaveBeenCalledWith({ id: 'wo_1' }, expect.objectContaining({ status: 'DONE' }));
+      expect(repo.updateSynced).toHaveBeenCalledWith(expect.objectContaining({ id: 'wo_1' }), expect.objectContaining({ status: 'DONE' }));
       expect(events.publish).toHaveBeenCalledWith('work_order.closed', { workOrderId: 'wo_1', vehicleId: 'veh_1' });
     });
 
@@ -111,6 +114,30 @@ describe('WorkOrdersService (TZ §5.10 — defect resolution workflow tied to a 
     it('refuses to edit a closed work order', async () => {
       repo.findById.mockResolvedValue(makeWorkOrder({ status: 'CANCELLED' }) as never);
       await expect(service.update('wo_1', { title: 'New title' })).rejects.toMatchObject({ code: 'WORK_ORDER_CLOSED' });
+    });
+
+    it('passes the pre-write row and the flag change to the synced update', async () => {
+      const before = makeWorkOrder({ keepOutOfService: true });
+      repo.findById.mockResolvedValue(before as never);
+      repo.updateSynced.mockResolvedValue({ workOrder: { ...before, keepOutOfService: false }, vehicleStatus: 'ACTIVE' } as never);
+
+      await service.update('wo_1', { keepOutOfService: false });
+
+      expect(repo.updateSynced).toHaveBeenCalledWith(before, { keepOutOfService: false });
+      expect(events.publish).toHaveBeenCalledWith('vehicle.status_changed', { vehicleId: 'veh_1', status: 'ACTIVE', source: 'work_order' });
+    });
+  });
+
+  describe('cancel', () => {
+    it('cancels through the synced update and announces no change when the unit status stayed', async () => {
+      const before = makeWorkOrder({ keepOutOfService: true });
+      repo.findById.mockResolvedValue(before as never);
+      repo.updateSynced.mockResolvedValue({ workOrder: { ...before, status: 'CANCELLED' }, vehicleStatus: null } as never);
+
+      await service.cancel('wo_1');
+
+      expect(repo.updateSynced).toHaveBeenCalledWith(before, expect.objectContaining({ status: 'CANCELLED' }));
+      expect(events.publish).not.toHaveBeenCalledWith('vehicle.status_changed', expect.anything());
     });
   });
 });

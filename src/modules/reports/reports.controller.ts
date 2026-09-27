@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, Param, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Param, Patch, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiQuery, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { Audit } from '../../common/decorators/audit.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -91,6 +91,22 @@ export class ReportsController {
   @ApiOkResponse({ schema: { example: { id: 'sch_1', enabled: false } } })
   updateSchedule(@Param('id') id: string, @Body(zodBody(UpdateReportScheduleDto)) dto: UpdateReportScheduleDto) {
     return this.reports.updateSchedule(id, dto);
+  }
+
+  @Delete('schedules/:id')
+  @Perm('reports', 'FULL')
+  @Audit({ object: 'ReportSchedule', action: 'DELETE' })
+  @HttpCode(204)
+  @ApiOperation({ summary: 'Deletes a report schedule. Reports it already generated are kept.' })
+  @ApiStandardErrors({
+    errors: [
+      apiError.forbidden('reports = FULL is required (§6.4).'),
+      apiError.notFound(ERROR_CODES.REPORT_SCHEDULE_NOT_FOUND, 'Report schedule not found.'),
+    ],
+  })
+  @ApiResponse({ status: 204, description: 'Deleted.' })
+  async deleteSchedule(@Param('id') id: string): Promise<void> {
+    await this.reports.deleteSchedule(id);
   }
 
   @Get('ifta')

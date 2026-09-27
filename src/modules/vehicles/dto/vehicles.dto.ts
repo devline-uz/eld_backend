@@ -4,10 +4,23 @@ export const VehicleStatusEnum = z.enum(['ACTIVE', 'INACTIVE', 'OUT_OF_SERVICE']
 export const FuelTypeEnum = z.enum(['DIESEL', 'GASOLINE', 'CNG', 'LNG', 'ELECTRIC']);
 export const BusTypeEnum = z.enum(['J1939', 'J1708', 'OBD_II']);
 
+/** ISO 3779 VIN alphabet: 17 characters, digits and letters except I, O and Q. */
+export const VIN_PATTERN = /^[A-HJ-NPR-Z0-9]{17}$/;
+export const VIN_MESSAGE = 'A VIN is 17 characters and cannot contain I, O or Q.';
+
+/** Web-panel VIN (`POST /vehicles`, `PATCH /vehicles/:id`, `POST /vehicles/import`) — trimmed and
+ * upper-cased first, then held to the ISO 3779 alphabet. This DTO file is used only by the
+ * web-panel vehicles controller; mobile/tablet endpoints never parse it. */
+export const VinField = z
+  .string()
+  .trim()
+  .transform((value) => value.toUpperCase())
+  .pipe(z.string().regex(VIN_PATTERN, VIN_MESSAGE));
+
 /** TZ §5.3 — unit inventory fields ("Unit inventory — ELD serial, VIN, odometer" screen). */
 export const CreateVehicleDto = z.object({
   unitNumber: z.string().min(1).max(40),
-  vin: z.string().min(1).max(17),
+  vin: VinField,
   make: z.string().max(60).optional(),
   model: z.string().max(60).optional(),
   year: z.number().int().min(1900).max(2100).optional(),

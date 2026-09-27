@@ -18,6 +18,7 @@ describe('ReportsService (TZ §15)', () => {
       findById: jest.fn(async () => null),
       update: jest.fn(async (_w: unknown, data: object) => ({ id: 'sch_1', ...data })),
       listAll: jest.fn(async () => []),
+      delete: jest.fn(async () => ({ id: 'sch_1' })),
     };
     const storage = {
       presignGet: jest.fn(async () => 'https://minio.local/signed'),
@@ -179,5 +180,41 @@ describe('ReportsService (TZ §15)', () => {
     const [createArgs] = schedules.create.mock.calls[0] as [{ nextRunAt: Date }];
     expect(createArgs.nextRunAt).toBeInstanceOf(Date);
     jest.restoreAllMocks();
+  });
+  describe('schedule management (web Scheduled reports list)', () => {
+    const row = {
+      id: 'sch_1', reportType: 'IFTA', format: 'PDF', params: {}, cron: '0 6 1 * *', timezone: 'UTC',
+      recipients: ['ops@example.com'], enabled: false, lastRunAt: null, nextRunAt: new Date('2020-01-01T06:00:00.000Z'), createdById: 'u1',
+    };
+
+    it('deleteSchedule() removes an existing schedule', async () => {
+      const { service, schedules } = build();
+      schedules.findById.mockResolvedValueOnce(row as never);
+      await service.deleteSchedule('sch_1');
+      expect(schedules.delete).toHaveBeenCalledWith({ id: 'sch_1' });
+    });
+
+    it('deleteSchedule() throws 404 for an unknown schedule and deletes nothing', async () => {
+      const { service, schedules } = build();
+      await expect(service.deleteSchedule('missing')).rejects.toThrow('Report schedule not found.');
+      expect(schedules.delete).not.toHaveBeenCalled();
+    });
+
+    it('updateSchedule() resuming a paused schedule recomputes a future nextRunAt', async () => {
+      const { service, schedules } = build();
+      schedules.findById.mockResolvedValueOnce(row as never);
+      await service.updateSchedule('sch_1', { enabled: true });
+      const [, data] = schedules.update.mock.calls[0] as unknown as [unknown, { enabled: boolean; nextRunAt: Date }];
+      expect(data.enabled).toBe(true);
+      expect(data.nextRunAt.getTime()).toBeGreaterThan(Date.now());
+    });
+
+    it('updateSchedule() pausing keeps nextRunAt untouched', async () => {
+      const { service, schedules } = build();
+      schedules.findById.mockResolvedValueOnce({ ...row, enabled: true } as never);
+      await service.updateSchedule('sch_1', { enabled: false });
+      const [, data] = schedules.update.mock.calls[0] as unknown as [unknown, Record<string, unknown>];
+      expect(data).toEqual({ enabled: false });
+    });
   });
 });

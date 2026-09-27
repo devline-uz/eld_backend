@@ -48,6 +48,12 @@ export class DefectsRepository extends BaseRepository<
     return { items, total };
   }
 
+  /** Open work orders flagged `Keep the unit out of service` for this unit — they keep holding it
+   * out of service even after its last critical defect is resolved. */
+  countOutOfServiceWorkOrders(vehicleId: string): Promise<number> {
+    return this.prisma.workOrder.count({ where: { vehicleId, keepOutOfService: true, status: { in: ['OPEN', 'IN_PROGRESS'] } } });
+  }
+
   findByWorkOrder(workOrderId: string): Promise<Defect[]> {
     return this.prisma.defect.findMany({ where: { workOrderId } });
   }
