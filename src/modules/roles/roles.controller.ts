@@ -19,7 +19,7 @@ export class RolesController {
   @Get()
   @Perm('roles', 'READ')
   @ApiOperation({ summary: 'Lists all roles, including the 4 system roles.' })
-  @ApiOkResponse({ schema: { example: [{ key: 'ADMIN', isSystem: true, permissions: {} }] } })
+  @ApiOkResponse({ schema: { example: [{ key: 'ADMIN', isSystem: true, permissions: {}, userCount: 1 }] } })
   @ApiStandardErrors()
   list() {
     return this.roles.list();

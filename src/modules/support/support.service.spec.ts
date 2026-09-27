@@ -18,7 +18,7 @@ function makeTicket(overrides: Partial<Record<string, unknown>> = {}) {
 
 describe('SupportService', () => {
   let repo: jest.Mocked<
-    Pick<SupportRepository, 'list' | 'findById' | 'create' | 'update' | 'count' | 'createFeedback'>
+    Pick<SupportRepository, 'list' | 'findById' | 'create' | 'update' | 'count' | 'createFeedback' | 'requesterNames'>
   >;
   let attachments: jest.Mocked<Pick<TicketAttachmentsService, 'collect'>>;
   let messagingRepo: jest.Mocked<Pick<MessagingRepository, 'createConversation'>>;
@@ -28,6 +28,7 @@ describe('SupportService', () => {
   beforeEach(() => {
     repo = {
       list: jest.fn(),
+      requesterNames: jest.fn().mockResolvedValue(new Map()),
       findById: jest.fn(),
       create: jest.fn(),
       update: jest.fn(),
@@ -52,6 +53,14 @@ describe('SupportService', () => {
       createdAt: 'desc',
     });
     expect(result.total).toBe(1);
+  });
+
+  it('list adds requesterName for the OPENED BY column', async () => {
+    repo.list.mockResolvedValue({ items: [makeTicket({ createdByUserId: 'usr_1' }), makeTicket({ id: 'tck_2', createdByUserId: null, createdByDriverId: 'drv_9' })], total: 2 } as never);
+    repo.requesterNames.mockResolvedValue(new Map([['usr_1', 'Sarah Chen']]));
+    const result = await service.list({ page: 1, limit: 25 });
+    expect(repo.requesterNames).toHaveBeenCalledWith(['usr_1'], ['drv_9']);
+    expect(result.items.map((t) => t.requesterName)).toEqual(['Sarah Chen', null]);
   });
 
   describe('get', () => {

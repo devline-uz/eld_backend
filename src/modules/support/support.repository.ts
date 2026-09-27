@@ -64,4 +64,17 @@ export class SupportRepository extends BaseRepository<
   createFeedback(data: Prisma.FeedbackCreateInput): Promise<Feedback> {
     return this.prisma.feedback.create({ data });
   }
+
+  /** `"First Last"` per requester id — the web ticket table's OPENED BY column (W-24). */
+  async requesterNames(userIds: string[], driverIds: string[]): Promise<Map<string, string>> {
+    const [users, drivers] = await Promise.all([
+      userIds.length
+        ? this.prisma.user.findMany({ where: { id: { in: userIds } }, select: { id: true, firstName: true, lastName: true } })
+        : [],
+      driverIds.length
+        ? this.prisma.driver.findMany({ where: { id: { in: driverIds } }, select: { id: true, firstName: true, lastName: true } })
+        : [],
+    ]);
+    return new Map([...users, ...drivers].map((p) => [p.id, `${p.firstName} ${p.lastName}`.trim()]));
+  }
 }

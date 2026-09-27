@@ -60,4 +60,9 @@ export class UsersRepository extends BaseRepository<
   findByEmail(email: string): Promise<User | null> {
     return this.prisma.user.findUnique({ where: { email } });
   }
+
+  /** Active users holding the ADMIN role — the last-admin guard in `UsersService.update`. */
+  countActiveAdmins(): Promise<number> {
+    return this.prisma.user.count({ where: { status: 'ACTIVE', role: { key: 'ADMIN' } } });
+  }
 }

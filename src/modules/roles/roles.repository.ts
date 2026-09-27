@@ -29,6 +29,12 @@ export class RolesRepository extends BaseRepository<
     return this.prisma.role.findUnique({ where: { key } });
   }
 
+  /** roleId → number of back-office users holding it (web W-21 "N users assigned"). */
+  async userCountsByRole(): Promise<Map<string, number>> {
+    const rows = await this.prisma.user.groupBy({ by: ['roleId'], _count: { _all: true } });
+    return new Map(rows.map((r) => [r.roleId, r._count._all]));
+  }
+
   countUsersWithRole(roleId: string): Promise<number> {
     return this.prisma.user.count({ where: { roleId } });
   }

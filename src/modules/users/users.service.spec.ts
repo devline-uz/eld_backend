@@ -22,7 +22,7 @@ function makeUser(overrides: Partial<Record<string, unknown>> = {}) {
 }
 
 describe('UsersService', () => {
-  let users: jest.Mocked<Pick<UsersRepository, 'listWithRoles' | 'findByIdWithRole' | 'findByEmail' | 'create' | 'update' | 'delete'>>;
+  let users: jest.Mocked<Pick<UsersRepository, 'listWithRoles' | 'findByIdWithRole' | 'findByEmail' | 'create' | 'update' | 'delete' | 'countActiveAdmins'>>;
   let roles: jest.Mocked<Pick<RolesRepository, 'findById'>>;
   let auth: jest.Mocked<Pick<AuthService, 'issueResetToken' | 'issueUserEmailVerifyToken'>>;
   let storage: jest.Mocked<Pick<StoragePort, 'put' | 'get' | 'delete' | 'exists' | 'presignPut' | 'presignGet'>>;
@@ -37,6 +37,7 @@ describe('UsersService', () => {
       create: jest.fn(),
       update: jest.fn(),
       delete: jest.fn(),
+      countActiveAdmins: jest.fn().mockResolvedValue(2),
     };
     roles = { findById: jest.fn() };
     auth = {
@@ -166,6 +167,23 @@ describe('UsersService', () => {
         { id: 'usr_1' },
         { firstName: 'Jane', role: { connect: { id: 'role_2' } }, status: 'ACTIVE' },
       );
+    });
+
+    it('refuses to demote or disable the last active admin (409)', async () => {
+      users.findByIdWithRole.mockResolvedValue(makeUser({ status: 'ACTIVE', role: { id: 'role_admin', key: 'ADMIN' } }) as never);
+      users.countActiveAdmins.mockResolvedValue(1);
+      roles.findById.mockResolvedValue({ id: 'role_2', key: 'VIEWER' } as never);
+      await expect(service.update('usr_1', { roleId: 'role_2' })).rejects.toThrow('last active admin');
+      await expect(service.update('usr_1', { status: 'DISABLED' } as never)).rejects.toThrow('last active admin');
+      expect(users.update).not.toHaveBeenCalled();
+    });
+
+    it('lets the last admin edit their own profile fields', async () => {
+      users.findByIdWithRole.mockResolvedValue(makeUser({ status: 'ACTIVE', role: { id: 'role_admin', key: 'ADMIN' } }) as never);
+      users.countActiveAdmins.mockResolvedValue(1);
+      users.update.mockResolvedValue({} as never);
+      await service.update('usr_1', { firstName: 'Jane' });
+      expect(users.update).toHaveBeenCalledWith({ id: 'usr_1' }, { firstName: 'Jane' });
     });
 
     it('applies homeTerminalName directly (no re-verification needed)', async () => {

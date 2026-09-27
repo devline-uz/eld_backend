@@ -123,9 +123,20 @@ export class UsersService {
    */
   async update(id: string, dto: UpdateUserDto): Promise<UserView & { emailVerification?: { pendingEmail: string; verifyToken?: string } }> {
     const current = await this.getRaw(id);
+    let nextRoleKey = current.role.key;
     if (dto.roleId) {
       const role = await this.roles.findById({ id: dto.roleId });
       if (!role) throw AppException.notFound('Role not found.');
+      nextRoleKey = role.key;
+    }
+    // The web panel refuses to demote or disable the last active ADMIN (it would lock every user
+    // out of Settings); the server enforces the same rule so a stale tab or a direct call can't.
+    const losesAdmin = nextRoleKey !== 'ADMIN' || (dto.status !== undefined && dto.status !== 'ACTIVE');
+    if (current.role.key === 'ADMIN' && current.status === 'ACTIVE' && losesAdmin) {
+      const activeAdmins = await this.users.countActiveAdmins();
+      if (activeAdmins <= 1) {
+        throw AppException.conflict('This is the last active admin. Promote another user to Admin first.');
+      }
     }
     let emailVerification: { pendingEmail: string; verifyToken?: string } | undefined;
     if (dto.email !== undefined && dto.email !== current.email) {

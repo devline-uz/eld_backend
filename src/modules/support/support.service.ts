@@ -25,7 +25,8 @@ export class SupportService {
     private readonly messaging: MessagingService,
   ) {}
 
-  async list(query: SupportTicketListQueryDto): Promise<OffsetPage<SupportTicket>> {
+  /** Each row carries `requesterName` (the ticket's user or driver) for the web OPENED BY column. */
+  async list(query: SupportTicketListQueryDto): Promise<OffsetPage<SupportTicket & { requesterName: string | null }>> {
     const orderBy = parseSort(query.sort, SORTABLE_FIELDS, { createdAt: 'desc' });
     const { items, total } = await this.repo.list(
       { status: query.status, priority: query.priority, q: query.q },
@@ -33,7 +34,14 @@ export class SupportService {
       query.limit,
       orderBy,
     );
-    return toOffsetPage(items, total, query.page, query.limit);
+    const userIds = [...new Set(items.map((t) => t.createdByUserId).filter((id): id is string => Boolean(id)))];
+    const driverIds = [...new Set(items.map((t) => t.createdByDriverId).filter((id): id is string => Boolean(id)))];
+    const names = await this.repo.requesterNames(userIds, driverIds);
+    const rows = items.map((t) => ({
+      ...t,
+      requesterName: names.get(t.createdByUserId ?? t.createdByDriverId ?? '') ?? null,
+    }));
+    return toOffsetPage(rows, total, query.page, query.limit);
   }
 
   async get(id: string): Promise<SupportTicket> {

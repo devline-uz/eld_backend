@@ -14,8 +14,13 @@ import { RolesRepository } from './roles.repository';
 export class RolesService {
   constructor(private readonly roles: RolesRepository) {}
 
-  list(): Promise<Role[]> {
-    return this.roles.findMany(undefined, undefined, { name: 'asc' });
+  /** Each role carries `userCount` so the web Roles screen can show "N users assigned". */
+  async list(): Promise<Array<Role & { userCount: number }>> {
+    const [roles, counts] = await Promise.all([
+      this.roles.findMany(undefined, undefined, { name: 'asc' }),
+      this.roles.userCountsByRole(),
+    ]);
+    return roles.map((role) => ({ ...role, userCount: counts.get(role.id) ?? 0 }));
   }
 
   async get(id: string): Promise<Role> {
