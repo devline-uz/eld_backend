@@ -6,7 +6,11 @@ interface FakeQueueEvents {
 
 const instances: FakeQueueEvents[] = [];
 
+const getJob = jest.fn();
+const queueClose = jest.fn().mockResolvedValue(undefined);
+
 jest.mock('bullmq', () => ({
+  Queue: jest.fn().mockImplementation(() => ({ getJob, on: jest.fn(), close: queueClose })),
   QueueEvents: jest.fn().mockImplementation((): FakeQueueEvents => {
     const instance: FakeQueueEvents = {
       handlers: {},
@@ -97,5 +101,36 @@ describe('WorkerHeartbeatService', () => {
 
     await service.onModuleDestroy();
     for (const inst of instances) expect(inst.close).toHaveBeenCalled();
+  });
+
+  it('never reports an empty failedReason — falls back to the job stacktrace', async () => {
+    const config = buildConfig(false);
+    const metrics = new MetricsService();
+    const sentry = { capture: jest.fn() } as unknown as SentryService;
+    const service = new WorkerHeartbeatService(config as unknown as AppConfigService, metrics, sentry);
+    getJob.mockResolvedValueOnce({
+      name: 'report.generate',
+      attemptsMade: 3,
+      failedReason: '',
+      stacktrace: ['AggregateError [ECONNREFUSED]: \n    at internalConnectMultiple (node:net:1339:18)'],
+    });
+
+    service.onModuleInit();
+    instances[instances.length - 1].handlers['failed']?.({ jobId: 'report-1', failedReason: '' });
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+
+    expect(sentry.capture as jest.Mock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: 'worker.job_failed',
+        extra: expect.objectContaining({
+          jobId: 'report-1',
+          jobName: 'report.generate',
+          failedReason: 'AggregateError [ECONNREFUSED]:',
+          stack: expect.stringContaining('internalConnectMultiple'),
+        }),
+      }),
+    );
+    await service.onModuleDestroy();
+    expect(queueClose).toHaveBeenCalled();
   });
 });
