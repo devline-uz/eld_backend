@@ -291,6 +291,95 @@ describe('VehiclesService', () => {
     });
   });
 
+  describe('soft delete frees unitNumber / VIN (partial unique indexes on live rows)', () => {
+    const p2002 = (target: string[]) => Object.assign(new Error('Unique constraint failed'), { code: 'P2002', meta: { target } });
+
+    it('re-creating a unit with a soft-deleted unit\'s unitNumber and VIN succeeds', async () => {
+      // The live-only lookups don't see the deleted row, so nothing collides.
+      vehiclesRepo.findByUnitNumber.mockResolvedValue(null);
+      vehiclesRepo.findByVin.mockResolvedValue(null);
+      vehiclesRepo.create.mockResolvedValue(makeVehicle({ id: 'veh_new' }) as never);
+      const result = await service.create({ unitNumber: '#101', vin: '1FUJA6CV88LW12345' } as never);
+      expect(result.id).toBe('veh_new');
+      expect(vehiclesRepo.findByUnitNumber).toHaveBeenCalledWith('#101');
+      expect(vehiclesRepo.findByVin).toHaveBeenCalledWith('1FUJA6CV88LW12345');
+      expect(vehiclesRepo.create).toHaveBeenCalledWith(expect.objectContaining({ unitNumber: '#101', vin: '1FUJA6CV88LW12345' }));
+    });
+
+    it('a duplicate among live units is still a 409', async () => {
+      vehiclesRepo.findByUnitNumber.mockResolvedValue(makeVehicle() as never);
+      vehiclesRepo.findByVin.mockResolvedValue(null);
+      await expect(service.create({ unitNumber: '#101', vin: 'OTHER' } as never)).rejects.toMatchObject({ code: 'CONFLICT', status: 409 });
+      expect(vehiclesRepo.create).not.toHaveBeenCalled();
+    });
+
+    it('maps a racing P2002 on create to a 409 CONFLICT naming the column', async () => {
+      vehiclesRepo.findByUnitNumber.mockResolvedValue(null);
+      vehiclesRepo.findByVin.mockResolvedValue(null);
+      vehiclesRepo.create.mockRejectedValue(p2002(['vin']));
+      await expect(service.create({ unitNumber: '#101', vin: 'VIN9' } as never)).rejects.toMatchObject({
+        code: 'CONFLICT',
+        status: 409,
+        message: 'VIN "VIN9" already exists.',
+      });
+    });
+
+    it('rethrows non-P2002 errors from create untouched', async () => {
+      vehiclesRepo.findByUnitNumber.mockResolvedValue(null);
+      vehiclesRepo.findByVin.mockResolvedValue(null);
+      const boom = new Error('db down');
+      vehiclesRepo.create.mockRejectedValue(boom);
+      await expect(service.create({ unitNumber: '#101', vin: 'VIN9' } as never)).rejects.toBe(boom);
+    });
+
+    it('update rejects a unitNumber held by another live unit', async () => {
+      vehiclesRepo.findById.mockResolvedValue(makeVehicle() as never);
+      vehiclesRepo.findByUnitNumber.mockResolvedValue(makeVehicle({ id: 'veh_2', unitNumber: '#202' }) as never);
+      vehiclesRepo.findByVin.mockResolvedValue(null);
+      await expect(service.update('veh_1', { unitNumber: '#202' })).rejects.toMatchObject({ code: 'CONFLICT', status: 409 });
+      expect(vehiclesRepo.update).not.toHaveBeenCalled();
+    });
+
+    it('update rejects a VIN held by another live unit', async () => {
+      vehiclesRepo.findById.mockResolvedValue(makeVehicle() as never);
+      vehiclesRepo.findByUnitNumber.mockResolvedValue(null);
+      vehiclesRepo.findByVin.mockResolvedValue(makeVehicle({ id: 'veh_2' }) as never);
+      await expect(service.update('veh_1', { vin: 'TAKEN' })).rejects.toMatchObject({ code: 'CONFLICT' });
+    });
+
+    it('update lets a unit re-send its own unitNumber / VIN', async () => {
+      vehiclesRepo.findById.mockResolvedValue(makeVehicle() as never);
+      vehiclesRepo.findByUnitNumber.mockResolvedValue(makeVehicle() as never);
+      vehiclesRepo.findByVin.mockResolvedValue(makeVehicle() as never);
+      vehiclesRepo.update.mockResolvedValue(makeVehicle() as never);
+      await service.update('veh_1', { unitNumber: '#101', vin: '1FUJA6CV88LW12345' });
+      expect(vehiclesRepo.update).toHaveBeenCalled();
+    });
+
+    it('update maps a racing P2002 to a 409', async () => {
+      vehiclesRepo.findById.mockResolvedValue(makeVehicle() as never);
+      vehiclesRepo.findByUnitNumber.mockResolvedValue(null);
+      vehiclesRepo.update.mockRejectedValue(p2002(['unitNumber']));
+      await expect(service.update('veh_1', { unitNumber: '#303' })).rejects.toMatchObject({
+        code: 'CONFLICT',
+        message: 'Unit "#303" already exists.',
+      });
+    });
+
+    it('get treats a soft-deleted unit as not found', async () => {
+      vehiclesRepo.findById.mockResolvedValue(makeVehicle({ deletedAt: new Date() }) as never);
+      await expect(service.get('veh_1')).rejects.toMatchObject({ code: 'VEHICLE_NOT_FOUND' });
+    });
+
+    it('importMany creates a new unit when only a soft-deleted unit had its unitNumber/VIN', async () => {
+      vehiclesRepo.findByUnitNumber.mockResolvedValue(null);
+      vehiclesRepo.findByVin.mockResolvedValue(null);
+      vehiclesRepo.create.mockResolvedValue(makeVehicle({ id: 'veh_new' }) as never);
+      const summary = await service.importMany({ vehicles: [{ unitNumber: '#101', vin: '1FUJA6CV88LW12345' }] } as never);
+      expect(summary).toMatchObject({ imported: 1, updated: 0, failed: [] });
+    });
+  });
+
   describe('update — VEHICLE_HAS_OPEN_CRITICAL_DEFECTS hard rule (bugs.md: unit 101 regression)', () => {
     it('blocks PATCH to ACTIVE while an open critical defect exists', async () => {
       vehiclesRepo.findById.mockResolvedValue(makeVehicle({ status: 'OUT_OF_SERVICE' }) as never);
@@ -527,7 +616,10 @@ describe('VehiclesService', () => {
 
       await service.remove('veh_1');
 
-      expect(vehiclesRepo.update).toHaveBeenCalledWith({ id: 'veh_1' }, { status: 'INACTIVE' });
+      const [where, data] = vehiclesRepo.update.mock.calls[0];
+      expect(where).toEqual({ id: 'veh_1' });
+      expect(data).toMatchObject({ status: 'INACTIVE' });
+      expect(data.deletedAt).toBeInstanceOf(Date);
       expect(vehiclesRepo.delete).not.toHaveBeenCalled();
     });
 

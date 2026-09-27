@@ -205,8 +205,71 @@ describe('DriversService', () => {
 
     await service.remove('drv_1');
 
-    expect(repo.update).toHaveBeenCalledWith({ id: 'drv_1' }, { status: 'TERMINATED', assignedVehicle: { disconnect: true } });
+    const [where, data] = repo.update.mock.calls[0];
+    expect(where).toEqual({ id: 'drv_1' });
+    expect(data).toMatchObject({ status: 'TERMINATED', assignedVehicle: { disconnect: true } });
+    expect(data.deletedAt).toBeInstanceOf(Date);
     expect(repo.delete).not.toHaveBeenCalled();
+  });
+
+  describe('soft delete frees username / email (partial unique indexes on live rows)', () => {
+    const p2002 = (target: string[]) => Object.assign(new Error('Unique constraint failed'), { code: 'P2002', meta: { target } });
+
+    it('re-creating a driver with a soft-deleted driver\'s username and email succeeds', async () => {
+      // The live-only lookups don't see the deleted row, so nothing collides.
+      repo.findByUsername.mockResolvedValue(null);
+      repo.findByEmail.mockResolvedValue(null);
+      repo.create.mockResolvedValue(makeDriver({ id: 'drv_new', email: 'jsmith@example.com' }) as never);
+      const result = await service.create({ ...baseDto, email: 'jsmith@example.com' });
+      expect(result.id).toBe('drv_new');
+      expect(repo.findByUsername).toHaveBeenCalledWith('jsmith');
+      expect(repo.findByEmail).toHaveBeenCalledWith('jsmith@example.com');
+      expect(repo.create).toHaveBeenCalledWith(expect.objectContaining({ username: 'jsmith', email: 'jsmith@example.com' }));
+    });
+
+    it('a duplicate username among live drivers is still a 409', async () => {
+      repo.findByUsername.mockResolvedValue(makeDriver() as never);
+      await expect(service.create(baseDto)).rejects.toMatchObject({ code: 'CONFLICT', status: 409 });
+      expect(repo.create).not.toHaveBeenCalled();
+    });
+
+    it('a duplicate email among live drivers is still a 409', async () => {
+      repo.findByUsername.mockResolvedValue(null);
+      repo.findByEmail.mockResolvedValue(makeDriver({ id: 'drv_2', email: 'x@example.com' }) as never);
+      await expect(service.create({ ...baseDto, email: 'x@example.com' })).rejects.toMatchObject({ code: 'CONFLICT', status: 409 });
+      expect(repo.create).not.toHaveBeenCalled();
+    });
+
+    it('maps a racing P2002 on create to a 409 CONFLICT naming the column', async () => {
+      repo.findByUsername.mockResolvedValue(null);
+      repo.create.mockRejectedValue(p2002(['username']));
+      await expect(service.create(baseDto)).rejects.toMatchObject({
+        code: 'CONFLICT',
+        status: 409,
+        message: 'A driver with username "jsmith" already exists.',
+      });
+    });
+
+    it('rethrows non-P2002 errors from create untouched', async () => {
+      repo.findByUsername.mockResolvedValue(null);
+      const boom = new Error('db down');
+      repo.create.mockRejectedValue(boom);
+      await expect(service.create(baseDto)).rejects.toBe(boom);
+    });
+
+    it('update maps a racing P2002 on email to a 409', async () => {
+      repo.findById.mockResolvedValue(makeDriver() as never);
+      repo.update.mockRejectedValue(p2002(['email']));
+      await expect(service.update('drv_1', { email: 'y@example.com' })).rejects.toMatchObject({
+        code: 'CONFLICT',
+        message: 'A driver with email "y@example.com" already exists.',
+      });
+    });
+
+    it('get treats a soft-deleted driver as not found', async () => {
+      repo.findById.mockResolvedValue(makeDriver({ deletedAt: new Date() }) as never);
+      await expect(service.get('drv_1')).rejects.toMatchObject({ code: 'DRIVER_NOT_FOUND' });
+    });
   });
 
   describe('resetPassword (B-81)', () => {

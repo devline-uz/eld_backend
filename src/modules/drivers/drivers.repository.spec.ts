@@ -24,9 +24,14 @@ describe('DriversRepository', () => {
     repo = new DriversRepository(prisma);
   });
 
-  it('findByUsername queries by username', async () => {
+  it('findByUsername queries live (non-deleted) drivers by username', async () => {
     await repo.findByUsername('johnsmith');
-    expect(driver.findUnique).toHaveBeenCalledWith({ where: { username: 'johnsmith' } });
+    expect(driver.findFirst).toHaveBeenCalledWith({ where: { username: 'johnsmith', deletedAt: null } });
+  });
+
+  it('findByEmail queries live (non-deleted) drivers by email', async () => {
+    await repo.findByEmail('a@b.co');
+    expect(driver.findFirst).toHaveBeenCalledWith({ where: { email: 'a@b.co', deletedAt: null } });
   });
 
   it('list builds status/q filters and paginates', async () => {
@@ -35,6 +40,7 @@ describe('DriversRepository', () => {
     const result = await repo.list({ status: 'ACTIVE', q: 'smith' }, 1, 10, { username: 'asc' });
     const where = (driver.findMany.mock.calls[0] as [{ where: Record<string, unknown> }])[0].where;
     expect(where.status).toBe('ACTIVE');
+    expect(where.deletedAt).toBeNull();
     expect(where.OR).toEqual(expect.arrayContaining([{ lastName: { contains: 'smith', mode: 'insensitive' } }]));
     expect(result).toEqual({ items: [{ id: 'd1' }], total: 1 });
   });
@@ -46,9 +52,9 @@ describe('DriversRepository', () => {
     expect(where.OR).toBeUndefined();
   });
 
-  it('listAll orders by username', async () => {
+  it('listAll returns live drivers ordered by username', async () => {
     await repo.listAll();
-    expect(driver.findMany).toHaveBeenCalledWith({ orderBy: { username: 'asc' } });
+    expect(driver.findMany).toHaveBeenCalledWith({ where: { deletedAt: null }, orderBy: { username: 'asc' } });
   });
   describe('listRoster', () => {
     const whereOf = () => (driver.findMany.mock.calls[0] as [{ where: Record<string, unknown> }])[0].where;
@@ -57,7 +63,7 @@ describe('DriversRepository', () => {
       driver.count.mockResolvedValue(3);
       const result = await repo.listRoster({}, 2, 10, { lastName: 'asc' });
       expect(driver.findMany).toHaveBeenCalledWith({
-        where: {},
+        where: { deletedAt: null },
         orderBy: { lastName: 'asc' },
         skip: 10,
         take: 10,

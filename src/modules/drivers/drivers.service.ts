@@ -40,6 +40,19 @@ function toView(driver: Driver): DriverView {
   return view;
 }
 
+/** Prisma unique-constraint violation (`P2002`) — here only the live-row partial unique indexes on
+ * `username` / `email` can raise it (a concurrent create/update racing the pre-check). */
+function isUniqueViolation(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { code?: string }).code === 'P2002';
+}
+
+/** Which column the `P2002` names — `meta.target` is the field list or the index name. */
+function uniqueViolationTarget(err: unknown): string {
+  const target = (err as { meta?: { target?: unknown } }).meta?.target;
+  if (Array.isArray(target)) return target.join(',');
+  return typeof target === 'string' ? target : '';
+}
+
 export interface ImportSummary {
   imported: number;
   updated: number;
@@ -84,8 +97,23 @@ export class DriversService {
 
   private async getRaw(id: string): Promise<Driver> {
     const driver = await this.drivers.findById({ id });
-    if (!driver) throw new AppException(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.', 404);
+    // Soft-deleted drivers are gone as far as the web is concerned.
+    if (!driver || driver.deletedAt) throw new AppException(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.', 404);
     return driver;
+  }
+
+  /** A write that loses a race to the pre-check hits the partial unique index (`P2002`); surface
+   * it as the same 409 the pre-check would have thrown, never a raw 500. */
+  private async conflictOnDuplicate<T>(write: Promise<T>, dto: { username?: string; email?: string }): Promise<T> {
+    try {
+      return await write;
+    } catch (err) {
+      if (!isUniqueViolation(err)) throw err;
+      const target = uniqueViolationTarget(err);
+      if (target.includes('email')) throw AppException.conflict(`A driver with email "${dto.email}" already exists.`);
+      if (target.includes('username')) throw AppException.conflict(`A driver with username "${dto.username}" already exists.`);
+      throw AppException.conflict('A driver with this username or email already exists.');
+    }
   }
 
   private async assertEmailAvailable(email: string | undefined, exceptDriverId?: string): Promise<void> {
@@ -102,7 +130,7 @@ export class DriversService {
     await this.assertEmailAvailable(dto.email);
 
     const passwordHash = await hashPassword(dto.password ?? randomBytes(16).toString('hex'));
-    const created = await this.drivers.create(this.toCreateInput(dto, passwordHash));
+    const created = await this.conflictOnDuplicate(this.drivers.create(this.toCreateInput(dto, passwordHash)), dto);
 
     // §20 B-82 — `sendInvitation` (default true, matching the previous always-on behavior).
     let inviteCode: string | undefined;
@@ -115,16 +143,21 @@ export class DriversService {
   async update(id: string, dto: UpdateDriverDto): Promise<DriverView> {
     await this.getRaw(id);
     await this.assertEmailAvailable(dto.email, id);
-    const updated = await this.drivers.update({ id }, this.toUpdateInput(dto));
+    const updated = await this.conflictOnDuplicate(this.drivers.update({ id }, this.toUpdateInput(dto)), dto);
     return toView(updated);
   }
 
   /** Soft-delete only — see bugs.md B-009 (hard `DELETE` breaks on the `EldEvent` FK's
    * `SET NULL` action under the append-only `REVOKE`) and decisions.md (also correct on its
-   * own merits: a driver with historical ELD events must never be dropped from the table). */
+   * own merits: a driver with historical ELD events must never be dropped from the table).
+   * `deletedAt` hides the row from every web read and frees its username / email for a new driver
+   * (partial unique indexes cover live rows only); driver-app login also ignores it. */
   async remove(id: string): Promise<DriverView> {
     await this.getRaw(id);
-    const updated = await this.drivers.update({ id }, { status: 'TERMINATED', assignedVehicle: { disconnect: true } });
+    const updated = await this.drivers.update(
+      { id },
+      { status: 'TERMINATED', deletedAt: new Date(), assignedVehicle: { disconnect: true } },
+    );
     return toView(updated);
   }
 
@@ -163,12 +196,12 @@ export class DriversService {
             continue;
           }
           await this.assertEmailAvailable(row.email, existing.id);
-          await this.drivers.update({ id: existing.id }, this.toUpdateInput(row));
+          await this.conflictOnDuplicate(this.drivers.update({ id: existing.id }, this.toUpdateInput(row)), row);
           summary.updated += 1;
         } else {
           await this.assertEmailAvailable(row.email);
           const passwordHash = await hashPassword(row.password ?? randomBytes(16).toString('hex'));
-          const created = await this.drivers.create(this.toCreateInput(row, passwordHash));
+          const created = await this.conflictOnDuplicate(this.drivers.create(this.toCreateInput(row, passwordHash)), row);
           summary.imported += 1;
           if (options.sendInvitations && created.email) {
             await this.dispatchOneTimeCode(created, 'Your OneBook ELD driver app invitation code');

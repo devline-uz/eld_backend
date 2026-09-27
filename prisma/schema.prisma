@@ -157,13 +157,16 @@ model DriverSession {
 
 model Driver {
   id           String       @id @default(uuid())
-  username     String       @unique
+  /// Unique among LIVE rows only (`deletedAt IS NULL`) — enforced by the partial unique index
+  /// `Driver_username_live_key` in migration 20260927090000_soft_delete_partial_uniques.
+  username     String
   passwordHash String
   firstName    String
   lastName     String
-  /// §20 B-29/B-30/B-31 — unique so a driver's Google-auth email can't collide; dev data checked
-  /// clean (206 distinct non-null / 60 null, Postgres treats NULLs as distinct under @unique).
-  email          String?   @unique
+  /// §20 B-29/B-30/B-31 — unique among LIVE rows so a driver's Google-auth email can't collide;
+  /// enforced by the partial unique index `Driver_email_live_key` (WHERE "deletedAt" IS NULL) in
+  /// migration 20260927090000_soft_delete_partial_uniques. NULLs stay distinct.
+  email          String?
   emailVerifiedAt DateTime?
   phone        String?
   cdlNumber    String
@@ -192,6 +195,9 @@ model Driver {
   sdkVersion   String?
   lastSyncAt   DateTime?
   registeredAt DateTime  @default(now())
+  /// Soft-delete marker (web `DELETE /drivers/:id`). Non-null rows are hidden from web reads and
+  /// free their username/email for reuse.
+  deletedAt    DateTime?
 
   fleetManager      User?              @relation("DriverFleetManager", fields: [fleetManagerId], references: [id])
   assignedVehicle   Vehicle?           @relation("VehicleDriver", fields: [assignedVehicleId], references: [id])
@@ -208,6 +214,9 @@ model Driver {
   documents         DriverDocument[]
 
   @@index([status])
+  // Partial unique indexes (WHERE "deletedAt" IS NULL) live in the migration SQL.
+  @@index([username])
+  @@index([email])
 }
 
 /// Co-driver pairing is TIME-bounded, not a permanent field (team driving history must persist).
@@ -262,8 +271,12 @@ model PushToken {
 
 model Vehicle {
   id           String   @id @default(uuid())
-  unitNumber   String   @unique
-  vin          String   @unique
+  /// Unique among LIVE rows only (`deletedAt IS NULL`) — enforced by the partial unique indexes
+  /// `Vehicle_unitNumber_live_key` / `Vehicle_vin_live_key` in migration
+  /// 20260927090000_soft_delete_partial_uniques (Prisma can't express partial indexes), so a
+  /// soft-deleted unit's number/VIN can be reused.
+  unitNumber   String
+  vin          String
   make         String?
   model        String?
   year         Int?
@@ -283,6 +296,9 @@ model Vehicle {
   notes       String?
   activatedAt DateTime?
   createdAt   DateTime      @default(now())
+  /// Soft-delete marker (web `DELETE /vehicles/:id`). Non-null rows are hidden from web reads and
+  /// free their unitNumber/VIN for reuse.
+  deletedAt   DateTime?
 
   /// Vehicle groups (web W-12 `Vehicle group`, W-13 `Group by`) — a unit belongs to at most one
   /// group; deleting the group leaves its units ungrouped.
@@ -301,6 +317,9 @@ model Vehicle {
 
   @@index([status])
   @@index([groupId])
+  // Partial unique indexes (WHERE "deletedAt" IS NULL) live in the migration SQL.
+  @@index([unitNumber])
+  @@index([vin])
 }
 
 /// Named set of units used to filter IFTA and group the activity report (web W-12/W-13).

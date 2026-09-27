@@ -7,7 +7,7 @@ export class DriverAuthRepository {
   constructor(private readonly prisma: PrismaService) {}
 
   findByUsername(username: string): Promise<Driver | null> {
-    return this.prisma.driver.findUnique({ where: { username } });
+    return this.prisma.driver.findFirst({ where: { username, deletedAt: null } });
   }
 
   findById(id: string): Promise<Driver | null> {

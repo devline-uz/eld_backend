@@ -43,14 +43,17 @@ export class DriversRepository extends BaseRepository<
     return this.prisma.driver;
   }
 
+  /** Live (not soft-deleted) driver only — `username` is unique among live rows via a partial
+   * unique index (migration 20260927090000_soft_delete_partial_uniques), so a deleted driver's
+   * username is free for reuse. */
   findByUsername(username: string): Promise<Driver | null> {
-    return this.prisma.driver.findUnique({ where: { username } });
+    return this.prisma.driver.findFirst({ where: { username, deletedAt: null } });
   }
 
-  /** §20 B-29/B-30 — `Driver.email` is `@unique`; checked pre-write so a collision surfaces as
-   * a clean `CONFLICT` instead of an unhandled Prisma `P2002`. */
+  /** §20 B-29/B-30 — `Driver.email` is unique among live rows (partial unique index); checked
+   * pre-write so a collision surfaces as a clean `CONFLICT` instead of an unhandled `P2002`. */
   findByEmail(email: string): Promise<Driver | null> {
-    return this.prisma.driver.findUnique({ where: { email } });
+    return this.prisma.driver.findFirst({ where: { email, deletedAt: null } });
   }
 
   async list(
@@ -60,6 +63,7 @@ export class DriversRepository extends BaseRepository<
     orderBy: Record<string, 'asc' | 'desc'>,
   ): Promise<DriverListPage> {
     const where: Prisma.DriverWhereInput = {
+      deletedAt: null,
       ...(filter.status && { status: filter.status }),
       ...(filter.q && {
         OR: [
@@ -86,6 +90,7 @@ export class DriversRepository extends BaseRepository<
     orderBy: Record<string, 'asc' | 'desc'>,
   ): Promise<{ items: DriverWithUnit[]; total: number }> {
     const where: Prisma.DriverWhereInput = {
+      deletedAt: null,
       ...(filter.status && { status: filter.status }),
       ...(filter.terminal && { homeTerminalName: { equals: filter.terminal, mode: 'insensitive' } }),
       ...(filter.exempt !== undefined && { eldExempt: filter.exempt }),
@@ -129,7 +134,7 @@ export class DriversRepository extends BaseRepository<
   }
 
   listAll(): Promise<Driver[]> {
-    return this.prisma.driver.findMany({ orderBy: { username: 'asc' } });
+    return this.prisma.driver.findMany({ where: { deletedAt: null }, orderBy: { username: 'asc' } });
   }
 
   // -------------------------------------------------------------------

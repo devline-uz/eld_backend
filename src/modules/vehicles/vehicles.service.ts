@@ -35,6 +35,19 @@ const DEFAULT_IMPORT_OPTIONS: ImportVehiclesOptionsDto = {
   emailSummary: false,
 };
 
+/** Prisma unique-constraint violation (`P2002`) — here only the live-row partial unique indexes on
+ * `unitNumber` / `vin` can raise it (a concurrent create/update racing the pre-check). */
+function isUniqueViolation(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { code?: string }).code === 'P2002';
+}
+
+/** Which column the `P2002` names — `meta.target` is the field list or the index name. */
+function uniqueViolationTarget(err: unknown): string {
+  const target = (err as { meta?: { target?: unknown } }).meta?.target;
+  if (Array.isArray(target)) return target.join(',');
+  return typeof target === 'string' ? target : '';
+}
+
 export interface ImportSummary {
   imported: number;
   updated: number;
@@ -83,7 +96,8 @@ export class VehiclesService {
 
   async get(id: string): Promise<Vehicle> {
     const vehicle = await this.vehicles.findById({ id });
-    if (!vehicle) throw new AppException(ERROR_CODES.VEHICLE_NOT_FOUND, 'Vehicle not found.', 404);
+    // Soft-deleted units are gone as far as the web is concerned.
+    if (!vehicle || vehicle.deletedAt) throw new AppException(ERROR_CODES.VEHICLE_NOT_FOUND, 'Vehicle not found.', 404);
     return vehicle;
   }
 
@@ -95,14 +109,43 @@ export class VehiclesService {
     if (byUnit) throw AppException.conflict(`Unit "${dto.unitNumber}" already exists.`);
     if (byVin) throw AppException.conflict(`VIN "${dto.vin}" already exists.`);
     await this.assertGroupExists(dto.groupId);
-    return this.vehicles.create(this.toCreateInput(dto));
+    return this.conflictOnDuplicate(this.vehicles.create(this.toCreateInput(dto)), dto);
   }
 
   async update(id: string, dto: UpdateVehicleDto): Promise<Vehicle> {
     await this.get(id);
+    await this.assertUnitAndVinAvailable(dto, id);
     await this.assertStatusChangeAllowed(id, dto.status);
     await this.assertGroupExists(dto.groupId);
-    return this.vehicles.update({ id }, this.toUpdateInput(dto));
+    return this.conflictOnDuplicate(this.vehicles.update({ id }, this.toUpdateInput(dto)), dto);
+  }
+
+  /** Unit number / VIN are unique among LIVE units only — a soft-deleted unit's values are free.
+   * `exceptVehicleId` lets a unit keep (re-send) its own values on update. */
+  private async assertUnitAndVinAvailable(
+    dto: { unitNumber?: string; vin?: string },
+    exceptVehicleId?: string,
+  ): Promise<void> {
+    const [byUnit, byVin] = await Promise.all([
+      dto.unitNumber !== undefined ? this.vehicles.findByUnitNumber(dto.unitNumber) : null,
+      dto.vin !== undefined ? this.vehicles.findByVin(dto.vin) : null,
+    ]);
+    if (byUnit && byUnit.id !== exceptVehicleId) throw AppException.conflict(`Unit "${dto.unitNumber}" already exists.`);
+    if (byVin && byVin.id !== exceptVehicleId) throw AppException.conflict(`VIN "${dto.vin}" already exists.`);
+  }
+
+  /** A write that loses a race to the pre-check hits the partial unique index (`P2002`); surface
+   * it as the same 409 the pre-check would have thrown, never a raw 500. */
+  private async conflictOnDuplicate<T>(write: Promise<T>, dto: { unitNumber?: string; vin?: string }): Promise<T> {
+    try {
+      return await write;
+    } catch (err) {
+      if (!isUniqueViolation(err)) throw err;
+      const target = uniqueViolationTarget(err);
+      if (target.includes('vin')) throw AppException.conflict(`VIN "${dto.vin}" already exists.`);
+      if (target.includes('unitNumber')) throw AppException.conflict(`Unit "${dto.unitNumber}" already exists.`);
+      throw AppException.conflict('A vehicle with this unit number or VIN already exists.');
+    }
   }
 
   /**
@@ -129,14 +172,15 @@ export class VehiclesService {
    * `ON DELETE SET NULL` from `EldEvent` needs `UPDATE` on `EldEvent`, which the append-only
    * hardening migration revokes fleet-wide. A plain `status` flip never touches `EldEvent` and
    * is also the correct behavior on its own merits: a unit with historical ELD events must
-   * never be dropped from the fleet table.
+   * never be dropped from the fleet table. `deletedAt` hides the row from every web read and frees
+   * its unit number / VIN for a new unit (partial unique indexes cover live rows only).
    */
   async remove(id: string): Promise<Vehicle> {
     await this.get(id);
     await this.assertStatusChangeAllowed(id, 'INACTIVE');
     const driver = await this.drivers.findOne({ assignedVehicleId: id });
     if (driver) await this.drivers.update({ id: driver.id }, { assignedVehicle: { disconnect: true } });
-    return this.vehicles.update({ id }, { status: 'INACTIVE' });
+    return this.vehicles.update({ id }, { status: 'INACTIVE', deletedAt: new Date() });
   }
 
   /**
@@ -354,11 +398,12 @@ export class VehiclesService {
             summary.failed.push({ index, error: `Unit "${row.unitNumber}" / VIN "${row.vin}" already exists.` });
             continue;
           }
+          await this.assertUnitAndVinAvailable(row, existing.id);
           await this.assertStatusChangeAllowed(existing.id, (row as UpdateVehicleDto).status);
-          vehicle = await this.vehicles.update({ id: existing.id }, this.toUpdateInput(row));
+          vehicle = await this.conflictOnDuplicate(this.vehicles.update({ id: existing.id }, this.toUpdateInput(row)), row);
           summary.updated += 1;
         } else {
-          vehicle = await this.vehicles.create(this.toCreateInput(row));
+          vehicle = await this.conflictOnDuplicate(this.vehicles.create(this.toCreateInput(row)), row);
           summary.imported += 1;
         }
         if (options.pairDevices && row.deviceSerial) {

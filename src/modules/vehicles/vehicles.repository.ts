@@ -37,12 +37,16 @@ export class VehiclesRepository extends BaseRepository<
     return this.prisma.vehicle;
   }
 
+  /** Live (not soft-deleted) unit only — `unitNumber` is unique among live rows via a partial
+   * unique index (migration 20260927090000_soft_delete_partial_uniques), so a deleted unit's
+   * number is free for reuse. */
   findByUnitNumber(unitNumber: string): Promise<Vehicle | null> {
-    return this.prisma.vehicle.findUnique({ where: { unitNumber } });
+    return this.prisma.vehicle.findFirst({ where: { unitNumber, deletedAt: null } });
   }
 
+  /** Live (not soft-deleted) unit only — see `findByUnitNumber`. */
   findByVin(vin: string): Promise<Vehicle | null> {
-    return this.prisma.vehicle.findUnique({ where: { vin } });
+    return this.prisma.vehicle.findFirst({ where: { vin, deletedAt: null } });
   }
 
   async list(
@@ -52,6 +56,7 @@ export class VehiclesRepository extends BaseRepository<
     orderBy: Record<string, 'asc' | 'desc'>,
   ): Promise<VehicleListPage> {
     const where: Prisma.VehicleWhereInput = {
+      deletedAt: null,
       ...(filter.status && { status: filter.status }),
       ...(filter.groupId && { groupId: filter.groupId === 'none' ? null : filter.groupId }),
       ...(filter.q && {
@@ -76,7 +81,7 @@ export class VehiclesRepository extends BaseRepository<
   }
 
   listAll(): Promise<Vehicle[]> {
-    return this.prisma.vehicle.findMany({ orderBy: { unitNumber: 'asc' } });
+    return this.prisma.vehicle.findMany({ where: { deletedAt: null }, orderBy: { unitNumber: 'asc' } });
   }
 
   /**

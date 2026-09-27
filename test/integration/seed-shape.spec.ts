@@ -55,12 +55,12 @@ describe('seed shape matches tz.md §22.3.6 (Figma demo dataset)', () => {
 
   it('has 69 vehicles, including unit #101 (Freightliner Cascadia) and unit #110 OUT_OF_SERVICE', async () => {
     expect(await prisma.vehicle.count({ where: NOT_LEAKED_VEHICLE })).toBe(69);
-    const unit101 = await prisma.vehicle.findUnique({ where: { unitNumber: '101' } });
+    const unit101 = await prisma.vehicle.findFirst({ where: { unitNumber: '101', deletedAt: null } });
     expect(unit101?.make).toBe('Freightliner');
     expect(unit101?.model).toBe('Cascadia');
     expect(unit101?.vin).toBe('1FUJGLDR8LLLL1234');
 
-    const unit110 = await prisma.vehicle.findUnique({ where: { unitNumber: '110' } });
+    const unit110 = await prisma.vehicle.findFirst({ where: { unitNumber: '110', deletedAt: null } });
     expect(unit110?.status).toBe('OUT_OF_SERVICE');
     const openCriticalDefect = await prisma.defect.findFirst({
       where: { vehicleId: unit110?.id, severity: 'CRITICAL', outOfService: true },
@@ -72,8 +72,8 @@ describe('seed shape matches tz.md §22.3.6 (Figma demo dataset)', () => {
 
   it('has 58 drivers, including John Smith on unit #101 with CDL OH-W8569238', async () => {
     expect(await prisma.driver.count({ where: NOT_LEAKED_DRIVER })).toBe(58);
-    const john = await prisma.driver.findUnique({
-      where: { username: 'johnsmith' },
+    const john = await prisma.driver.findFirst({
+      where: { username: 'johnsmith', deletedAt: null },
       include: { assignedVehicle: true },
     });
     expect(john?.firstName).toBe('John');
@@ -86,10 +86,10 @@ describe('seed shape matches tz.md §22.3.6 (Figma demo dataset)', () => {
   });
 
   it('pairs John Smith with Marcus Webb on unit #101 (not William Bond, who drives #104)', async () => {
-    const john = await prisma.driver.findUnique({ where: { username: 'johnsmith' } });
-    const marcus = await prisma.driver.findUnique({ where: { username: 'marcuswebb' } });
-    const william = await prisma.driver.findUnique({
-      where: { username: 'williambond' },
+    const john = await prisma.driver.findFirst({ where: { username: 'johnsmith', deletedAt: null } });
+    const marcus = await prisma.driver.findFirst({ where: { username: 'marcuswebb', deletedAt: null } });
+    const william = await prisma.driver.findFirst({
+      where: { username: 'williambond', deletedAt: null },
       include: { assignedVehicle: true },
     });
     expect(william?.assignedVehicle?.unitNumber).toBe('104');
@@ -102,7 +102,7 @@ describe('seed shape matches tz.md §22.3.6 (Figma demo dataset)', () => {
   });
 
   it("John Smith's today log shows 11:26 driving with an 11-hour violation exceeded by 00:26", async () => {
-    const john = await prisma.driver.findUnique({ where: { username: 'johnsmith' } });
+    const john = await prisma.driver.findFirst({ where: { username: 'johnsmith', deletedAt: null } });
     const dailyLogs = await prisma.dailyLog.findMany({
       where: { driverId: john?.id },
       orderBy: { logDate: 'desc' },

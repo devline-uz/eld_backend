@@ -24,16 +24,16 @@ describe('VehiclesRepository', () => {
     repo = new VehiclesRepository(prisma);
   });
 
-  it('findByUnitNumber queries by unitNumber', async () => {
-    vehicle.findUnique.mockResolvedValue({ id: 'v1' });
+  it('findByUnitNumber queries live (non-deleted) units by unitNumber', async () => {
+    vehicle.findFirst.mockResolvedValue({ id: 'v1' });
     const result = await repo.findByUnitNumber('101');
-    expect(vehicle.findUnique).toHaveBeenCalledWith({ where: { unitNumber: '101' } });
+    expect(vehicle.findFirst).toHaveBeenCalledWith({ where: { unitNumber: '101', deletedAt: null } });
     expect(result).toEqual({ id: 'v1' });
   });
 
-  it('findByVin queries by vin', async () => {
+  it('findByVin queries live (non-deleted) units by vin', async () => {
     await repo.findByVin('VIN123');
-    expect(vehicle.findUnique).toHaveBeenCalledWith({ where: { vin: 'VIN123' } });
+    expect(vehicle.findFirst).toHaveBeenCalledWith({ where: { vin: 'VIN123', deletedAt: null } });
   });
 
   it('list builds a status + free-text filter and paginates', async () => {
@@ -45,6 +45,7 @@ describe('VehiclesRepository', () => {
     );
     const where = (vehicle.findMany.mock.calls[0] as [{ where: Record<string, unknown> }])[0].where;
     expect(where.status).toBe('ACTIVE');
+    expect(where.deletedAt).toBeNull();
     expect(where.OR).toEqual(
       expect.arrayContaining([{ unitNumber: { contains: 'ford', mode: 'insensitive' } }]),
     );
@@ -58,9 +59,9 @@ describe('VehiclesRepository', () => {
     expect(where.OR).toBeUndefined();
   });
 
-  it('listAll orders by unitNumber', async () => {
+  it('listAll returns live units ordered by unitNumber', async () => {
     await repo.listAll();
-    expect(vehicle.findMany).toHaveBeenCalledWith({ orderBy: { unitNumber: 'asc' } });
+    expect(vehicle.findMany).toHaveBeenCalledWith({ where: { deletedAt: null }, orderBy: { unitNumber: 'asc' } });
   });
 
   it('findOpenCriticalDefectIds queries the Defect table for OPEN + CRITICAL rows on this unit', async () => {

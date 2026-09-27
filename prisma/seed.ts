@@ -233,23 +233,26 @@ async function main(): Promise<void> {
         ? '1FUJGLDR8LLLL1234'
         : `1FUJGLDR${(8000 + i).toString().padStart(4, '0')}LL${(1000 + i).toString().slice(-4)}`;
     const status = unitNumber === '110' ? VehicleStatus.OUT_OF_SERVICE : VehicleStatus.ACTIVE;
-    const vehicle = await prisma.vehicle.upsert({
-      where: { unitNumber },
-      create: {
-        unitNumber,
-        vin,
-        make,
-        model,
-        year: 2021 + (i % 4),
-        licensePlate: `OH-${(10000 + i).toString()}`,
-        plateState: 'OH',
-        fuelType: FuelType.DIESEL,
-        odometerMi: 50_000 + i * 733,
-        status,
-        activatedAt: ANCHOR.minus({ months: 6 + (i % 12) }).toJSDate(),
-      },
-      update: { status },
-    });
+    // `unitNumber` is unique among live rows only (partial unique index), so it can't be an
+    // upsert key — find the live unit, then update or create (same effect as the old upsert).
+    const existingVehicle = await prisma.vehicle.findFirst({ where: { unitNumber, deletedAt: null } });
+    const vehicle = existingVehicle
+      ? await prisma.vehicle.update({ where: { id: existingVehicle.id }, data: { status } })
+      : await prisma.vehicle.create({
+          data: {
+            unitNumber,
+            vin,
+            make,
+            model,
+            year: 2021 + (i % 4),
+            licensePlate: `OH-${(10000 + i).toString()}`,
+            plateState: 'OH',
+            fuelType: FuelType.DIESEL,
+            odometerMi: 50_000 + i * 733,
+            status,
+            activatedAt: ANCHOR.minus({ months: 6 + (i % 12) }).toJSDate(),
+          },
+        });
     vehicleIds.push(vehicle.id);
   }
   const unit101Id = vehicleIds[0];
@@ -387,25 +390,31 @@ async function main(): Promise<void> {
       assignedVehicleId = candidate === unit101Id || candidate === unit104Id ? null : candidate;
     }
 
-    const driver = await prisma.driver.upsert({
-      where: { username },
-      create: {
-        username,
-        passwordHash: DEMO_PASSWORD_HASH,
-        firstName: first,
-        lastName: last,
-        cdlNumber,
-        cdlState: 'OH',
-        status: DriverStatus.ACTIVE,
-        homeTerminalName: 'Columbus, OH',
-        homeTerminalTimezone: HOME_TZ,
-        fleetManagerId: users['mike.torres@universal-logistics.example'],
-        assignedVehicleId,
-        appPlatform: 'ANDROID',
-        sdkVersion: '6.7.1',
-      },
-      update: { assignedVehicleId, passwordHash: DEMO_PASSWORD_HASH },
-    });
+    // `username` is unique among live rows only (partial unique index), so it can't be an
+    // upsert key — find the live driver, then update or create (same effect as the old upsert).
+    const existingDriver = await prisma.driver.findFirst({ where: { username, deletedAt: null } });
+    const driver = existingDriver
+      ? await prisma.driver.update({
+          where: { id: existingDriver.id },
+          data: { assignedVehicleId, passwordHash: DEMO_PASSWORD_HASH },
+        })
+      : await prisma.driver.create({
+          data: {
+            username,
+            passwordHash: DEMO_PASSWORD_HASH,
+            firstName: first,
+            lastName: last,
+            cdlNumber,
+            cdlState: 'OH',
+            status: DriverStatus.ACTIVE,
+            homeTerminalName: 'Columbus, OH',
+            homeTerminalTimezone: HOME_TZ,
+            fleetManagerId: users['mike.torres@universal-logistics.example'],
+            assignedVehicleId,
+            appPlatform: 'ANDROID',
+            sdkVersion: '6.7.1',
+          },
+        });
     driverIds.push(driver.id);
     if (i === 0) johnSmithId = driver.id;
     if (i === 1) marcusWebbId = driver.id;

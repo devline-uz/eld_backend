@@ -23,7 +23,7 @@ describe('seeded credentials are real Argon2id hashes (tz.md §6.5 / §22.3.6)',
   });
 
   it('John Smith (driver) has an Argon2id hash that verifies against "Onebook2026"', async () => {
-    const john = await prisma.driver.findUnique({ where: { username: 'johnsmith' } });
+    const john = await prisma.driver.findFirst({ where: { username: 'johnsmith', deletedAt: null } });
     expect(john?.passwordHash).toMatch(/^\$argon2id\$/);
     await expect(verifyPassword(john!.passwordHash, 'Onebook2026')).resolves.toBe(true);
   });
