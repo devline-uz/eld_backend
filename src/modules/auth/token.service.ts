@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import jwt from 'jsonwebtoken';
+import ms from 'ms';
 import type { ContextUser } from '../../core/context/request-context';
 import { AppConfigService } from '../../core/config/config.service';
 import { AppException } from '../../common/errors/app.exception';
@@ -11,6 +12,10 @@ export interface UserTokenSubject {
   id: string;
   roleKey: string;
   permissions: PermissionMatrix;
+  /** B-50 — the `Session.id` this access token was issued alongside, so `GET /me/sessions`
+   * can mark the caller's own session `current: true` without ever putting `refreshHash` in
+   * the token or the response. */
+  sessionId?: string;
 }
 
 export interface DriverTokenSubject {
@@ -18,12 +23,20 @@ export interface DriverTokenSubject {
 }
 
 const PASSWORD_RESET_TYP = 'password_reset';
+/** §20 B-29/B-30/B-31 — `POST /drivers/:id/send-verification` / `verify-email`. */
+const DRIVER_EMAIL_VERIFY_TYP = 'driver_email_verify';
+/** B-84 — `PATCH /users/:id { email }` re-verification. Same shape as the driver one above,
+ * kept as its own `typ` so a driver verify link can never be replayed against a user (TZ §6.1
+ * — two distinct subjects, never cross-usable). */
+const USER_EMAIL_VERIFY_TYP = 'user_email_verify';
 
 interface AccessTokenClaims {
   sub: string;
   typ: 'user' | 'driver';
   rol?: string;
   per?: PermissionMatrix;
+  /** B-50 — see `UserTokenSubject.sessionId`. */
+  sid?: string;
 }
 
 interface PasswordResetClaims {
@@ -31,6 +44,18 @@ interface PasswordResetClaims {
   typ: typeof PASSWORD_RESET_TYP;
   /** Bound to the current passwordHash so a used/rotated hash invalidates outstanding tokens. */
   pwv: string;
+}
+
+interface DriverEmailVerifyClaims {
+  sub: string;
+  typ: typeof DRIVER_EMAIL_VERIFY_TYP;
+  email: string;
+}
+
+interface UserEmailVerifyClaims {
+  sub: string;
+  typ: typeof USER_EMAIL_VERIFY_TYP;
+  email: string;
 }
 
 /**
@@ -51,6 +76,7 @@ export class TokenService extends TokenVerifier {
       typ: 'user',
       rol: user.roleKey,
       per: user.permissions,
+      sid: user.sessionId,
     };
     return jwt.sign(claims, this.secret, { expiresIn: this.config.get('JWT_ACCESS_TTL') } as jwt.SignOptions);
   }
@@ -77,6 +103,37 @@ export class TokenService extends TokenVerifier {
     return { userId: claims.sub, passwordVersion: claims.pwv };
   }
 
+  /** §20 B-29/B-30 — bound to the email so a subsequent change of `Driver.email` invalidates
+   * outstanding links, same idea as `pwv` on password-reset tokens. */
+  signDriverEmailVerifyToken(driverId: string, email: string): string {
+    const claims: DriverEmailVerifyClaims = { sub: driverId, typ: DRIVER_EMAIL_VERIFY_TYP, email };
+    return jwt.sign(claims, this.secret, { expiresIn: this.config.get('JWT_PASSWORD_RESET_TTL') } as jwt.SignOptions);
+  }
+
+  verifyDriverEmailVerifyToken(token: string): { driverId: string; email: string } {
+    const claims = this.verifyRaw<DriverEmailVerifyClaims>(token);
+    if (claims.typ !== DRIVER_EMAIL_VERIFY_TYP) {
+      throw new AppException(ERROR_CODES.TOKEN_INVALID, 'Not an email-verification token.', 401);
+    }
+    return { driverId: claims.sub, email: claims.email };
+  }
+
+  /** B-84 — `PATCH /users/:id { email }` issues one of these; the caller only ever applies
+   * the new email once this comes back verified (no outbound-mail transport yet, see
+   * `AuthService.forgotPassword` — same "return outside production" convention). */
+  signUserEmailVerifyToken(userId: string, email: string): string {
+    const claims: UserEmailVerifyClaims = { sub: userId, typ: USER_EMAIL_VERIFY_TYP, email };
+    return jwt.sign(claims, this.secret, { expiresIn: this.config.get('JWT_PASSWORD_RESET_TTL') } as jwt.SignOptions);
+  }
+
+  verifyUserEmailVerifyToken(token: string): { userId: string; email: string } {
+    const claims = this.verifyRaw<UserEmailVerifyClaims>(token);
+    if (claims.typ !== USER_EMAIL_VERIFY_TYP) {
+      throw new AppException(ERROR_CODES.TOKEN_INVALID, 'Not a user email-verification token.', 401);
+    }
+    return { userId: claims.sub, email: claims.email };
+  }
+
   /** TokenVerifier port — consumed by the transport-only `JwtAuthGuard`. */
   async verifyAccessToken(token: string): Promise<ContextUser> {
     const claims = this.verifyRaw<AccessTokenClaims>(token);
@@ -88,7 +145,23 @@ export class TokenService extends TokenVerifier {
       type: claims.typ,
       role: claims.rol,
       permissions: claims.per,
+      sessionId: claims.sid,
     };
+  }
+
+  /**
+   * MB-21 — refresh-token DB expiry must honour `JWT_REFRESH_TTL` / `JWT_DRIVER_REFRESH_TTL`
+   * (previously a hardcoded map in AuthService silently ignored these env vars). Reuses the
+   * same duration-string format as the access-token TTLs above (`15m`, `24h`, `30d`, ...),
+   * parsed with the `ms` package that `jsonwebtoken` itself depends on for `expiresIn`.
+   */
+  refreshTtlMs(subjectType: 'user' | 'driver'): number {
+    const raw = subjectType === 'user' ? this.config.get('JWT_REFRESH_TTL') : this.config.get('JWT_DRIVER_REFRESH_TTL');
+    const parsed = ms(raw as ms.StringValue);
+    if (typeof parsed !== 'number' || Number.isNaN(parsed) || parsed <= 0) {
+      throw new Error(`Invalid duration string for refresh TTL: "${raw}"`);
+    }
+    return parsed;
   }
 
   private get secret(): string {

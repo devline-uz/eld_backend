@@ -29,10 +29,18 @@ export type DutyStatusDto = z.infer<typeof DutyStatusDto>;
 
 export const DEFAULT_DUTY_STATUS_ANNOTATION = 'Driver-reported status change';
 
-/** §9.2 — certify from the sync queue; identical semantics to `POST /mobile/certify`. */
+/**
+ * §9.2 / §13.6 MB-8 — certify from the sync queue; identical semantics to `POST /mobile/certify`.
+ * `signatureBase64` is the offline path: a certification captured with no connectivity has no
+ * `signatureImageId` yet (that id is only minted by `POST /mobile/signature`, which needs the
+ * network). When both are absent the existing "no signature" certify path is unchanged —
+ * backwards-compatible with every already-queued payload.
+ */
 export const SyncCertifyPayloadDto = z.object({
   dates: z.array(dayKeySchema).min(1).max(31),
   signatureImageId: z.string().max(200).optional(),
+  signatureBase64: z.string().min(16).optional(),
+  signatureMimeType: z.enum(['image/png', 'image/jpeg']).default('image/png'),
 });
 export type SyncCertifyPayloadDto = z.infer<typeof SyncCertifyPayloadDto>;
 
@@ -81,9 +89,18 @@ export const SyncChangeDto = z.discriminatedUnion('type', [
 ]);
 export type SyncChangeDto = z.infer<typeof SyncChangeDto>;
 
+/** MB-11 — the app's own view of how far behind it is: oldest unsynced local record, in days,
+ *  and the cumulative bytes still queued locally (§13.3/§13.4 local retention). */
+export const SyncBacklogDto = z.object({
+  days: z.number().min(0).max(3650),
+  bytes: z.number().int().min(0),
+});
+export type SyncBacklogDto = z.infer<typeof SyncBacklogDto>;
+
 export const SyncRequestDto = z.object({
   lastSyncAt: isoDateTime.optional(),
   hosEngineVersion: z.string().max(20).optional(),
   changes: z.array(SyncChangeDto).max(MAX_SYNC_CHANGES),
+  backlog: SyncBacklogDto.optional(),
 });
 export type SyncRequestDto = z.infer<typeof SyncRequestDto>;

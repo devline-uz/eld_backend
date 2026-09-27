@@ -126,6 +126,18 @@ describe('statusInEffectAt / drivingIntervals', () => {
     expect(intervals).toHaveLength(2);
     expect(intervals[0].startAt.toISOString()).toBe('2026-06-01T12:00:00.000Z');
     expect(intervals[1].endAt.toISOString()).toBe('2026-06-01T17:00:00.000Z');
+    expect(intervals.map((d) => d.open)).toEqual([false, false]);
+  });
+
+  it('B-073 — flags the driving segment still in force at now as open', () => {
+    const events = [
+      event({ at: '2026-06-01T12:00:00Z', code: 1 }),
+      event({ at: '2026-06-01T14:00:00Z', code: 3 }),
+    ];
+    const intervals = drivingIntervals(events, new Date('2026-06-01T16:00:00Z'));
+    expect(intervals).toHaveLength(1);
+    expect(intervals[0]).toMatchObject({ open: true });
+    expect(intervals[0].endAt.toISOString()).toBe('2026-06-01T16:00:00.000Z');
   });
 });
 

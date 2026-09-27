@@ -17,6 +17,10 @@
  *                                                                 status that followed
  *   REQUEST          recordStatus = 3, recordOrigin = 3            a carrier proposal, inert
  *   REJECT_MARKER    recordStatus = 4, supersedesId = <request>    the driver said no
+ *   SPECIAL          eventType 3, code 1 (PC) / 2 (YM)             B-39 — the §395.1(e)
+ *                                                                 category of an accepted edit
+ *   SPECIAL_CLEAR    eventType 3, code 0                           ends that category at the
+ *                                                                 end of the edited interval
  *
  * The NEUTRALIZE record is what lets every existing reader — the HOS engine included — keep
  * its simple `recordStatus = 1` filter and still see the corrected timeline: two records at the
@@ -31,7 +35,9 @@ export type AppendKind =
   | 'NEUTRALIZE'
   | 'NEW_ACTIVE'
   | 'RESTORE'
-  | 'REJECT_MARKER';
+  | 'REJECT_MARKER'
+  | 'SPECIAL'
+  | 'SPECIAL_CLEAR';
 
 export interface AppendRow {
   kind: AppendKind;
@@ -60,7 +66,22 @@ export interface ProposalInput {
   statusBeforeTarget?: DutyStatus | null;
   /** Status that must be back in force at `endAt`. */
   statusAfterInterval?: DutyStatus | null;
+  /** B-39 — §395.1(e) special driving category the accepted record carries. */
+  special?: SpecialCategory;
+  /**
+   * B-39 — where an open-ended PC/YM interval ends (the next active record). `null` when the
+   * interval is still open (nothing follows it yet): the category then stays in force until
+   * the driver's next duty-status change clears it, exactly as a device-entered PC/YM does.
+   */
+  specialClearAt?: Date | null;
 }
+
+export type SpecialCategory = 'NONE' | 'PC' | 'YM';
+
+/** Appendix A eventType 3 — 0 cleared, 1 personal conveyance, 2 yard move. */
+export const SPECIAL_EVENT_TYPE = 3;
+export const SPECIAL_CODE: Record<SpecialCategory, number> = { NONE: 0, PC: 1, YM: 2 };
+export const SPECIAL_BY_CODE: Record<number, SpecialCategory> = { 0: 'NONE', 1: 'PC', 2: 'YM' };
 
 const DUTY = 1;
 
@@ -92,14 +113,38 @@ export function planEditRequest(target: EditTarget, proposal: ProposalInput): Ap
   ];
 }
 
-/** §9.1 step 3 — driver accepted: old record 2, proposal becomes the active record. */
+/**
+ * B-72 — a carrier proposal of a NEW record (no original to replace — e.g. a RODS day with no
+ * duty record yet). Inert like any §395.30 proposal: recordStatus 3, nothing counts until the
+ * driver accepts.
+ */
+export function planProposedEvent(proposal: ProposalInput): AppendRow[] {
+  return [
+    {
+      kind: 'REQUEST',
+      eventType: DUTY,
+      eventCode: DUTY_CODE_BY_STATUS[proposal.status],
+      at: proposal.startAt,
+      recordStatus: 3,
+      recordOrigin: 3,
+      supersedesId: null,
+      annotation: proposal.annotation,
+    },
+  ];
+}
+
+/**
+ * §9.1 step 3 — driver accepted: old record 2, proposal becomes the active record. `target` is
+ * `null` for an accepted B-72 proposed event: there is no original to retire.
+ */
 export function planAcceptEdit(
   request: EditTarget,
-  target: EditTarget,
+  target: EditTarget | null,
   proposal: ProposalInput,
 ): AppendRow[] {
-  const rows: AppendRow[] = [
-    {
+  const rows: AppendRow[] = [];
+  if (target) {
+    rows.push({
       kind: 'INACTIVE_MARKER',
       eventType: target.eventType,
       eventCode: target.eventCode,
@@ -108,10 +153,10 @@ export function planAcceptEdit(
       recordOrigin: 3,
       supersedesId: target.id,
       annotation: proposal.annotation,
-    },
-  ];
+    });
+  }
 
-  if (needsNeutralizer(target, proposal)) {
+  if (target && needsNeutralizer(target, proposal)) {
     rows.push({
       kind: 'NEUTRALIZE',
       eventType: DUTY,
@@ -137,6 +182,23 @@ export function planAcceptEdit(
     annotation: proposal.annotation,
   });
 
+  // B-39 — the §395.1(e) category is its own Appendix A record (eventType 3), appended right
+  // after the duty-status record at the same instant so it re-states that status under PC/YM
+  // (later sequence wins, `hos-event-mapper`). Origin 3: entered by another authorised user.
+  const special = proposal.special ?? 'NONE';
+  if (special !== 'NONE') {
+    rows.push({
+      kind: 'SPECIAL',
+      eventType: SPECIAL_EVENT_TYPE,
+      eventCode: SPECIAL_CODE[special],
+      at: proposal.startAt,
+      recordStatus: 1,
+      recordOrigin: 3,
+      supersedesId: null,
+      annotation: proposal.annotation,
+    });
+  }
+
   if (proposal.endAt && proposal.statusAfterInterval) {
     rows.push({
       kind: 'RESTORE',
@@ -150,7 +212,55 @@ export function planAcceptEdit(
     });
   }
 
+  // B-39 — the category must not outlive the edited interval: a PC edit followed by an OFF
+  // record would otherwise keep counting as PC. Cleared after the RESTORE at the same instant.
+  const clearAt = proposal.endAt ?? proposal.specialClearAt ?? null;
+  if (special !== 'NONE' && clearAt) {
+    rows.push({
+      kind: 'SPECIAL_CLEAR',
+      eventType: SPECIAL_EVENT_TYPE,
+      eventCode: SPECIAL_CODE.NONE,
+      at: clearAt,
+      recordStatus: 1,
+      recordOrigin: 3,
+      supersedesId: null,
+      annotation: proposal.annotation,
+    });
+  }
+
   return rows;
+}
+
+/**
+ * B-39 / B-72 — what a pending proposal carries beyond its own columns. `EldEvent` has no
+ * column for the proposed end, the PC/YM category or "insert vs. replace", and the table is
+ * append-only, so they travel in the proposal row's free-text `comment` as `key=value` tokens
+ * (the pre-existing `proposedEnd=` convention). `comment` is never an Appendix A field on a
+ * proposal row: the annotation is (`snapshot.ts` prefers `annotation`).
+ */
+export interface ProposalMeta {
+  proposedEnd: Date | null;
+  special: SpecialCategory;
+}
+
+export function formatProposalMeta(meta: Partial<ProposalMeta>): string | null {
+  const tokens: string[] = [];
+  if (meta.proposedEnd) tokens.push(`proposedEnd=${meta.proposedEnd.toISOString()}`);
+  if (meta.special && meta.special !== 'NONE') tokens.push(`proposedSpecial=${meta.special}`);
+  return tokens.length ? tokens.join(' ') : null;
+}
+
+export function parseProposalMeta(comment: string | null | undefined): ProposalMeta {
+  const out: ProposalMeta = { proposedEnd: null, special: 'NONE' };
+  if (!comment) return out;
+  const end = /proposedEnd=(\S+)/.exec(comment);
+  if (end) {
+    const parsed = new Date(end[1]);
+    if (Number.isFinite(parsed.getTime())) out.proposedEnd = parsed;
+  }
+  const special = /proposedSpecial=(PC|YM)\b/.exec(comment);
+  if (special) out.special = special[1] as SpecialCategory;
+  return out;
 }
 
 /** §9.1 step 3 — driver rejected: the request is closed with status 4, nothing else changes. */

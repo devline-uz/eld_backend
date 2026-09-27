@@ -1,7 +1,7 @@
 /** TZ §5.5 / §7.3 rule 8 — appended RODS records are sequenced, partitioned and checksummed. */
 import { EditorType } from '@prisma/client';
 import type { IngestRepository } from '../ingest/ingest.repository';
-import { computeChecksum } from '../ingest/checksum';
+import { computeChecksum, type ChecksumFields } from '../ingest/checksum';
 import type { AppendRow } from './edit-plan';
 import { RodsEventWriter } from './rods-event-writer';
 
@@ -121,6 +121,27 @@ describe('RodsEventWriter', () => {
 
     expect(repo.inserted[0].locationPrecisionMi).toBe(10);
     expect(Math.abs((repo.inserted[0].latitude as number) - 38.999123)).toBeGreaterThan(0);
+  });
+
+  it('B-39: stores a name-only location with no coordinates', async () => {
+    const repo = new FakeIngestRepo();
+    const writer = new RodsEventWriter(repo as unknown as IngestRepository);
+
+    await writer.append(tx(repo) as never, { ...ctx, location: { name: 'Acme yard, Dayton OH' } }, [rows[0]]);
+
+    expect(repo.inserted[0]).toMatchObject({ latitude: null, longitude: null, locationName: 'Acme yard, Dayton OH' });
+  });
+
+  it('B-72: writes the engine hours and checksums them', async () => {
+    const repo = new FakeIngestRepo();
+    const writer = new RodsEventWriter(repo as unknown as IngestRepository);
+
+    await writer.append(tx(repo) as never, { ...ctx, totalEngineHours: 4321.4 }, [rows[0]]);
+
+    const row = repo.inserted[0];
+    expect(row.totalEngineHours).toBe(4321.4);
+    const withoutHours = computeChecksum({ ...(row as unknown as ChecksumFields), totalEngineHours: null });
+    expect(row.checksum).not.toBe(withoutHours);
   });
 
   it('returns ids keyed by the CALLER\'s row order, not the chronological one', async () => {

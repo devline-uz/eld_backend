@@ -1876,3 +1876,247 @@ from 162 KB, -64%). Note: 161 rows is this DB's `db:mock` dataset (200-driver mo
 deleted-user placeholders), not the "small user list" the brief pictured — <20 KB is not reachable
 for 161 real, human-legible rows without pagination or response compression (this backend has no
 `compression()` middleware on any route; flagged as a follow-up, out of scope here).
+
+## B-070 — `AuthService` refresh-token DB expiry ignored `JWT_REFRESH_TTL` / `JWT_DRIVER_REFRESH_TTL` env vars · FIXED
+**Found:** 2026-09-21, Phase 6b MB-21 (`backend/tasks.md`).
+**Root cause:** `auth.service.ts` hardcoded a `REFRESH_TTL_MS: Record<'user'|'driver', number>` map
+(30d / 90d) and used it for every `Session`/`DriverSession.expiresAt` on login and rotation.
+`env.schema.ts` defines `JWT_REFRESH_TTL` (default `'30d'`) and `JWT_DRIVER_REFRESH_TTL` (default
+`'90d'`) and `TokenService` already reads them for the *access*-token `expiresIn`, but nothing read
+them for the refresh-token DB expiry — an operator setting either env var got no effect and no
+error, silently keeping 30d/90d regardless.
+**Fix:** added `TokenService.refreshTtlMs(subjectType)`, which reads the matching env var and
+parses it with the `ms` package (added as a direct dependency; it was already a transitive dep of
+`jsonwebtoken`, which uses it internally for `expiresIn` strings) into milliseconds, throwing on an
+invalid duration string. `AuthService` now calls `this.tokens.refreshTtlMs('user' | 'driver')` in
+`loginDriver`, `issueUserTokens`, `refreshUser`, and `refreshDriver` instead of the removed
+`REFRESH_TTL_MS` map. Defaults are unchanged (30d user / 90d driver) so current `.env` behaviour is
+identical.
+**Verified:** `src/modules/auth/token.service.spec.ts` (`refreshTtlMs` describe block — default
+30d/90d, custom env override, throws on garbage input) and `src/modules/auth/auth.service.spec.ts`
+(asserts `tokens.refreshTtlMs` is called with the right subject type) both green; full
+`src/modules/auth` suite: 61/61 passing.
+
+## B-071 — `POST /mobile/dvir` and sync `dvir` silently dropped `defects[].photoAttachmentIds`; `DVIR_PHOTO` uploads never became `Attachment` rows · FIXED
+**Found:** 2026-09-21, Phase 6b MB-6 (`mobile/tz.md` §21.2, screens M-11/M-14).
+**Severity:** Medium — a driver's defect photos (the evidence behind an OOS decision, §396.11) were
+accepted by the API with 201 and lost; `Defect.photos` was always empty.
+**Root cause:** two halves. (1) `MobileDvirService.uploadSignature(purpose='DVIR_PHOTO')` put the
+bytes in object storage and returned a random `signatureImageId`, but never inserted an
+`Attachment` row, so the id referenced nothing. (2) `submit()` mapped `dto.defects` to the
+repository input without `photoAttachmentIds`, and `MobileRepository.createDvir` used
+`createMany` for defects with no way to link photos (`attachPhotos` existed but was dead code).
+**Fix:** new `mobile/dvir-photos.repository.ts` — `DVIR_PHOTO` upload now creates
+`Attachment { id = signatureImageId, key, mimeType, sizeBytes, sha256, uploadedById = driver,
+uploadedByType = DRIVER }` (response gains `attachmentId`); `submit()` validates every referenced
+id as the driver's OWN, not-yet-attached photo (else `422 VALIDATION_FAILED { missing[] }`, before
+the signature is stored) and passes `photoAttachmentIds` per defect; `createDvir` switched from
+`createMany` to nested `create` so each Defect `connect`s its photos and the Dvir `connect`s all of
+them — one transaction, no `Attachment` row created without its DVIR. Response and AuditLog
+`after` gain `photoCount`. No schema change: `Attachment.dvirId/defectId` already existed.
+**Verified:** `src/modules/mobile/mobile-dvir.service.spec.ts` (5 unit regressions) and
+`test/integration/mobile-dvir-photos.spec.ts` (real dev DB: upload → Attachment row; submit links
+each photo to its own Defect and the Dvir; foreign/already-attached id → 422, nothing created).
+
+## B-072 — `SupportTicket` had no `updatedAt` column · FIXED
+**Found:** 2026-09-21, Phase 6b MB-16 (`backend/tasks.md`). `GET /mobile/support/tickets`
+(mobile/tz.md §21, screens M-30/M-22) must report `updatedAt`, but `SupportTicket` never tracked
+one — only `createdAt` and a nullable `resolvedAt`. The existing web `PATCH /support/tickets/:id`
+(status/priority/assignee changes) had no way to expose "last touched" either.
+**Fix:** added `updatedAt DateTime @updatedAt` to `SupportTicket` (Prisma auto-manages it on every
+`update()`, including the existing `SupportRepository`/`SupportService.update()` path — no service
+code change needed). Migration
+`prisma/migrations/20260921100000_notification_kind_and_ticket_updated_at` backfills existing rows
+from `createdAt` before making the column `NOT NULL`.
+**Verified:** `src/modules/support/mobile-support.controller.spec.ts` asserts the field is present
+and returned by `GET /mobile/support/tickets`; existing `support.repository.spec.ts` /
+`support.service.spec.ts` still green (76/76 in the notifications+support+alert.processor slice).
+
+## B-073 — an OPEN driver self-entry starting inside a Driving segment shortened driving time (§395.30(c)(2) loophole) · FIXED
+**Found:** 2026-09-22, mobile team report `mobile/future.md` F-45.
+**Severity:** High (compliance) — `POST /mobile/log-entries`, `POST /mobile/duty-status` and sync
+`log_entry`/`duty_status` (all `LogsService.createLogEntry`, D-030) accepted an OFF/SB/ON entry with
+no `endAt` whose `startAt` fell inside a D segment. The planner writes one active record at
+`startAt` that runs until the next record, so the tail of the D segment became OFF/SB/ON — driving
+time reduced by a driver edit, the exact thing §395.30(c)(2) / D-080 forbid.
+**Root cause:** `checkDriverSelfEdit` (`src/modules/logs/edit-rules.ts`) treated an open entry as a
+zero-length point and returned `null` before the overlap loop — only closed `[startAt, endAt)`
+intervals were checked.
+**Fix:** an open entry (no `endAt`, or `endAt <= startAt`) is refused `422 DRIVING_TIME_IMMUTABLE
+{ reason: OVERLAPS_DRIVING }` when `startAt ∈ [D.start, D.end)` of any active driving interval.
+Starting exactly at a D end, or before a later D segment, stays allowed (the ELD's D record is the
+next record and still wins from its instant). `rods.ts drivingIntervals` now flags the segment still
+in force at `now` as `open`; a live status tap within `LIVE_STATUS_TOLERANCE_MS` (2 min) of `now`
+that ends such an open segment is the only allowed case (decisions.md D-089). `createLogEntry`
+passes `now` to the rule. No DTO/route change.
+**Verified:** `edit-rules.spec.ts` (12 new pure cases incl. at-start, exact-end, before-later-D,
+open-segment tolerance edges, target/no-`now` fail-closed), `logs.service.spec.ts` (6 new: 422 with
+nothing written, exact-end allowed, D interval unchanged after an earlier open entry, back-dated entry
+in an open D refused, live tap accepted, normal tap after the ELD closed D accepted), `rods.spec.ts`
+(open flag).
+
+## B-074 — `ReportsRepository.create` typed against `Prisma.ReportCreateInput`, broke on adding `Report.requestedBy` relation · FIXED
+**Found:** 2026-09-24, Phase 13A (schema pass) — after adding `Report.requestedBy User @relation(...)` for
+B-46 (`requestedBy: { id, name }` on read), `npx tsc --noEmit` failed:
+`reports.service.ts(76,7): 'requestedById' does not exist in type 'ReportCreateInput'` — Prisma's generated
+`XCreateInput` drops a relation's own FK scalar once the relation is declared, requiring `requestedBy: {
+connect: { id } }` instead of the plain `requestedById: actor.id` the service already wrote.
+**Severity:** Low (build break only, dev DB unaffected; caught before merge).
+**Fix:** `ReportsRepository extends BaseRepository<..., Prisma.ReportUncheckedCreateInput, ...>` instead of
+`Prisma.ReportCreateInput` — `UncheckedCreateInput` keeps the plain FK scalar alongside the new relation, no
+service-code change needed.
+**Verified:** `npx tsc --noEmit` no longer reports the error; `npm run build` (excludes specs) is clean.
+
+## B-075 — `openapi-audit.spec.ts` failed `tsc --noEmit` (TS2352 cast to `OpenAPIObject`) · FIXED
+- **Found:** 2026-09-24, Phase 13B, `npx tsc --noEmit` (spec files are type-checked by tsconfig.json, not by `nest build`).
+- **Severity:** Low — test-only typing; jest (isolated transpile) still ran it.
+- **Resolution:** `docWith()` casts through `unknown` (`as unknown as OpenAPIObject`).
+
+## B-076 — Accepted carrier edit dropped the proposal's location (and engine hours) · FIXED
+- **Found:** 2026-09-24, Phase 13C (B-39), reading `LogsService.acceptEditRequest`.
+- **Severity:** Medium — §395.30 compliance: `createEditRequest` stored the carrier's location on the recordStatus-3 proposal, but `acceptEditRequest` appended the new active record with no location, so the location the driver accepted never reached the RODS / eRODS file. `RodsEventWriter` also hard-coded `totalEngineHours: null`, so `engineHours` in the request DTO was silently ignored.
+- **Resolution:** accept now carries the proposal row's coordinates / `locationName` (`locationOf()`), PC coarsening (10 mi) and `totalEngineHours`; `AppendContext.totalEngineHours` is written and checksummed. Tests: `logs.service.spec.ts` (B-39 / B-72 blocks), `rods-event-writer.spec.ts` "B-72: writes the engine hours".
+
+## B-077 — `GET /me/sessions` returned raw `Session` rows including `refreshHash`/`userId` · FIXED
+- **Found:** 2026-09-24, Phase 13I (B-50), reading `SessionRepository.listActiveForUser` / `AuthService.listUserSessions`.
+- **Severity:** High — a refresh-token hash (SHA-256 of the opaque refresh token) was being serialized straight to the browser on every "My profile → Active sessions" load; `userId` was also present (self-evident but unnecessary exposure on a per-item basis).
+- **Resolution:** `SessionRepository.listActiveForUser` now does a Prisma `select` (`SafeSession`: `id`/`deviceLabel`/`userAgent`/`ip`/`lastSeenAt`) instead of returning the full row. `current` is derived from a new `sid` claim signed into the User access token at login/refresh (`TokenService`/`AuthService.issueUserTokens`/`refreshUser`), not guessed from `lastSeenAt`. Added `DELETE /me/sessions` ("sign out everywhere", excludes the caller's own session) → `{ revoked }`. Tests: `auth.service.spec.ts` "sessions" block, `me.controller.spec.ts`.
+
+## B-078 — worker-published `realtime.push` never reached `RealtimeGateway` (`report.ready`, and every worker-only alert/safety-detect socket push) · FIXED
+- **Found:** 2026-09-24, Phase 13D (B-49), tracing why `report.processor.ts`'s `report.ready` publish "looked wired" already.
+- **Severity:** High — `EventBusService` (`core/events/event-bus.service.ts`) is a plain in-process `Map<name, handlers>`, not a message broker. `worker.ts` (`report`/`alert`/`safety-detect`/... processors) and `app.module.ts` (`RealtimeGateway`) are separate Node processes/containers per TZ §3.3, each with its OWN `EventBusService` instance. Any `realtime.push` published from a worker-only processor was silently dropped — no error, no log, the socket event simply never fired. `report.ready` (this task), and pre-existing `alert`/`safety-detect` pushes, were all affected; only `trips`/`messaging`/`ingest` (API-process publishers) actually worked.
+- **Resolution:** Added `RealtimePubSubService` (`core/events/realtime-pubsub.service.ts`) bridging `realtime.push` over Redis pub/sub in both processes; `RealtimeGateway` now emits from its `onRelayed()` callback instead of listening to `EventBusService` directly. See decisions.md D-100. Tests: `core/events/realtime-pubsub.service.spec.ts` (mocked `ioredis`).
+
+## B-079 — `GET /mobile/device-health` `pendingConfirmationRequestIds` never listed a B-83 PENDING_CONFIRMATION segment · FIXED
+- **Found:** 2026-09-24, D-095 follow-up (Phase 13C leftover).
+- **Severity:** Medium — `DeviceHealthRepository.findPendingUnidentifiedSegments` only queried `status: 'PENDING'` on the driver's assigned vehicle. A carrier's B-83 "please confirm" assignment (`status: PENDING_CONFIRMATION`, `assignedDriverId: <that driver>`) never showed up in the device-health poll, so a driver-app screen relying on it (rather than the realtime push or `GET /unidentified/confirmation-requests`) never surfaced the prompt — and a segment assigned on a *different* vehicle than the driver's current one was invisible entirely.
+- **Resolution:** `findPendingUnidentifiedSegments(vehicleId, driverId, since)` now ORs the existing PENDING-on-assigned-vehicle pool query with `status: PENDING_CONFIRMATION AND assignedDriverId = driverId` (any vehicle), and runs even when the driver has no assigned vehicle. Tests: `device-health.service.spec.ts`.
+
+## B-080 — `POST /vehicles/:id/assign-driver` `notify: true` never reached a backgrounded driver app (no FCM) · FIXED
+- **Found:** 2026-09-24, D-095 follow-up (Phase 13C leftover, "vehicle assign-driver notify from 13F").
+- **Severity:** Medium — unlike every other driver-facing alert (`AlertProcessor.send`'s IN_APP+FCM pairing), `VehiclesService.assignDriver` wrote the `Notification` row directly via `NotificationsRepository.create`, bypassing the alert-rule/FCM pipeline entirely — a driver with the app closed got nothing.
+- **Resolution:** `assignDriver` now also reads the driver's active `PushToken`s (`MobileRepository.findPushTokens`, cross-module read already documented for exactly this) and best-effort `FirebaseService.sendToToken`s each one when `FirebaseService.enabled`, mirroring `AlertProcessor.send`'s IN_APP+FCM pairing. Tests: `vehicles.service.spec.ts`.
+
+<!-- B-081..B-089 intentionally left free: eld-security (Phase 13J) numbered from B-090 while another agent was appending concurrently. -->
+
+## B-090 — `GET /search` had no `@Perm`: any bearer token (driver JWT, scope-less API key, a role with `drivers`/`vehicles` NONE) listed every driver and vehicle · FIXED
+- **Found:** 2026-09-24, Phase 13J security review (route-surface gate also failed on it).
+- **Severity:** High — cross-role data exposure (names, CDL-adjacent roster data, VINs, violation counts) to principals with no READ on either entity; the controller comment claimed "smaller-but-honest result" but no filtering existed.
+- **Resolution:** `@PermAny(['drivers','READ'],['vehicles','READ'])` on the route; `SearchService.search(q, limit, actor)` queries drivers only with `drivers` READ, vehicles only with `vehicles` READ, `openViolations` only with `hos` READ (else `null`), and hides `vehicle.driverName` without `drivers` READ. Tests: `search.service.spec.ts` (4 new), `route-surface.spec.ts`.
+
+## B-091 — Driver document presigned PUT signed only `host`: caller-chosen MIME type (incl. `text/html`), unbounded size, caller `fileName` inside the S3 key; and every presigned PUT carried an empty-body CRC32 · FIXED
+- **Found:** 2026-09-24, Phase 13J review of B-94 `POST /drivers/:id/documents`; verified against dev MinIO.
+- **Severity:** Medium — stored XSS / arbitrary content served from the bucket origin, storage-exhaustion, key-namespace injection (`../`, `/`) under `driver-documents/`; and uploads were functionally broken (SDK >= 3.729 bakes `x-amz-checksum-crc32=AAAAAA==` into the URL).
+- **Resolution:** `StoragePort.presignPut(key, contentType, ttl, contentLength?)` now passes `signableHeaders` (`content-type` + `content-length`); S3 client `requestChecksumCalculation: 'WHEN_REQUIRED'`. `CreateDriverDocumentDto.contentType` is an allowlist (pdf/jpeg/png/heic/webp), `sizeBytes` required (<= 10 MB); key is `driver-documents/{driverId}/{128-bit hex}.{ext}`, `fileName` is display metadata only; TTL 15 min. Live MinIO check: matching PUT 200, wrong type 403, wrong length 403. Tests: `s3-storage.service.spec.ts`, `drivers.service.spec.ts`.
+
+## B-092 — `POST /alert-rules/:id/test` was neither throttled nor audited · FIXED
+- **Found:** 2026-09-24, Phase 13J (route-surface "audits every permission-gated mutation" failed).
+- **Severity:** Low — each call fans out to every configured outbound webhook and inserts a notification row; usable as a spam/amplification pump with no trail.
+- **Resolution:** `@Throttle(5/min)` + `@Audit({ object: 'AlertRule', action: 'TEST' })`.
+
+## B-093 — One-time secrets echoed in responses whenever `NODE_ENV !== 'production'` — and the public API runs `NODE_ENV=development` · FIXED
+- **Found:** 2026-09-24, Phase 13J; `/proc/<pid>/environ` of the `:3002` API behind `eldapi.stackyard.uz` shows `NODE_ENV=development`.
+- **Severity:** Critical — unauthenticated `POST /auth/password/forgot` returned a live `resetToken` for any known email (full back-office account takeover from the internet); same pattern in B-81 reset-password / B-29 send-verification / B-82 invite codes and B-84 email-change tokens.
+- **Resolution:** new env `DEV_ECHO_SECRETS` (default `false`) and `AppConfigService.echoOneTimeSecrets = !isProduction && DEV_ECHO_SECRETS`; all five echo sites use it. The dispatcher-read-aloud code for a driver with no email is still returned (by design, `drivers:FULL` + audited). See decisions.md D-103. Tests: `auth.service.spec.ts`, `drivers.service.spec.ts`. **Takes effect on the public API only after `npm run build` + restart** (not done by this agent).
+
+## B-094 — `POST /drivers/:id/reset-password` left the driver's refresh sessions alive · FIXED
+- **Found:** 2026-09-24, Phase 13J.
+- **Severity:** Medium — a reset after a lost/stolen phone did not log that phone out (90-day driver refresh token kept rotating). Also `randomInt(100000, 999999)` could never yield 999999.
+- **Resolution:** `DriversRepository.revokeAllSessions(driverId)` called right after the hash rotation; upper bound `1_000_000`. Tests: `drivers.service.spec.ts`.
+
+## B-095 — Avatar upload: whole file buffered before the 5 MB check, no pixel-size cap, EXIF/GPS stored as-is · FIXED
+- **Found:** 2026-09-24, Phase 13J review of B-51 `POST /me/avatar`.
+- **Severity:** Medium — memory DoS (multer memory storage had no `limits`), 65535x65535 decompression bomb served to every browser, driver/user GPS position leaked via EXIF (TZ control "EXIF stripped").
+- **Resolution:** `FileInterceptor('file', { limits: { fileSize: 5 MB, files: 1, ... } })` (413 while streaming); dims > 8192 refused; `stripImageMetadata()` drops JPEG APP1–APP15/COM and PNG tEXt/zTXt/iTXt/eXIf/tIME, refusing malformed containers; PNG parser now requires the IHDR tag. Fuzz test: 500 random buffers never throw. Tests: `image-dimensions.util.spec.ts`, `users.service.spec.ts`.
+
+## B-096 — `GEOCODER_URL` call: no timeout, followed redirects, unvalidated coordinates, base path dropped · FIXED
+- **Found:** 2026-09-24, Phase 13J review of B-93.
+- **Severity:** Low — host is operator config and `q` was already URL-encoded (no direct SSRF), but a redirect could bounce the server to an internal address, a hanging geocoder pinned a request, `NaN` coordinates could be stored.
+- **Resolution:** `redirect: 'error'`, `AbortSignal.timeout(5 s)`, 256 KB response cap, finite + range-checked lat/lon, `./search` keeps a base path. Tests: new `geocoder.spec.ts`, `geofences.service.spec.ts`.
+
+## B-097 — `realtime:push` Redis channel was global across environments; relayed payloads emitted unvalidated · FIXED
+- **Found:** 2026-09-24, Phase 13J review of the B-49/B-078 bridge.
+- **Severity:** Medium — Redis pub/sub ignores `REDIS_DB`, so every process on the same Redis server (dev, test runs, a second deployment) relayed its socket pushes into every other one's rooms (cross-environment data leak); any malformed message was emitted as-is.
+- **Resolution:** channel `${QUEUE_PREFIX}:db${REDIS_DB}:realtime:push`; messages from another channel dropped; `isRelayPayload` enforces the gateway's room grammar and an event-name pattern before any emit. Tests: `realtime-pubsub.service.spec.ts`.
+
+## B-098 — PDF templates expanded `{{...}}` typed by users inside `{{#each}}` rows; renderer ran JS with open network · FIXED
+- **Found:** 2026-09-24, Phase 13J review of B-75 `GET /dvir/:id/pdf` / B-48 report PDFs.
+- **Severity:** Low — HTML was already escaped, but a defect description `{{carrier...}}` was re-expanded by the second template pass (template injection, same-report data only); defence in depth missing for SSRF from headless Chrome.
+- **Resolution:** `escapeHtml` also encodes `{`/`}`; the page runs with JavaScript disabled and request interception allowing only `data:`/`about:blank` and the exact presigned URLs present in the render data. Live render check (Chrome 152): only the allowed signature URL was fetched. Tests: new `pdf-render.spec.ts`.
+
+## B-099 — Phase 13J review items checked and found safe · NOT A BUG
+- `GET /attachments/:id/presign` — owner-chain check, deny-by-default, 404 for foreign ids (D-096); now on the reviewed self-scoped list in `route-surface.spec.ts`.
+- `POST /notifications/:id/read` — update filtered by caller's own userId/driverId, 404 otherwise. `POST /conversations/:id/read` — participant check. Support chats — `conversation:{id}` room join requires participation.
+- `POST /unidentified/:id/confirm` — `DriverGuard`; PENDING_CONFIRMATION answerable only by the asked driver; self-claim needs a driver-vehicle association (§395.32).
+- `/drivers/:id/documents` DELETE checks `doc.driverId`; `/vehicles/:id/{histories,activities,telemetry}`, `/dvir/:id/pdf`, co-driver pairings — permission-gated, single-carrier (TZ §27.3), bounded queries.
+- `/me/sessions` — `SAFE_SESSION_SELECT` (no `refreshHash`/`userId`); `DELETE /me/sessions[/:id]` scoped to the caller; driver verify-email token bound to the current `Driver.email`; audit snapshots redact `passwordHash`.
+- `POST /support/*` at `support:READ` is tz.md B-12 by design — listed in `route-surface.spec.ts` `READ_LEVEL_MUTATIONS`.
+- `User.terminalScope` is stored but enforced nowhere — correct for now: backend_tasks.md §20 leaves "UI filter or security boundary" as an open product question (decisions.md D-090); the UI must not present it as an access restriction.
+- `Carrier.notificationChannels.webhook.url` is stored but never fetched — no SSRF path today; when wired it must go through the webhook module's outbound checks.
+
+## B-101 — Two migrations shipped without `down.sql` (`20260913160000_remove_two_factor_auth`, `20260924120000_phase13_web_gaps_schema`) · FIXED
+- **Found:** 2026-09-24, Phase 13J `eld-qa-test` — `npm run test:integration` (`migration-updown.spec.ts`).
+- **Severity:** Medium — violates the tasks.md Global gate "every migration tested up AND down on the dev DB"; blocked the whole integration suite (test aborts the process on any `migrate-updown-dev.sh` failure).
+- **Resolution:** added both `down.sql` files. `remove_two_factor_auth`'s down re-adds the 3 dropped `User` columns; because Postgres always appends `ADD COLUMN` at the end (by attnum) and `migrate-updown-dev.sh` does a literal `pg_dump` text diff, a plain `ADD COLUMN` left them after `createdAt` instead of their original position — fixed with a full-table rebuild (rename, recreate in the original column order, copy, drop, reattach the 4 FKs/3 indexes) since the scratch DB it runs against is always empty at that point. `phase13_web_gaps_schema`'s down reverses every `AlterTable`/`CreateTable`/FK/index and rebuilds the 5 enums Postgres has no `DROP VALUE` for (`create _old type, repoint the one column + its default, drop, rename`). Verified: `npm run migrate:test-updown` — all 12 migrations pass up→down→up.
+
+## B-102 — Integration suite intermittently fails on exact-row-count assertions (`seed-shape.spec.ts`, IFTA nightly segment test and `retention.spec.ts`'s scratch-partition count in `reports-pipeline.spec.ts`/`retention.spec.ts`) when run against the shared dev DB while `prisma/mock/simulator` is running · OPEN (environmental, not a code defect)
+- **Found:** 2026-09-24, Phase 13J `eld-qa-test` full-suite run.
+- **Severity:** Low (test-infra only) — the always-on mock telemetry/event simulator (`node prisma/mock/simulator/index.js`, PID persists across sessions) continuously inserts `DailyLog`/`TelemetryPoint`/`EldEvent` rows for the whole 200-driver mock fleet, including dates/partitions the fixed-count assertions in these specs assume are scoped to one seeded driver/vehicle or one scratch partition (e.g. `seed-shape.spec.ts` expects exactly 8 `DailyLog` rows for John Smith, got 22, and re-runs also mismatch the 4-role/12-user/58-driver/69-vehicle/DVIR counts once the simulator has been running a while; `reports-pipeline.spec.ts`'s IFTA test expects `segmentsUpserted: 1` for one test vehicle/day, got 305 because `IftaSegmentsService.computeForDate` legitimately scans every vehicle with telemetry that day; `retention.spec.ts`'s "scratch partition only" test expects exactly 3 rows in a partition it just created, got 6 — the simulator's own `EldEvent` inserts can land in the same monthly partition mid-test). Not introduced by Phase 13 work — pre-existing coupling between "exact count" integration assertions and a shared, continuously-writing background process.
+- **Action:** not fixed here — stopping/pausing the simulator is out of this task's scope and risks other agents' in-flight work; flagging for whoever owns `prisma/mock/simulator` to either scope these specs to an isolated vehicle/driver+date range/partition the simulator never touches, or make them tolerant (`toBeGreaterThanOrEqual`) instead of exact `toBe`. All affected specs passed cleanly in isolated runs when the simulator's write volume was lower.
+
+## B-103 — `renderPdf` launched puppeteer's pinned Chrome build, which was not on disk (every PDF endpoint 500s) · FIXED
+- **Found:** 2026-09-24, Phase 13J security review — reports PDF, `/dvir/:id/pdf`, RODS, IDLE_FUEL, FMCSA pack.
+- **Severity:** High — every PDF-producing endpoint threw on `puppeteer.launch()` (ENOENT: the box only has Chrome 152.0.7977.75 cached under `~/.cache/puppeteer/chrome`, not `puppeteer@24.43.1`'s pinned 148.0.7778.97).
+- **Resolution:** `src/modules/reports/lib/pdf-render.ts` now resolves the launch `executablePath` itself: `PUPPETEER_EXECUTABLE_PATH` env override first, then puppeteer's own pinned path IF it exists on disk, then the newest `linux-*` build actually present in the puppeteer cache — never hard-codes "152". Proved with a real render: `pdf-render.spec.ts`'s new `renderPdf (real headless Chrome launch)` test launches the installed Chrome 152 and asserts a real `%PDF-` byte stream (`npx jest src/modules/reports/lib/pdf-render.spec.ts` — 5/5 green).
+
+## B-104 — `RealtimeModule wiring` unit spec and 21 spec/e2e files failed `tsc --noEmit` (test-only breakage, blocked `npm test`) · FIXED
+- **Found:** 2026-09-24, Phase 13J `eld-qa-test`.
+- **Severity:** Medium — `realtime.module.spec.ts` didn't import the `CommonModule`/`StorageModule` globals `AuthModule -> CarrierModule`/`AttachmentsModule` now need (a prior phase added those imports to `AuthModule` for B-34/B-51 without updating this isolated-module-graph test); the 21 `tsc` errors were narrow test-file typing issues (missing `override`, untyped `jest.fn()` spread targets, stale enum literals, a `Report.processor` constructor missing its 2 newest generator params after 13D added `rodsGen`/`idleFuelGen`).
+- **Resolution:** all fixed in the listed spec/e2e/integration files; `npx tsc --noEmit` and `npm run test:unit` (202/202 suites, 2484/2484 tests) are clean.
+
+## B-105 — `VehiclesModule -> MobileModule -> LogsModule -> IngestModule -> TelemetryModule -> DtcModule -> VehiclesModule` is a real circular module dependency; crashed every e2e spec at boot · FIXED
+- **Found:** 2026-09-24, Phase 13J `eld-qa-test` — `npm run test:e2e` (all 10 suites failed the same way).
+- **Severity:** High — `Test.createTestingModule({ imports: [AppModule] })` (every e2e spec) threw "The module at index [0] of the DtcModule imports array is undefined" the instant Nest's scanner hit the cycle; this is CommonJS resolving one side of the circular `require()` to an incomplete (not-yet-exported) module, not a DI config mistake — it would hit `dist/main.js` at boot too, just never got there because no e2e spec had passed since `DtcModule` (B-8, Phase 13H) started importing `VehiclesModule`.
+- **Resolution:** `DtcModule` now imports `forwardRef(() => VehiclesModule)` (`src/modules/dtc/dtc.module.ts`) — defers the reference lookup until after the full module graph has registered. This alone fixed the API process/e2e specs, but which side of a CommonJS circular `require()` ends up `undefined` depends on which module is required *first* — restarting the real `pm2` worker on the new build (`worker.ts -> WorkersModule -> ServiceModule -> ... -> VehiclesModule`, a different entry point than `main.ts -> AppModule -> VehiclesModule`) then crash-looped with the *mirror* error, "the module at index [5] of the VehiclesModule imports array is undefined" (`MobileModule`). Fixed the other end of the same edge: `VehiclesModule` now imports `forwardRef(() => MobileModule)` too (`src/modules/vehicles/vehicles.module.ts`) — both ends of the one edge that closes the loop needed `forwardRef`, not just one. Verified: `test/e2e/ingest.e2e-spec.ts` and the rest of the e2e project boot past `app.init()`; `node dist/worker.js` boots to "Worker started — BullMQ processors registered" standalone; `pm2 restart eld-worker` stayed stable (restart counter stopped climbing, uptime counting up) after the fix, where it crash-looped continuously before it.
+
+## B-106 — Two e2e specs still asserted pre-Phase-13 request/response shapes (stale, not regressions) · FIXED
+- **Found:** 2026-09-24, Phase 13J `eld-qa-test` — `npm run test:e2e`.
+- **Severity:** Low — the shipped behavior is correct (covered by passing unit tests); only the e2e assertion was stale.
+- **Resolution:** `test/e2e/reports.e2e-spec.ts` "rejects an unsupported format" sent `{ type: 'IFTA', format: 'PDF' }`, which B-48 (Phase 13D) deliberately made valid — swapped to `{ type: 'RODS', format: 'CSV' }` (RODS is still PDF-only per `REPORT_TYPE_FORMATS`). `test/e2e/service.e2e-spec.ts`'s two `PATCH /defects/:id/resolve` calls still sent `{ status: 'REPAIRED' }`; B-68/B-70 changed the field to `resolutionType` — updated both call sites (the response body's `data.status` derived field is unaffected, assertion left as-is). Both files now 100% green in isolation.
+
+## B-107 — Environmental: e2e specs racing the live `pm2` worker/DB-pool cap, not code defects · OPEN (infra, not actionable here)
+- **Found:** 2026-09-24, Phase 13J `eld-qa-test` full `npm run test:e2e` run.
+- **Severity:** Low (test-infra only) — with `DATABASE_URL` connection_limit tuned down to fit the shared 10-connection `eld_dev` role cap (pm2's `eld-api`/`eld-worker`/`eld-simulator` permanently hold ~8), 88-90/94 e2e tests pass; the remaining ~4-6 are two independent, unfixable-from-the-test-side races on this box, not code bugs:
+  1. `reports.e2e-spec.ts` "returns 202 QUEUED and never a generated file" — the real `eld-worker` pm2 process shares the same Redis/BullMQ queue as the test and can pick up and start the just-enqueued job (`RUNNING`) before the test's own assertion runs. The API-level contract (enqueue-only, worker-only-generates) is correct; only a spec that also boots its own isolated worker (or stubs the queue) could assert `QUEUED` reliably against a live shared queue.
+  2. `auth.e2e-spec.ts` "GET /roles lists all 4 seeded roles" and "inviting a user is recorded in the audit log" — this dev DB also carries the 200-driver mock dataset (`prisma/mock/simulator`, always running), which seeds >100 extra `MOCK_ROLE_*` rows and continuously writes `AuditLog` rows from simulated activity; both assertions were written for a bare-seed-only DB. Same root cause as B-102.
+- **Action:** not fixed here — stopping the live pm2 worker/simulator for a test run is out of scope (other agents/production depend on them) and DB connection headroom is a fixed constraint of this box, not this codebase; whoever owns e2e test infra should either point `test:e2e` at a dedicated worker-free/mock-free DB, or make these two assertions tolerant of a live consumer (`toBeOneOf(['QUEUED','RUNNING'])`, filter mock rows).
+
+## B-108 — `GET /dvir/:id/pdf` sent `{"type":"Buffer","data":[...]}` JSON instead of real PDF bytes · FIXED
+- **Found:** 2026-09-24, Phase 13J `eld-qa-test` smoke test (real login, real download against `:3002` after restart).
+- **Severity:** High — every caller of B-75's `/dvir/:id/pdf` got an unparseable file with a lying `Content-Type: application/pdf` header, despite `renderPdf()` itself producing correct bytes (proven separately by `pdf-render.spec.ts`). Root cause: NestJS's Express adapter's `reply()` does `isObject(body) ? response.json(body) : response.send(body)` — a `Buffer` passes `isObject`, so `@Res({ passthrough: true })` + `return pdf` (the controller's original shape) got silently JSON-serialized (`Buffer.prototype.toJSON()` → `{type:'Buffer',data:[...]}`) even with `Content-Type`/`Content-Disposition` set by hand. `reports.controller.ts`'s PDF-producing report types are unaffected — they return a presigned-URL JSON body, never raw bytes.
+- **Resolution:** `src/modules/service/dvir-admin.controller.ts` `getPdf` now uses `@Res() res: Response` (no `passthrough`) and calls `res.send(pdf)` directly instead of returning the buffer for Nest to re-serialize. Verified: real login → `GET /dvir/:id/pdf` against the restarted `:3002` API returns `Content-Type: application/pdf`, 126146 bytes starting with `%PDF-1.4`.
+
+## B-100 — `AUTH_MODE` defaults to `dev` everywhere, including `.env.production.example` · OPEN
+- **Found:** 2026-09-24, Phase 13J review of B-25.
+- **Severity:** Medium — the production password-login block (B-25) is fail-open: a deployment that forgets `AUTH_MODE=production` keeps password login (plus `/auth/password/forgot`) for the back office. Left open deliberately: D-101 chose `dev` because Google Sign-In is not rolled out (the live panel runs `VITE_AUTH_MODE=dev` with empty Firebase keys), so flipping it now locks every back-office user out.
+- **Action:** operator flips `AUTH_MODE=production` once Firebase is configured; consider failing startup when `NODE_ENV=production` and `AUTH_MODE` is unset.
+
+## B-109 — `src/core/config/db-guard.ts` rejected the new `onebook_eld_test` DB name outright, making every `test:e2e` suite fail at Nest bootstrap · FIXED
+- **Found:** 2026-09-24, Phase 13J follow-up (D-105 test-DB isolation work) — `npm run test:e2e` after pointing `.env.test` at the new dedicated test DB.
+- **Severity:** High — `assertDatabaseTarget()` only recognized `onebook_eld`/`onebook_eld_dev`; every e2e spec's `Test.createTestingModule({ imports: [AppModule] }).compile()` threw `XAVFLI: noma'lum DB nomi "onebook_eld_test"` at `AppConfigModule` construction, so all 10 e2e suites/94 tests failed identically (each suite's own `afterAll` then also threw on `app.close()` since `app` was never assigned, which is why the run visibly hung for minutes on cleanup before finally reporting).
+- **Resolution:** `db-guard.ts` adds a third named entry, `TEST_DB_NAME = 'onebook_eld_test'`, only ever accepted when `NODE_ENV === 'test'` (both directions enforced: `onebook_eld_test` rejected outside `NODE_ENV=test`, and `NODE_ENV=test` rejected against any DB other than `onebook_eld_test` — so a stray `NODE_ENV=test` can never silently fall through to the dev/prod DBs). `db-guard.spec.ts` covers all 4 new branches. `test/setup/integration.setup.ts` also now sets `process.env.NODE_ENV = 'test'` explicitly (was relying on Jest's implicit default). Verified: `npm run test:e2e` — 10/10 suites, 94/94 tests, ~62s (previously failed 94/94 after multi-minute hangs on cleanup).
+
+## B-110 — `onebook_eld_test`'s seeded DVIR/WorkOrder fixture rows (odometerMi 88214/88208, unit #110/WO-2214) were briefly missing after the first `prisma/seed.ts` run · WORKAROUND (root cause not confirmed)
+- **Found:** 2026-09-24, Phase 13J follow-up — `test/integration/seed-shape.spec.ts` failed 2/8 (both DVIR/unit-#110 assertions) immediately after provisioning `onebook_eld_test`, reproducibly even running that one spec file alone.
+- **Severity:** Low (test-infra only, one-time on first provisioning) — `SELECT count(*) FROM "Dvir"` on the freshly-seeded test DB returned 0 despite the seed script logging `Seed complete` with no errors. Re-running `npm run db:test:seed` (same idempotent script, no code change) produced the expected 3 DVIR rows (88214/88208/71442) and the suite has passed cleanly on two subsequent full `test:integration` runs since.
+- **Action:** not chased further — did not reproduce on the second attempt, and nothing in `prisma/seed.ts` between the two runs changed; possibly a `ts-node`/connection-pool warm-up race against the freshly-created `eld_test` role's `CONNECTION LIMIT 8` on the very first connection to a brand-new database. If this recurs when re-provisioning `onebook_eld_test` elsewhere, re-run `npm run db:test:seed` once more before assuming a real regression.
+
+## B-111 — Raw Prisma `Decimal` fields serialized as JSON strings, not numbers, across every endpoint that returns a raw row (OpenAPI/DTOs declare `number`) · FIXED
+- **Found:** 2026-09-24, coordinator follow-up — `GET /vehicles/:id/telemetry`'s `latitude`/`longitude` came back as `"40.712800"` (quoted string), not `40.7128`, even though the controller's own `@ApiOkResponse` example declares them numbers. Root cause: `Prisma.Decimal.prototype.toJSON()` returns `this.toString()`, so any handler returning a raw Prisma row/array (rather than hand-mapping every field, the way `VehiclesService.histories()` already does with its own `Number(p.latitude)` calls) leaks every `Decimal` column as a string — confirmed independently on `POST /geofences` (`centerLat`/`centerLon`/`radiusMi` came back quoted) during the dev `GEOCODER_URL` verification for this same session.
+- **Severity:** High — silently wrong types break any strict client-side schema/type check (the web's OpenAPI-generated types expect `number`), and downstream arithmetic on a string coerces unpredictably.
+- **Resolution:** app-wide fix at the one choke point every success response already passes through — `src/common/interceptors/transform.interceptor.ts` (the global `TransformInterceptor`) now runs the response body through a new `serializeDecimals()` (`src/common/serialization/decimal.util.ts`), which recursively walks objects/arrays and converts every `Prisma.Decimal` instance to a `number` (Date/Buffer left untouched, cycle-safe). Fixes every current AND future endpoint (`GET /vehicles/:id/telemetry`, `POST/GET /geofences`, `GET /safety/events`, `GET /work-orders`, etc.) in one place instead of patching each handler by hand. `decimal.util.spec.ts` (9 tests) + `transform.interceptor.spec.ts` (4 tests, new — no prior spec existed for this interceptor) cover it. Verified live: `POST /geofences` now returns `"centerLat": 38.897639` (number) instead of a quoted string.
+
+## B-96 — `GET /reports/{ifta,activity,dvir}` had no PDF path a READ-only role (VIEWER) could reach · FIXED
+- **Found:** 2026-09-24, web/backend-gaps.md (`web-hos-logs` phase 13 review) — W-14 "Download PDF" removed for VIEWER because the only PDF path, `POST /reports/generate { format: 'PDF' }`, requires `reports: FULL`; the READ-level shortcuts (`GET /reports/ifta|activity|dvir`) always queued `format: 'CSV'` with no override.
+- **Severity:** Medium — blocked a documented VIEWER capability (read-only roles can view/print compliance PDFs) with no workaround.
+- **Resolution:** the three shortcuts now accept `?format=CSV|PDF` (default unchanged, `CSV`) via new `IftaReportQueryDto`/`ActivityReportQueryDto`/`DvirReportQueryDto` (`dto/reports.dto.ts`) — kept separate from `IftaReportParamsDto`/`ActivityReportParamsDto`/`DvirReportParamsDto` because those types are reused as the generators' own `params` argument and as the persisted `Report.params` JSON shape, which must never carry a `format` field. The controller destructures `{ format, ...reportParams }` before calling `ReportsService.generate()`, so the stored `params` is unchanged. Generation's own permission gate is untouched — `@Perm('reports','READ')` on the shortcuts (already the case before this fix), `@Perm('reports','FULL')` still required on `POST /reports/generate` directly; carrier scoping is unaffected (report rows are still scoped the same way `ReportsRepository` already scoped them). Verified live end-to-end as a seeded VIEWER (`diane.foster@...`, `reports: READ`): `GET /reports/dvir?format=PDF` → `202 QUEUED`, worker completes it to `READY` with `format: 'PDF'` and `params` holding only `from`/`to` (no `format` leaked into the stored params), `GET /reports/:id/download` → `200` with a presigned PDF URL; `POST /reports/generate` as the same user still `403 FORBIDDEN` (`required: FULL, granted: READ`). 12 dto unit tests added/passing.

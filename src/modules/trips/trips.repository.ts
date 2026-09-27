@@ -9,6 +9,13 @@ export interface TripListFilter {
   q?: string;
 }
 
+/** §20 B-36 — minimal driver/vehicle name join, reused by `list`, `unassignedLoads` and
+ * `getWithStops`. */
+const NAME_JOIN = {
+  driver: { select: { id: true, firstName: true, lastName: true } },
+  vehicle: { select: { id: true, unitNumber: true } },
+} as const;
+
 @Injectable()
 export class TripsRepository extends BaseRepository<
   Trip,
@@ -47,27 +54,31 @@ export class TripsRepository extends BaseRepository<
       }),
     };
     const [items, total] = await Promise.all([
-      this.prisma.trip.findMany({ where, orderBy, skip: (page - 1) * limit, take: limit, include: { stops: true } }),
+      this.prisma.trip.findMany({ where, orderBy, skip: (page - 1) * limit, take: limit, include: { stops: true, ...NAME_JOIN } }),
       this.prisma.trip.count({ where }),
     ]);
     return { items, total };
   }
 
+  /** §20 B-36 — pickup/delivery columns need `stops`; the board also gets a driver/vehicle
+   * name join so a caller does not have to round-trip `/drivers` + `/vehicles` just for this
+   * list (the web panel already does its own client-side join and ignores these extra keys). */
   unassignedLoads(): Promise<Trip[]> {
     return this.prisma.trip.findMany({
       where: { status: 'PLANNED', driverId: null },
       orderBy: { plannedStartAt: 'asc' },
+      include: { stops: { orderBy: { sequence: 'asc' } }, ...NAME_JOIN },
     });
   }
 
   getWithStops(id: string) {
-    return this.prisma.trip.findUnique({ where: { id }, include: { stops: { orderBy: { sequence: 'asc' } } } });
+    return this.prisma.trip.findUnique({ where: { id }, include: { stops: { orderBy: { sequence: 'asc' } }, ...NAME_JOIN } });
   }
 
   createWithStops(data: Prisma.TripCreateInput, stops: Prisma.TripStopCreateWithoutTripInput[]) {
     return this.prisma.trip.create({
       data: { ...data, stops: stops.length ? { create: stops } : undefined },
-      include: { stops: true },
+      include: { stops: true, ...NAME_JOIN },
     });
   }
 

@@ -52,6 +52,17 @@ export const envSchema = z.object({
   FIREBASE_PROJECT_ID: z.string().optional(),
   /** Path to the service-account JSON — never committed (TZ §6.5). */
   FIREBASE_CREDENTIALS_FILE: z.string().optional(),
+  /** B-25 — `production` blocks `POST /auth/login` (password login) with
+   * `403 PASSWORD_LOGIN_DISABLED`, forcing Google Sign-In for the back office. Defaults to
+   * `dev` so seeded password logins (and driver login, which this never touches) keep
+   * working unless an operator explicitly opts a deployment into `production`. */
+  AUTH_MODE: z.enum(['dev', 'production']).default('dev'),
+  /** B-093 — echo one-time secrets (password-reset / email-verify tokens, driver one-time
+   * codes that were also emailed) in API responses so flows are testable without a mailer.
+   * Off unless explicitly enabled, and ignored when NODE_ENV=production: the public dev API
+   * runs with NODE_ENV=development, and "not production" alone handed any caller of the
+   * unauthenticated `POST /auth/password/forgot` a live reset token. */
+  DEV_ECHO_SECRETS: bool('false'),
 
   // --- integrations (TZ §16) ------------------------------------------------
   /** Base64-encoded 32-byte AES-256-GCM key that encrypts `Integration.config` secrets at
@@ -90,6 +101,22 @@ export const envSchema = z.object({
   /** Bind address for the worker's bare-http health/metrics listener; default keeps
    * prior behaviour (all interfaces) but ops can pin it to loopback behind a proxy. */
   WORKER_HEALTH_HOST: z.string().min(1).default('0.0.0.0'),
+
+  // --- mobile app update (TZ §11.8 bootstrap.appUpdate, MB-19) --------------
+  /** Unset in dev/most envs — `bootstrap.appUpdate` is then `null` rather than a half-filled
+   * object, so the app never shows a stale "update available" banner off defaults. */
+  MOBILE_APP_LATEST_VERSION: z.string().optional(),
+  MOBILE_APP_MIN_VERSION: z.string().optional(),
+  MOBILE_APP_RELEASE_NOTES: z.string().optional(),
+  MOBILE_APP_STORE_URL_IOS: z.string().optional(),
+  MOBILE_APP_STORE_URL_ANDROID: z.string().optional(),
+
+  // --- geocoding (TZ §20 B-93) ----------------------------------------------
+  /** Nominatim-compatible `/search?q=&format=json` base URL for `type: 'ADDRESS'` geofences.
+   * Unset by default — no paid geocoding vendor is wired in, so `POST/PATCH /geofences` with
+   * an `ADDRESS` type returns `422 GEOCODER_NOT_CONFIGURED` until an operator points this at
+   * a self-hosted or public Nominatim instance (decisions.md). */
+  GEOCODER_URL: z.string().url().optional(),
 
   // --- misc ----------------------------------------------------------------
   SEED_ANCHOR_DATE: z.string().optional(),

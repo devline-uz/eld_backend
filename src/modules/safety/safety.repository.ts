@@ -55,6 +55,16 @@ export class SafetyRepository extends BaseRepository<
     return this.prisma.safetyEvent.createMany({ data: rows });
   }
 
+  /** §20 B-43 — driver-level coaching assignment: the most recent not-yet-coached event for
+   * this driver, so "Assign coaching" from the scorecard row does not first require picking a
+   * specific event in the events list. */
+  findLatestOpenForDriver(driverId: string): Promise<SafetyEvent | null> {
+    return this.prisma.safetyEvent.findFirst({
+      where: { driverId, status: { in: ['NEW', 'REVIEWED'] } },
+      orderBy: { occurredAt: 'desc' },
+    });
+  }
+
   /** Raw counts feeding `computeDriverScore` for a period, per driver. */
   countsForDriver(driverId: string, from: Date, to: Date) {
     return this.prisma.safetyEvent.groupBy({

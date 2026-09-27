@@ -1,26 +1,59 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
+import { DateTime } from 'luxon';
 import type { Prisma, Vehicle } from '@prisma/client';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
 import { OffsetPage, parseSort, toOffsetPage } from '../../common/dto/list-query.dto';
 import { applyOdometerOffsetMi, computeOdometerOffsetMi } from '../../common/units/odometer';
+import { CarrierRepository } from '../carrier/carrier.repository';
 import { DriversRepository } from '../drivers/drivers.repository';
+import { FirebaseService } from '../../core/firebase/firebase.service';
+import { MobileRepository } from '../mobile/mobile.repository';
+import { NotificationsRepository } from '../notifications/notifications.repository';
+import { MAIL_PORT, MailPort } from '../transfers/mail.port';
+import { UsersRepository } from '../users/users.repository';
+import { buildVehicleHistories, HistoryPoint, VehicleHistoriesResponse } from './lib/vehicle-histories';
 import {
   AssignDriverDto,
+  BulkUpdateVehicleStatusDto,
   CalibrateOdometerDto,
   CreateVehicleDto,
+  ImportVehicleRowDto,
   ImportVehiclesDto,
+  ImportVehiclesOptionsDto,
   UpdateVehicleDto,
   VehicleListQueryDto,
+  VehicleTelemetryQueryDto,
 } from './dto/vehicles.dto';
 import { VehiclesRepository } from './vehicles.repository';
 
 const SORTABLE_FIELDS = ['unitNumber', 'vin', 'make', 'model', 'status', 'createdAt'] as const;
 
+const DEFAULT_IMPORT_OPTIONS: ImportVehiclesOptionsDto = {
+  duplicateStrategy: 'UPDATE_BY_VIN',
+  pairDevices: false,
+  emailSummary: false,
+};
+
 export interface ImportSummary {
   imported: number;
   updated: number;
+  skipped?: number;
   failed: Array<{ index: number; error: string }>;
+}
+
+export interface VehicleActivityItem {
+  id: string;
+  occurredAt: string;
+  activity: string;
+  driverName: string | null;
+  source: string;
+  details: string;
+}
+
+export interface BulkStatusResult {
+  updated: string[];
+  failed: Array<{ id: string; error: string }>;
 }
 
 /**
@@ -34,11 +67,17 @@ export class VehiclesService {
   constructor(
     private readonly vehicles: VehiclesRepository,
     private readonly drivers: DriversRepository,
+    private readonly notifications: NotificationsRepository,
+    private readonly carrier: CarrierRepository,
+    private readonly users: UsersRepository,
+    private readonly mobile: MobileRepository,
+    private readonly firebase: FirebaseService,
+    @Inject(MAIL_PORT) private readonly mail: MailPort,
   ) {}
 
   async list(query: VehicleListQueryDto): Promise<OffsetPage<Vehicle>> {
     const orderBy = parseSort(query.sort, SORTABLE_FIELDS, { unitNumber: 'asc' });
-    const { items, total } = await this.vehicles.list({ status: query.status, q: query.q }, query.page, query.limit, orderBy);
+    const { items, total } = await this.vehicles.list({ status: query.status, q: query.q, groupId: query.groupId }, query.page, query.limit, orderBy);
     return toOffsetPage(items, total, query.page, query.limit);
   }
 
@@ -55,12 +94,14 @@ export class VehiclesService {
     ]);
     if (byUnit) throw AppException.conflict(`Unit "${dto.unitNumber}" already exists.`);
     if (byVin) throw AppException.conflict(`VIN "${dto.vin}" already exists.`);
+    await this.assertGroupExists(dto.groupId);
     return this.vehicles.create(this.toCreateInput(dto));
   }
 
   async update(id: string, dto: UpdateVehicleDto): Promise<Vehicle> {
     await this.get(id);
     await this.assertStatusChangeAllowed(id, dto.status);
+    await this.assertGroupExists(dto.groupId);
     return this.vehicles.update({ id }, this.toUpdateInput(dto));
   }
 
@@ -126,7 +167,9 @@ export class VehiclesService {
     return applyOdometerOffsetMi(vehicle.deviceOdometerMi, vehicle.odometerOffsetMi);
   }
 
-  /** Hard rule — an `OUT_OF_SERVICE` unit blocks driver assignment. */
+  /** Hard rule — an `OUT_OF_SERVICE` unit blocks driver assignment. §20 B-74 — `notify`
+   * (default true) fires the existing driver-app notification (in-app inbox row picked up by
+   * `GET /notifications`, same table `NotificationsController` already reads). */
   async assignDriver(vehicleId: string, dto: AssignDriverDto): Promise<Vehicle> {
     const vehicle = await this.get(vehicleId);
     if (vehicle.status === 'OUT_OF_SERVICE') {
@@ -140,6 +183,33 @@ export class VehiclesService {
     } catch {
       throw AppException.conflict('Vehicle is already assigned to another driver.');
     }
+    if (dto.notify) {
+      const title = 'New unit assignment';
+      const body = `You've been assigned to unit ${vehicle.unitNumber}.`;
+      const notification = await this.notifications.create({
+        driverId: dto.driverId,
+        type: 'ASSIGNMENT',
+        title,
+        body,
+        objectType: 'Vehicle',
+        objectId: vehicleId,
+        category: 'assignment',
+      });
+      // §12.7 — background app gets FCM too, not just the in-app inbox row (same
+      // IN_APP + FCM pairing `AlertProcessor.send` uses for every other driver alert).
+      if (this.firebase.enabled) {
+        const tokens = await this.mobile.findPushTokens(dto.driverId);
+        await Promise.allSettled(
+          tokens.map((t) =>
+            this.firebase.sendToToken(
+              t.token,
+              { title, body },
+              { type: 'ASSIGNMENT', id: notification.id, driverId: dto.driverId },
+            ),
+          ),
+        );
+      }
+    }
     return vehicle;
   }
 
@@ -150,30 +220,184 @@ export class VehiclesService {
     return vehicle;
   }
 
+  /** §20 B-71 — `PATCH /vehicles/bulk-status`, one row at a time so a single bad id doesn't
+   * fail the whole batch; each row still goes through the OOS hard rule. */
+  async bulkUpdateStatus(dto: BulkUpdateVehicleStatusDto): Promise<BulkStatusResult> {
+    const result: BulkStatusResult = { updated: [], failed: [] };
+    for (const id of dto.ids) {
+      try {
+        await this.get(id);
+        await this.assertStatusChangeAllowed(id, dto.status);
+        await this.vehicles.update({ id }, { status: dto.status });
+        result.updated.push(id);
+      } catch (err) {
+        result.failed.push({ id, error: err instanceof Error ? err.message : 'Unknown error' });
+      }
+    }
+    return result;
+  }
+
+  // -------------------------------------------------------------------
+  // §20 B-5 — "Unit activity" feed.
+  // -------------------------------------------------------------------
+
+  async activities(vehicleId: string): Promise<VehicleActivityItem[]> {
+    await this.get(vehicleId);
+    const [auditRows, dvirRows] = await Promise.all([
+      this.vehicles.findAuditRows(vehicleId),
+      this.vehicles.findDvirRows(vehicleId),
+    ]);
+    const driverActorIds = [...new Set(auditRows.filter((r) => r.actorType === 'DRIVER').map((r) => r.actorId))];
+    const driverNames = new Map<string, string>();
+    if (driverActorIds.length > 0) {
+      const found = await Promise.all(driverActorIds.map((id) => this.drivers.findById({ id })));
+      found.forEach((d, i) => {
+        if (d) driverNames.set(driverActorIds[i], `${d.firstName} ${d.lastName}`);
+      });
+    }
+    const fromAudit: VehicleActivityItem[] = auditRows.map((row) => ({
+      id: `audit_${row.id}`,
+      occurredAt: row.createdAt.toISOString(),
+      activity: row.action,
+      driverName: row.actorType === 'DRIVER' ? driverNames.get(row.actorId) ?? null : null,
+      source: 'AUDIT',
+      details: row.detail ?? JSON.stringify(row.after ?? row.before ?? {}),
+    }));
+    const fromDvir: VehicleActivityItem[] = dvirRows.map((row) => ({
+      id: `dvir_${row.id}`,
+      occurredAt: row.submittedAt.toISOString(),
+      activity: `DVIR_${row.type}`,
+      driverName: `${row.driver.firstName} ${row.driver.lastName}`,
+      source: 'DVIR',
+      details: row.notes ? `${row.vehicleCondition} — ${row.notes}` : row.vehicleCondition,
+    }));
+    return [...fromAudit, ...fromDvir].sort((a, b) => (a.occurredAt < b.occurredAt ? 1 : -1));
+  }
+
+  // -------------------------------------------------------------------
+  // §20 B-4 — `GET /vehicles/:id/histories?date=`, server-side day segmentation.
+  // -------------------------------------------------------------------
+
+  async histories(vehicleId: string, date: string): Promise<VehicleHistoriesResponse> {
+    const vehicle = await this.get(vehicleId);
+    const driver = await this.drivers.findOne({ assignedVehicleId: vehicleId });
+    const tz = await this.dayBoundaryTimezone(driver?.homeTerminalTimezone);
+
+    const dayStart = DateTime.fromISO(date, { zone: tz }).startOf('day');
+    if (!dayStart.isValid) throw AppException.unprocessable(ERROR_CODES.VALIDATION_FAILED, 'Invalid date.');
+    const dayEnd = dayStart.plus({ days: 1 });
+
+    const points = await this.vehicles.findTelemetryRange(vehicle.id, dayStart.toUTC().toJSDate(), dayEnd.toUTC().toJSDate());
+    const historyPoints: HistoryPoint[] = points.map((p) => ({
+      time: p.time,
+      speedMph: p.speedMph,
+      engineOn: p.engineOn,
+      odometerMi: p.odometerMi,
+      totalFuelIdleGal: p.totalFuelIdleGal ? Number(p.totalFuelIdleGal) : null,
+      driverId: p.driverId,
+      lat: Number(p.latitude),
+      lon: Number(p.longitude),
+    }));
+
+    const driverIds = [...new Set(historyPoints.map((p) => p.driverId).filter((id): id is string => Boolean(id)))];
+    const driverNameById = new Map<string, string>();
+    if (driverIds.length > 0) {
+      const found = await Promise.all(driverIds.map((id) => this.drivers.findById({ id })));
+      found.forEach((d, i) => {
+        if (d) driverNameById.set(driverIds[i], `${d.firstName} ${d.lastName}`);
+      });
+    }
+
+    return buildVehicleHistories(date, historyPoints, driverNameById);
+  }
+
+  private async dayBoundaryTimezone(driverTz: string | undefined): Promise<string> {
+    if (driverTz) return driverTz;
+    const carrier = await this.carrier.get();
+    return carrier?.timezone ?? 'America/New_York';
+  }
+
+  // -------------------------------------------------------------------
+  // Telemetry read path — `GET /vehicles/:id/telemetry`.
+  // -------------------------------------------------------------------
+
+  async telemetryRecent(vehicleId: string, query: VehicleTelemetryQueryDto) {
+    await this.get(vehicleId);
+    return this.vehicles.findTelemetryRecent(vehicleId, query.limit, query.from, query.to);
+  }
+
   async exportAll(): Promise<CreateVehicleDto[]> {
     return (await this.vehicles.listAll()).map((v) => this.toExportRow(v));
   }
 
-  /** Upserts by `unitNumber` (falls back to `vin`) so re-importing an export is idempotent. */
-  async importMany(dto: ImportVehiclesDto): Promise<ImportSummary> {
-    const summary: ImportSummary = { imported: 0, updated: 0, failed: [] };
+  /**
+   * §20 B-69 — `options` change the result for real: `duplicateStrategy` picks UPDATE_BY_VIN
+   * (prior behavior) / SKIP / CREATE, `defaultTerminal` backfills `notes` when a row omits it
+   * (`Vehicle` has no dedicated terminal column), `pairDevices` pairs a row's `deviceSerial` to
+   * the created/updated unit, `emailSummary` emails the import result to the calling user.
+   */
+  async importMany(dto: ImportVehiclesDto, actorUserId?: string): Promise<ImportSummary> {
+    const options = dto.options ?? DEFAULT_IMPORT_OPTIONS;
+    const summary: ImportSummary = { imported: 0, updated: 0, skipped: 0, failed: [] };
     for (let index = 0; index < dto.vehicles.length; index += 1) {
-      const row = dto.vehicles[index];
+      const row = this.applyImportDefaults(dto.vehicles[index], options);
       try {
+        await this.assertGroupExists(row.groupId);
         const existing = (await this.vehicles.findByUnitNumber(row.unitNumber)) ?? (await this.vehicles.findByVin(row.vin));
+        let vehicle: Vehicle;
         if (existing) {
+          if (options.duplicateStrategy === 'SKIP') {
+            summary.skipped = (summary.skipped ?? 0) + 1;
+            continue;
+          }
+          if (options.duplicateStrategy === 'CREATE') {
+            summary.failed.push({ index, error: `Unit "${row.unitNumber}" / VIN "${row.vin}" already exists.` });
+            continue;
+          }
           await this.assertStatusChangeAllowed(existing.id, (row as UpdateVehicleDto).status);
-          await this.vehicles.update({ id: existing.id }, this.toUpdateInput(row));
+          vehicle = await this.vehicles.update({ id: existing.id }, this.toUpdateInput(row));
           summary.updated += 1;
         } else {
-          await this.vehicles.create(this.toCreateInput(row));
+          vehicle = await this.vehicles.create(this.toCreateInput(row));
           summary.imported += 1;
+        }
+        if (options.pairDevices && row.deviceSerial) {
+          await this.pairDeviceQuietly(row.deviceSerial, vehicle.id);
         }
       } catch (err) {
         summary.failed.push({ index, error: err instanceof Error ? err.message : 'Unknown error' });
       }
     }
+    if (options.emailSummary && actorUserId) {
+      await this.emailImportSummary(actorUserId, summary);
+    }
     return summary;
+  }
+
+  private applyImportDefaults(row: ImportVehicleRowDto, options: ImportVehiclesOptionsDto): ImportVehicleRowDto {
+    if (!options.defaultTerminal || row.notes) return row;
+    return { ...row, notes: `Terminal: ${options.defaultTerminal}` };
+  }
+
+  /** A bad `deviceSerial` in an import row must never fail the whole vehicle row — it is a
+   * best-effort convenience on top of an already-succeeded create/update. */
+  private async pairDeviceQuietly(serial: string, vehicleId: string): Promise<void> {
+    const device = await this.vehicles.findDeviceBySerial(serial);
+    if (!device || device.vehicleId) return;
+    await this.vehicles.pairDevice(device.id, vehicleId);
+  }
+
+  private async emailImportSummary(actorUserId: string, summary: ImportSummary): Promise<void> {
+    const user = await this.users.findById({ id: actorUserId });
+    if (!user?.email) return;
+    // Reuses the same `MAIL_PORT`-backed transport as reports/eRODS (TZ §10.4) — Phase 1's
+    // default provider logs and does not deliver; see `mail.port.ts`.
+    await this.mail.send({
+      to: user.email,
+      subject: 'Vehicle import summary',
+      text: `Imported ${summary.imported}, updated ${summary.updated}, skipped ${summary.skipped ?? 0}, failed ${summary.failed.length}.`,
+      attachments: [],
+    });
   }
 
   private toCreateInput(dto: CreateVehicleDto): Prisma.VehicleCreateInput {
@@ -190,7 +414,16 @@ export class VehiclesService {
       odometerMi: dto.odometerMi,
       busType: dto.busType,
       notes: dto.notes,
+      ...(dto.groupId && { group: { connect: { id: dto.groupId } } }),
     };
+  }
+
+  /** A `groupId` naming no group is a 404, not a raw FK violation surfacing as a 500. */
+  private async assertGroupExists(groupId: string | null | undefined): Promise<void> {
+    if (!groupId) return;
+    if (!(await this.vehicles.groupExists(groupId))) {
+      throw new AppException(ERROR_CODES.VEHICLE_GROUP_NOT_FOUND, 'Vehicle group not found.', 404);
+    }
   }
 
   private toUpdateInput(dto: UpdateVehicleDto): Prisma.VehicleUpdateInput {
@@ -207,6 +440,9 @@ export class VehiclesService {
       ...(dto.busType !== undefined && { busType: dto.busType }),
       ...(dto.notes !== undefined && { notes: dto.notes }),
       ...(dto.status !== undefined && { status: dto.status }),
+      ...(dto.groupId !== undefined && {
+        group: dto.groupId === null ? { disconnect: true } : { connect: { id: dto.groupId } },
+      }),
     };
   }
 
@@ -224,6 +460,7 @@ export class VehiclesService {
       odometerMi: v.odometerMi,
       busType: v.busType ?? undefined,
       notes: v.notes ?? undefined,
+      groupId: v.groupId ?? undefined,
     };
   }
 }

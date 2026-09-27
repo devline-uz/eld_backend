@@ -1,5 +1,5 @@
 import { Body, Controller, Get, HttpCode, Param, Patch, Post, Query } from '@nestjs/common';
-import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiQuery, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { Audit } from '../../common/decorators/audit.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { FigmaScreen } from '../../common/decorators/figma-screen.decorator';
@@ -8,17 +8,18 @@ import { apiError, ApiStandardErrors, ERROR_CODES } from '../../common/errors';
 import { zodBody } from '../../common/pipes/zod-validation.pipe';
 import type { ContextUser } from '../../core/context/request-context';
 import {
-  ActivityReportParamsDto,
+  ActivityReportQueryDto,
   ActivitySummaryQueryDto,
   CreateReportScheduleDto,
-  DvirReportParamsDto,
+  DvirReportQueryDto,
   FmcsaPackParamsDto,
   GenerateReportDto,
-  IftaReportParamsDto,
+  IftaReportQueryDto,
   IftaSummaryParamsDto,
   ReportListQueryDto,
   UpdateReportScheduleDto,
 } from './dto/reports.dto';
+import { listJurisdictions } from './lib/jurisdiction';
 import { ReportsService } from './reports.service';
 
 /**
@@ -95,23 +96,55 @@ export class ReportsController {
   @Get('ifta')
   @FigmaScreen('web/reports-ifta')
   @Perm('reports', 'READ')
-  @ApiOperation({ summary: 'Shortcut: queues an IFTA report for a quarter (TZ §11.6 `/reports/ifta?quarter=`).' })
+  @ApiOperation({ summary: 'Shortcut: queues an IFTA report for a quarter (TZ §11.6 `/reports/ifta?quarter=`). `?format=PDF` (B-96) queues the PDF instead of the CSV — still READ, no FULL required.' })
+  @ApiQuery({ name: 'format', required: false, enum: ['CSV', 'PDF'] })
+  @ApiQuery({ name: 'quarter', required: true, example: '2026-Q3' })
+  @ApiQuery({ name: 'vehicleId', required: false })
+  @ApiQuery({ name: 'vehicleGroupId', required: false, description: 'Only units in this vehicle group (`GET /vehicle-groups`).' })
+  @ApiQuery({ name: 'jurisdiction', required: false, description: 'Two-letter code from `GET /reports/ifta/jurisdictions`.' })
   @ApiStandardErrors({ errors: [apiError.validation('quarter must look like 2026-Q3.')] })
   @HttpCode(202)
   @ApiResponse({ status: 202, description: 'Queued.', schema: { example: { reportId: 'rpt_2', status: 'QUEUED' } } })
-  async ifta(@Query(zodBody(IftaReportParamsDto)) params: IftaReportParamsDto, @CurrentUser() actor: ContextUser) {
-    const report = await this.reports.generate({ type: 'IFTA', format: 'CSV', params }, actor);
+  async ifta(@Query(zodBody(IftaReportQueryDto)) params: IftaReportQueryDto, @CurrentUser() actor: ContextUser) {
+    const { format, ...reportParams } = params;
+    const report = await this.reports.generate({ type: 'IFTA', format, params: reportParams }, actor);
     return { reportId: report.id, status: report.status };
+  }
+
+  @Get('ifta/jurisdictions')
+  @FigmaScreen('web/reports-ifta')
+  @Perm('reports', 'READ')
+  @ApiOperation({
+    summary:
+      'IFTA jurisdictions for the W-12 `Jurisdiction` menu — every US state / Canadian province code an IftaSegment can carry (US first, then Canada, each by name). Declared before GET /reports/:id.',
+  })
+  @ApiOkResponse({ schema: { example: { items: [{ code: 'AL', name: 'Alabama', country: 'US' }, { code: 'ON', name: 'Ontario', country: 'CA' }] } } })
+  @ApiStandardErrors()
+  iftaJurisdictions() {
+    return { items: listJurisdictions() };
   }
 
   @Get('ifta/summary')
   @FigmaScreen('web/reports-ifta')
   @Perm('reports', 'READ')
+  @ApiQuery({ name: 'quarter', required: true, example: '2026-Q3' })
+  @ApiQuery({ name: 'vehicleId', required: false })
+  @ApiQuery({ name: 'vehicleGroupId', required: false, description: 'Only units in this vehicle group (`GET /vehicle-groups`). 404 VEHICLE_GROUP_NOT_FOUND if unknown.' })
+  @ApiQuery({
+    name: 'jurisdiction',
+    required: false,
+    description: 'Two-letter code from `GET /reports/ifta/jurisdictions`. Narrows rows, miles, gallons and receipts to it; fleet MPG stays fleet-wide.',
+  })
   @ApiOperation({
     summary:
       'JSON IFTA quarter summary for the W-12 screen (gap B-46) — jurisdiction totals, fleet MPG and the vs-prev-quarter chip, read directly from the same IftaSegment/FuelPurchase totals the CSV export uses. Declared before GET /reports/:id so it is never swallowed by the id param route.',
   })
-  @ApiStandardErrors({ errors: [apiError.validation('quarter must look like 2026-Q3.')] })
+  @ApiStandardErrors({
+    errors: [
+      apiError.validation('quarter must look like 2026-Q3.'),
+      apiError.notFound(ERROR_CODES.VEHICLE_GROUP_NOT_FOUND, 'Vehicle group not found.'),
+    ],
+  })
   @ApiOkResponse({
     schema: {
       example: {
@@ -129,17 +162,29 @@ export class ReportsController {
 
   @Get('activity')
   @Perm('reports', 'READ')
-  @ApiOperation({ summary: 'Shortcut: queues an activity report for a date range.' })
+  @ApiOperation({ summary: 'Shortcut: queues an activity report for a date range. `?format=PDF` (B-96) queues the PDF instead of the CSV — still READ, no FULL required.' })
+  @ApiQuery({ name: 'format', required: false, enum: ['CSV', 'PDF'] })
   @ApiStandardErrors({ errors: [apiError.validation('from/to must be YYYY-MM-DD.')] })
   @HttpCode(202)
   @ApiResponse({ status: 202, description: 'Queued.', schema: { example: { reportId: 'rpt_3', status: 'QUEUED' } } })
-  async activity(@Query(zodBody(ActivityReportParamsDto)) params: ActivityReportParamsDto, @CurrentUser() actor: ContextUser) {
-    const report = await this.reports.generate({ type: 'ACTIVITY', format: 'CSV', params }, actor);
+  async activity(@Query(zodBody(ActivityReportQueryDto)) params: ActivityReportQueryDto, @CurrentUser() actor: ContextUser) {
+    const { format, ...reportParams } = params;
+    const report = await this.reports.generate({ type: 'ACTIVITY', format, params: reportParams }, actor);
     return { reportId: report.id, status: report.status };
   }
 
   @Get('activity/summary')
   @Perm('reports', 'READ')
+  @ApiQuery({ name: 'from', required: true, example: '2026-09-01' })
+  @ApiQuery({ name: 'to', required: true, example: '2026-09-14' })
+  @ApiQuery({ name: 'vehicleGroupId', required: false, description: 'Only drivers whose currently assigned unit is in this vehicle group.' })
+  @ApiQuery({
+    name: 'groupBy',
+    required: false,
+    enum: ['driver', 'vehicleGroup'],
+    description:
+      '`driver` (default): one row per driver. `vehicleGroup`: one row per group of the driver\'s currently assigned unit — `{ groupId, name, drivers, days, offSec, sbSec, drivingSec, onSec, distanceMi, violations, certifiedDays }`, `groupId: null` / `name: "Ungrouped"` for drivers with no unit or an ungrouped unit.',
+  })
   @ApiOperation({
     summary:
       'JSON per-driver activity aggregate for W-13/W-15/dashboard (gap B-46) — the web previously fanned out one GET /logs/:driverId/range call per driver (308 calls, 3s→15s in QA). Computed in SQL from DailyLog + HosViolation, never per-driver RODS rebuilds, and never loads EldEvent rows. Declared before GET /reports/:id so it is never swallowed by the id param route.',
@@ -176,12 +221,14 @@ export class ReportsController {
 
   @Get('dvir')
   @Perm('reports', 'READ')
-  @ApiOperation({ summary: 'Shortcut: queues a DVIR report for a date range.' })
+  @ApiOperation({ summary: 'Shortcut: queues a DVIR report for a date range. `?format=PDF` (B-96) queues the PDF instead of the CSV — still READ, no FULL required.' })
+  @ApiQuery({ name: 'format', required: false, enum: ['CSV', 'PDF'] })
   @ApiStandardErrors({ errors: [apiError.validation('from/to must be YYYY-MM-DD.')] })
   @HttpCode(202)
   @ApiResponse({ status: 202, description: 'Queued.', schema: { example: { reportId: 'rpt_4', status: 'QUEUED' } } })
-  async dvir(@Query(zodBody(DvirReportParamsDto)) params: DvirReportParamsDto, @CurrentUser() actor: ContextUser) {
-    const report = await this.reports.generate({ type: 'DVIR', format: 'CSV', params }, actor);
+  async dvir(@Query(zodBody(DvirReportQueryDto)) params: DvirReportQueryDto, @CurrentUser() actor: ContextUser) {
+    const { format, ...reportParams } = params;
+    const report = await this.reports.generate({ type: 'DVIR', format, params: reportParams }, actor);
     return { reportId: report.id, status: report.status };
   }
 

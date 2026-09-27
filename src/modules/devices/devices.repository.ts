@@ -6,6 +6,7 @@ import { PrismaService } from '../../core/prisma/prisma.service';
 export interface DeviceListFilter {
   status?: Device['status'];
   bleState?: Device['bleState'];
+  vehicleId?: string;
   q?: string;
 }
 
@@ -53,6 +54,7 @@ export class DevicesRepository extends BaseRepository<
     const where: Prisma.DeviceWhereInput = {
       ...(filter.status && { status: filter.status }),
       ...(filter.bleState && { bleState: filter.bleState }),
+      ...(filter.vehicleId && { vehicleId: filter.vehicleId }),
       ...(filter.q && {
         OR: [
           { serial: { contains: filter.q, mode: 'insensitive' } },

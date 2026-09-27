@@ -21,7 +21,7 @@ describe('ReportSchedulerProcessor.runTick (TZ §15 — report scheduler runs wi
     const reportsService = { computeNextRun: jest.fn(() => new Date('2026-09-21T06:00:00.000Z')) };
     const config = { isTest: true };
     const tickQueue = { add: jest.fn(async () => undefined) };
-    const queue = { add: jest.fn(async () => undefined) };
+    const queue = { add: jest.fn(async (..._args: unknown[]) => undefined) };
     const processor = new ReportSchedulerProcessor(
       prisma as never,
       schedulesRepo as never,
@@ -62,8 +62,8 @@ describe('ReportSchedulerProcessor.runTick (TZ §15 — report scheduler runs wi
   it('does not let one failing schedule block the others', async () => {
     const { processor, prisma, schedulesRepo, queue } = build();
     schedulesRepo.dueSchedules.mockResolvedValueOnce([
-      { id: 'sch_bad', reportType: 'IFTA', format: 'CSV', params: {}, cron: '0 6 * * 1', timezone: 'UTC', createdById: 'usr_1', enabled: true },
-      { id: 'sch_ok', reportType: 'ACTIVITY', format: 'CSV', params: {}, cron: '0 6 * * 1', timezone: 'UTC', createdById: 'usr_1', enabled: true },
+      { id: 'sch_bad', reportType: 'IFTA', format: 'CSV', params: { from: '2026-09-01', to: '2026-09-07' }, cron: '0 6 * * 1', timezone: 'UTC', createdById: 'usr_1', enabled: true },
+      { id: 'sch_ok', reportType: 'ACTIVITY', format: 'CSV', params: { from: '2026-09-01', to: '2026-09-07' }, cron: '0 6 * * 1', timezone: 'UTC', createdById: 'usr_1', enabled: true },
     ]);
     prisma.report.create.mockRejectedValueOnce(new Error('db down')).mockResolvedValueOnce({ id: 'rpt_2' });
     const result = await processor.runTick(new Date());

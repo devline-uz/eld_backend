@@ -77,10 +77,12 @@ describe('Reports (e2e, tz.md §11.6/§15)', () => {
   });
 
   it('rejects an unsupported format for a report type with 422 VALIDATION_FAILED', async () => {
+    // B-48 (Phase 13D) widened IFTA/ACTIVITY/DVIR to allow PDF too — RODS stays PDF-only
+    // (REPORT_TYPE_FORMATS), so CSV is the combination that is still genuinely rejected.
     const res = await request(server())
       .post('/api/reports/generate')
       .set('Authorization', `Bearer ${token}`)
-      .send({ type: 'IFTA', format: 'PDF', params: { quarter: '2026-Q3' } });
+      .send({ type: 'RODS', format: 'CSV', params: { from: '2026-09-01', to: '2026-09-08' } });
     expect(res.status).toBe(422);
     expect(res.body.code).toBe('VALIDATION_FAILED');
   });

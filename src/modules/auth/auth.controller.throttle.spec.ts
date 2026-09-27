@@ -12,6 +12,12 @@ describe('AuthController — login rate limiting (TZ §6.5)', () => {
     expect(Reflect.getMetadata(TTL_KEY, handler)).toBe(60_000);
   });
 
+  it('refresh is limited to 30 requests / 60s (MB-20)', () => {
+    const handler = AuthController.prototype.refresh;
+    expect(Reflect.getMetadata(LIMIT_KEY, handler)).toBe(30);
+    expect(Reflect.getMetadata(TTL_KEY, handler)).toBe(60_000);
+  });
+
   it('logout is not rate-limited beyond the global 600/min default (no @Throttle override)', () => {
     const handler = AuthController.prototype.logout;
     expect(Reflect.getMetadata(LIMIT_KEY, handler)).toBeUndefined();

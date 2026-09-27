@@ -159,9 +159,14 @@ export function parseController(source: string, file: string): RouteInfo[] {
     }
 
     const all = [...classDecorators, ...own];
-    const permDecorator = own.find((d) => decoratorName(d) === 'Perm') ??
-      classDecorators.find((d) => decoratorName(d) === 'Perm');
-    const permMatch = permDecorator ? /\(\s*'([^']*)'\s*,\s*'([^']*)'/.exec(permDecorator) : null;
+    // B-13 — `@PermAny(['vehicles', 'FULL'], ['trips', 'FULL'])` is still an explicit
+    // authorization decision; its first pair stands in for `route.perm` below (this
+    // surface only needs "is the route decided", not the full OR-set).
+    const permDecorator = own.find((d) => decoratorName(d) === 'Perm' || decoratorName(d) === 'PermAny') ??
+      classDecorators.find((d) => decoratorName(d) === 'Perm' || decoratorName(d) === 'PermAny');
+    const permMatch = permDecorator
+      ? /\(\s*\[?\s*'([^']*)'\s*,\s*'([^']*)'/.exec(permDecorator)
+      : null;
 
     routes.push({
       file,

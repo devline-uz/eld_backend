@@ -33,6 +33,14 @@ export class TelemetryService {
   latest(vehicleId: string): Promise<TelemetryPoint | null> {
     return this.repo.latestForVehicle(vehicleId);
   }
+
+  range(vehicleId: string, from: Date, to: Date): Promise<TelemetryPoint[]> {
+    return this.repo.listRange(vehicleId, from, to);
+  }
+
+  recent(vehicleId: string, limit: number, from?: Date, to?: Date): Promise<TelemetryPoint[]> {
+    return this.repo.listRecent(vehicleId, limit, from, to);
+  }
 }
 
 function monthStart(date: Date): string {

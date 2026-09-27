@@ -1,6 +1,7 @@
 import { CallHandler, ExecutionContext, Injectable, NestInterceptor } from '@nestjs/common';
 import { Observable, map } from 'rxjs';
 import { RequestContext } from '../../core/context/request-context';
+import { serializeDecimals } from '../serialization/decimal.util';
 
 /**
  * Success-response envelope. Mirrors the §20 error envelope so clients always find
@@ -21,7 +22,9 @@ export class TransformInterceptor<T> implements NestInterceptor<T, ResponseEnvel
         // Streamed/raw payloads (files, /metrics) opt out by returning a Buffer or string.
         if (data instanceof Buffer || typeof data === 'string') return data;
         return {
-          data,
+          // B-111 — never let a raw Prisma `Decimal` (serializes to a STRING) leak into a
+          // response body that OpenAPI/DTOs declare `number`.
+          data: serializeDecimals(data),
           traceId: RequestContext.traceId ?? '',
           timestamp: new Date().toISOString(),
         };

@@ -3,11 +3,13 @@ import type { SyncedChange } from '@prisma/client';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
 import type { ContextUser } from '../../core/context/request-context';
+import type { EventBusService } from '../../core/events/event-bus.service';
 import type { LogsService } from '../logs/logs.service';
 import type { SyncChangeDto, SyncRequestDto } from './dto/mobile.dto';
 import type { MobileDvirService } from './mobile-dvir.service';
 import { MobileSyncService } from './mobile-sync.service';
 import type { MobileRepository } from './mobile.repository';
+import type { SignatureService } from './signature.service';
 
 const actor: ContextUser = { id: 'drv_1', type: 'driver' };
 const NOW = new Date('2026-09-11T15:41:00.000Z');
@@ -41,6 +43,9 @@ describe('MobileSyncService', () => {
   let repo: jest.Mocked<Pick<MobileRepository, 'findSyncedByClientId' | 'recordSyncedResult' | 'findEventsSince' | 'touchLastSync'>>;
   let logs: jest.Mocked<Pick<LogsService, 'createLogEntry' | 'certify'>>;
   let dvir: jest.Mocked<Pick<MobileDvirService, 'submit'>>;
+  let signatures: jest.Mocked<Pick<SignatureService, 'store'>>;
+  let events: jest.Mocked<Pick<EventBusService, 'publish'>>;
+  let alertQueue: { add: jest.Mock };
   let service: MobileSyncService;
 
   beforeEach(() => {
@@ -56,7 +61,17 @@ describe('MobileSyncService', () => {
     };
     logs = { createLogEntry: jest.fn().mockResolvedValue({ id: 'evt_1' }), certify: jest.fn() };
     dvir = { submit: jest.fn() };
-    service = new MobileSyncService(repo as unknown as MobileRepository, logs as unknown as LogsService, dvir as unknown as MobileDvirService);
+    signatures = { store: jest.fn().mockResolvedValue({ id: 'sig_offline', key: 'signatures/drv_1/sig_offline.png', sha256: 'x', sizeBytes: 4 }) };
+    events = { publish: jest.fn().mockResolvedValue(undefined) };
+    alertQueue = { add: jest.fn().mockResolvedValue(undefined) };
+    service = new MobileSyncService(
+      repo as unknown as MobileRepository,
+      logs as unknown as LogsService,
+      dvir as unknown as MobileDvirService,
+      signatures as unknown as SignatureService,
+      events as unknown as EventBusService,
+      alertQueue as never,
+    );
   });
 
   it('applies a fresh duty_status change and accepts it', async () => {
@@ -128,10 +143,10 @@ describe('MobileSyncService', () => {
 
   it('dispatches certify and dvir change types to the right service', async () => {
     logs.certify.mockResolvedValue({ driverId: 'drv_1', days: [] });
-    dvir.submit.mockResolvedValue({ id: 'dvir_1' });
+    dvir.submit.mockResolvedValue({ id: 'dvir_1' } as never);
     const dto: SyncRequestDto = {
       changes: [
-        change({ type: 'certify', clientId: 'c-certify', payload: { dates: ['2026-09-10'] } }),
+        change({ type: 'certify', clientId: 'c-certify', payload: { dates: ['2026-09-10'], signatureMimeType: 'image/png' } }),
         change({ type: 'dvir', clientId: 'c-dvir', payload: { vehicleId: 'veh_1' } as never }),
       ],
     };
@@ -141,15 +156,65 @@ describe('MobileSyncService', () => {
     expect(dvir.submit).toHaveBeenCalledWith('drv_1', { vehicleId: 'veh_1' }, actor);
   });
 
+  it('MB-8 — an offline certify with signatureBase64 stores it via SignatureService before certifying', async () => {
+    logs.certify.mockResolvedValue({ driverId: 'drv_1', days: [] });
+    const dto: SyncRequestDto = {
+      changes: [
+        change({
+          type: 'certify',
+          clientId: 'c-certify-offline',
+          payload: { dates: ['2026-09-10'], signatureBase64: 'x'.repeat(20), signatureMimeType: 'image/png' },
+        }),
+      ],
+    };
+    const result = await service.sync('drv_1', dto, actor, NOW);
+    expect(result.accepted).toEqual(['c-certify-offline']);
+    expect(signatures.store).toHaveBeenCalledWith('signatures', 'drv_1', 'x'.repeat(20), 'image/png');
+    expect(logs.certify).toHaveBeenCalledWith({ dates: ['2026-09-10'], signatureImageId: 'sig_offline', driverId: undefined }, actor);
+  });
+
+  it('MB-8 — an existing signatureImageId is never overwritten, even if signatureBase64 is also present', async () => {
+    logs.certify.mockResolvedValue({ driverId: 'drv_1', days: [] });
+    const dto: SyncRequestDto = {
+      changes: [
+        change({
+          type: 'certify',
+          clientId: 'c-certify-both',
+          payload: { dates: ['2026-09-10'], signatureImageId: 'sig_existing', signatureBase64: 'x'.repeat(20), signatureMimeType: 'image/png' },
+        }),
+      ],
+    };
+    await service.sync('drv_1', dto, actor, NOW);
+    expect(signatures.store).not.toHaveBeenCalled();
+    expect(logs.certify).toHaveBeenCalledWith({ dates: ['2026-09-10'], signatureImageId: 'sig_existing', driverId: undefined }, actor);
+  });
+
   it('processes changes in occurredAt order, not submission order', async () => {
     const order: string[] = [];
     logs.createLogEntry.mockImplementation((_driverId, payload) => {
       order.push(payload.annotation);
-      return Promise.resolve({ id: 'evt' });
+      return Promise.resolve({ id: 'evt' } as never);
     });
     const later = change({ clientId: 'later', occurredAt: new Date(NOW.getTime() + 60_000), payload: { status: 'OFF', startAt: NOW, annotation: 'later' } });
     const earlier = change({ clientId: 'earlier', occurredAt: new Date(NOW.getTime() - 60_000), payload: { status: 'OFF', startAt: NOW, annotation: 'earlier' } });
     await service.sync('drv_1', { changes: [later, earlier] }, actor, NOW);
     expect(order).toEqual(['earlier', 'later']);
+  });
+
+  it('MB-11 — raises alert.sync_backlog when the reported backlog exceeds the configured thresholds', async () => {
+    await service.sync('drv_1', { changes: [], backlog: { days: 31, bytes: 0 } }, actor, NOW);
+    expect(events.publish).toHaveBeenCalledWith('alert.sync_backlog', { driverId: 'drv_1', days: 31, bytes: 0 });
+    expect(alertQueue.add).toHaveBeenCalledWith('alert.sync_backlog', { driverId: 'drv_1', days: 31, bytes: 0 });
+  });
+
+  it('MB-11 — a backlog within thresholds raises nothing', async () => {
+    await service.sync('drv_1', { changes: [], backlog: { days: 1, bytes: 100 } }, actor, NOW);
+    expect(events.publish).not.toHaveBeenCalledWith('alert.sync_backlog', expect.anything());
+  });
+
+  it('MB-11 — the alert is raised only once per driver per day', async () => {
+    await service.sync('drv_1', { changes: [], backlog: { days: 31, bytes: 0 } }, actor, NOW);
+    await service.sync('drv_1', { changes: [], backlog: { days: 32, bytes: 0 } }, actor, NOW);
+    expect(events.publish.mock.calls.filter((c) => c[0] === 'alert.sync_backlog')).toHaveLength(1);
   });
 });

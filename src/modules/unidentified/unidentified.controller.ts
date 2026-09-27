@@ -43,6 +43,18 @@ export class UnidentifiedController {
     return this.unidentified.confirm(id, dto, actor);
   }
 
+  @Get('confirmation-requests')
+  @UseGuards(DriverGuard)
+  @ApiOperation({
+    summary:
+      'B-83 — driver app: segments a carrier asked THIS driver to confirm (status PENDING_CONFIRMATION). Answer with POST /unidentified/:id/confirm.',
+  })
+  @ApiOkResponse({ schema: { example: { items: [{ id: 'seg_1', vehicleId: 'veh_1', status: 'PENDING_CONFIRMATION', assignedDriverId: 'drv_1', assignedById: 'usr_1', confirmationRequestedAt: '2026-09-11T15:41:00.000Z', startAt: '2026-09-10T12:30:00.000Z', endAt: '2026-09-10T13:00:00.000Z', durationSec: 1800, distanceMi: 21 }] } } })
+  @ApiStandardErrors()
+  listConfirmationRequests(@CurrentUser() actor: ContextUser) {
+    return this.unidentified.listConfirmationRequests(actor);
+  }
+
   @Get()
   @Perm('hos', 'READ')
   @ApiOperation({ summary: 'Lists unidentified driving segments (§5.9).' })
@@ -82,7 +94,7 @@ export class UnidentifiedController {
   @Perm('hosEdit', 'FULL')
   @ApiOperation({
     summary:
-      'Assigns the segment to a driver: status ASSIGNED, assignedById/At set, recordOrigin stays 1, AuditLog entry UNIDENTIFIED_ASSIGNED.',
+      'Assigns the segment to a driver: status ASSIGNED, assignedById/At set, recordOrigin stays 1, AuditLog entry UNIDENTIFIED_ASSIGNED. With requireDriverConfirmation = true (B-83) nothing is attributed yet: status PENDING_CONFIRMATION, the driver is asked in the app (AuditLog UNIDENTIFIED_CONFIRMATION_REQUESTED) and the records move to their log only when they confirm.',
   })
   @ApiCreatedResponse({
     description: 'recordOrigin stays 1 forever (§23) and the assignment is audited as UNIDENTIFIED_ASSIGNED.',

@@ -18,11 +18,14 @@
   <div class="meta">
     Carrier: {{carrier.name}} (DOT {{carrier.dot}})<br/>
     Period: {{period.from}} — {{period.to}}<br/>
+    Unit filter: {{unitFilter}}<br/>
+    Sections: {{includeLabel}}<br/>
+    ELD identifier: {{eldIdentifier}} / registration {{eldRegistrationId}}<br/>
     Generated: {{generatedAt}}
   </div>
   <table>
     <thead>
-      <tr><th>Driver</th><th>Status</th><th>Output file</th><th>Uncertified days</th><th>Reason</th></tr>
+      <tr><th>Driver</th><th>Status</th><th>Output file</th><th>Uncertified days</th><th>Unidentified events</th><th>Edits</th><th>Open DVIR defects</th><th>Malfunctions</th><th>Reason</th></tr>
     </thead>
     <tbody>
       {{#each drivers}}
@@ -31,6 +34,10 @@
         <td class="{{status}}">{{status}}</td>
         <td>{{fileName}}</td>
         <td>{{uncertifiedDays}}</td>
+        <td>{{unidentifiedCount}}</td>
+        <td>{{editCount}}</td>
+        <td>{{dvirOpenDefects}}</td>
+        <td>{{malfunctionCodesLabel}}</td>
         <td>{{reason}}</td>
       </tr>
       {{/each}}

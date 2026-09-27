@@ -10,6 +10,8 @@ export interface ContextUser {
   type: 'user' | 'driver' | 'api-key';
   role?: string;
   permissions?: Readonly<Record<string, 'NONE' | 'READ' | 'FULL'>>;
+  /** B-50 — the `Session.id` behind this User access token (undefined for driver/api-key). */
+  sessionId?: string;
 }
 
 /**

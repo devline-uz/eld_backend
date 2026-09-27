@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  body { font-family: Helvetica, Arial, sans-serif; font-size: 12px; color: #1a1a1a; }
+  h1 { font-size: 18px; margin-bottom: 0; }
+  h2 { font-size: 14px; margin: 18px 0 6px; }
+  .meta { color: #555; margin-bottom: 16px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 6px; }
+  th, td { border: 1px solid #ccc; padding: 6px 8px; text-align: left; vertical-align: top; }
+  th { background: #f2f2f2; }
+  .CRITICAL { color: #b30000; font-weight: bold; }
+  .MAJOR { color: #b36b00; font-weight: bold; }
+  .MINOR { color: #555; }
+  .signature-block { display: flex; margin-top: 18px; }
+  .signature { flex: 1; margin-right: 16px; }
+  .signature img { max-height: 60px; border: 1px solid #ccc; padding: 4px; }
+  .label { color: #777; font-size: 10px; text-transform: uppercase; }
+</style>
+</head>
+<body>
+  <h1>Driver Vehicle Inspection Report — §396.11</h1>
+  <div class="meta">
+    DVIR: {{dvirId}} &nbsp;|&nbsp; Type: {{type}} &nbsp;|&nbsp; Submitted: {{submittedAt}}<br/>
+    Driver: {{driverName}} (CDL {{driverCdl}})<br/>
+    Vehicle: {{vehicleUnit}} — VIN {{vehicleVin}} &nbsp;|&nbsp; Trailer: {{trailerUnit}}<br/>
+    Odometer: {{odometerMi}} mi &nbsp;|&nbsp; Location: {{locationName}}<br/>
+    Overall condition: {{vehicleCondition}} &nbsp;|&nbsp; Repair status: {{repairStatus}}
+  </div>
+
+  <h2>Notes</h2>
+  <div>{{notes}}</div>
+
+  <h2>Defects ({{defectCount}})</h2>
+  <table>
+    <thead>
+      <tr><th>Part</th><th>Category</th><th>Severity</th><th>Description</th><th>Status</th><th>Out of service</th></tr>
+    </thead>
+    <tbody>
+      {{#each defects}}
+      <tr>
+        <td>{{part}}</td>
+        <td>{{category}}</td>
+        <td class="{{severity}}">{{severity}}</td>
+        <td>{{description}}</td>
+        <td>{{status}}</td>
+        <td>{{outOfService}}</td>
+      </tr>
+      {{/each}}
+    </tbody>
+  </table>
+
+  <h2>Mechanic review (§396.13)</h2>
+  <div>
+    Mechanic: {{mechanicName}} &nbsp;|&nbsp; Signed: {{mechanicSignedAt}}<br/>
+    Repair status: {{repairStatus}} &nbsp;|&nbsp; Note: {{mechanicNote}}<br/>
+    Next-driver review: {{nextDriverReviewedAt}}
+  </div>
+
+  <h2>Signatures</h2>
+  <div class="signature-block">
+    <div class="signature">
+      <div class="label">Driver signature</div>
+      <img src="{{driverSignatureUrl}}" />
+    </div>
+    <div class="signature">
+      <div class="label">Mechanic attestation</div>
+      <div>{{mechanicName}} — {{mechanicSignedAt}}</div>
+    </div>
+  </div>
+</body>
+</html>

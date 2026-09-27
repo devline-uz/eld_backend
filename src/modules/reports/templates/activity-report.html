@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  body { font-family: Helvetica, Arial, sans-serif; font-size: 11px; color: #1a1a1a; }
+  h1 { font-size: 18px; margin-bottom: 0; }
+  .meta { color: #555; margin-bottom: 16px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+  th, td { border: 1px solid #ccc; padding: 5px 6px; text-align: left; }
+  th { background: #f2f2f2; }
+</style>
+</head>
+<body>
+  <h1>Driver Activity Report</h1>
+  <div class="meta">Period: {{from}} — {{to}}</div>
+  <table>
+    <thead>
+      <tr><th>Driver</th><th>Date</th><th>Driving</th><th>On duty</th><th>Off duty</th><th>Sleeper</th><th>Distance (mi)</th><th>Certified</th><th>Violations</th></tr>
+    </thead>
+    <tbody>
+      {{#each rows}}
+      <tr>
+        <td>{{driverName}}</td>
+        <td>{{date}}</td>
+        <td>{{drivingHours}}</td>
+        <td>{{onDutyHours}}</td>
+        <td>{{offDutyHours}}</td>
+        <td>{{sleeperHours}}</td>
+        <td>{{totalDistanceMi}}</td>
+        <td>{{certified}}</td>
+        <td>{{violationCount}}</td>
+      </tr>
+      {{/each}}
+    </tbody>
+  </table>
+</body>
+</html>

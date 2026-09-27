@@ -25,7 +25,9 @@ export class AlertRulesRepository extends BaseRepository<
     return this.prisma.alertRule;
   }
 
-  listAll(): Promise<AlertRule[]> {
+  async listAll(): Promise<AlertRule[]> {
+    // §20 B-86 — surface an expired mute as cleared here too, not only on the next event match.
+    await this.prisma.alertRule.updateMany({ where: { mutedUntil: { lte: new Date() } }, data: { mutedUntil: null } });
     return this.prisma.alertRule.findMany({ orderBy: { name: 'asc' } });
   }
 
@@ -33,14 +35,25 @@ export class AlertRulesRepository extends BaseRepository<
     return this.prisma.alertRule.findUnique({ where: { key } });
   }
 
-  /** Enabled rules whose `conditions[].event` matches the given job/alert name. */
-  findByEvent(event: string): Promise<AlertRule[]> {
-    return this.prisma.alertRule.findMany({ where: { enabled: true } }).then((rows) =>
-      rows.filter((r) => {
-        const conditions = r.conditions as Array<{ event: string }>;
-        return Array.isArray(conditions) && conditions.some((c) => c.event === event);
-      }),
-    );
+  /**
+   * Enabled, currently-unmuted rules whose `conditions[].event` matches the given job/alert
+   * name. §20 B-86 — a rule "Mute for 24h"'d (`mutedUntil` in the future) is skipped; once
+   * `mutedUntil` has passed it is cleared here (not just ignored) so the row goes back to
+   * reading as a plain un-muted rule everywhere else (list/get/UI) without a date comparison.
+   */
+  async findByEvent(event: string): Promise<AlertRule[]> {
+    const now = new Date();
+    await this.prisma.alertRule.updateMany({
+      where: { mutedUntil: { lte: now } },
+      data: { mutedUntil: null },
+    });
+    const rows = await this.prisma.alertRule.findMany({
+      where: { enabled: true, mutedUntil: null },
+    });
+    return rows.filter((r) => {
+      const conditions = r.conditions as Array<{ event: string }>;
+      return Array.isArray(conditions) && conditions.some((c) => c.event === event);
+    });
   }
 }
 
@@ -87,15 +100,33 @@ export class NotificationsRepository {
     return this.prisma.notification.create({ data });
   }
 
-  list(recipient: { userId?: string; driverId?: string }, page: number, limit: number, unreadOnly: boolean) {
+  list(
+    recipient: { userId?: string; driverId?: string },
+    page: number,
+    limit: number,
+    unreadOnly: boolean,
+    category?: string,
+  ) {
     const where: Prisma.NotificationWhereInput = {
       ...(recipient.userId ? { userId: recipient.userId } : { driverId: recipient.driverId }),
       ...(unreadOnly && { readAt: null }),
+      ...(category && { category }),
     };
     return Promise.all([
       this.prisma.notification.findMany({ where, orderBy: { createdAt: 'desc' }, skip: (page - 1) * limit, take: limit }),
       this.prisma.notification.count({ where }),
     ]).then(([items, total]) => ({ items, total }));
+  }
+
+  /** §20 B-57 — sidebar counts; `all` ignores `category`/`unreadOnly` entirely. */
+  async counts(recipient: { userId?: string; driverId?: string }): Promise<{ all: number; violations: number; maintenance: number }> {
+    const base: Prisma.NotificationWhereInput = recipient.userId ? { userId: recipient.userId } : { driverId: recipient.driverId };
+    const [all, violations, maintenance] = await Promise.all([
+      this.prisma.notification.count({ where: base }),
+      this.prisma.notification.count({ where: { ...base, category: 'VIOLATIONS' } }),
+      this.prisma.notification.count({ where: { ...base, category: 'MAINTENANCE' } }),
+    ]);
+    return { all, violations, maintenance };
   }
 
   async markAllRead(recipient: { userId?: string; driverId?: string }): Promise<number> {
@@ -104,5 +135,24 @@ export class NotificationsRepository {
       data: { readAt: new Date() },
     });
     return result.count;
+  }
+
+  /**
+   * §20 B-56 — marks exactly one of the caller's own notifications read. Scoped by
+   * recipient in the `WHERE` (not a separate ownership check) so this both 404s for a
+   * foreign id and never leaks whether that id exists.
+   */
+  async markRead(id: string, recipient: { userId?: string; driverId?: string }): Promise<Notification | null> {
+    const result = await this.prisma.notification.updateMany({
+      where: { id, ...(recipient.userId ? { userId: recipient.userId } : { driverId: recipient.driverId }), readAt: null },
+      data: { readAt: new Date() },
+    });
+    if (result.count > 0) return this.prisma.notification.findUnique({ where: { id } });
+    // Already read (by the same recipient) or not theirs at all — tell the two apart so a
+    // double-click on an already-read row still answers 200, not a spurious 404.
+    const existing = await this.prisma.notification.findFirst({
+      where: { id, ...(recipient.userId ? { userId: recipient.userId } : { driverId: recipient.driverId }) },
+    });
+    return existing;
   }
 }

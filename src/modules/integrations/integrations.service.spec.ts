@@ -2,6 +2,7 @@ import { AppConfigService } from '../../core/config/config.service';
 import { AppException } from '../../common/errors/app.exception';
 import { IntegrationsRepository } from './integrations.repository';
 import { IntegrationsService } from './integrations.service';
+import { INTEGRATION_PROVIDERS } from './dto/integrations.dto';
 import { IntegrationCipherService } from './lib/integration-cipher.service';
 
 function makeCipher(): IntegrationCipherService {
@@ -49,6 +50,14 @@ describe('IntegrationsService', () => {
 
   it('upsert() rejects an unknown provider', async () => {
     await expect(service.upsert('not-a-real-provider', { enabled: true, config: {} })).rejects.toThrow(AppException);
+  });
+
+  it.each(['pacific-track', 'dat', 'geotab', 'zapier'])('upsert() connects %s (W-22 marketplace provider)', async (provider) => {
+    repo.upsert.mockResolvedValue(makeIntegration({ provider }) as never);
+
+    await service.upsert(provider, { enabled: true, config: {} });
+
+    expect(repo.upsert).toHaveBeenCalledWith(provider, expect.objectContaining({ enabled: true, status: 'CONNECTED' }));
   });
 
   it('upsert() encrypts secret-looking config fields before persisting', async () => {
@@ -148,5 +157,23 @@ describe('IntegrationsService', () => {
     const snapshot = await service.getRedactedSnapshot('mcleod');
 
     expect((snapshot?.config as Record<string, unknown>).apiKey).toBe('[REDACTED]');
+  });
+
+  describe('catalog (B-89)', () => {
+    it('lists every catalog entry, connected providers available:true', () => {
+      const entry = service.catalog().find((e) => e.provider === 'mcleod');
+      expect(entry?.available).toBe(true);
+    });
+
+    it('lists Pacific Track, DAT, Geotab and Zapier as connectable (available:true)', () => {
+      const catalog = service.catalog();
+      for (const provider of ['pacific-track', 'dat', 'geotab', 'zapier']) {
+        expect(catalog.find((e) => e.provider === provider)?.available).toBe(true);
+      }
+    });
+
+    it('every catalog entry is an accepted provider, and every provider is in the catalog', () => {
+      expect(service.catalog().map((e) => e.provider).sort()).toEqual([...INTEGRATION_PROVIDERS].sort());
+    });
   });
 });

@@ -1,0 +1,91 @@
+import type { ContextUser } from '../../core/context/request-context';
+import { MobileDvirService } from './mobile-dvir.service';
+import type { DvirCreateInput } from './mobile.repository';
+
+const DRIVER: ContextUser = { id: 'drv_1', type: 'driver' };
+const PHOTO_A = '11111111-1111-4111-8111-111111111111';
+const PHOTO_B = '22222222-2222-4222-8222-222222222222';
+
+function build() {
+  const repo = {
+    findVehicle: jest.fn().mockResolvedValue({ id: 'veh_1' }),
+    createDvir: jest.fn().mockResolvedValue({ id: 'dvir_1', defects: [] }),
+    markVehicleOutOfService: jest.fn().mockResolvedValue({}),
+  };
+  const photos = {
+    createPhoto: jest.fn().mockResolvedValue({}),
+    findLinkable: jest.fn().mockResolvedValue([{ id: PHOTO_A }, { id: PHOTO_B }]),
+  };
+  const signatures = { store: jest.fn().mockResolvedValue({ id: 'sig_1', key: 'signatures/drv_1/sig_1.png', sha256: 'ff', sizeBytes: 10 }) };
+  const audit = { insert: jest.fn().mockResolvedValue({}) };
+  const events = { publish: jest.fn().mockResolvedValue(undefined) };
+  const alertQueue = { add: jest.fn().mockResolvedValue({}) };
+  const service = new MobileDvirService(repo as never, photos as never, signatures as never, audit as never, events as never, alertQueue as never);
+  return { service, repo, photos, signatures, audit };
+}
+
+function dto(defects: Array<{ photoAttachmentIds: string[] }>) {
+  return {
+    vehicleId: 'veh_1',
+    type: 'PRE_TRIP' as const,
+    submittedAt: new Date('2026-09-10T12:00:00Z'),
+    odometerMi: 993107,
+    vehicleCondition: 'DEFECTS_FOUND' as const,
+    defects: defects.map((d, i) => ({ part: 'TRUCK' as const, category: 'Brakes', severity: 'MAJOR' as const, description: `defect ${i}`, ...d })),
+    signatureBase64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB',
+    signatureMimeType: 'image/png' as const,
+  };
+}
+
+describe('MobileDvirService — MB-6 DVIR photo persistence (regression)', () => {
+  it('uploadSignature(DVIR_PHOTO) writes an Attachment row with the returned id; signatures stay key-only', async () => {
+    const { service, photos, signatures } = build();
+    signatures.store.mockResolvedValueOnce({ id: PHOTO_A, key: `dvir-photos/drv_1/${PHOTO_A}.jpg`, sha256: 'aa', sizeBytes: 123 });
+    const out = await service.uploadSignature('drv_1', { purpose: 'DVIR_PHOTO', base64: 'AAAAAAAAAAAAAAAAAAAA', mimeType: 'image/jpeg' });
+    expect(photos.createPhoto).toHaveBeenCalledWith({ id: PHOTO_A, key: `dvir-photos/drv_1/${PHOTO_A}.jpg`, mimeType: 'image/jpeg', sizeBytes: 123, sha256: 'aa', driverId: 'drv_1' });
+    expect(out).toMatchObject({ signatureImageId: PHOTO_A, attachmentId: PHOTO_A });
+
+    photos.createPhoto.mockClear();
+    const sig = await service.uploadSignature('drv_1', { purpose: 'CERTIFICATION', base64: 'AAAAAAAAAAAAAAAAAAAA', mimeType: 'image/png' });
+    expect(photos.createPhoto).not.toHaveBeenCalled();
+    expect(sig.attachmentId).toBeNull();
+  });
+
+  it('submit passes photoAttachmentIds through to repo.createDvir per defect (the bug: they were dropped)', async () => {
+    const { service, repo, photos } = build();
+    await service.submit('drv_1', dto([{ photoAttachmentIds: [PHOTO_A] }, { photoAttachmentIds: [PHOTO_B] }]), DRIVER);
+    expect(photos.findLinkable).toHaveBeenCalledWith([PHOTO_A, PHOTO_B], 'drv_1');
+    const [input] = repo.createDvir.mock.calls[0] as [DvirCreateInput];
+    expect(input.defects[0].photoAttachmentIds).toEqual([PHOTO_A]);
+    expect(input.defects[1].photoAttachmentIds).toEqual([PHOTO_B]);
+  });
+
+  it('submit reports photoCount and audits it', async () => {
+    const { service, audit } = build();
+    const out = await service.submit('drv_1', dto([{ photoAttachmentIds: [PHOTO_A, PHOTO_B] }]), DRIVER);
+    expect(out).toMatchObject({ id: 'dvir_1', defectCount: 1, photoCount: 2, applied: true });
+    const [auditRow] = audit.insert.mock.calls[0] as [{ action: string; after: { photoCount: number } }];
+    expect(auditRow.action).toBe('DVIR_SUBMITTED');
+    expect(auditRow.after.photoCount).toBe(2);
+  });
+
+  it("submit rejects with 422 VALIDATION_FAILED when a photo id is unknown, another driver's, or already attached — before storing the signature", async () => {
+    const { service, repo, photos, signatures } = build();
+    photos.findLinkable.mockResolvedValueOnce([{ id: PHOTO_A }]);
+    await expect(service.submit('drv_1', dto([{ photoAttachmentIds: [PHOTO_A, PHOTO_B] }]), DRIVER)).rejects.toMatchObject({
+      code: 'VALIDATION_FAILED',
+      status: 422,
+      details: { missing: [PHOTO_B] },
+    });
+    expect(signatures.store).not.toHaveBeenCalled();
+    expect(repo.createDvir).not.toHaveBeenCalled();
+  });
+
+  it('submit without photos never queries attachments', async () => {
+    const { service, photos, repo } = build();
+    await service.submit('drv_1', dto([{ photoAttachmentIds: [] }]), DRIVER);
+    expect(photos.findLinkable).not.toHaveBeenCalled();
+    const [input] = repo.createDvir.mock.calls[0] as [DvirCreateInput];
+    expect(input.defects[0].photoAttachmentIds).toEqual([]);
+  });
+});

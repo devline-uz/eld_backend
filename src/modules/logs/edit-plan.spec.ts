@@ -2,7 +2,15 @@
  * TZ §9.1 / §9.3 on an append-only ledger (D-019) — every record-status transition is an
  * APPENDED record, because `EldEvent` has UPDATE revoked at the database level.
  */
-import { planAcceptEdit, planDriverSelfEdit, planEditRequest, planRejectEdit } from './edit-plan';
+import {
+  formatProposalMeta,
+  parseProposalMeta,
+  planAcceptEdit,
+  planDriverSelfEdit,
+  planEditRequest,
+  planProposedEvent,
+  planRejectEdit,
+} from './edit-plan';
 
 const target = {
   id: 10n,
@@ -130,5 +138,69 @@ describe('planDriverSelfEdit', () => {
         target,
       ),
     ).toThrow(/driving/i);
+  });
+});
+
+describe('B-39 / B-72 — special category and proposed new records', () => {
+  it('planProposedEvent is one inert record with no original', () => {
+    const rows = planProposedEvent({ status: 'ON', startAt: new Date('2026-06-03T13:00:00Z'), annotation: 'Pre-trip inspection' });
+    expect(rows).toEqual([
+      expect.objectContaining({ kind: 'REQUEST', recordStatus: 3, recordOrigin: 3, supersedesId: null, eventType: 1, eventCode: 4 }),
+    ]);
+  });
+
+  it('accepting a proposed record (no target) retires nothing and neutralizes nothing', () => {
+    const rows = planAcceptEdit(request, null, {
+      status: 'SB',
+      startAt: request.eventDateTime,
+      endAt: new Date('2026-06-01T15:00:00Z'),
+      annotation: 'Sleeper',
+      statusAfterInterval: 'OFF',
+    });
+    expect(rows.map((row) => row.kind)).toEqual(['NEW_ACTIVE', 'RESTORE']);
+  });
+
+  it('a PC edit appends eventType 3 code 1 after the duty record and clears it at the next record', () => {
+    const rows = planAcceptEdit(request, target, {
+      status: 'OFF',
+      startAt: target.eventDateTime,
+      annotation: 'Personal conveyance to the motel',
+      special: 'PC',
+      specialClearAt: new Date('2026-06-01T16:00:00Z'),
+    });
+    const kinds = rows.map((row) => row.kind);
+    expect(kinds.indexOf('SPECIAL')).toBeGreaterThan(kinds.indexOf('NEW_ACTIVE'));
+    expect(rows.find((row) => row.kind === 'SPECIAL')).toMatchObject({ eventType: 3, eventCode: 1, recordOrigin: 3 });
+    expect(rows.find((row) => row.kind === 'SPECIAL_CLEAR')).toMatchObject({
+      eventType: 3,
+      eventCode: 0,
+      at: new Date('2026-06-01T16:00:00Z'),
+    });
+  });
+
+  it('an open-ended YM interval with nothing after it is not cleared (the next status change clears it)', () => {
+    const rows = planAcceptEdit(request, target, {
+      status: 'ON',
+      startAt: target.eventDateTime,
+      annotation: 'Yard move',
+      special: 'YM',
+      specialClearAt: null,
+    });
+    expect(rows.some((row) => row.kind === 'SPECIAL_CLEAR')).toBe(false);
+    expect(rows.find((row) => row.kind === 'SPECIAL')).toMatchObject({ eventCode: 2 });
+  });
+
+  it('NONE adds no eventType 3 record (no spurious Appendix A rows)', () => {
+    const rows = planAcceptEdit(request, target, { status: 'ON', startAt: target.eventDateTime, annotation: 'Loading' });
+    expect(rows.some((row) => row.eventType === 3)).toBe(false);
+  });
+
+  it('proposal meta round-trips through the comment column', () => {
+    const end = new Date('2026-06-01T13:00:00.000Z');
+    expect(parseProposalMeta(formatProposalMeta({ proposedEnd: end, special: 'YM' }))).toEqual({ proposedEnd: end, special: 'YM' });
+    expect(formatProposalMeta({ proposedEnd: null, special: 'NONE' })).toBeNull();
+    expect(parseProposalMeta(null)).toEqual({ proposedEnd: null, special: 'NONE' });
+    // Legacy rows written before B-39 carry only `proposedEnd=`.
+    expect(parseProposalMeta(`proposedEnd=${end.toISOString()}`)).toEqual({ proposedEnd: end, special: 'NONE' });
   });
 });

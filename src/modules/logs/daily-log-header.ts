@@ -55,7 +55,10 @@ export interface BuildDailyLogHeadersInput {
   fromKey: string;
   toKey: string;
   now: Date;
-  /** Segments on the driver's units touching the range; only `PENDING` ones raise the flag. */
+  /**
+   * Segments on the driver's units touching the range; only unresolved ones (`PENDING`, and
+   * B-83 `PENDING_CONFIRMATION` — still unattributed) raise the flag.
+   */
   segments: HeaderUnidentifiedSegment[];
   /** Stored `hasEdits` per "YYYY-MM-DD": once a day was edited it stays edited (§9.2). */
   previousHasEdits?: ReadonlyMap<string, boolean>;
@@ -100,7 +103,9 @@ export function buildDailyLogHeaders(input: BuildDailyLogHeadersInput): BuiltDai
   const events = [...input.events].sort(
     (a, b) => a.eventDateTime.getTime() - b.eventDateTime.getTime() || a.eventSequenceId - b.eventSequenceId,
   );
-  const pending = input.segments.filter((segment) => segment.status === 'PENDING');
+  const pending = input.segments.filter(
+    (segment) => segment.status === 'PENDING' || segment.status === 'PENDING_CONFIRMATION',
+  );
   const out: BuiltDailyLogHeader[] = [];
 
   let lo = 0;

@@ -4,7 +4,7 @@ import type { Job, Queue } from 'bullmq';
 import { QUEUES } from '../core/queue/queue.constants';
 import { PrismaService } from '../core/prisma/prisma.service';
 import { EventBusService } from '../core/events/event-bus.service';
-import { CircleGeofence, detectGeofenceTransitions, isInsideGeofence, Point } from '../modules/geofences/lib/geofence-detect';
+import { CircleGeofence, detectGeofenceTransitions, isDwellExceeded, isInsideGeofence, Point } from '../modules/geofences/lib/geofence-detect';
 import { GeofencesRepository } from '../modules/geofences/geofences.repository';
 import { detectHarshEvents, toSample } from '../modules/safety/lib/harsh-detect';
 import { SafetyRepository } from '../modules/safety/safety.repository';
@@ -87,6 +87,7 @@ export class SafetyDetectProcessor extends WorkerHost {
       .map((p) => ({ lat: p.latitude, lon: p.longitude, time: p.time }))
       .sort((a, b) => a.time.localeCompare(b.time));
     const earliest = new Date(orderedPoints[0].time);
+    const zone = await this.resolveZone();
 
     for (const fence of fences) {
       const circle: CircleGeofence = {
@@ -96,6 +97,7 @@ export class SafetyDetectProcessor extends WorkerHost {
         radiusMi: Number(fence.radiusMi),
         alertOnEnter: fence.alertOnEnter,
         alertOnExit: fence.alertOnExit,
+        afterHoursOnly: fence.afterHoursOnly,
       };
       const priorPoint = await this.prisma.telemetryPoint.findFirst({
         where: { vehicleId, time: { lt: earliest } },
@@ -106,7 +108,7 @@ export class SafetyDetectProcessor extends WorkerHost {
         ? distanceInside({ lat: Number(priorPoint.latitude), lon: Number(priorPoint.longitude) }, circle)
         : null;
 
-      const transitions = detectGeofenceTransitions(orderedPoints, circle, wasInside);
+      const transitions = detectGeofenceTransitions(orderedPoints, circle, wasInside, zone);
       for (const t of transitions) {
         await this.events.publish('realtime.push', {
           room: 'fleet',
@@ -117,7 +119,49 @@ export class SafetyDetectProcessor extends WorkerHost {
           .add(`alert.geofence_${t.kind.toLowerCase()}`, { vehicleId, geofenceId: t.geofenceId })
           .catch((err: unknown) => this.logger.error({ err }, 'Failed to enqueue geofence alert'));
       }
+
+      if (fence.dwellMinutes) {
+        await this.detectDwell(vehicleId, fence.id, fence.dwellMinutes, circle, orderedPoints);
+      }
     }
+  }
+
+  /** §20 B-15 "Dwell longer than N min" — fires (at most once per batch, throttled by the
+   * matching `AlertRule`) once the vehicle has been continuously inside the fence for at
+   * least `dwellMinutes`, found by walking `TelemetryPoint` history backward from the latest
+   * point in this batch until the first point outside the fence (capped at 300 rows). */
+  private async detectDwell(
+    vehicleId: string,
+    geofenceId: string,
+    dwellMinutes: number,
+    circle: CircleGeofence,
+    orderedPoints: Array<Point & { time: string }>,
+  ): Promise<void> {
+    const last = orderedPoints[orderedPoints.length - 1];
+    if (!isInsideGeofence(last, circle)) return;
+
+    const history = await this.prisma.telemetryPoint.findMany({
+      where: { vehicleId, time: { lte: new Date(last.time) } },
+      orderBy: { time: 'desc' },
+      take: 300,
+      select: { time: true, latitude: true, longitude: true },
+    });
+    let enteredAt: Date | null = null;
+    for (const p of history) {
+      if (isInsideGeofence({ lat: Number(p.latitude), lon: Number(p.longitude) }, circle)) {
+        enteredAt = p.time;
+      } else break;
+    }
+    if (!enteredAt || !isDwellExceeded(enteredAt, new Date(last.time), dwellMinutes)) return;
+
+    await this.alertQueue
+      .add('alert.geofence_dwell', { vehicleId, geofenceId, dwellMinutes })
+      .catch((err: unknown) => this.logger.error({ err }, 'Failed to enqueue alert.geofence_dwell'));
+  }
+
+  private async resolveZone(): Promise<string> {
+    const carrier = await this.prisma.carrier.findFirst({ select: { timezone: true } });
+    return carrier?.timezone ?? 'America/New_York';
   }
 }
 

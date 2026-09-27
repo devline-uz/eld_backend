@@ -88,4 +88,22 @@ describe('CarrierService', () => {
       });
     });
   });
+
+  describe('getTransferConfig (B-45)', () => {
+    it('returns only the four eRODS transfer fields', async () => {
+      repo.get.mockResolvedValue(makeCarrier({ timezone: 'America/Chicago', eldRegistrationId: 'AB12', erodsMode: 'PRODUCTION' }) as never);
+      await expect(service.getTransferConfig()).resolves.toEqual({
+        timezone: 'America/Chicago',
+        eldIdentifier: 'OBK1',
+        eldRegistrationId: 'AB12',
+        erodsMode: 'PRODUCTION',
+      });
+    });
+
+    it('reports TEST by default for a fresh carrier row', async () => {
+      repo.get.mockResolvedValue(null);
+      repo.ensure.mockResolvedValue(makeCarrier({ timezone: 'America/New_York' }) as never);
+      await expect(service.getTransferConfig()).resolves.toMatchObject({ erodsMode: 'TEST', eldIdentifier: 'OBK1' });
+    });
+  });
 });

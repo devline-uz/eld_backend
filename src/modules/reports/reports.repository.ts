@@ -9,7 +9,7 @@ export class ReportsRepository extends BaseRepository<
   Report,
   Prisma.ReportWhereInput,
   Prisma.ReportWhereUniqueInput,
-  Prisma.ReportCreateInput,
+  Prisma.ReportUncheckedCreateInput,
   Prisma.ReportUpdateInput
 > {
   constructor(prisma: PrismaService) {
@@ -20,7 +20,7 @@ export class ReportsRepository extends BaseRepository<
     Report,
     Prisma.ReportWhereInput,
     Prisma.ReportWhereUniqueInput,
-    Prisma.ReportCreateInput,
+    Prisma.ReportUncheckedCreateInput,
     Prisma.ReportUpdateInput
   > {
     return this.prisma.report;
@@ -33,12 +33,23 @@ export class ReportsRepository extends BaseRepository<
         orderBy: { requestedAt: 'desc' },
         skip: (page - 1) * limit,
         take: limit,
+        include: REQUESTED_BY_INCLUDE,
       }),
       this.prisma.report.count({ where }),
     ]);
     return { items, total };
   }
+
+  /** B-46 — `requestedBy: { id, name }` on read (`Report.requestedBy` is a real `User`
+   * relation, unlike `DataTransfer.requestedById`, see decisions.md D-092). */
+  findByIdWithRequestedBy(id: string) {
+    return this.prisma.report.findUnique({ where: { id }, include: REQUESTED_BY_INCLUDE });
+  }
 }
+
+const REQUESTED_BY_INCLUDE = {
+  requestedBy: { select: { id: true, firstName: true, lastName: true } },
+} satisfies Prisma.ReportInclude;
 
 /** `ReportSchedule` rows — cron-like definitions the report scheduler consumes (TZ §15). */
 @Injectable()

@@ -3,8 +3,11 @@ import type { Request } from 'express';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
 import { PermissionMatrix } from '../../common/decorators/permission.types';
+import type { ContextUser } from '../../core/context/request-context';
 import { FirebaseService } from '../../core/firebase/firebase.service';
 import { AppConfigService } from '../../core/config/config.service';
+import { AttachmentsService } from '../attachments/attachments.service';
+import { CarrierRepository } from '../carrier/carrier.repository';
 import { hashPassword, verifyPassword } from './lib/password.util';
 import { randomOpaqueToken, sha256 } from './lib/hash.util';
 import { TokenService } from './token.service';
@@ -26,10 +29,15 @@ export interface AccessTokenPair {
 
 export type LoginResult = AccessTokenPair;
 
-const REFRESH_TTL_MS: Record<'user' | 'driver', number> = {
-  user: 30 * 24 * 60 * 60 * 1000,
-  driver: 90 * 24 * 60 * 60 * 1000,
-};
+/**
+ * MB-9 — `driverId` is additive on top of `AccessTokenPair` so the mobile app can name its
+ * per-driver offline SQLite file (`onebook_{driverId}.db`, mobile/tz.md §5.5) without decoding
+ * the JWT. Only `POST /auth/login/driver` returns this shape; the back-office `/auth/login`
+ * and `/auth/google` responses are untouched.
+ */
+export interface DriverLoginResult extends AccessTokenPair {
+  driverId: string;
+}
 
 /**
  * TZ §6 — password + Google login for `User`, password login for `Driver`, and
@@ -48,6 +56,8 @@ export class AuthService {
     private readonly tokens: TokenService,
     private readonly firebase: FirebaseService,
     private readonly config: AppConfigService,
+    private readonly carrier: CarrierRepository,
+    private readonly attachments: AttachmentsService,
   ) {}
 
   // ---------------------------------------------------------------------
@@ -55,6 +65,16 @@ export class AuthService {
   // ---------------------------------------------------------------------
 
   async loginUser(email: string, password: string, meta: RequestMeta): Promise<LoginResult> {
+    // B-25 — in `production` AUTH_MODE the back office must use Google Sign-In; password
+    // login is blocked outright (before even touching the DB) so it can't be used as a
+    // user-enumeration oracle either.
+    if (this.config.get('AUTH_MODE') === 'production') {
+      throw new AppException(
+        ERROR_CODES.PASSWORD_LOGIN_DISABLED,
+        'Password login is disabled in production — sign in with Google.',
+        403,
+      );
+    }
     const user = await this.users.findByEmailWithRole(email);
     if (!user || !user.passwordHash || user.status !== 'ACTIVE') {
       throw new AppException(ERROR_CODES.INVALID_CREDENTIALS, 'Invalid email or password.', 401);
@@ -70,7 +90,7 @@ export class AuthService {
   // Password login — Driver
   // ---------------------------------------------------------------------
 
-  async loginDriver(username: string, password: string, meta: RequestMeta): Promise<AccessTokenPair> {
+  async loginDriver(username: string, password: string, meta: RequestMeta): Promise<DriverLoginResult> {
     const driver = await this.drivers.findByUsername(username);
     if (!driver || driver.status !== 'ACTIVE') {
       throw new AppException(ERROR_CODES.INVALID_CREDENTIALS, 'Invalid username or password.', 401);
@@ -86,9 +106,9 @@ export class AuthService {
       refreshHash: sha256(refreshToken),
       userAgent: meta.userAgent,
       ip: meta.ip,
-      expiresAt: new Date(Date.now() + REFRESH_TTL_MS.driver),
+      expiresAt: new Date(Date.now() + this.tokens.refreshTtlMs('driver')),
     });
-    return { accessToken, refreshToken, tokenType: 'Bearer' };
+    return { accessToken, refreshToken, tokenType: 'Bearer', driverId: driver.id };
   }
 
   // ---------------------------------------------------------------------
@@ -140,18 +160,19 @@ export class AuthService {
   }
 
   private async issueUserTokens(user: UserWithRole, meta: RequestMeta): Promise<AccessTokenPair> {
-    const accessToken = this.tokens.signUserAccessToken({
-      id: user.id,
-      roleKey: user.role.key,
-      permissions: user.role.permissions as PermissionMatrix,
-    });
     const refreshToken = randomOpaqueToken();
-    await this.sessions.create({
+    const session = await this.sessions.create({
       userId: user.id,
       refreshHash: sha256(refreshToken),
       userAgent: meta.userAgent,
       ip: meta.ip,
-      expiresAt: new Date(Date.now() + REFRESH_TTL_MS.user),
+      expiresAt: new Date(Date.now() + this.tokens.refreshTtlMs('user')),
+    });
+    const accessToken = this.tokens.signUserAccessToken({
+      id: user.id,
+      roleKey: user.role.key,
+      permissions: user.role.permissions as PermissionMatrix,
+      sessionId: session.id,
     });
     return { accessToken, refreshToken, tokenType: 'Bearer' };
   }
@@ -184,18 +205,19 @@ export class AuthService {
 
     await this.sessions.revoke(session.id);
     const newRefreshToken = randomOpaqueToken();
-    await this.sessions.create({
+    const newSession = await this.sessions.create({
       userId: user.id,
       refreshHash: sha256(newRefreshToken),
       userAgent: meta.userAgent ?? session.userAgent ?? undefined,
       ip: meta.ip ?? session.ip ?? undefined,
       deviceLabel: session.deviceLabel ?? undefined,
-      expiresAt: new Date(Date.now() + REFRESH_TTL_MS.user),
+      expiresAt: new Date(Date.now() + this.tokens.refreshTtlMs('user')),
     });
     const accessToken = this.tokens.signUserAccessToken({
       id: user.id,
       roleKey: user.role.key,
       permissions: user.role.permissions as PermissionMatrix,
+      sessionId: newSession.id,
     });
     return { accessToken, refreshToken: newRefreshToken, tokenType: 'Bearer' };
   }
@@ -225,7 +247,7 @@ export class AuthService {
       ip: meta.ip ?? session.ip ?? undefined,
       deviceLabel: session.deviceLabel ?? undefined,
       appVersion: session.appVersion ?? undefined,
-      expiresAt: new Date(Date.now() + REFRESH_TTL_MS.driver),
+      expiresAt: new Date(Date.now() + this.tokens.refreshTtlMs('driver')),
     });
     const accessToken = this.tokens.signDriverAccessToken({ id: driver.id });
     return { accessToken, refreshToken: newRefreshToken, tokenType: 'Bearer' };
@@ -242,14 +264,23 @@ export class AuthService {
     }
   }
 
-  async listUserSessions(userId: string) {
-    return this.sessions.listActiveForUser(userId);
+  /** B-50 — `current` is derived from the `sid` claim on the caller's own access token
+   * (`TokenService`), never guessed from `lastSeenAt`/IP heuristics. */
+  async listUserSessions(userId: string, currentSessionId?: string) {
+    const sessions = await this.sessions.listActiveForUser(userId);
+    return sessions.map((s) => ({ ...s, current: s.id === currentSessionId }));
   }
 
   async revokeUserSession(userId: string, sessionId: string): Promise<void> {
     const session = await this.sessions.findActiveById(sessionId, userId);
     if (!session) throw AppException.notFound('Session not found.');
     await this.sessions.revoke(sessionId);
+  }
+
+  /** B-50 "Sign out everywhere" — revokes every other active session for the user, keeping
+   * the caller's own current session (if known) alive. */
+  async revokeAllUserSessions(userId: string, currentSessionId?: string): Promise<number> {
+    return this.sessions.revokeAllForUserExcept(userId, currentSessionId);
   }
 
   // ---------------------------------------------------------------------
@@ -265,7 +296,7 @@ export class AuthService {
     // Phase 1 has no outbound-email integration (TZ §14 covers in-app/push, not SMTP). The
     // token is returned directly outside production so the flow is testable end-to-end;
     // production callers must wire an email provider before relying on this endpoint.
-    return this.config.isProduction ? {} : { resetToken: token };
+    return this.config.echoOneTimeSecrets ? { resetToken: token } : {};
   }
 
   /** Used by `modules/users` (`POST /users`, `POST /users/:id/resend-invite`, TZ §11.7). */
@@ -282,6 +313,59 @@ export class AuthService {
     const passwordHash = await hashPassword(newPassword);
     await this.users.updatePasswordHash(userId, passwordHash);
     await this.sessions.revokeAllForUser(userId);
+  }
+
+  // ---------------------------------------------------------------------
+  // Email re-verification — B-84 `PATCH /users/:id { email }`
+  // ---------------------------------------------------------------------
+
+  /** Used by `modules/users` — the new address is not written to `User.email` until the
+   * returned token comes back through `verifyEmailChange` (TZ §18-adjacent: a changed email
+   * is itself a login-affecting change, so it should not take effect silently). Same
+   * "return outside production only" convention as `forgotPassword` — no mailer in Phase 1. */
+  issueUserEmailVerifyToken(userId: string, email: string): string | undefined {
+    const token = this.tokens.signUserEmailVerifyToken(userId, email);
+    return this.config.echoOneTimeSecrets ? token : undefined;
+  }
+
+  async verifyEmailChange(token: string): Promise<void> {
+    const { userId, email } = this.tokens.verifyUserEmailVerifyToken(token);
+    const user = await this.users.findByIdWithRole(userId);
+    if (!user) throw new AppException(ERROR_CODES.TOKEN_INVALID, 'This verification link is no longer valid.', 401);
+    const existing = await this.users.findByEmail(email);
+    if (existing && existing.id !== userId) {
+      throw AppException.conflict(`A user with email "${email}" already exists.`);
+    }
+    await this.users.applyVerifiedEmail(userId, email);
+  }
+
+  // ---------------------------------------------------------------------
+  // B-34 — `GET /auth/me` topbar fields (avoids a second `/me/profile` round trip).
+  // ---------------------------------------------------------------------
+
+  /** Adds `fullName`, `email`, `avatarUrl`, `carrierName`, `homeTerminalTimezone` on top of
+   * the raw token-claim principal, for a `user` subject only — drivers/api-keys get the
+   * claims back unchanged (mobile has its own bootstrap payload, TZ §11.8). Carrier has no
+   * per-user home-terminal timezone column; the account's carrier timezone is used, same
+   * value the topbar would otherwise fetch via a second `/me/profile` call. */
+  async meProfile(user: ContextUser): Promise<ContextUser | (ContextUser & Record<string, unknown>)> {
+    if (user.type !== 'user') return user;
+    const account = await this.users.findByIdWithRole(user.id);
+    if (!account) return user;
+    const [carrier, avatarUrl] = await Promise.all([
+      this.carrier.get(),
+      // Reuses the reusable presign helper (`AttachmentsService.presignKey`, §20 B-41)
+      // rather than reaching for `STORAGE_PORT.presignGet` directly.
+      account.avatarKey ? this.attachments.presignKey(account.avatarKey).then((r) => r.url) : Promise.resolve(null),
+    ]);
+    return {
+      ...user,
+      fullName: `${account.firstName} ${account.lastName}`.trim(),
+      email: account.email,
+      avatarUrl,
+      carrierName: carrier?.name ?? null,
+      homeTerminalTimezone: carrier?.timezone ?? null,
+    };
   }
 
   static meta(req: Request): RequestMeta {

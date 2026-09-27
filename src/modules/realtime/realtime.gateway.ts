@@ -11,7 +11,7 @@ import {
 import type { Server, Socket } from 'socket.io';
 import { TokenVerifier } from '../../common/guards/token-verifier.port';
 import type { ContextUser } from '../../core/context/request-context';
-import { EventBusService } from '../../core/events/event-bus.service';
+import { RealtimePubSubService } from '../../core/events/realtime-pubsub.service';
 import { RealtimeRoomAuthorizer } from './room-authorizer';
 
 interface AuthedSocket extends Socket {
@@ -49,17 +49,14 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
 
   constructor(
     private readonly tokens: TokenVerifier,
-    private readonly events: EventBusService,
+    private readonly realtimePubSub: RealtimePubSubService,
     private readonly rooms: RealtimeRoomAuthorizer,
   ) {}
 
   onModuleInit(): void {
-    this.unsubscribe = this.events.on<{ room: string; event: string; payload: unknown }>(
-      'realtime.push',
-      async ({ payload }) => {
-        this.server?.to(payload.room).emit(payload.event, payload.payload);
-      },
-    );
+    this.unsubscribe = this.realtimePubSub.onRelayed((payload) => {
+      this.server?.to(payload.room).emit(payload.event, payload.payload);
+    });
   }
 
   onModuleDestroy(): void {

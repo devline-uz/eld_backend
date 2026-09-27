@@ -1,10 +1,12 @@
-const getApps = jest.fn((): unknown[] => []);
-const initializeApp = jest.fn((): unknown => ({ name: '[DEFAULT]' }));
-const cert = jest.fn((x: unknown): unknown => x);
+const getApps = jest.fn((..._args: unknown[]): unknown[] => []);
+const initializeApp = jest.fn((..._args: unknown[]): unknown => ({ name: '[DEFAULT]' }));
+const cert = jest.fn((...args: unknown[]): unknown => args[0]);
 const verifyIdToken = jest.fn();
 const send = jest.fn();
-const getAuth = jest.fn((): { verifyIdToken: typeof verifyIdToken } => ({ verifyIdToken }));
-const getMessaging = jest.fn((): { send: typeof send } => ({ send }));
+const getAuth = jest.fn(
+  (..._args: unknown[]): { verifyIdToken: typeof verifyIdToken } => ({ verifyIdToken }),
+);
+const getMessaging = jest.fn((..._args: unknown[]): { send: typeof send } => ({ send }));
 
 jest.mock('firebase-admin/app', () => ({
   getApps: (...args: unknown[]): unknown => getApps(...args),

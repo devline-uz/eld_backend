@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { Integration } from '@prisma/client';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
-import { UpsertIntegrationDto, INTEGRATION_PROVIDERS } from './dto/integrations.dto';
+import { UpsertIntegrationDto, INTEGRATION_PROVIDERS, INTEGRATION_CATALOG, IntegrationCatalogEntry } from './dto/integrations.dto';
 import { IntegrationsRepository } from './integrations.repository';
 import { IntegrationCipherService } from './lib/integration-cipher.service';
 import { decryptConfigSecret, encryptConfigSecrets, redactConfigSecrets } from './lib/config-secrets';
@@ -29,6 +29,11 @@ export class IntegrationsService {
 
   async list(): Promise<IntegrationView[]> {
     return (await this.repo.list()).map(toView);
+  }
+
+  /** §20 B-89 — static marketplace catalog; unconnected providers come back `available: false`. */
+  catalog(): IntegrationCatalogEntry[] {
+    return [...INTEGRATION_CATALOG];
   }
 
   async get(provider: string): Promise<IntegrationView> {

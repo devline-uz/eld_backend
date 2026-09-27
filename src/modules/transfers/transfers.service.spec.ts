@@ -88,6 +88,7 @@ function harness(overrides: Partial<Record<string, unknown>> = {}): Harness {
     updateTransfer: jest.fn(),
     findTransfer: jest.fn(),
     listTransfers: jest.fn(),
+    resolveRequestedByMany: jest.fn().mockResolvedValue(new Map()),
     ...overrides,
   } as unknown as Record<string, jest.Mock>;
 

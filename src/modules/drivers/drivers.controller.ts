@@ -1,9 +1,17 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Param, Patch, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiCreatedResponse, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { Audit } from '../../common/decorators/audit.decorator';
 import { Perm } from '../../common/decorators/perm.decorator';
 import { zodBody } from '../../common/pipes/zod-validation.pipe';
-import { CreateDriverDto, DriverListQueryDto, DriverRosterQueryDto, ImportDriversDto, UpdateDriverDto } from './dto/drivers.dto';
+import {
+  CreateDriverDocumentDto,
+  CreateDriverDto,
+  DriverListQueryDto,
+  DriverRosterQueryDto,
+  ImportDriversDto,
+  UpdateDriverDto,
+  VerifyDriverEmailDto,
+} from './dto/drivers.dto';
 import { DriverRosterService } from './driver-roster.service';
 import { DriversService } from './drivers.service';
 import { apiError, ApiStandardErrors, ERROR_CODES } from '../../common/errors';
@@ -117,5 +125,67 @@ export class DriversController {
   @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.')] })
   remove(@Param('id') id: string) {
     return this.drivers.remove(id);
+  }
+
+  @Post(':id/reset-password')
+  @HttpCode(202)
+  @Perm('drivers', 'FULL')
+  @Audit({ object: 'Driver', action: 'RESET_PASSWORD' })
+  @ApiOperation({ summary: 'B-81 — carrier-side reset of a driver-app password (email or a one-time code for the dispatcher to read out). Always audited.' })
+  @ApiOkResponse({ schema: { example: { emailedTo: 'jsmith@example.com' } } })
+  @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.')] })
+  resetPassword(@Param('id') id: string) {
+    return this.drivers.resetPassword(id);
+  }
+
+  @Post(':id/send-verification')
+  @HttpCode(202)
+  @Perm('drivers', 'FULL')
+  @Audit({ object: 'Driver', action: 'SEND_EMAIL_VERIFICATION' })
+  @ApiOperation({ summary: 'B-29/B-30 — emails a verification token for `Driver.email`.' })
+  @ApiOkResponse({ schema: { example: { emailedTo: 'jsmith@example.com' } } })
+  @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.')] })
+  sendVerification(@Param('id') id: string) {
+    return this.drivers.sendVerification(id);
+  }
+
+  @Post(':id/verify-email')
+  @Perm('drivers', 'FULL')
+  @Audit({ object: 'Driver', action: 'VERIFY_EMAIL' })
+  @ApiOperation({ summary: 'B-31 — confirms the token from `send-verification`; sets `emailVerifiedAt`.' })
+  @ApiOkResponse({ schema: { example: { id: 'drv_1', email: 'jsmith@example.com', emailVerifiedAt: '2026-09-24T00:00:00.000Z' } } })
+  @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.'), { status: 401, code: ERROR_CODES.TOKEN_INVALID, message: 'Verification token is no longer valid.' }] })
+  verifyEmail(@Param('id') id: string, @Body(zodBody(VerifyDriverEmailDto)) dto: VerifyDriverEmailDto) {
+    return this.drivers.verifyEmail(id, dto);
+  }
+
+  @Get(':id/documents')
+  @Perm('drivers', 'READ')
+  @ApiOperation({ summary: 'B-94 — lists a driver\'s qualification documents (CDL scan, medical card, ...).' })
+  @ApiOkResponse({ schema: { example: [{ id: 'doc_1', type: 'CDL', fileName: 'cdl-front.jpg', expiresAt: '2028-01-01T00:00:00.000Z', uploadedAt: '2026-09-24T00:00:00.000Z', url: 'https://minio/...' }] } })
+  @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.')] })
+  listDocuments(@Param('id') id: string) {
+    return this.drivers.listDocuments(id);
+  }
+
+  @Post(':id/documents')
+  @Perm('drivers', 'FULL')
+  @Audit({ object: 'Driver', action: 'ADD_DOCUMENT' })
+  @ApiOperation({ summary: 'B-94 — records document metadata and returns a presigned PUT for the file upload (TZ §17).' })
+  @ApiCreatedResponse({ schema: { example: { id: 'doc_1', type: 'CDL', fileName: 'cdl-front.jpg', expiresAt: null, uploadedAt: '2026-09-24T00:00:00.000Z', url: 'https://minio/...', uploadUrl: 'https://minio/... (PUT)' } } })
+  @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.')] })
+  createDocument(@Param('id') id: string, @Body(zodBody(CreateDriverDocumentDto)) dto: CreateDriverDocumentDto) {
+    return this.drivers.createDocument(id, dto);
+  }
+
+  @Delete(':id/documents/:docId')
+  @Perm('drivers', 'FULL')
+  @Audit({ object: 'Driver', action: 'REMOVE_DOCUMENT' })
+  @ApiOperation({ summary: 'B-94 — deletes a driver document (storage object and row).' })
+  @ApiOkResponse({ schema: { example: { deleted: true } } })
+  @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.DRIVER_DOCUMENT_NOT_FOUND, 'Driver document not found.')] })
+  async removeDocument(@Param('id') id: string, @Param('docId') docId: string) {
+    await this.drivers.deleteDocument(id, docId);
+    return { deleted: true };
   }
 }

@@ -8,7 +8,7 @@
  */
 import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
-import { PrismaClient } from '@prisma/client';
+import { Prisma, PrismaClient } from '@prisma/client';
 import request from 'supertest';
 import { AppModule } from '../../src/app.module';
 import { configureApp } from '../../src/main';
@@ -49,7 +49,7 @@ describe('AuditLog before/after (e2e, TZ §18 / D-002)', () => {
    * briefly instead of asserting immediately.
    */
   async function waitForAuditRow(
-    where: Parameters<typeof prisma.auditLog.findFirst>[0]['where'],
+    where: Prisma.AuditLogWhereInput,
   ): Promise<Awaited<ReturnType<typeof prisma.auditLog.findFirst>>> {
     for (let attempt = 0; attempt < 20; attempt += 1) {
       const row = await prisma.auditLog.findFirst({ where, orderBy: { id: 'desc' } });

@@ -31,7 +31,7 @@ describe('DefectsService (TZ §5.10 out-of-service rule)', () => {
 
   it('404s resolving a defect that does not exist', async () => {
     repo.findById.mockResolvedValue(null);
-    await expect(service.resolve('missing', { status: 'REPAIRED' }, 'user_1')).rejects.toBeInstanceOf(AppException);
+    await expect(service.resolve('missing', { resolutionType: 'REPAIRED' }, 'user_1')).rejects.toBeInstanceOf(AppException);
   });
 
   it('restores the vehicle from OUT_OF_SERVICE when the last open CRITICAL defect is resolved', async () => {
@@ -41,7 +41,7 @@ describe('DefectsService (TZ §5.10 out-of-service rule)', () => {
     repo.count.mockResolvedValue(0); // no other open CRITICAL defects left
     vehicles.findById.mockResolvedValue({ id: 'veh_1', status: 'OUT_OF_SERVICE' } as never);
 
-    await service.resolve('def_1', { status: 'REPAIRED', resolutionNote: 'Brakes replaced' }, 'user_1');
+    await service.resolve('def_1', { resolutionType: 'REPAIRED', resolutionNote: 'Brakes replaced' }, 'user_1');
 
     expect(vehicles.update).toHaveBeenCalledWith({ id: 'veh_1' }, { status: 'ACTIVE' });
     expect(events.publish).toHaveBeenCalledWith('vehicle.restored_from_out_of_service', { vehicleId: 'veh_1' });
@@ -53,7 +53,7 @@ describe('DefectsService (TZ §5.10 out-of-service rule)', () => {
     repo.update.mockResolvedValue({ ...defect, status: 'REPAIRED' } as never);
     repo.count.mockResolvedValue(1); // one other open CRITICAL defect
 
-    await service.resolve('def_1', { status: 'REPAIRED' }, 'user_1');
+    await service.resolve('def_1', { resolutionType: 'REPAIRED' }, 'user_1');
 
     expect(vehicles.update).not.toHaveBeenCalled();
   });
@@ -65,7 +65,7 @@ describe('DefectsService (TZ §5.10 out-of-service rule)', () => {
     repo.count.mockResolvedValue(0);
     vehicles.findById.mockResolvedValue({ id: 'veh_1', status: 'INACTIVE' } as never);
 
-    await service.resolve('def_1', { status: 'REPAIRED' }, 'user_1');
+    await service.resolve('def_1', { resolutionType: 'REPAIRED' }, 'user_1');
 
     expect(vehicles.update).not.toHaveBeenCalled();
   });
@@ -75,9 +75,57 @@ describe('DefectsService (TZ §5.10 out-of-service rule)', () => {
     repo.findById.mockResolvedValue(defect as never);
     repo.update.mockResolvedValue({ ...defect, status: 'REPAIRED' } as never);
 
-    await service.resolve('def_1', { status: 'REPAIRED' }, 'user_1');
+    await service.resolve('def_1', { resolutionType: 'REPAIRED' }, 'user_1');
 
     expect(repo.count).not.toHaveBeenCalled();
     expect(vehicles.update).not.toHaveBeenCalled();
+  });
+
+  it('B-68 — NOT_REQUIRED is written as resolutionType, never as a REPAIRED status (§396.11 record must not read as a repair)', async () => {
+    const defect = makeDefect({ severity: 'MAJOR' });
+    repo.findById.mockResolvedValue(defect as never);
+    repo.update.mockResolvedValue({ ...defect, status: 'REPAIRED', resolutionType: 'NOT_REQUIRED' } as never);
+
+    await service.resolve('def_1', { resolutionType: 'NOT_REQUIRED' }, 'user_1');
+
+    expect(repo.update).toHaveBeenCalledWith(
+      { id: 'def_1' },
+      expect.objectContaining({ resolutionType: 'NOT_REQUIRED' }),
+    );
+  });
+
+  it('B-70 — persists correctedBy/completedAt/laborHours/partsCostUsd on resolve', async () => {
+    const defect = makeDefect({ severity: 'MAJOR' });
+    repo.findById.mockResolvedValue(defect as never);
+    repo.update.mockResolvedValue({ ...defect, status: 'REPAIRED' } as never);
+
+    await service.resolve(
+      'def_1',
+      { resolutionType: 'REPAIRED', correctedBy: 'Joe Mechanic', completedAt: '2026-09-20T10:00:00.000Z', laborHours: 2.5, partsCostUsd: 120 },
+      'user_1',
+    );
+
+    expect(repo.update).toHaveBeenCalledWith(
+      { id: 'def_1' },
+      expect.objectContaining({ correctedBy: 'Joe Mechanic', laborHours: 2.5, partsCostUsd: 120 }),
+    );
+  });
+
+  it('B-40 — assign() sets the assigneeId', async () => {
+    repo.findById.mockResolvedValue(makeDefect() as never);
+    repo.update.mockResolvedValue(makeDefect({ assigneeId: 'usr_2' }) as never);
+
+    await service.assign('def_1', { assigneeId: 'usr_2' });
+
+    expect(repo.update).toHaveBeenCalledWith({ id: 'def_1' }, { assigneeId: 'usr_2' });
+  });
+
+  it('B-40 — assign() clears the assigneeId with null', async () => {
+    repo.findById.mockResolvedValue(makeDefect({ assigneeId: 'usr_2' }) as never);
+    repo.update.mockResolvedValue(makeDefect({ assigneeId: null }) as never);
+
+    await service.assign('def_1', { assigneeId: null });
+
+    expect(repo.update).toHaveBeenCalledWith({ id: 'def_1' }, { assigneeId: null });
   });
 });

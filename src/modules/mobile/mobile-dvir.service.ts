@@ -10,6 +10,7 @@ import { EventBusService } from '../../core/events/event-bus.service';
 import { QUEUES } from '../../core/queue/queue.constants';
 import { AuditRepository } from '../audit/audit.repository';
 import type { DvirSubmitDto, SignatureUploadDto } from './dto/mobile.dto';
+import { DvirPhotosRepository } from './dvir-photos.repository';
 import { MobileRepository } from './mobile.repository';
 import { SignatureService } from './signature.service';
 
@@ -28,6 +29,7 @@ export class MobileDvirService {
 
   constructor(
     private readonly repo: MobileRepository,
+    private readonly photos: DvirPhotosRepository,
     private readonly signatures: SignatureService,
     private readonly audit: AuditRepository,
     private readonly events: EventBusService,
@@ -37,12 +39,34 @@ export class MobileDvirService {
   async uploadSignature(driverId: string, dto: SignatureUploadDto) {
     const prefix = dto.purpose === 'DVIR_PHOTO' ? 'dvir-photos' : 'signatures';
     const stored = await this.signatures.store(prefix, driverId, dto.base64, dto.mimeType);
-    return { signatureImageId: stored.id, key: stored.key, sha256: stored.sha256, sizeBytes: stored.sizeBytes };
+    if (dto.purpose === 'DVIR_PHOTO') {
+      // MB-6 — a DVIR photo must exist as an `Attachment` row so `POST /mobile/dvir`
+      // (`defects[].photoAttachmentIds`) can link it to the defect. Signatures stay key-only
+      // (`Dvir.driverSignatureUrl` / `DailyLog.signatureUrl`).
+      await this.photos.createPhoto({ id: stored.id, key: stored.key, mimeType: dto.mimeType, sizeBytes: stored.sizeBytes, sha256: stored.sha256, driverId });
+    }
+    return { signatureImageId: stored.id, attachmentId: dto.purpose === 'DVIR_PHOTO' ? stored.id : null, key: stored.key, sha256: stored.sha256, sizeBytes: stored.sizeBytes };
   }
 
   async submit(driverId: string, dto: DvirSubmitDto, actor: ContextUser) {
     const vehicle = await this.repo.findVehicle(dto.vehicleId);
     if (!vehicle) throw new AppException(ERROR_CODES.VEHICLE_NOT_FOUND, 'Vehicle not found.', 404, { vehicleId: dto.vehicleId });
+
+    // MB-6 — every referenced photo must be the driver's own, not yet attached DVIR_PHOTO upload;
+    // checked BEFORE the signature is stored so a bad id leaves no orphan object behind.
+    const photoIds = [...new Set(dto.defects.flatMap((defect) => defect.photoAttachmentIds))];
+    if (photoIds.length) {
+      const linkable = new Set((await this.photos.findLinkable(photoIds, driverId)).map((row) => row.id));
+      const missing = photoIds.filter((id) => !linkable.has(id));
+      if (missing.length) {
+        throw new AppException(
+          ERROR_CODES.VALIDATION_FAILED,
+          'photoAttachmentIds must reference DVIR_PHOTO uploads of this driver that are not yet attached to a defect.',
+          422,
+          { missing },
+        );
+      }
+    }
 
     const signature = await this.signatures.store('signatures', driverId, dto.signatureBase64, dto.signatureMimeType);
 
@@ -53,6 +77,7 @@ export class MobileDvirService {
       severity: defect.severity,
       description: defect.description,
       outOfService: defect.severity === 'CRITICAL',
+      photoAttachmentIds: defect.photoAttachmentIds,
     }));
 
     const dvir = await this.repo.createDvir({
@@ -78,7 +103,7 @@ export class MobileDvirService {
     }
 
     await this.writeAudit(actor, 'DVIR_SUBMITTED', dvir.id, {
-      after: { driverId, vehicleId: dto.vehicleId, type: dto.type, vehicleCondition: dto.vehicleCondition, defectCount: defects.length, outOfService: hasOutOfService },
+      after: { driverId, vehicleId: dto.vehicleId, type: dto.type, vehicleCondition: dto.vehicleCondition, defectCount: defects.length, photoCount: photoIds.length, outOfService: hasOutOfService },
       detail: 'Driver DVIR submission from the app (§5.10).',
     });
 
@@ -95,6 +120,7 @@ export class MobileDvirService {
       submittedAt: dto.submittedAt,
       vehicleCondition: dto.vehicleCondition,
       defectCount: defects.length,
+      photoCount: photoIds.length,
       outOfService: hasOutOfService,
       signatureImageId: signature.id,
       applied: true,

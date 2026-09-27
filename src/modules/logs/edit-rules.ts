@@ -23,7 +23,19 @@ export type DrivingImmutabilityReason =
 export interface Interval {
   startAt: Date;
   endAt: Date;
+  /**
+   * The segment is still in force: its `endAt` is the caller's `now`, not a recorded record
+   * (`rods.ts drivingIntervals`). Only meaningful for driving intervals (decisions.md D-089).
+   */
+  open?: boolean;
 }
+
+/**
+ * decisions.md D-089 — how far before the server's `now` a live duty-status tap may start and
+ * still count as "ending driving at the present" rather than a back-dated edit of driving time.
+ * Covers network latency and the app's PT30/server-offset clock; anything older is an edit.
+ */
+export const LIVE_STATUS_TOLERANCE_MS = 2 * 60 * 1000;
 
 export interface TargetEvent {
   eventType: number;
@@ -105,6 +117,7 @@ export function checkDriverSelfEdit(
   proposal: SelfEditProposal,
   drivingIntervals: Interval[],
   target?: TargetEvent,
+  now?: Date,
 ): DrivingImmutabilityReason | null {
   if (proposal.status === 'D') return 'MANUAL_DRIVING';
   if (target && isDrivingRecord(target)) return 'RESTATUS_DRIVING';
@@ -116,19 +129,38 @@ export function checkDriverSelfEdit(
     return 'EXTENDS_DRIVING';
   }
 
-  const proposed: Interval = {
-    startAt: proposal.startAt,
-    endAt: proposal.endAt ?? proposal.startAt,
-  };
-  if (proposed.endAt.getTime() <= proposed.startAt.getTime()) {
-    // An open-ended entry runs until the next record; treat it as a point for overlap purposes
-    // and let the caller's timeline decide the rest.
+  const startMs = proposal.startAt.getTime();
+  const endMs = proposal.endAt ? proposal.endAt.getTime() : startMs;
+  if (endMs <= startMs) {
+    // bugs.md B-073 — an open-ended entry runs until the NEXT record. Starting inside a driving
+    // segment it re-states that segment's tail as OFF/SB/ON, i.e. shortens driving time.
+    // Starting at or after a segment's end, or before its start, it cannot reach driving: the
+    // ELD's D record is the next record and still wins from its own instant on.
+    for (const driving of drivingIntervals) {
+      if (startMs < driving.startAt.getTime() || startMs >= driving.endAt.getTime()) continue;
+      if (isLiveStatusChange(driving, proposal.startAt, target, now)) continue;
+      return 'OVERLAPS_DRIVING';
+    }
     return null;
   }
+  const proposed: Interval = { startAt: proposal.startAt, endAt: new Date(endMs) };
   for (const driving of drivingIntervals) {
     if (overlaps(proposed, driving)) return 'OVERLAPS_DRIVING';
   }
   return null;
+}
+
+/**
+ * decisions.md D-089 — the one open entry allowed inside driving: a status change made NOW that
+ * ends a driving segment the ELD has not closed yet (Appendix A 4.3.1.2 "enter the proper duty
+ * status" after 5 min stationary; §395.24 duty-status entry). The part of the open segment after
+ * `startAt` is only the segment projected to `now`, never recorded driving, so nothing recorded
+ * is shortened. Fails closed: no `now`, a closed segment, a correction of an existing record, or
+ * a start older than `LIVE_STATUS_TOLERANCE_MS` is an edit and refused.
+ */
+function isLiveStatusChange(driving: Interval, startAt: Date, target: TargetEvent | undefined, now?: Date): boolean {
+  if (!driving.open || !now || target) return false;
+  return now.getTime() - startAt.getTime() <= LIVE_STATUS_TOLERANCE_MS;
 }
 
 /** Human-readable detail for the `422 DRIVING_TIME_IMMUTABLE` envelope. */

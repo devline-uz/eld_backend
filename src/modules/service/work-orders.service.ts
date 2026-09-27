@@ -61,6 +61,10 @@ export class WorkOrdersService {
       odometerMi: dto.odometerMi ?? null,
       openedById,
       dueAt: dto.dueAt ? new Date(dto.dueAt) : null,
+      estimatedLaborHours: dto.estimatedLaborHours ?? null,
+      keepOutOfService: dto.keepOutOfService,
+      notifyDriver: dto.notifyDriver,
+      blockDispatchAssignment: dto.blockDispatchAssignment,
     });
 
     if (dto.defectIds?.length) {
@@ -83,6 +87,10 @@ export class WorkOrdersService {
       ...(dto.costUsd !== undefined && { costUsd: dto.costUsd }),
       ...(dto.odometerMi !== undefined && { odometerMi: dto.odometerMi }),
       ...(dto.dueAt !== undefined && { dueAt: dto.dueAt ? new Date(dto.dueAt) : null }),
+      ...(dto.estimatedLaborHours !== undefined && { estimatedLaborHours: dto.estimatedLaborHours }),
+      ...(dto.keepOutOfService !== undefined && { keepOutOfService: dto.keepOutOfService }),
+      ...(dto.notifyDriver !== undefined && { notifyDriver: dto.notifyDriver }),
+      ...(dto.blockDispatchAssignment !== undefined && { blockDispatchAssignment: dto.blockDispatchAssignment }),
     };
     return this.repo.update({ id }, data);
   }

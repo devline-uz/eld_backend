@@ -108,10 +108,37 @@ export const FIGMA_UNMAPPED_ROUTES: Record<string, string> = {
   'POST /api/mobile/duty-status': 'Driver app duty-status button (TZ §9.3/§13.2) — tablet/mobile Figma export missing.',
   'POST /api/mobile/signature': 'Driver app signature capture (TZ §6/§13.2) — tablet/mobile Figma export missing.',
   'POST /api/mobile/dvir': 'Driver app DVIR submission (TZ §5.10/§13.2) — tablet/mobile Figma export missing.',
+  'POST /api/mobile/transfers': 'Driver app M-28 "Send logs (eRODS)" (mobile/tz.md MB-4) — tablet/mobile Figma export missing.',
+  'GET /api/mobile/transfers': 'Driver app S-10 eRODS receipt / M-27 "Last transfer" (mobile/tz.md MB-4) — tablet/mobile Figma export missing.',
+  'GET /api/mobile/logs/{date}/export': 'Driver app P-05 "Download" one RODS day (mobile/tz.md MB-18) — tablet/mobile Figma export missing.',
+  'POST /api/mobile/feedback': 'Driver app M-22 "Feedback" (mobile/tz.md MB-16) — screens live in mobile/mobile app/, not eld.docs.',
+  'POST /api/mobile/support/tickets': 'Driver app M-30 "Customer support" / M-20 "Send diagnostics" (mobile/tz.md MB-16).',
+  'GET /api/mobile/support/tickets': 'Driver app M-30 "My tickets" (mobile/tz.md MB-16).',
+  'GET /api/mobile/available-vehicles': 'Driver app M-03 "Select your unit" (mobile/tz.md MB-2).',
+  'POST /api/mobile/select-vehicle': 'Driver app M-03 unit row tap (mobile/tz.md MB-2).',
+  'POST /api/mobile/co-driver/switch': 'Driver app S-11/S-18 "Switch to co-driver" (mobile/tz.md MB-3).',
+  'POST /api/mobile/co-driver/leave': 'Driver app S-19 "Leave the truck" (mobile/tz.md MB-3).',
+  'GET /api/mobile/trip': 'Driver app M-05/P-03 "Trip details" + Home trip card (mobile/tz.md MB-5).',
+  'PATCH /api/mobile/trip': 'Driver app M-05 "Save trip details" / S-05 (mobile/tz.md MB-5).',
+  'GET /api/mobile/dvirs': 'Driver app M-10/P-07 DVIR history (mobile/tz.md MB-10).',
+  'GET /api/mobile/dvirs/{id}': 'Driver app M-11 DVIR detail (mobile/tz.md MB-10).',
+  'GET /api/mobile/dvirs/{id}/pdf': 'Driver app M-11 "Download" (mobile/tz.md MB-10) — 501 until a per-DVIR template exists.',
+  'GET /api/mobile/contacts': 'Driver app M-15 "+" new conversation / M-16 call button (mobile/tz.md MB-14).',
+  'POST /api/mobile/push-tokens': 'Driver app FCM registration on login (mobile/tz.md MB-1, §10.2).',
+  'DELETE /api/mobile/push-tokens/{token}': 'Driver app FCM token removal on logout (mobile/tz.md MB-1, S-12).',
+  'GET /api/mobile/device-health': 'Driver app M-20/P-12 "Diagnosis of device" (mobile/tz.md MB-7).',
+  'GET /api/mobile/conversations': 'Driver app M-15/P-09 Messages list (mobile/tz.md MB-15).',
+  'GET /api/mobile/conversations/{id}/messages': 'Driver app M-16 conversation thread (mobile/tz.md MB-15).',
+  'POST /api/mobile/conversations/{id}/messages': 'Driver app M-16 composer / quick replies (mobile/tz.md MB-15).',
+  'POST /api/mobile/conversations/{id}/read': 'Driver app M-16 open-thread read receipt (mobile/tz.md MB-15).',
   // In-app notification inbox — a bell icon shown on every screen, not a screen of its own;
   // the role-guide exports do not capture it separately from the pages it overlays.
   'GET /api/notifications': 'In-app notification bell (TZ §14) — not a distinct screen in the role-guide export.',
   'POST /api/notifications/read-all': 'In-app notification bell "mark all read" (TZ §14) — same as above.',
+  'POST /api/notifications/{id}/read': 'In-app notification bell — marking one item read (TZ §14) — same as above.',
+  // B-41 presigned download helper — reused by whichever screen renders the attachment
+  // (DVIR photo, defect photo, support-ticket file); not a screen of its own.
+  'GET /api/attachments/{id}/presign': 'Short-lived presigned GET for a stored attachment (TZ §20 B-41) — reused across DVIR/defect/support screens, not a screen of its own.',
   // Reports (TZ §11.6/§15). Only the IFTA and FMCSA-pack tabs of the Reports screen were
   // exported (p.20/p.21) — the generic generate/list/status/download/schedule flow and the
   // Activity/DVIR report tabs are not captured as separate role-guide pages.

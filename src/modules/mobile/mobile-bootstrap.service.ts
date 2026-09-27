@@ -1,10 +1,12 @@
 import { Injectable } from '@nestjs/common';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
+import { AppConfigService } from '../../core/config/config.service';
 import { HosRecalcService } from '../hos-recalc/hos-recalc.service';
 import { HOS_ENGINE_VERSION } from '../hos/hos.constants';
 import { toMobileShape } from '../hos-state/hos-drift';
 import { LogsService } from '../logs/logs.service';
+import { MobileFleetOpsRepository } from './mobile-fleet-ops.repository';
 import { MobileRepository } from './mobile.repository';
 
 /** §13.3 — what the app must retry-fetch/backoff on, mirrored into the bootstrap response. */
@@ -32,20 +34,30 @@ export class MobileBootstrapService {
     private readonly repo: MobileRepository,
     private readonly hosRecalc: HosRecalcService,
     private readonly logs: LogsService,
+    private readonly config: AppConfigService,
+    private readonly fleetOps: MobileFleetOpsRepository,
   ) {}
 
   async bootstrap(driverId: string, now: Date = new Date()) {
     const driver = await this.repo.findDriver(driverId);
     if (!driver) throw new AppException(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.', 404, { driverId });
 
-    const [carrier, vehicle, pairing, hos, inspection] = await Promise.all([
+    const [carrier, vehicle, pairing, hos, inspection, availableVehicles] = await Promise.all([
       this.repo.findCarrier(),
       driver.assignedVehicleId ? this.repo.findVehicle(driver.assignedVehicleId) : Promise.resolve(null),
       this.repo.findActivePairing(driverId),
       this.hosRecalc.computeCurrentState(driverId, now),
       this.logs.getInspectionPacket(driverId, now),
+      // MB-2 (mobile/tz.md §21.1, screen M-03) — units this driver may pick from.
+      this.fleetOps.findAvailableVehicles(driverId),
     ]);
     const device = vehicle ? await this.repo.findDeviceByVehicle(vehicle.id) : null;
+    // MB-3 (mobile/tz.md §21.1, screens S-11/S-18/S-19) — the co-driver's own identity + duty
+    // status, not just the pairing row ids the response already carried.
+    const coDriverId = pairing ? (pairing.primaryDriverId === driverId ? pairing.coDriverId : pairing.primaryDriverId) : null;
+    const [coDriver, coDriverStatus] = coDriverId
+      ? await Promise.all([this.repo.findDriver(coDriverId), this.fleetOps.findLatestDutyStatus(coDriverId)])
+      : [null, null];
 
     return {
       serverTime: now.toISOString(),
@@ -98,9 +110,27 @@ export class MobileBootstrapService {
             periodicDisconnectedMin: device.periodicDisconnectedMin,
           }
         : null,
-      coDriver: pairing
-        ? { pairingId: pairing.id, primaryDriverId: pairing.primaryDriverId, coDriverId: pairing.coDriverId, startedAt: pairing.startedAt }
-        : null,
+      coDriver:
+        pairing && coDriver
+          ? {
+              pairingId: pairing.id,
+              primaryDriverId: pairing.primaryDriverId,
+              coDriverId: pairing.coDriverId,
+              startedAt: pairing.startedAt,
+              firstName: coDriver.firstName,
+              lastName: coDriver.lastName,
+              username: coDriver.username,
+              currentStatus: coDriverStatus,
+            }
+          : null,
+      /** MB-2 (M-03) — `{ id, unitNumber, make, model, deviceSerial }` per unit. */
+      availableVehicles: availableVehicles.map((v) => ({
+        id: v.id,
+        unitNumber: v.unitNumber,
+        make: v.make,
+        model: v.model,
+        deviceSerial: v.device?.serial ?? null,
+      })),
       carrier: carrier
         ? {
             name: carrier.name,
@@ -120,6 +150,24 @@ export class MobileBootstrapService {
       /** §13.5 — cached locally; the app's inspection mode never calls the network again. */
       inspectionPacket: inspection,
       syncConfig: SYNC_CONFIG,
+      /** MB-19 — force-update banner (M-09). `null` when unconfigured, never a half-filled
+       * object: an app must not show "update available" off bare defaults. */
+      appUpdate: this.buildAppUpdate(),
+    };
+  }
+
+  private buildAppUpdate() {
+    const latestVersion = this.config.get('MOBILE_APP_LATEST_VERSION');
+    const minVersion = this.config.get('MOBILE_APP_MIN_VERSION');
+    if (!latestVersion && !minVersion) return null;
+    return {
+      latestVersion: latestVersion ?? null,
+      minVersion: minVersion ?? null,
+      notes: this.config.get('MOBILE_APP_RELEASE_NOTES') ?? null,
+      storeUrl: {
+        ios: this.config.get('MOBILE_APP_STORE_URL_IOS') ?? null,
+        android: this.config.get('MOBILE_APP_STORE_URL_ANDROID') ?? null,
+      },
     };
   }
 }

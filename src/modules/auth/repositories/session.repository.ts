@@ -11,6 +11,24 @@ export interface CreateSessionInput {
   expiresAt: Date;
 }
 
+/** B-50 — `GET /me/sessions` shape. Never `refreshHash`/`userId` (TZ §6.5 — a refresh-token
+ * hash must never reach the browser, and `userId` is redundant/leaky on a "your sessions" list). */
+export interface SafeSession {
+  id: string;
+  deviceLabel: string | null;
+  userAgent: string | null;
+  ip: string | null;
+  lastSeenAt: Date;
+}
+
+const SAFE_SESSION_SELECT = {
+  id: true,
+  deviceLabel: true,
+  userAgent: true,
+  ip: true,
+  lastSeenAt: true,
+} as const;
+
 /**
  * Back-office `Session` (User refresh tokens). Rotation keeps the previous row around with
  * `revokedAt` set instead of deleting it, so a replayed refresh token can still be found and
@@ -34,10 +52,12 @@ export class SessionRepository {
     });
   }
 
-  listActiveForUser(userId: string): Promise<Session[]> {
+  /** B-50 — `select`, not the full row: `refreshHash`/`userId` must never leave this module. */
+  listActiveForUser(userId: string): Promise<SafeSession[]> {
     return this.prisma.session.findMany({
       where: { userId, revokedAt: null, expiresAt: { gt: new Date() } },
       orderBy: { lastSeenAt: 'desc' },
+      select: SAFE_SESSION_SELECT,
     });
   }
 
@@ -50,5 +70,15 @@ export class SessionRepository {
       where: { userId, revokedAt: null },
       data: { revokedAt: new Date() },
     });
+  }
+
+  /** B-50 "Sign out everywhere" — revokes every active session for the user except
+   * `exceptId` (the caller's own current session), and returns how many were revoked. */
+  async revokeAllForUserExcept(userId: string, exceptId?: string): Promise<number> {
+    const result = await this.prisma.session.updateMany({
+      where: { userId, revokedAt: null, ...(exceptId && { id: { not: exceptId } }) },
+      data: { revokedAt: new Date() },
+    });
+    return result.count;
   }
 }

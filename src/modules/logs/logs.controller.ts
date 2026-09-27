@@ -11,6 +11,7 @@ import {
   EditRequestListQueryDto,
   LogDateQueryDto,
   LogRangeQueryDto,
+  ProposeEventDto,
   ResolveEditRequestDto,
 } from './dto/logs.dto';
 import { LogsService } from './logs.service';
@@ -119,10 +120,49 @@ export class LogsController {
     summary:
       'Every §395 record of a RODS day, including superseded (2), proposed (3) and rejected (4) ones — the audit trail the inspector sees.',
   })
-  @ApiOkResponse({ description: 'Append-only audit trail: active (1), superseded (2), proposed (3) and rejected (4) records.', schema: { example: { driverId: 'drv_1', date: '2026-09-10', events: [{ id: 'evt_8801', eventType: 1, eventCode: 3, eventSequenceId: 1042, recordStatus: 2, recordOrigin: 1, dutyStatus: 'ON', occurredAt: '2026-09-10T18:26:58.000Z', odometerMiles: 993590, latitude: 38.02, longitude: -84.5, locationDescription: '0.64 mi N of Florence, KY', checksumValid: true }] } } })
+  @ApiOkResponse({ description: 'Append-only audit trail: active (1), superseded (2), proposed (3) and rejected (4) records.', schema: { example: { driverId: 'drv_1', date: '2026-09-10', events: [{ id: 'evt_8801', eventType: 1, eventCode: 3, eventSequenceId: 1042, recordStatus: 2, recordOrigin: 1, dutyStatus: 'ON', occurredAt: '2026-09-10T18:26:58.000Z', odometerMiles: 993590, latitude: 38.02, longitude: -84.5, locationDescription: '0.64 mi N of Florence, KY', totalEngineHours: 4321.4, checksumValid: true }] } } })
   @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.')] })
   getEvents(@Param('driverId') driverId: string, @Query(zodBody(LogDateQueryDto)) query: LogDateQueryDto) {
     return this.logs.getEvents(driverId, query.date);
+  }
+
+  @Post(':driverId/events')
+  @Perm('hosEdit', 'FULL')
+  @ApiOperation({
+    summary:
+      'B-72 — proposes a NEW record (e.g. on a RODS day with no duty record yet). §395.30: stored inert with recordStatus = 3, counts toward nothing and is applied only when the driver accepts via edit-requests/:id/accept.',
+  })
+  @ApiCreatedResponse({
+    description: 'Stored as an inert proposal (recordStatus = 3, applied = false). Audited as LOG_EVENT_PROPOSED; the driver is pushed unless notifyDriver = false.',
+    schema: {
+      example: {
+        id: '9001',
+        driverId: 'drv_1',
+        status: 'PENDING',
+        kind: 'INSERT',
+        proposedStatus: 'ON',
+        proposedSpecial: 'NONE',
+        eventDateTime: '2026-09-10T13:00:00.000Z',
+        endDateTime: '2026-09-10T14:30:00.000Z',
+        annotation: 'Pre-trip inspection at the yard',
+        notifyDriver: true,
+        recordStatus: 3,
+        applied: false,
+      },
+    },
+  })
+  @ApiStandardErrors({
+    errors: [
+      apiError.notFound(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.'),
+      apiError.unprocessable(ERROR_CODES.DRIVING_TIME_IMMUTABLE, 'The proposed interval would overwrite recorded driving time (49 CFR §395.30(c)(2)).'),
+    ],
+  })
+  proposeEvent(
+    @Param('driverId') driverId: string,
+    @Body(zodBody(ProposeEventDto)) dto: ProposeEventDto,
+    @CurrentUser() actor: ContextUser,
+  ) {
+    return this.logs.proposeEvent(driverId, dto, actor);
   }
 
   @Get(':driverId/edit-requests')
@@ -154,6 +194,10 @@ export class LogsController {
         date: '2026-09-10',
         reason: 'Driver forgot to switch to On duty while loading at shipper #4821.',
         proposed: { status: 'ON', startAt: '2026-09-10T18:26:58.000Z', endAt: '2026-09-10T19:30:00.000Z' },
+        proposedSpecial: 'YM',
+        notifyDriver: true,
+        recordStatus: 3,
+        applied: false,
         createdAt: '2026-09-11T15:41:00.000Z',
       },
     },

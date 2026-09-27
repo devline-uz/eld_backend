@@ -31,10 +31,14 @@ export const ERROR_CODES = {
   API_KEY_REVOKED: 'API_KEY_REVOKED',
   API_KEY_EXPIRED: 'API_KEY_EXPIRED',
   DRIVER_CONTEXT_REQUIRED: 'DRIVER_CONTEXT_REQUIRED',
+  /** B-25 — `AUTH_MODE=production` blocks `POST /auth/login`; the back office must use Google Sign-In. */
+  PASSWORD_LOGIN_DISABLED: 'PASSWORD_LOGIN_DISABLED',
 
   // --- fleet (TZ §5.3, §5.4) ----------------------------------------------
   DRIVER_NOT_FOUND: 'DRIVER_NOT_FOUND',
   VEHICLE_NOT_FOUND: 'VEHICLE_NOT_FOUND',
+  /** `/vehicle-groups/:id`, or a `groupId` on a vehicle write / report filter, that names no group. */
+  VEHICLE_GROUP_NOT_FOUND: 'VEHICLE_GROUP_NOT_FOUND',
   DEVICE_NOT_FOUND: 'DEVICE_NOT_FOUND',
   DEVICE_ALREADY_PAIRED: 'DEVICE_ALREADY_PAIRED',
   VEHICLE_OUT_OF_SERVICE: 'VEHICLE_OUT_OF_SERVICE',
@@ -44,6 +48,10 @@ export const ERROR_CODES = {
   ODOMETER_ANOMALY: 'ODOMETER_ANOMALY',
   ODOMETER_NOT_CALIBRATED: 'ODOMETER_NOT_CALIBRATED',
   IMPORT_FAILED: 'IMPORT_FAILED',
+  /** §20 B-94 — `GET/POST/DELETE /drivers/:id/documents`. */
+  DRIVER_DOCUMENT_NOT_FOUND: 'DRIVER_DOCUMENT_NOT_FOUND',
+  /** §20 B-7 — co-driver pairing not found / already ended. */
+  CO_DRIVER_PAIRING_NOT_FOUND: 'CO_DRIVER_PAIRING_NOT_FOUND',
 
   // --- ingest (TZ §7) ------------------------------------------------------
   CHECKSUM_MISMATCH: 'CHECKSUM_MISMATCH',
@@ -107,9 +115,28 @@ export const ERROR_CODES = {
   // --- storage / integrations (TZ §16, §17) -------------------------------
   FILE_TOO_LARGE: 'FILE_TOO_LARGE',
   UNSUPPORTED_FILE_TYPE: 'UNSUPPORTED_FILE_TYPE',
+  /** B-51 — `POST /me/avatar` requires PNG/JPG >= 256x256. */
+  IMAGE_TOO_SMALL: 'IMAGE_TOO_SMALL',
   STORAGE_UNAVAILABLE: 'STORAGE_UNAVAILABLE',
   WEBHOOK_DELIVERY_FAILED: 'WEBHOOK_DELIVERY_FAILED',
   INTEGRATION_NOT_CONFIGURED: 'INTEGRATION_NOT_CONFIGURED',
+  /** §20 B-41 — `GET /attachments/:id/presign`: no `Attachment` row with that id. */
+  ATTACHMENT_NOT_FOUND: 'ATTACHMENT_NOT_FOUND',
+
+  // --- trips / dispatch (mobile/tz.md §21.1 MB-5) -------------------------
+  TRIP_NOT_FOUND: 'TRIP_NOT_FOUND',
+  /** `PATCH /mobile/trip { trailerNumber }` — no `Trailer` row with that number exists.
+   * Deliberately rejected rather than stored as free text (no schema change, TZ §5.3). */
+  TRAILER_NOT_FOUND: 'TRAILER_NOT_FOUND',
+  /** §20 B-73 — `POST /trips/:id/publish` (or `PATCH` to a non-DRAFT status) on a trip that is
+   * not currently DRAFT. */
+  TRIP_NOT_DRAFT: 'TRIP_NOT_DRAFT',
+
+  // --- geofences (TZ §20 B-93) ----------------------------------------------
+  /** `GEOCODER_URL` is unset — `type: 'ADDRESS'` cannot be resolved to coordinates. */
+  GEOCODER_NOT_CONFIGURED: 'GEOCODER_NOT_CONFIGURED',
+  /** The configured geocoder returned zero matches (or failed) for the given `address`. */
+  GEOCODE_FAILED: 'GEOCODE_FAILED',
 } as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];

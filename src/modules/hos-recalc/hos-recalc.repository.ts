@@ -189,7 +189,8 @@ export class HosRecalcRepository extends BaseRepository<
   findUnidentifiedSegments(vehicleIds: string[], from: Date, to: Date): Promise<Array<Pick<UnidentifiedSegment, 'status' | 'startAt' | 'endAt'>>> {
     if (!vehicleIds.length) return Promise.resolve([]);
     return this.prisma.unidentifiedSegment.findMany({
-      where: { vehicleId: { in: vehicleIds }, status: 'PENDING', startAt: { lte: to }, endAt: { gte: from } },
+      // B-83 — a segment awaiting driver confirmation is still unattributed (same set as `daily-log-header`).
+      where: { vehicleId: { in: vehicleIds }, status: { in: ['PENDING', 'PENDING_CONFIRMATION'] }, startAt: { lte: to }, endAt: { gte: from } },
       select: { status: true, startAt: true, endAt: true },
     });
   }

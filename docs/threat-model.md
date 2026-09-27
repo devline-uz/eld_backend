@@ -223,6 +223,23 @@ Assumption: the driver JWT is compromised. What remains:
 prod→dev, prod with a non-`eld_prod` user) at AppModule bootstrap, for API and worker alike, with
 no env escape hatch — `NODE_ENV` alone cannot bypass it because the DB **name** is what decides.
 
+## 11a. Phase 13 surface (13J review, 2026-09-24)
+
+| Surface | Attacker gain | Control (bugs.md) |
+|---|---|---|
+| `GET /search` | roster/VIN enumeration by any token | `PermAny(drivers\|vehicles READ)` + per-section filtering (B-090) |
+| Presigned PUT (`/drivers/:id/documents`) | stored XSS from bucket origin, oversize objects, key injection | content-type allowlist + signed `content-type`/`content-length`, server-only keys, 15-min TTL (B-091) |
+| One-time secrets in responses | account takeover via public `forgot` on the `NODE_ENV=development` host | `DEV_ECHO_SECRETS` opt-in, never in production (B-093, D-103) |
+| Driver reset-password | stolen phone keeps its session | all `DriverSession`s revoked on reset (B-094) |
+| `POST /me/avatar` | memory DoS, decompression bomb, EXIF/GPS leak | streaming 5 MB limit, <= 8192 px, metadata stripped (B-095) |
+| `GEOCODER_URL` | SSRF via redirect, hung workers | no redirects, 5 s timeout, response cap, validated coords (B-096) |
+| Redis `realtime:push` bridge | cross-environment socket leak (pub/sub ignores DB number) | channel namespaced by `QUEUE_PREFIX`+`REDIS_DB`, payload grammar check (B-097) |
+| Puppeteer PDFs | template injection, SSRF from headless Chrome | `{`/`}` escaped, JS off, request allowlist = presigned URLs in data (B-098) |
+| `POST /alert-rules/:id/test` | webhook spam without a trail | 5/min throttle + audit (B-092) |
+
+Trust note: anything that can `PUBLISH` on the Redis server can still push a well-formed event into
+any room — Redis must stay password-protected and unreachable from outside the host.
+
 ## 12. Open items for the next pass
 
 1. Per-driver ingest rate limit (300/min, TZ §6.5) — not implemented.
@@ -231,3 +248,5 @@ no env escape hatch — `NODE_ENV` alone cannot bypass it because the DB **name*
 4. Policy: never grant the `apiKeys` permission to an API key.
 5. Per-user WebSocket connection cap.
 6. `firebase-admin@14` upgrade to clear the transitive advisories.
+7. `AUTH_MODE` is fail-open (`dev` default, also in `.env.production.example`) — flip once Google Sign-In is live (bugs.md B-100).
+8. `User.terminalScope` is not an access boundary until the product decides (D-090).

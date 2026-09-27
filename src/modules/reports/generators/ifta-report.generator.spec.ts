@@ -75,9 +75,18 @@ describe('IftaReportGenerator (TZ §15 — real IftaSegment/FuelPurchase aggrega
 
 describe('IftaReportGenerator.summary (gap B-46 — GET /reports/ifta/summary JSON)', () => {
   function buildPrisma(
-    byQuarterGroupBy: Record<string, { segments: unknown[]; purchases: unknown[]; receiptCount?: number }>,
+    byQuarterGroupBy: Record<
+      string,
+      { segments: unknown[]; purchases: unknown[]; receiptCount?: number; receiptsByJurisdiction?: Record<string, number> }
+    >,
+    groups: Record<string, string[]> = {},
   ) {
     return {
+      vehicleGroup: {
+        findUnique: jest.fn(async ({ where }: { where: { id: string } }) =>
+          groups[where.id] ? { vehicles: groups[where.id].map((id) => ({ id })) } : null,
+        ),
+      },
       iftaSegment: {
         groupBy: jest.fn(async ({ where }: { where: { date: { gte: Date } } }) => {
           const key = where.date.gte.toISOString().slice(0, 7);
@@ -90,8 +99,9 @@ describe('IftaReportGenerator.summary (gap B-46 — GET /reports/ifta/summary JS
           const key = where.purchasedAt.gte.toISOString().slice(0, 7);
           return byQuarterGroupBy[key]?.purchases ?? [];
         }),
-        count: jest.fn(async ({ where }: { where: { purchasedAt: { gte: Date } } }) => {
+        count: jest.fn(async ({ where }: { where: { purchasedAt: { gte: Date }; jurisdiction?: string } }) => {
           const key = where.purchasedAt.gte.toISOString().slice(0, 7);
+          if (where.jurisdiction) return byQuarterGroupBy[key]?.receiptsByJurisdiction?.[where.jurisdiction] ?? 0;
           const entry = byQuarterGroupBy[key];
           return entry?.receiptCount ?? entry?.purchases.length ?? 0;
         }),
@@ -163,5 +173,85 @@ describe('IftaReportGenerator.summary (gap B-46 — GET /reports/ifta/summary JS
     expect(summary.kpis.totalMiles).toBe(0);
     expect(summary.kpis.taxablePct).toBeNull();
     expect(summary.rows).toEqual([]);
+  });
+});
+
+describe('IftaReportGenerator — W-12 `Jurisdiction` / `Vehicle group` filters', () => {
+  const Q3 = {
+    segments: [
+      { jurisdiction: 'OH', _sum: { distanceMi: 800 } },
+      { jurisdiction: 'KY', _sum: { distanceMi: 200 } },
+    ],
+    purchases: [
+      { jurisdiction: 'OH', _sum: { gallons: 60 } },
+      { jurisdiction: 'KY', _sum: { gallons: 40 } },
+    ],
+    receiptCount: 7,
+    receiptsByJurisdiction: { KY: 2 },
+  };
+
+  function buildPrisma(groups: Record<string, string[]> = {}) {
+    const byMonth: Record<string, typeof Q3> = { '2026-07': Q3 };
+    return {
+      vehicleGroup: {
+        findUnique: jest.fn(async ({ where }: { where: { id: string } }) =>
+          groups[where.id] ? { vehicles: groups[where.id].map((id) => ({ id })) } : null,
+        ),
+      },
+      iftaSegment: {
+        groupBy: jest.fn(async ({ where }: { where: { date: { gte: Date } } }) => byMonth[where.date.gte.toISOString().slice(0, 7)]?.segments ?? []),
+        findMany: jest.fn(async () => [{ vehicleId: 'veh_1' }]),
+      },
+      fuelPurchase: {
+        groupBy: jest.fn(async ({ where }: { where: { purchasedAt: { gte: Date } } }) => byMonth[where.purchasedAt.gte.toISOString().slice(0, 7)]?.purchases ?? []),
+        count: jest.fn(async ({ where }: { where: { purchasedAt: { gte: Date }; jurisdiction?: string } }) => {
+          const entry = byMonth[where.purchasedAt.gte.toISOString().slice(0, 7)];
+          if (!entry) return 0;
+          return where.jurisdiction ? entry.receiptsByJurisdiction[where.jurisdiction as 'KY'] ?? 0 : entry.receiptCount;
+        }),
+      },
+    };
+  }
+
+  it('summary: `jurisdiction` narrows rows/miles/gallons/receipts but keeps fleet MPG fleet-wide', async () => {
+    const gen = new IftaReportGenerator(buildPrisma() as never);
+    const summary = await gen.summary({ quarter: '2026-Q3', jurisdiction: 'KY' });
+
+    expect(summary.rows).toEqual([{ jurisdiction: 'KY', totalMiles: 200, taxableMiles: 200, fuelGal: 40, mpg: 10, taxDueUsd: null }]);
+    expect(summary.kpis).toMatchObject({ totalMiles: 200, taxableMiles: 200, fuelGal: 40, receiptCount: 2, fleetMpg: 10 });
+    expect(summary.totals).toEqual({ totalMiles: 200, taxableMiles: 200, fuelGal: 40, mpg: 10, taxDueUsd: null });
+  });
+
+  it('rows (CSV/PDF): `jurisdiction` keeps only that row, taxable gallons still use fleet MPG', async () => {
+    const gen = new IftaReportGenerator(buildPrisma() as never);
+    const rows = await gen.rows({ quarter: '2026-Q3', jurisdiction: 'KY' });
+    expect(rows).toEqual([
+      { jurisdiction: 'KY', milesDriven: 200, fuelPurchasedGal: '40.00', fleetMpg: '10.000', taxableGallons: '20.000', netTaxableGallons: '-20.000' },
+    ]);
+  });
+
+  it('`vehicleGroupId` scopes every query to the group\'s units', async () => {
+    const prisma = buildPrisma({ 'vg-1': ['veh_1', 'veh_2'] });
+    const gen = new IftaReportGenerator(prisma as never);
+    await gen.summary({ quarter: '2026-Q3', vehicleGroupId: 'vg-1' });
+
+    for (const call of [...prisma.iftaSegment.groupBy.mock.calls, ...prisma.fuelPurchase.groupBy.mock.calls, ...prisma.fuelPurchase.count.mock.calls]) {
+      expect((call as unknown as [{ where: { vehicleId: unknown } }])[0].where.vehicleId).toEqual({ in: ['veh_1', 'veh_2'] });
+    }
+  });
+
+  it('`vehicleGroupId` + `vehicleId` intersect; a unit outside the group matches nothing', async () => {
+    const prisma = buildPrisma({ 'vg-1': ['veh_1', 'veh_2'] });
+    const gen = new IftaReportGenerator(prisma as never);
+    await gen.rows({ quarter: '2026-Q3', vehicleGroupId: 'vg-1', vehicleId: 'veh_9' });
+    const [[{ where }]] = prisma.iftaSegment.groupBy.mock.calls as unknown as [[{ where: { vehicleId: unknown } }]];
+    expect(where.vehicleId).toEqual({ in: [] });
+  });
+
+  it('an unknown `vehicleGroupId` is a 404 VEHICLE_GROUP_NOT_FOUND', async () => {
+    const gen = new IftaReportGenerator(buildPrisma() as never);
+    await expect(gen.summary({ quarter: '2026-Q3', vehicleGroupId: 'missing' })).rejects.toMatchObject({
+      code: 'VEHICLE_GROUP_NOT_FOUND',
+    });
   });
 });

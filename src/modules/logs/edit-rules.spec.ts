@@ -1,5 +1,5 @@
 /** 49 CFR §395.30(c)(2) / TZ §9.1, §9.3 — driving time can never be reduced. */
-import { checkDriverSelfEdit, checkEditProposal, isDrivingRecord, overlaps } from './edit-rules';
+import { checkDriverSelfEdit, checkEditProposal, isDrivingRecord, LIVE_STATUS_TOLERANCE_MS, overlaps } from './edit-rules';
 
 const drivingTarget = {
   eventType: 1,
@@ -186,5 +186,82 @@ describe('helpers', () => {
     const a = { startAt: new Date('2026-06-01T10:00:00Z'), endAt: new Date('2026-06-01T12:00:00Z') };
     const b = { startAt: new Date('2026-06-01T12:00:00Z'), endAt: new Date('2026-06-01T14:00:00Z') };
     expect(overlaps(a, b)).toBe(false);
+  });
+});
+
+// bugs.md B-073 / mobile F-45 — an OPEN self-entry (no endAt) runs until the next record, so one
+// that STARTS inside a driving segment re-states that segment's tail as OFF/SB/ON, i.e. shortens
+// driving time (§395.30(c)(2)). decisions.md D-089 fixes how "now" inside a still-open D is read.
+describe('checkDriverSelfEdit — open-ended entries (B-073, D-089)', () => {
+  const at = (hhmmss: string) => new Date(`2026-06-01T${hhmmss}Z`);
+
+  it('refuses an open OFF entry that starts inside a closed driving segment', () => {
+    expect(checkDriverSelfEdit({ status: 'OFF', startAt: at('13:00:00') }, driving)).toBe('OVERLAPS_DRIVING');
+  });
+
+  it('refuses open SB / ON entries inside driving too, including one at the driving start instant', () => {
+    expect(checkDriverSelfEdit({ status: 'SB', startAt: at('14:59:00') }, driving)).toBe('OVERLAPS_DRIVING');
+    expect(checkDriverSelfEdit({ status: 'ON', startAt: at('12:00:00') }, driving)).toBe('OVERLAPS_DRIVING');
+  });
+
+  it('treats endAt <= startAt as open-ended (no closed-interval escape hatch)', () => {
+    expect(
+      checkDriverSelfEdit({ status: 'OFF', startAt: at('13:00:00'), endAt: at('13:00:00') }, driving),
+    ).toBe('OVERLAPS_DRIVING');
+  });
+
+  it('allows an open entry starting exactly where driving ends', () => {
+    expect(checkDriverSelfEdit({ status: 'ON', startAt: at('15:00:00') }, driving)).toBeNull();
+  });
+
+  it('allows an open entry BEFORE a later driving segment (it ends where the next record begins)', () => {
+    expect(checkDriverSelfEdit({ status: 'ON', startAt: at('10:00:00') }, driving)).toBeNull();
+  });
+
+  describe('a still-open driving segment (the ELD has not ended driving yet)', () => {
+    const now = at('14:00:00');
+    const liveDriving = [{ startAt: at('12:00:00'), endAt: now, open: true }];
+
+    it('refuses a back-dated open entry inside the open segment', () => {
+      expect(checkDriverSelfEdit({ status: 'OFF', startAt: at('13:00:00') }, liveDriving, undefined, now)).toBe(
+        'OVERLAPS_DRIVING',
+      );
+    });
+
+    it('refuses one just outside the live-tap tolerance', () => {
+      const startAt = new Date(now.getTime() - LIVE_STATUS_TOLERANCE_MS - 1000);
+      expect(checkDriverSelfEdit({ status: 'ON', startAt }, liveDriving, undefined, now)).toBe('OVERLAPS_DRIVING');
+    });
+
+    it('allows a live status tap at "now" that ends driving at the present (Appendix A 4.3.1.2)', () => {
+      expect(checkDriverSelfEdit({ status: 'ON', startAt: at('13:59:30') }, liveDriving, undefined, now)).toBeNull();
+    });
+
+    it('refuses the live tap when it corrects an existing record (originalEventId)', () => {
+      expect(
+        checkDriverSelfEdit({ status: 'ON', startAt: at('13:59:30') }, liveDriving, onDutyTarget, now),
+      ).toBe('OVERLAPS_DRIVING');
+    });
+
+    it('fails closed when the caller does not supply now', () => {
+      expect(checkDriverSelfEdit({ status: 'ON', startAt: at('13:59:30') }, liveDriving)).toBe('OVERLAPS_DRIVING');
+    });
+
+    it('never applies the tolerance to a CLOSED driving segment', () => {
+      expect(checkDriverSelfEdit({ status: 'ON', startAt: at('14:59:30') }, driving, undefined, at('15:00:00'))).toBe(
+        'OVERLAPS_DRIVING',
+      );
+    });
+
+    it('refuses a closed interval inside the open segment even within the tolerance', () => {
+      expect(
+        checkDriverSelfEdit(
+          { status: 'OFF', startAt: at('13:59:30'), endAt: at('13:59:50') },
+          liveDriving,
+          undefined,
+          now,
+        ),
+      ).toBe('OVERLAPS_DRIVING');
+    });
   });
 });

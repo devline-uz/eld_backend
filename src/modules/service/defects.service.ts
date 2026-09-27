@@ -6,7 +6,7 @@ import { ERROR_CODES } from '../../common/errors/codes';
 import { EventBusService } from '../../core/events/event-bus.service';
 import { VehiclesRepository } from '../vehicles/vehicles.repository';
 import { DefectsRepository } from './defects.repository';
-import { DefectListQueryDto, LinkDefectWorkOrderDto, ResolveDefectDto } from './dto/service.dto';
+import { AssignDefectDto, DefectListQueryDto, LinkDefectWorkOrderDto, ResolveDefectDto } from './dto/service.dto';
 
 const SORTABLE_FIELDS = ['createdAt', 'severity', 'status'] as const;
 
@@ -31,7 +31,7 @@ export class DefectsService {
   async list(query: DefectListQueryDto): Promise<OffsetPage<Defect>> {
     const orderBy = parseSort(query.sort, SORTABLE_FIELDS, { createdAt: 'desc' });
     const { items, total } = await this.repo.list(
-      { vehicleId: query.vehicleId, status: query.status, severity: query.severity, outOfService: query.outOfService },
+      { vehicleId: query.vehicleId, status: query.status, severity: query.severity, outOfService: query.outOfService, assigneeId: query.assigneeId },
       query.page,
       query.limit,
       orderBy,
@@ -49,24 +49,49 @@ export class DefectsService {
     return defect;
   }
 
+  /**
+   * §20 B-68 — `resolutionType` (`REPAIRED` / `NOT_REQUIRED` / `DEFERRED`) is the field the
+   * §396.11 record actually reads for display; `Defect.status` only tracks OPEN-ness for the
+   * out-of-service rule and never carries `NOT_REQUIRED` (no such status exists — see the
+   * schema comment on `DefectResolutionType`). A `NOT_REQUIRED` resolution must never be
+   * rendered as a repair.
+   * §20 B-70 — `correctedBy`/`completedAt`/`laborHours`/`partsCostUsd` complete the repair record.
+   */
   async resolve(id: string, dto: ResolveDefectDto, resolvedById: string): Promise<Defect> {
     const defect = await this.getOrThrow(id);
+    const status = dto.resolutionType === 'DEFERRED' ? 'DEFERRED' : 'REPAIRED';
     const updated = await this.repo.update(
       { id },
-      { status: dto.status, resolvedAt: new Date(), resolvedById, resolutionNote: dto.resolutionNote ?? null },
+      {
+        status,
+        resolutionType: dto.resolutionType,
+        resolvedAt: new Date(),
+        resolvedById,
+        resolutionNote: dto.resolutionNote ?? null,
+        correctedBy: dto.correctedBy ?? null,
+        completedAt: dto.completedAt ? new Date(dto.completedAt) : new Date(),
+        laborHours: dto.laborHours ?? null,
+        partsCostUsd: dto.partsCostUsd ?? null,
+      },
     );
 
     if (defect.severity === 'CRITICAL' && defect.status === 'OPEN') {
       await this.maybeRestoreVehicle(defect.vehicleId);
     }
 
-    await this.events.publish('defect.resolved', { defectId: id, vehicleId: defect.vehicleId, status: dto.status });
+    await this.events.publish('defect.resolved', { defectId: id, vehicleId: defect.vehicleId, resolutionType: dto.resolutionType });
     return updated;
   }
 
   async linkWorkOrder(id: string, dto: LinkDefectWorkOrderDto): Promise<Defect> {
     await this.getOrThrow(id);
     return this.repo.update({ id }, { workOrder: dto.workOrderId ? { connect: { id: dto.workOrderId } } : { disconnect: true } });
+  }
+
+  /** §20 B-40 — defect assignee/shop (`null` clears it). */
+  async assign(id: string, dto: AssignDefectDto): Promise<Defect> {
+    await this.getOrThrow(id);
+    return this.repo.update({ id }, { assigneeId: dto.assigneeId });
   }
 
   /** Restores `Vehicle.status` to `ACTIVE` once no OPEN CRITICAL defect remains — only if the

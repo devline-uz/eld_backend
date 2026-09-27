@@ -2242,6 +2242,13 @@ Prefiks `/v1`. Ro'yxatlar `?page&limit&sort&q`.
 `POST /auth/login` · `/auth/login/driver` · `/auth/google` · `/auth/refresh` · `/auth/logout` · `/auth/password/forgot` · `/auth/password/reset` · `GET /auth/me`
 (`/auth/2fa/verify`, `/auth/2fa/enroll`, `/auth/2fa/enable` removed 2026-09-13 — D-050, 2FA deleted.)
 
+> **MB-9 (2026-09-21).** `POST /auth/login/driver` javobi qo'shimcha `driverId` maydonini
+> qaytaradi: `{ accessToken, refreshToken, tokenType, driverId }`. Bu qo'shimcha (additive)
+> o'zgarish — faqat drayver login javobiga tegishli, mobil ilovaga per-driver offline SQLite
+> fayl nomini (`onebook_{driverId}.db`, `mobile/tz.md` §5.5) JWT'ni dekodlamasdan tanlash
+> imkonini beradi. `POST /auth/login` va `POST /auth/google` (back-office `User`) javob shakli
+> o'zgarishsiz qoladi.
+
 ### 11.2. Ingest
 `POST /ingest/events` · `/ingest/telemetry` · `/ingest/ble-state` · `/ingest/device-status`
 

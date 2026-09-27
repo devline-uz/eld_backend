@@ -36,6 +36,27 @@ export class TransfersRepository extends BaseRepository<
     return this.prisma.dataTransfer;
   }
 
+  /** B-46 — `requestedBy: { id, name }` on read. `DataTransfer.requestedById` is polymorphic
+   * (`requestedByType` USER or DRIVER, see decisions.md D-092), so unlike `Report.requestedBy`
+   * this is an app-level lookup rather than a Prisma relation. Batches by type across the
+   * whole page so an N-row list never fires N lookups. */
+  async resolveRequestedByMany(
+    entries: Array<{ requestedById: string | null; requestedByType: 'USER' | 'DRIVER' | 'SYSTEM' }>,
+  ): Promise<Map<string, { id: string; name: string }>> {
+    const userIds = [...new Set(entries.filter((e) => e.requestedByType === 'USER' && e.requestedById).map((e) => e.requestedById as string))];
+    const driverIds = [...new Set(entries.filter((e) => e.requestedByType === 'DRIVER' && e.requestedById).map((e) => e.requestedById as string))];
+    const [users, drivers] = await Promise.all([
+      userIds.length ? this.prisma.user.findMany({ where: { id: { in: userIds } }, select: { id: true, firstName: true, lastName: true } }) : [],
+      driverIds.length
+        ? this.prisma.driver.findMany({ where: { id: { in: driverIds } }, select: { id: true, firstName: true, lastName: true } })
+        : [],
+    ]);
+    const byId = new Map<string, { id: string; name: string }>();
+    for (const u of users) byId.set(u.id, { id: u.id, name: `${u.firstName} ${u.lastName}` });
+    for (const d of drivers) byId.set(d.id, { id: d.id, name: `${d.firstName} ${d.lastName}` });
+    return byId;
+  }
+
   findCarrier(): Promise<Carrier | null> {
     return this.prisma.carrier.findFirst();
   }
@@ -105,7 +126,8 @@ export class TransfersRepository extends BaseRepository<
   /** §10.3 — unresolved unidentified segments touching the window (warning, never blocking). */
   findPendingUnidentifiedSegments(from: Date, to: Date): Promise<UnidentifiedSegment[]> {
     return this.prisma.unidentifiedSegment.findMany({
-      where: { status: 'PENDING', startAt: { lte: to }, endAt: { gte: from } },
+      // B-83 — PENDING_CONFIRMATION is still unresolved: the records remain unidentified until the driver confirms.
+      where: { status: { in: ['PENDING', 'PENDING_CONFIRMATION'] }, startAt: { lte: to }, endAt: { gte: from } },
     });
   }
 

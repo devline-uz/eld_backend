@@ -21,13 +21,23 @@ export class SafetyService {
     return { items, page: query.page, limit: query.limit, total, totalPages: Math.max(1, Math.ceil(total / query.limit)) };
   }
 
+  /** §20 B-43 — `dto.driverId` assigns coaching at the driver level: the most recent
+   * not-yet-coached event for that driver is coached, so the caller never has to hunt down a
+   * specific event first. `dto.eventId` keeps the existing event-driven flow. */
   async coach(dto: AssignCoachingDto, coachedById: string) {
-    const event = await this.repo.findById({ id: dto.eventId });
+    const eventId = dto.eventId ?? (await this.findEventIdForDriver(dto.driverId!));
+    const event = await this.repo.findById({ id: eventId });
     if (!event) throw new AppException(ERROR_CODES.NOT_FOUND, 'Safety event not found.', 404);
     return this.repo.update(
-      { id: dto.eventId },
+      { id: eventId },
       { status: 'COACHED', coachedById, coachedAt: new Date(), coachingNote: dto.note },
     );
+  }
+
+  private async findEventIdForDriver(driverId: string): Promise<string> {
+    const event = await this.repo.findLatestOpenForDriver(driverId);
+    if (!event) throw new AppException(ERROR_CODES.NOT_FOUND, 'No open safety event for this driver to coach.', 404);
+    return event.id;
   }
 
   async updateEvent(id: string, dto: UpdateSafetyEventDto) {
@@ -41,12 +51,29 @@ export class SafetyService {
    * already-computed `DriverScore` rows for the period (nightly-computed in production);
    * this endpoint only ranks and returns them — it never recomputes on a GET, so the
    * numbers a fleet manager reviews stay stable within a session.
+   *
+   * §20 B-44 — also reads the immediately preceding period of the same length as a baseline
+   * (W-10 `TREND` column) and adds `previousScore`/`trend` (`trend = score - previousScore`) to
+   * each row; both are `null` when there is no scored previous period for that driver yet.
    */
   async scorecard(query: ScorecardQueryDto) {
     const periodEnd = query.periodEnd ?? new Date();
     const periodStart = query.periodStart ?? new Date(periodEnd.getTime() - 30 * 24 * 60 * 60 * 1000);
-    const rows = await this.repo.scorecard(periodStart, periodEnd);
-    return { items: rows, periodStart, periodEnd };
+    const durationMs = periodEnd.getTime() - periodStart.getTime();
+    const previousPeriodEnd = new Date(periodStart.getTime() - 24 * 60 * 60 * 1000);
+    const previousPeriodStart = new Date(previousPeriodEnd.getTime() - durationMs);
+
+    const [rows, previousRows] = await Promise.all([
+      this.repo.scorecard(periodStart, periodEnd),
+      this.repo.scorecard(previousPeriodStart, previousPeriodEnd),
+    ]);
+    const previousByDriver = new Map(previousRows.map((r) => [r.driverId, r.score]));
+
+    const items = rows.map((row) => {
+      const previousScore = previousByDriver.get(row.driverId) ?? null;
+      return { ...row, previousScore, trend: previousScore === null ? null : row.score - previousScore };
+    });
+    return { items, periodStart, periodEnd };
   }
 
   /**

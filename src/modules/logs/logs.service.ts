@@ -20,10 +20,14 @@ import {
 } from './certification';
 import {
   AppendRow,
+  formatProposalMeta,
+  parseProposalMeta,
   planAcceptEdit,
   planDriverSelfEdit,
   planEditRequest,
+  planProposedEvent,
   planRejectEdit,
+  type SpecialCategory,
 } from './edit-plan';
 import {
   IMMUTABILITY_DETAIL,
@@ -36,6 +40,7 @@ import {
   CreateEditRequestDto,
   CreateLogEntryDto,
   EditRequestListQueryDto,
+  ProposeEventDto,
   ResolveEditRequestDto,
 } from './dto/logs.dto';
 import { LogsRepository } from './logs.repository';
@@ -52,9 +57,15 @@ export interface EditRequestView {
   id: string;
   driverId: string;
   status: 'PENDING' | 'ACCEPTED' | 'REJECTED';
+  /** B-72 — `INSERT` is a proposed new record (no original), `EDIT` replaces `originalEventId`. */
+  kind: 'EDIT' | 'INSERT';
   originalEventId: string | null;
   proposedStatus: DutyStatus | null;
+  /** B-39 — §395.1(e) category the driver is asked to accept (PC/YM), `NONE` otherwise. */
+  proposedSpecial: SpecialCategory;
   proposedStart: Date;
+  proposedEnd: Date | null;
+  locationName: string | null;
   annotation: string | null;
   requestedById: string | null;
   requestedAt: Date;
@@ -254,6 +265,7 @@ export class LogsService {
       ),
     );
 
+    const special: SpecialCategory = dto.proposedSpecial ?? 'NONE';
     const rows = planEditRequest(target, {
       status: dto.proposedStatus,
       startAt: dto.proposedStart,
@@ -274,34 +286,39 @@ export class LogsService {
           editorType: EditorType.USER,
           editReason: dto.reason,
           location: dto.location ?? null,
+          // §23 — a PC position is coarsened to 10 miles BEFORE it is ever written.
+          personalConveyance: special === 'PC',
           totalVehicleMiles: dto.odometerMi ?? null,
-          comment: dto.proposedEnd ? `proposedEnd=${dto.proposedEnd.toISOString()}` : null,
+          totalEngineHours: dto.engineHours ?? null,
+          comment: formatProposalMeta({ proposedEnd: dto.proposedEnd ?? null, special }),
         },
         rows,
       ),
     );
 
     const requestId = firstId(ids, rows);
+    const notifyDriver = dto.notifyDriver ?? true;
     await this.writeAudit(actor, 'LOG_EDIT_REQUESTED', 'EldEvent', String(requestId), {
       after: {
         driverId,
         originalEventId: dto.originalEventId,
         proposedStatus: dto.proposedStatus,
+        proposedSpecial: special,
         proposedStart: dto.proposedStart.toISOString(),
         proposedEnd: dto.proposedEnd?.toISOString() ?? null,
+        location: dto.location ?? null,
         reason: dto.reason,
+        notifyDriver,
       },
       detail: 'Carrier edit proposal (49 CFR §395.30) — inert until the driver accepts.',
     });
 
-    // §12.5 — the driver app is pushed the proposal; nothing changes on the log yet.
-    await this.events.publish('log.edit_requested', {
-      driverId,
-      requestId: String(requestId),
+    await this.notifyProposal(driverId, String(requestId), {
       proposedStatus: dto.proposedStatus,
-      proposedStart: dto.proposedStart.toISOString(),
+      proposedSpecial: special,
+      proposedStart: dto.proposedStart,
+      notifyDriver,
     });
-    await this.raiseAlert('alert.edit_request', { driverId, requestId: String(requestId) });
 
     return {
       id: String(requestId),
@@ -309,11 +326,111 @@ export class LogsService {
       driverId,
       originalEventId: dto.originalEventId,
       proposedStatus: dto.proposedStatus,
+      proposedSpecial: special,
       proposedStart: dto.proposedStart,
       proposedEnd: dto.proposedEnd ?? null,
+      location: dto.location ?? null,
       reason: dto.reason,
+      notifyDriver,
+      recordStatus: 3,
       /** §395.30 — spelled out for every client: this has NOT been applied. */
       applied: false,
+    };
+  }
+
+  /**
+   * B-72 — `POST /logs/:driverId/events`: the carrier proposes a NEW record, typically on a RODS
+   * day that has no duty record yet (an edit request needs an original to point at). §395.30
+   * governs it exactly like an edit: stored with `recordStatus = 3` (inert — `activeRecords`
+   * ignores it, so it counts toward nothing), audited, pushed to the driver, and applied only
+   * when the driver accepts through the same `edit-requests/:id/accept` route. It may never
+   * overwrite recorded driving time (§395.30(c)(2)).
+   */
+  async proposeEvent(driverId: string, dto: ProposeEventDto, actor: ContextUser) {
+    const driver = await this.requireDriver(driverId);
+    const timezone = driver.homeTerminalTimezone;
+    const now = new Date();
+    if (dto.eventDateTime.getTime() > now.getTime()) {
+      throw new AppException(ERROR_CODES.VALIDATION_FAILED, 'A record cannot be proposed in the future.', 422, {
+        eventDateTime: dto.eventDateTime.toISOString(),
+      });
+    }
+    const context = await this.loadEditContext(driverId, timezone, dto.eventDateTime, now);
+    this.assertDrivingImmutable(
+      checkEditProposal(
+        this.insertTarget(context.events, dto.eventDateTime, now),
+        { proposedStatus: dto.status, proposedStart: dto.eventDateTime, proposedEnd: dto.endDateTime ?? null },
+        context.driving,
+      ),
+    );
+
+    const special: SpecialCategory = dto.proposedSpecial ?? 'NONE';
+    const rows = planProposedEvent({
+      status: dto.status,
+      startAt: dto.eventDateTime,
+      endAt: dto.endDateTime ?? null,
+      annotation: dto.annotation,
+    });
+
+    const ids = await this.repo.runInTransaction((tx) =>
+      this.writer.append(
+        tx,
+        {
+          driverId,
+          sequenceKey: driverId,
+          timezone,
+          vehicleId: driver.assignedVehicleId,
+          editedById: actor.id,
+          editorType: EditorType.USER,
+          editReason: dto.annotation,
+          location: dto.location ?? null,
+          personalConveyance: special === 'PC',
+          totalVehicleMiles: dto.odometerMi ?? null,
+          totalEngineHours: dto.engineHours ?? null,
+          comment: formatProposalMeta({ proposedEnd: dto.endDateTime ?? null, special }),
+        },
+        rows,
+      ),
+    );
+
+    const requestId = firstId(ids, rows);
+    const notifyDriver = dto.notifyDriver ?? true;
+    await this.writeAudit(actor, 'LOG_EVENT_PROPOSED', 'EldEvent', String(requestId), {
+      after: {
+        driverId,
+        status: dto.status,
+        proposedSpecial: special,
+        eventDateTime: dto.eventDateTime.toISOString(),
+        endDateTime: dto.endDateTime?.toISOString() ?? null,
+        location: dto.location ?? null,
+        odometerMi: dto.odometerMi ?? null,
+        engineHours: dto.engineHours ?? null,
+        annotation: dto.annotation,
+        recordStatus: 3,
+        notifyDriver,
+      },
+      detail: 'Carrier proposed a new record (49 CFR §395.30) — inert until the driver accepts.',
+    });
+    await this.notifyProposal(driverId, String(requestId), {
+      proposedStatus: dto.status,
+      proposedSpecial: special,
+      proposedStart: dto.eventDateTime,
+      notifyDriver,
+    });
+
+    return {
+      id: String(requestId),
+      driverId,
+      status: 'PENDING' as const,
+      kind: 'INSERT' as const,
+      proposedStatus: dto.status,
+      proposedSpecial: special,
+      eventDateTime: dto.eventDateTime,
+      endDateTime: dto.endDateTime ?? null,
+      annotation: dto.annotation,
+      notifyDriver,
+      recordStatus: 3 as const,
+      applied: false as const,
     };
   }
 
@@ -334,22 +451,26 @@ export class LogsService {
     const { request, original, driver } = await this.loadPendingRequest(requestId, actor);
     const timezone = driver.homeTerminalTimezone;
     const now = new Date();
-    const context = await this.loadEditContext(driver.id, timezone, original.eventDateTime, now);
+    const anchor = original ? original.eventDateTime : request.eventDateTime;
+    const context = await this.loadEditContext(driver.id, timezone, anchor, now);
 
     const proposedStatus = DUTY_STATUS_BY_CODE[request.eventCode];
-    const proposedEnd = parseProposedEnd(request.comment);
-    const target = {
-      id: original.id,
-      eventType: original.eventType,
-      eventCode: original.eventCode,
-      eventDateTime: original.eventDateTime,
-      intervalEndAt: this.intervalEndOf(context.events, original, now),
-    };
+    const meta = parseProposalMeta(request.comment);
+    const proposedEnd = meta.proposedEnd;
+    const target = original
+      ? {
+          id: original.id,
+          eventType: original.eventType,
+          eventCode: original.eventCode,
+          eventDateTime: original.eventDateTime,
+          intervalEndAt: this.intervalEndOf(context.events, original, now),
+        }
+      : null;
 
     // Re-checked at apply time: the timeline may have changed since the proposal was made.
     this.assertDrivingImmutable(
       checkEditProposal(
-        target,
+        target ?? this.insertTarget(context.events, request.eventDateTime, now),
         { proposedStatus, proposedStart: request.eventDateTime, proposedEnd },
         context.driving,
       ),
@@ -368,8 +489,14 @@ export class LogsService {
         startAt: request.eventDateTime,
         endAt: proposedEnd,
         annotation: request.annotation ?? request.editReason ?? 'Carrier edit accepted',
-        statusBeforeTarget: statusInEffectAt(context.events, original.eventDateTime),
-        statusAfterInterval: proposedEnd ? statusInEffectAt(context.events, proposedEnd) : null,
+        statusBeforeTarget: original ? statusInEffectAt(context.events, original.eventDateTime) : null,
+        // B-72 — a proposed interval on an empty day falls back to OFF (§395.8(a): no record
+        // is off duty), otherwise it would run on until the driver's next record.
+        statusAfterInterval: proposedEnd
+          ? (statusInEffectAt(context.events, proposedEnd) ?? (original ? null : 'OFF'))
+          : null,
+        special: meta.special,
+        specialClearAt: this.nextActiveDutyAfter(context.events, request.eventDateTime, original?.id ?? null),
       },
     );
 
@@ -380,22 +507,34 @@ export class LogsService {
           driverId: driver.id,
           sequenceKey: driver.id,
           timezone,
-          vehicleId: original.vehicleId,
-          deviceId: original.deviceId,
+          vehicleId: original ? original.vehicleId : request.vehicleId,
+          deviceId: original ? original.deviceId : request.deviceId,
           editedById: actor.id,
           editorType: EditorType.DRIVER,
           editReason: dto.note ?? request.editReason ?? null,
+          // bugs.md B-076 — the proposal's location / engine hours are part of what the driver
+          // accepted; they were dropped on accept before.
+          location: locationOf(request),
+          personalConveyance: meta.special === 'PC',
           totalVehicleMiles: request.totalVehicleMiles,
+          totalEngineHours: toNumberOrNull(request.totalEngineHours),
         },
         rows,
       ),
     );
 
-    await this.afterLogChange(driver.id, timezone, rows, original.eventDateTime);
+    await this.afterLogChange(driver.id, timezone, rows, anchor);
     await this.writeAudit(actor, 'LOG_EDIT_ACCEPTED', 'EldEvent', String(request.id), {
       before: { recordStatus: 3 },
-      after: { recordStatus: 1, originalEventId: String(original.id), originalRecordStatus: 2 },
-      detail: 'Driver accepted the carrier edit (49 CFR §395.30(c)(1)).',
+      after: {
+        recordStatus: 1,
+        originalEventId: original ? String(original.id) : null,
+        originalRecordStatus: original ? 2 : null,
+        proposedSpecial: meta.special,
+      },
+      detail: original
+        ? 'Driver accepted the carrier edit (49 CFR §395.30(c)(1)).'
+        : 'Driver accepted the carrier-proposed record (49 CFR §395.30(c)(1)).',
     });
     await this.events.publish('log.edit_accepted', {
       driverId: driver.id,
@@ -489,6 +628,7 @@ export class LogsService {
         { status: dto.status, startAt: dto.startAt, endAt: dto.endAt ?? null },
         context.driving,
         target,
+        now,
       ),
     );
 
@@ -819,6 +959,61 @@ export class LogsService {
     return next ? next.eventDateTime : now;
   }
 
+  /**
+   * B-72 — the rule-engine view of a proposed NEW record: a non-driving pseudo target whose
+   * implicit interval runs to the next active duty record (or `now`), so `checkEditProposal`
+   * refuses anything that would overwrite recorded driving time.
+   */
+  private insertTarget(events: RodsEvent[], at: Date, now: Date) {
+    return {
+      eventType: 0,
+      eventCode: 0,
+      eventDateTime: at,
+      intervalEndAt: this.nextActiveDutyAfter(events, at, null) ?? now,
+    };
+  }
+
+  /** The first active duty-status record strictly after `at`, ignoring `excludeId`. */
+  private nextActiveDutyAfter(events: RodsEvent[], at: Date, excludeId: bigint | null): Date | null {
+    const next = activeRecords(events)
+      .filter(
+        (row) =>
+          row.eventType === 1 &&
+          row.eventDateTime.getTime() > at.getTime() &&
+          (excludeId === null || row.id === undefined || String(row.id) !== String(excludeId)),
+      )
+      .sort((a, b) => a.eventDateTime.getTime() - b.eventDateTime.getTime())[0];
+    return next ? next.eventDateTime : null;
+  }
+
+  /**
+   * §12.5 / B-39 — tells the driver app a proposal is waiting: a socket event to `driver:{id}`
+   * and the `alert.edit_request` job (AlertProcessor → IN_APP + FCM, kind EDIT_REQUEST).
+   * `notifyDriver = false` suppresses only this push; the proposal is still listed by
+   * `GET /mobile/log-edit-requests` and still needs the driver's answer (§395.30(c)(1)).
+   */
+  private async notifyProposal(
+    driverId: string,
+    requestId: string,
+    data: { proposedStatus: DutyStatus; proposedSpecial: SpecialCategory; proposedStart: Date; notifyDriver: boolean },
+  ): Promise<void> {
+    const payload = {
+      driverId,
+      requestId,
+      proposedStatus: data.proposedStatus,
+      proposedSpecial: data.proposedSpecial,
+      proposedStart: data.proposedStart.toISOString(),
+    };
+    await this.events.publish('log.edit_requested', { ...payload, notifyDriver: data.notifyDriver });
+    if (!data.notifyDriver) return;
+    await this.events.publish('realtime.push', {
+      room: `driver:${driverId}`,
+      event: 'log.edit_requested',
+      payload,
+    });
+    await this.raiseAlert('alert.edit_request', payload);
+  }
+
   private async loadPendingRequest(requestId: string, actor: ContextUser) {
     const request = await this.repo.findEventById(BigInt(requestId));
     if (!request || request.recordStatus !== 3) {
@@ -855,9 +1050,8 @@ export class LogsService {
       );
     }
     const driver = await this.requireDriver(request.driverId);
-    if (request.supersedesId === null) {
-      throw new AppException(ERROR_CODES.NOT_FOUND, 'Edit request has no original record.', 404);
-    }
+    // B-72 — a proposed NEW record has no original to replace.
+    if (request.supersedesId === null) return { request, original: null, driver };
     const original = await this.repo.findEventById(request.supersedesId);
     if (!original) {
       throw new AppException(ERROR_CODES.NOT_FOUND, 'Original record not found.', 404);
@@ -878,13 +1072,18 @@ export class LogsService {
   private toEditRequestView(request: EldEvent, markers: EldEvent[]): EditRequestView {
     const marker = markers.find((row) => String(row.supersedesId) === String(request.id));
     const status = !marker ? 'PENDING' : marker.recordStatus === 4 ? 'REJECTED' : 'ACCEPTED';
+    const meta = parseProposalMeta(request.comment);
     return {
       id: String(request.id),
       driverId: request.driverId as string,
       status,
+      kind: request.supersedesId === null ? 'INSERT' : 'EDIT',
       originalEventId: request.supersedesId === null ? null : String(request.supersedesId),
       proposedStatus: DUTY_STATUS_BY_CODE[request.eventCode] ?? null,
+      proposedSpecial: meta.special,
       proposedStart: request.eventDateTime,
+      proposedEnd: meta.proposedEnd,
+      locationName: request.locationName,
       annotation: request.annotation,
       requestedById: request.editedById,
       requestedAt: request.createdAt,
@@ -904,6 +1103,8 @@ export class LogsService {
       status: event.eventType === 1 ? (DUTY_STATUS_BY_CODE[event.eventCode] ?? null) : null,
       locationName: event.locationName,
       totalVehicleMiles: event.totalVehicleMiles,
+      /** B-38 — Appendix A "total engine hours" (W-08 ENGINE HRS column). */
+      totalEngineHours: toNumberOrNull(event.totalEngineHours),
       annotation: event.annotation,
       comment: event.comment,
       supersedesId: event.supersedesId === null ? null : String(event.supersedesId),
@@ -931,12 +1132,23 @@ function dayKeyRange(from: string, to: string): string[] {
   return keys;
 }
 
-function parseProposedEnd(comment: string | null): Date | null {
-  if (!comment) return null;
-  const match = /proposedEnd=(\S+)/.exec(comment);
-  if (!match) return null;
-  const parsed = new Date(match[1]);
-  return Number.isFinite(parsed.getTime()) ? parsed : null;
+/** B-39 / B-076 — the location a proposal row carries, for the record the driver accepts. */
+function locationOf(event: EldEvent): { lat?: number; lon?: number; name?: string } | null {
+  const lat = toNumberOrNull(event.latitude);
+  const lon = toNumberOrNull(event.longitude);
+  const hasCoordinates = lat !== null && lon !== null;
+  if (!hasCoordinates && !event.locationName) return null;
+  return {
+    ...(hasCoordinates && { lat, lon }),
+    ...(event.locationName && { name: event.locationName }),
+  };
+}
+
+/** Prisma `Decimal` / number → number; `null`/`undefined`/non-finite → `null`. */
+function toNumberOrNull(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function firstId(ids: Map<string, bigint>, rows: AppendRow[], kind?: string): bigint {

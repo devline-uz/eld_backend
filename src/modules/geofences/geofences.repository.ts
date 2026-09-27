@@ -29,10 +29,15 @@ export class GeofencesRepository extends BaseRepository<
     return this.prisma.geofence.findMany({ orderBy: { createdAt: 'desc' } });
   }
 
-  /** Enabled CIRCLE fences with at least one alert flag on — the only ones worth detecting against. */
+  /** Enabled CIRCLE fences worth detecting against — an alert flag, or a dwell threshold
+   * (§20 B-15), on. */
   activeCircleFences(): Promise<Geofence[]> {
     return this.prisma.geofence.findMany({
-      where: { enabled: true, type: 'CIRCLE', OR: [{ alertOnEnter: true }, { alertOnExit: true }] },
+      where: {
+        enabled: true,
+        type: 'CIRCLE',
+        OR: [{ alertOnEnter: true }, { alertOnExit: true }, { dwellMinutes: { not: null } }],
+      },
     });
   }
 }

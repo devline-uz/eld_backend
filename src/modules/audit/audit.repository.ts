@@ -50,4 +50,31 @@ export class AuditRepository {
     const page = hasMore ? items.slice(0, limit) : items;
     return { items: page, nextCursor: hasMore ? String(page.at(-1)?.id) : null };
   }
+
+  /**
+   * B-62 — `GET /audit-log` rows show `actorName`/`actorEmail` instead of a bare id. `User`
+   * and `Driver` are looked up in two batched `findMany`s (never N+1 per row); `SYSTEM` actors
+   * (API keys, TZ §18) have no such row and are left unresolved by the caller.
+   */
+  async findActorNames(
+    userIds: string[],
+    driverIds: string[],
+  ): Promise<Map<string, { name: string; email: string | null }>> {
+    const map = new Map<string, { name: string; email: string | null }>();
+    if (userIds.length > 0) {
+      const users = await this.prisma.user.findMany({
+        where: { id: { in: userIds } },
+        select: { id: true, firstName: true, lastName: true, email: true },
+      });
+      for (const u of users) map.set(u.id, { name: `${u.firstName} ${u.lastName}`.trim(), email: u.email });
+    }
+    if (driverIds.length > 0) {
+      const drivers = await this.prisma.driver.findMany({
+        where: { id: { in: driverIds } },
+        select: { id: true, firstName: true, lastName: true, email: true },
+      });
+      for (const d of drivers) map.set(d.id, { name: `${d.firstName} ${d.lastName}`.trim(), email: d.email });
+    }
+    return map;
+  }
 }

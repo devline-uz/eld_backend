@@ -13,9 +13,12 @@ import { TransfersService } from './transfers.service';
 /**
  * TZ §10 / §11.4 — `GET/POST /transfers` plus the §10.1 download.
  *
- * Permission key `reportsTransfer` (§6.4): ADMIN and FLEET_MANAGER FULL, DISPATCHER and
- * VIEWER NONE — "the FMCSA package is sent by the Administrator and the Fleet manager only".
- * Because DISPATCHER/VIEWER are NONE, even the READ-level download is a 403 for them.
+ * Permission keys (§6.4, split by B-95): `dataTransfer` gates *sending* the eRODS package
+ * (`POST /transfers`) while `reportsTransfer` still gates viewing/downloading the transfer
+ * history and generated file. ADMIN and FLEET_MANAGER are FULL on both, DISPATCHER and
+ * VIEWER are NONE on both — "the FMCSA package is sent by the Administrator and the Fleet
+ * manager only". Because DISPATCHER/VIEWER are NONE on `reportsTransfer`, even the
+ * READ-level download is a 403 for them.
  */
 @FigmaScreen('web/send-logs-to-safety-official', 'web/reports-fmcsa-audit-pack')
 @ApiTags('transfers')
@@ -25,14 +28,14 @@ export class TransfersController {
   constructor(private readonly transfers: TransfersService) {}
 
   @Post()
-  @Perm('reportsTransfer', 'FULL')
+  @Perm('dataTransfer', 'FULL')
   @ApiOperation({
     summary:
       'Requests an eRODS data transfer: generates the §395 Appendix A output file, validates it, stores it and queues the send step. In TEST mode the file is NOT sent to FMCSA.',
   })
   @ApiStandardErrors({
     errors: [
-      apiError.forbidden('reportsTransfer = FULL is required — only ADMIN and FLEET_MANAGER may send the FMCSA package (§6.4).'),
+      apiError.forbidden('dataTransfer = FULL is required — only ADMIN and FLEET_MANAGER may send the FMCSA package (§6.4, B-95).'),
       apiError.notFound(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.'),
       apiError.unprocessable(ERROR_CODES.INVALID_TRANSFER_RECIPIENT, 'Email transfer is accepted only for an fmcsa.dot.gov address (§10).'),
       { status: 422, code: ERROR_CODES.RANGE_TOO_LARGE, message: 'The requested date range exceeds the allowed transfer window.' },

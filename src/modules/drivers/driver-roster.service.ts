@@ -37,8 +37,9 @@ export interface DriverRosterEntry {
   unit: { id: string; unitNumber: string } | null;
   hos: { driveRemainingSec: number; shiftRemainingSec: number; cycleRemainingSec: number };
   openViolations: number;
-  /** Web gap B-31 — no e-mail verification state exists; always null. */
-  emailVerified: null;
+  /** §20 B-31 — real verification state from `Driver.emailVerifiedAt`; null when there's no
+   * email on file at all (nothing to verify), true/false once there is. */
+  emailVerified: boolean | null;
 }
 
 export interface DriverRosterPage {
@@ -155,7 +156,7 @@ export class DriverRosterService {
         ? { driveRemainingSec: state.driveRemainingSec, shiftRemainingSec: state.shiftRemainingSec, cycleRemainingSec: state.cycleRemainingSec }
         : { driveRemainingSec: limits.driveLimitSec, shiftRemainingSec: limits.shiftLimitSec, cycleRemainingSec: limits.cycleLimitSec },
       openViolations,
-      emailVerified: null,
+      emailVerified: driver.email ? driver.emailVerifiedAt != null : null,
     };
   }
 }

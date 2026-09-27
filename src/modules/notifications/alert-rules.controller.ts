@@ -1,10 +1,13 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { ApiBearerAuth, ApiCreatedResponse, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Audit } from '../../common/decorators/audit.decorator';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { FigmaScreen } from '../../common/decorators/figma-screen.decorator';
 import { Perm } from '../../common/decorators/perm.decorator';
 import { apiError, ApiStandardErrors, ERROR_CODES } from '../../common/errors';
 import { zodBody } from '../../common/pipes/zod-validation.pipe';
+import type { ContextUser } from '../../core/context/request-context';
 import { AlertRulesService } from './alert-rules.service';
 import { CreateAlertRuleDto, UpdateAlertRuleDto } from './dto/notifications.dto';
 
@@ -78,5 +81,18 @@ export class AlertRulesController {
   })
   remove(@Param('id') id: string) {
     return this.alertRules.remove(id);
+  }
+
+  @Post(':id/test')
+  @Perm('alertRules', 'FULL')
+  // B-092 — each call fans out to every configured webhook and writes a notification row;
+  // throttled per principal and audited so it cannot be used as a spam/amplification pump.
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Audit({ object: 'AlertRule', action: 'TEST' })
+  @ApiOperation({ summary: "Sends a test notification through the rule's own channels to the caller. A disabled rule triggers nothing." })
+  @ApiOkResponse({ schema: { example: { triggered: true } } })
+  @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.NOT_FOUND, 'Alert rule not found.')] })
+  test(@Param('id') id: string, @CurrentUser() actor: ContextUser) {
+    return this.alertRules.testRule(id, actor);
   }
 }

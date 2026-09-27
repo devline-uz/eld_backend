@@ -14,6 +14,7 @@ import {
   UpdateFirmwareDto,
 } from './dto/devices.dto';
 import { DevicesRepository } from './devices.repository';
+import { deriveDeviceDiagnostics, DeviceDiagnostics } from './diagnostics.util';
 import { isFirmwareOutdated } from './firmware.util';
 
 const SORTABLE_FIELDS = ['serial', 'model', 'status', 'bleState', 'lastSeenAt', 'createdAt'] as const;
@@ -41,7 +42,7 @@ export class DevicesService {
   async list(query: DeviceListQueryDto): Promise<OffsetPage<DeviceView>> {
     const orderBy = parseSort(query.sort, SORTABLE_FIELDS, { serial: 'asc' });
     const { items, total } = await this.devices.list(
-      { status: query.status, bleState: query.bleState, q: query.q },
+      { status: query.status, bleState: query.bleState, vehicleId: query.vehicleId, q: query.q },
       query.page,
       query.limit,
       orderBy,
@@ -69,8 +70,17 @@ export class DevicesService {
       firmware: dto.firmware,
       periodicConnectedSec: dto.periodicConnectedSec,
       periodicDisconnectedMin: dto.periodicDisconnectedMin,
+      autoFirmware: dto.autoFirmware,
+      shareDiagnostics: dto.shareDiagnostics,
     });
     return toView(created);
+  }
+
+  /** §20 B-8 — derived from the latest recorded status/BLE data, never a live device round-trip.
+   * An unresponsive device reads `responded: false`; it is never an HTTP error. */
+  async diagnostics(id: string): Promise<DeviceDiagnostics> {
+    const device = await this.getRaw(id);
+    return deriveDeviceDiagnostics(device);
   }
 
   async update(id: string, dto: UpdateDeviceDto): Promise<DeviceView> {
@@ -141,6 +151,8 @@ export class DevicesService {
       firmware: d.firmware ?? undefined,
       periodicConnectedSec: d.periodicConnectedSec,
       periodicDisconnectedMin: d.periodicDisconnectedMin,
+      autoFirmware: d.autoFirmware,
+      shareDiagnostics: d.shareDiagnostics,
     }));
   }
 
@@ -180,6 +192,8 @@ export class DevicesService {
       ...(dto.periodicConnectedSec !== undefined && { periodicConnectedSec: dto.periodicConnectedSec }),
       ...(dto.periodicDisconnectedMin !== undefined && { periodicDisconnectedMin: dto.periodicDisconnectedMin }),
       ...(dto.status !== undefined && { status: dto.status }),
+      ...(dto.autoFirmware !== undefined && { autoFirmware: dto.autoFirmware }),
+      ...(dto.shareDiagnostics !== undefined && { shareDiagnostics: dto.shareDiagnostics }),
     };
   }
 }

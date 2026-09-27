@@ -4,6 +4,8 @@ import { FmcsaEncryptionService } from './fmcsa-encryption.service';
 import { FmcsaTransferService } from './fmcsa-transfer.service';
 import { LoggingMailTransport } from './logging-mail.transport';
 import { MAIL_PORT } from './mail.port';
+import { MobileTransfersController } from './mobile-transfers.controller';
+import { MobileTransfersService } from './mobile-transfers.service';
 import { TransfersController } from './transfers.controller';
 import { TransfersRepository } from './transfers.repository';
 import { TransfersService } from './transfers.service';
@@ -17,14 +19,15 @@ import { TransfersService } from './transfers.service';
  */
 @Module({
   imports: [AuditModule],
-  controllers: [TransfersController],
+  controllers: [TransfersController, MobileTransfersController],
   providers: [
     TransfersService,
     TransfersRepository,
+    MobileTransfersService,
     FmcsaTransferService,
     FmcsaEncryptionService,
     { provide: MAIL_PORT, useClass: LoggingMailTransport },
   ],
-  exports: [TransfersService, TransfersRepository, FmcsaTransferService, FmcsaEncryptionService],
+  exports: [TransfersService, TransfersRepository, FmcsaTransferService, FmcsaEncryptionService, MAIL_PORT],
 })
 export class TransfersModule {}

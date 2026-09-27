@@ -19,10 +19,20 @@ describe('VehiclesController permissions', () => {
     ['update', 'FULL'],
     ['remove', 'FULL'],
     ['calibrateOdometer', 'FULL'],
-    ['assignDriver', 'FULL'],
     ['unassignDriver', 'FULL'],
+    ['activities', 'READ'],
+    ['histories', 'READ'],
+    ['telemetry', 'READ'],
+    ['bulkUpdateStatus', 'FULL'],
   ] as const)('%s requires vehicles:%s', (method, level) => {
     expect(permOf(method)).toEqual({ key: 'vehicles', level });
+  });
+
+  it('assignDriver accepts vehicles:FULL OR trips:FULL (B-13 — a dispatcher may assign a driver)', () => {
+    expect(Reflect.getMetadata(PERM_METADATA_KEY, VehiclesController.prototype.assignDriver)).toEqual([
+      { key: 'vehicles', level: 'FULL' },
+      { key: 'trips', level: 'FULL' },
+    ]);
   });
 });
 
@@ -38,6 +48,10 @@ describe('VehiclesController — delegates to VehiclesService', () => {
     calibrateOdometer: jest.fn().mockResolvedValue({ id: 'veh_1' }),
     assignDriver: jest.fn().mockResolvedValue({ id: 'veh_1' }),
     unassignDriver: jest.fn().mockResolvedValue({ id: 'veh_1' }),
+    activities: jest.fn().mockResolvedValue([]),
+    histories: jest.fn().mockResolvedValue({ date: '2026-09-24' }),
+    telemetryRecent: jest.fn().mockResolvedValue([]),
+    bulkUpdateStatus: jest.fn().mockResolvedValue({ updated: [], failed: [] }),
   };
   const controller = new VehiclesController(service as never);
 
@@ -65,8 +79,8 @@ describe('VehiclesController — delegates to VehiclesService', () => {
 
   it('import', async () => {
     const dto = { vehicles: [] } as never;
-    await controller.import(dto);
-    expect(service.importMany).toHaveBeenCalledWith(dto);
+    await controller.import(dto, 'usr_1');
+    expect(service.importMany).toHaveBeenCalledWith(dto, 'usr_1');
   });
 
   it('update', async () => {
@@ -95,5 +109,29 @@ describe('VehiclesController — delegates to VehiclesService', () => {
   it('unassignDriver', async () => {
     await controller.unassignDriver('veh_1');
     expect(service.unassignDriver).toHaveBeenCalledWith('veh_1');
+  });
+
+  it('activities wraps the array in { items }', async () => {
+    const result = await controller.activities('veh_1');
+    expect(service.activities).toHaveBeenCalledWith('veh_1');
+    expect(result).toEqual({ items: [] });
+  });
+
+  it('histories', async () => {
+    await controller.histories('veh_1', { date: '2026-09-24' });
+    expect(service.histories).toHaveBeenCalledWith('veh_1', '2026-09-24');
+  });
+
+  it('telemetry wraps the array in { items }', async () => {
+    const query = { limit: 500 } as never;
+    const result = await controller.telemetry('veh_1', query);
+    expect(service.telemetryRecent).toHaveBeenCalledWith('veh_1', query);
+    expect(result).toEqual({ items: [] });
+  });
+
+  it('bulkUpdateStatus', async () => {
+    const dto = { ids: ['veh_1'], status: 'INACTIVE' } as never;
+    await controller.bulkUpdateStatus(dto);
+    expect(service.bulkUpdateStatus).toHaveBeenCalledWith(dto);
   });
 });

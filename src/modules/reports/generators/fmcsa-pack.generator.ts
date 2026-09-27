@@ -9,7 +9,7 @@ import { validateOutputFile } from '../../transfers/validator';
 import { buildOutputFileName, inclusiveDayCount } from '../../transfers/filename';
 import { runPreSendChecks } from '../../transfers/pre-send-checks';
 import { TransfersRepository } from '../../transfers/transfers.repository';
-import type { FmcsaPackParamsDto } from '../dto/reports.dto';
+import { FMCSA_PACK_SECTIONS, type FmcsaPackParamsDto, type FmcsaPackSection } from '../dto/reports.dto';
 import { renderPdf } from '../lib/pdf-render';
 
 export interface FmcsaPackDriverEntry {
@@ -21,6 +21,9 @@ export interface FmcsaPackDriverEntry {
   fileName?: string;
   uncertifiedDays?: number;
   malfunctionCodes?: string[];
+  unidentifiedCount?: number;
+  editCount?: number;
+  dvirOpenDefects?: number;
 }
 
 export interface FmcsaPackResult {
@@ -69,6 +72,12 @@ export class FmcsaPackGenerator {
     const dayCount = inclusiveDayCount(rangeStart, rangeEnd);
     const generatedAt = new Date();
 
+    // B-48 — no `include` ⇒ every section (the pack this generator built before the gap was
+    // closed); an explicit list limits both the cover PDF columns and, for `RODS`, whether the
+    // per-driver Appendix A output file is generated/attached at all.
+    const sections = new Set(params.include ?? FMCSA_PACK_SECTIONS);
+    const has = (section: FmcsaPackSection): boolean => sections.has(section);
+
     const entries: FmcsaPackDriverEntry[] = [];
     for (const driver of drivers) {
       const timezone = driver.homeTerminalTimezone ?? carrier.timezone;
@@ -81,6 +90,18 @@ export class FmcsaPackGenerator {
         this.transfers.findDailyLogs(driver.id, rangeStart, rangeEnd),
         this.transfers.findPendingUnidentifiedSegments(fromInstant, toInstant),
       ]);
+
+      const vehicleIds = [
+        ...new Set([...events, ...unidentifiedEvents].map((e) => e.vehicleId).filter((v): v is string => Boolean(v))),
+      ];
+
+      // B-48 — `vehicleId` filters WHICH DRIVERS the pack covers: a driver who never operated
+      // the selected unit in the period has nothing to report for it, so is left out of the
+      // pack entirely (not SKIPPED — SKIPPED means "should have been included but failed a
+      // check"). No `vehicleId` ⇒ every active driver, unchanged from before this gap closed.
+      // Checked BEFORE pre-send validation so an unrelated driver never produces a spurious
+      // SKIPPED row.
+      if (params.vehicleId && !vehicleIds.includes(params.vehicleId)) continue;
 
       const preSend = runPreSendChecks({
         driverExists: true,
@@ -102,14 +123,48 @@ export class FmcsaPackGenerator {
         continue;
       }
 
-      const vehicleIds = [
-        ...new Set([...events, ...unidentifiedEvents].map((e) => e.vehicleId).filter((v): v is string => Boolean(v))),
-      ];
       const editorIds = [...new Set(events.map((e) => e.editedById).filter((v): v is string => Boolean(v)))];
       const [vehicles, users] = await Promise.all([
         this.transfers.findVehicles(vehicleIds),
         this.transfers.findUsers(editorIds),
       ]);
+
+      // B-48 §"DVIR" section — open defect count for this driver's DVIRs in the period
+      // (scoped to `vehicleId` too, when given).
+      const dvirOpenDefects = has('DVIR')
+        ? await this.prisma.defect.count({
+            where: {
+              status: 'OPEN',
+              dvir: {
+                driverId: driver.id,
+                submittedAt: { gte: rangeStart, lte: rangeEnd },
+                ...(params.vehicleId ? { vehicleId: params.vehicleId } : {}),
+              },
+            },
+          })
+        : undefined;
+      const unidentifiedCount = has('UNIDENTIFIED')
+        ? unidentifiedEvents.filter((e) => !params.vehicleId || e.vehicleId === params.vehicleId).length
+        : undefined;
+      const editCount = has('EDITS') ? editorIds.length : undefined;
+      const malfunctionCodes = has('MALFUNCTIONS') ? activeMalfunctionCodes(events) : [];
+
+      // "RODS" section — the Appendix A output file itself. Every other section is metadata
+      // ABOUT the driver's record; this is the record. Excluding it keeps the cover-page row
+      // (status/counts) but skips building and storing the CSV.
+      if (!has('RODS')) {
+        entries.push({
+          driverId: driver.id,
+          driverName: `${driver.lastName}, ${driver.firstName}`,
+          status: 'INCLUDED',
+          uncertifiedDays: uncertifiedDayCount(dailyLogs, dayCount),
+          malfunctionCodes,
+          unidentifiedCount,
+          editCount,
+          dvirOpenDefects,
+        });
+        continue;
+      }
 
       const snapshot = buildSnapshot({
         driver,
@@ -152,7 +207,10 @@ export class FmcsaPackGenerator {
         fileKey,
         fileName,
         uncertifiedDays: uncertifiedDayCount(dailyLogs, dayCount),
-        malfunctionCodes: activeMalfunctionCodes(events),
+        malfunctionCodes,
+        unidentifiedCount,
+        editCount,
+        dvirOpenDefects,
       });
     }
 
@@ -160,7 +218,14 @@ export class FmcsaPackGenerator {
       generatedAt: generatedAt.toISOString(),
       carrier: { name: carrier.name, dot: carrier.dotNumber },
       period: { from: params.from, to: params.to },
-      drivers: entries,
+      unitFilter: params.vehicleId ?? 'ALL',
+      includeLabel: params.include ? params.include.join(', ') : 'ALL (full pack)',
+      eldIdentifier: has('ELD_ID') ? carrier.eldIdentifier : '—',
+      eldRegistrationId: has('ELD_ID') ? carrier.eldRegistrationId ?? '' : '—',
+      drivers: entries.map((e) => ({
+        ...e,
+        malfunctionCodesLabel: e.malfunctionCodes?.length ? e.malfunctionCodes.join(', ') : '—',
+      })),
     });
 
     return { coverPdf, driverEntries: entries };

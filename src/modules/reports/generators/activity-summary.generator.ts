@@ -35,6 +35,24 @@ export interface ActivitySummaryRow {
   certifiedDays: number;
 }
 
+/** `groupBy=vehicleGroup` row — the same totals summed over every driver whose currently
+ * assigned unit is in the group. `groupId: null` = drivers with no unit or an ungrouped unit. */
+export interface ActivitySummaryGroupRow {
+  groupId: string | null;
+  name: string;
+  drivers: number;
+  days: number;
+  offSec: number;
+  sbSec: number;
+  drivingSec: number;
+  onSec: number;
+  distanceMi: number;
+  violations: number;
+  certifiedDays: number;
+}
+
+export const UNGROUPED_NAME = 'Ungrouped';
+
 export interface ActivitySummaryKpis {
   drivingSec: number;
   /** `null` when the previous period (same length, immediately before `from`) has no
@@ -51,7 +69,9 @@ export interface ActivitySummaryKpis {
 
 export interface ActivitySummaryResult {
   kpis: ActivitySummaryKpis;
-  items: ActivitySummaryRow[];
+  /** `ActivitySummaryRow[]` for `groupBy=driver`, `ActivitySummaryGroupRow[]` for `groupBy=vehicleGroup`. */
+  items: ActivitySummaryRow[] | ActivitySummaryGroupRow[];
+  groupBy: 'driver' | 'vehicleGroup';
   page: number;
   limit: number;
   total: number;
@@ -62,6 +82,7 @@ interface Filters {
   driverId?: string;
   terminal?: string;
   status?: 'ACTIVE' | 'INACTIVE' | 'TERMINATED';
+  vehicleGroupId?: string;
 }
 
 /** Whitelisted sort columns — `sort` is NEVER interpolated into SQL directly. */
@@ -77,11 +98,22 @@ const SORT_COLUMNS: Record<ActivitySummarySortField, string> = {
   certifiedDays: 'certified_days',
 };
 
+/** `groupBy=vehicleGroup` sort columns — `name` is the group name (ungrouped last). */
+const GROUP_SORT_COLUMNS: Record<ActivitySummarySortField, string> = {
+  ...SORT_COLUMNS,
+  name: 'COALESCE(name_sort, \'~\')',
+};
+
 function buildFilterSql(filters: Filters): Prisma.Sql {
   const clauses: Prisma.Sql[] = [];
   if (filters.driverId) clauses.push(Prisma.sql`d."id" = ${filters.driverId}`);
   if (filters.terminal) clauses.push(Prisma.sql`d."homeTerminalName" = ${filters.terminal}`);
   if (filters.status) clauses.push(Prisma.sql`d."status" = ${filters.status}::"DriverStatus"`);
+  if (filters.vehicleGroupId) {
+    clauses.push(
+      Prisma.sql`EXISTS (SELECT 1 FROM "Vehicle" fv WHERE fv."id" = d."assignedVehicleId" AND fv."groupId" = ${filters.vehicleGroupId})`,
+    );
+  }
   if (clauses.length === 0) return Prisma.sql``;
   return Prisma.sql`AND ${Prisma.join(clauses, ' AND ')}`;
 }
@@ -99,7 +131,12 @@ export class ActivitySummaryGenerator {
   constructor(private readonly prisma: PrismaService) {}
 
   async summary(params: ActivitySummaryQueryDto): Promise<ActivitySummaryResult> {
-    const filters: Filters = { driverId: params.driverId, terminal: params.terminal, status: params.status };
+    const filters: Filters = {
+      driverId: params.driverId,
+      terminal: params.terminal,
+      status: params.status,
+      vehicleGroupId: params.vehicleGroupId,
+    };
     const [field, dir] = params.sort.split(':') as [ActivitySummarySortField, 'asc' | 'desc'];
     const orderCol = SORT_COLUMNS[field];
     const orderDir = dir === 'desc' ? Prisma.sql`DESC` : Prisma.sql`ASC`;
@@ -108,7 +145,9 @@ export class ActivitySummaryGenerator {
     const prevRange = previousPeriod(from, to);
 
     const [page, current, previous] = await Promise.all([
-      this.fetchPage(from, to, filters, orderCol, orderDir, params.page, params.limit),
+      params.groupBy === 'vehicleGroup'
+        ? this.fetchGroupPage(from, to, filters, GROUP_SORT_COLUMNS[field], orderDir, params.page, params.limit)
+        : this.fetchPage(from, to, filters, orderCol, orderDir, params.page, params.limit),
       this.fetchTotals(from, to, filters),
       this.fetchTotals(prevRange.from, prevRange.to, filters),
     ]);
@@ -129,6 +168,7 @@ export class ActivitySummaryGenerator {
         violationsDelta,
       },
       items: page.items,
+      groupBy: params.groupBy,
       page: params.page,
       limit: params.limit,
       total: page.total,
@@ -199,6 +239,79 @@ export class ActivitySummaryGenerator {
     const items: ActivitySummaryRow[] = rows.map((r) => ({
       driverId: r.driverId,
       name: r.name,
+      days: Number(r.days),
+      offSec: Number(r.off_sec),
+      sbSec: Number(r.sb_sec),
+      drivingSec: Number(r.driving_sec),
+      onSec: Number(r.on_sec),
+      distanceMi: Number(r.distance_mi),
+      violations: Number(r.violations),
+      certifiedDays: Number(r.certified_days),
+    }));
+    const total = rows.length > 0 ? Number(rows[0].total) : 0;
+    return { items, total };
+  }
+
+  /** `groupBy=vehicleGroup` — per-driver day totals rolled up by the group of each driver's
+   * currently assigned unit. Uses the current assignment (DailyLog carries no unit), so a
+   * driver who switched units mid-range counts wholly toward their present unit's group. */
+  private async fetchGroupPage(
+    from: string,
+    to: string,
+    filters: Filters,
+    orderCol: string,
+    orderDir: Prisma.Sql,
+    page: number,
+    limit: number,
+  ): Promise<{ items: ActivitySummaryGroupRow[]; total: number }> {
+    const offset = (page - 1) * limit;
+    const filterSql = buildFilterSql(filters);
+    const rows = await this.prisma.$queryRaw<
+      Array<{
+        groupId: string | null;
+        name_sort: string | null;
+        drivers: bigint;
+        days: bigint;
+        off_sec: bigint;
+        sb_sec: bigint;
+        driving_sec: bigint;
+        on_sec: bigint;
+        distance_mi: bigint;
+        violations: bigint;
+        certified_days: bigint;
+        total: bigint;
+      }>
+    >(Prisma.sql`
+      WITH agg AS (
+        SELECT
+          g."id" AS "groupId",
+          g."name" AS name_sort,
+          COUNT(DISTINCT dl."driverId")::bigint AS drivers,
+          COUNT(*)::bigint AS days,
+          COALESCE(SUM(dl."offDutySec"), 0)::bigint AS off_sec,
+          COALESCE(SUM(dl."sleeperSec"), 0)::bigint AS sb_sec,
+          COALESCE(SUM(dl."drivingSec"), 0)::bigint AS driving_sec,
+          COALESCE(SUM(dl."onDutySec"), 0)::bigint AS on_sec,
+          COALESCE(SUM(dl."totalDistanceMi"), 0)::bigint AS distance_mi,
+          COALESCE(SUM(dl."violationCount"), 0)::bigint AS violations,
+          COALESCE(SUM(CASE WHEN dl."certified" THEN 1 ELSE 0 END), 0)::bigint AS certified_days
+        FROM "DailyLog" dl
+        JOIN "Driver" d ON d."id" = dl."driverId"
+        LEFT JOIN "Vehicle" v ON v."id" = d."assignedVehicleId"
+        LEFT JOIN "VehicleGroup" g ON g."id" = v."groupId"
+        WHERE dl."logDate" >= ${from}::date AND dl."logDate" <= ${to}::date ${filterSql}
+        GROUP BY g."id", g."name"
+      )
+      SELECT agg.*, COUNT(*) OVER ()::bigint AS total
+      FROM agg
+      ORDER BY ${Prisma.raw(orderCol)} ${orderDir}, "groupId" ASC NULLS LAST
+      LIMIT ${limit} OFFSET ${offset}
+    `);
+
+    const items: ActivitySummaryGroupRow[] = rows.map((r) => ({
+      groupId: r.groupId,
+      name: r.name_sort ?? UNGROUPED_NAME,
+      drivers: Number(r.drivers),
       days: Number(r.days),
       offSec: Number(r.off_sec),
       sbSec: Number(r.sb_sec),

@@ -53,4 +53,25 @@ export class TelemetryRepository extends BaseRepository<
       orderBy: { time: 'desc' },
     });
   }
+
+  /** §20 B-4 / telemetry read — every point in `[from, to)` for one vehicle, oldest first. Used
+   * server-side only (day segmentation); never shipped raw to a browser (~60k pts/day, TZ §20.1). */
+  listRange(vehicleId: string, from: Date, to: Date): Promise<TelemetryPoint[]> {
+    return this.prisma.telemetryPoint.findMany({
+      where: { vehicleId, time: { gte: from, lt: to } },
+      orderBy: { time: 'asc' },
+    });
+  }
+
+  /** `GET /vehicles/:id/telemetry` read path — most recent N points, newest first. */
+  listRecent(vehicleId: string, limit: number, from?: Date, to?: Date): Promise<TelemetryPoint[]> {
+    return this.prisma.telemetryPoint.findMany({
+      where: {
+        vehicleId,
+        ...((from || to) && { time: { ...(from && { gte: from }), ...(to && { lte: to }) } }),
+      },
+      orderBy: { time: 'desc' },
+      take: limit,
+    });
+  }
 }

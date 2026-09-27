@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  body { font-family: Helvetica, Arial, sans-serif; font-size: 12px; color: #1a1a1a; }
+  h1 { font-size: 18px; margin-bottom: 0; }
+  .meta { color: #555; margin-bottom: 16px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+  th, td { border: 1px solid #ccc; padding: 6px 8px; text-align: left; }
+  th { background: #f2f2f2; }
+</style>
+</head>
+<body>
+  <h1>IFTA Quarterly Report</h1>
+  <div class="meta">
+    Quarter: {{quarter}}<br/>
+    Unit: {{vehicleId}}
+  </div>
+  <table>
+    <thead>
+      <tr><th>Jurisdiction</th><th>Miles driven</th><th>Fuel purchased (gal)</th><th>Fleet MPG</th><th>Taxable gallons</th><th>Net taxable gallons</th></tr>
+    </thead>
+    <tbody>
+      {{#each rows}}
+      <tr>
+        <td>{{jurisdiction}}</td>
+        <td>{{milesDriven}}</td>
+        <td>{{fuelPurchasedGal}}</td>
+        <td>{{fleetMpg}}</td>
+        <td>{{taxableGallons}}</td>
+        <td>{{netTaxableGallons}}</td>
+      </tr>
+      {{/each}}
+    </tbody>
+  </table>
+</body>
+</html>

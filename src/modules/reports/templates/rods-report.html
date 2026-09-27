@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  body { font-family: Helvetica, Arial, sans-serif; font-size: 11px; color: #1a1a1a; }
+  h1 { font-size: 16px; margin-bottom: 0; }
+  .page { page-break-after: always; border: 1px solid #ccc; padding: 10px; margin-bottom: 10px; }
+  .page:last-child { page-break-after: avoid; }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  th, td { border: 1px solid #ccc; padding: 4px 6px; text-align: left; }
+  th { background: #f2f2f2; }
+  .events { margin-top: 8px; font-size: 10px; color: #333; }
+</style>
+</head>
+<body>
+  <h1>Driver's Daily Log — Record of Duty Status (§395)</h1>
+  <div>Period: {{from}} — {{to}}</div>
+  {{#each pages}}
+  <div class="page">
+    <table>
+      <tr><th>Driver</th><td>{{driverName}}</td><th>CDL</th><td>{{cdlNumber}}</td></tr>
+      <tr><th>Date</th><td>{{date}}</td><th>Timezone</th><td>{{timezone}}</td></tr>
+      <tr><th>Off duty (h)</th><td>{{offDutyHours}}</td><th>Sleeper (h)</th><td>{{sleeperHours}}</td></tr>
+      <tr><th>Driving (h)</th><td>{{drivingHours}}</td><th>On duty (h)</th><td>{{onDutyHours}}</td></tr>
+      <tr><th>Distance (mi)</th><td>{{totalDistanceMi}}</td><th>Certified</th><td>{{certified}}</td></tr>
+    </table>
+    <div class="events"><strong>§395 records:</strong> {{eventLines}}</div>
+  </div>
+  {{/each}}
+</body>
+</html>

@@ -49,13 +49,49 @@ describe('TripsService — lifecycle transitions', () => {
 describe('TripsService — assign', () => {
   it('rejects assigning a trip that is already IN_PROGRESS', async () => {
     const { service } = buildService({ id: 'trp_1', status: 'IN_PROGRESS', etaAt: null });
-    await expect(service.assign('trp_1', { driverId: 'drv_1' })).rejects.toMatchObject({ code: 'CONFLICT' });
+    await expect(service.assign('trp_1', { driverId: 'drv_1', notify: true })).rejects.toMatchObject({ code: 'CONFLICT' });
   });
 
   it('assigns a PLANNED trip and raises alert.trip_assigned', async () => {
     const { service, alertQueue } = buildService({ id: 'trp_1', status: 'PLANNED', etaAt: null });
-    const result = await service.assign('trp_1', { driverId: 'drv_1' });
+    const result = await service.assign('trp_1', { driverId: 'drv_1', notify: true });
     expect(result.status).toBe('ASSIGNED');
     expect(alertQueue.add).toHaveBeenCalledWith('alert.trip_assigned', { tripId: 'trp_1', driverId: 'drv_1' });
+  });
+
+  it('§20 B-74 — notify: false assigns without raising the driver-app notification', async () => {
+    const { service, alertQueue } = buildService({ id: 'trp_1', status: 'PLANNED', etaAt: null });
+    const result = await service.assign('trp_1', { driverId: 'drv_1', notify: false });
+    expect(result.status).toBe('ASSIGNED');
+    expect(alertQueue.add).not.toHaveBeenCalled();
+  });
+});
+
+describe('TripsService — create (§20 B-73 draft)', () => {
+  it('creates a DRAFT trip when draft: true, even with a driverId', async () => {
+    const { service, repo } = buildService();
+    await service.create({ number: 'TRP-9', driverId: 'drv_1', draft: true }, 'usr_1');
+    const data = repo.createWithStops.mock.calls[0][0] as Record<string, unknown>;
+    expect(data.status).toBe('DRAFT');
+  });
+
+  it('creates a PLANNED trip by default (no driverId, draft: false)', async () => {
+    const { service, repo } = buildService();
+    await service.create({ number: 'TRP-10', draft: false }, 'usr_1');
+    const data = repo.createWithStops.mock.calls[0][0] as Record<string, unknown>;
+    expect(data.status).toBe('PLANNED');
+  });
+});
+
+describe('TripsService — DRAFT lifecycle (§20 B-73 publish)', () => {
+  it('publishes a DRAFT trip via PATCH { status: PLANNED }', async () => {
+    const { service } = buildService({ id: 'trp_1', status: 'DRAFT', etaAt: null });
+    const result = await service.update('trp_1', { status: 'PLANNED' });
+    expect(result.status).toBe('PLANNED');
+  });
+
+  it('rejects DRAFT -> ASSIGNED (must publish to PLANNED first)', async () => {
+    const { service } = buildService({ id: 'trp_1', status: 'DRAFT', etaAt: null });
+    await expect(service.update('trp_1', { status: 'ASSIGNED' })).rejects.toMatchObject({ code: 'CONFLICT' });
   });
 });

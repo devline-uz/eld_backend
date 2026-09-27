@@ -54,6 +54,7 @@ describe('ActivitySummaryGenerator (gap B-46)', () => {
       from: '2026-09-01',
       to: '2026-09-08',
       sort: 'name:asc',
+      groupBy: 'driver',
       page: 1,
       limit: 25,
     });
@@ -92,7 +93,7 @@ describe('ActivitySummaryGenerator (gap B-46)', () => {
     );
     const generator = new ActivitySummaryGenerator(prisma as never);
 
-    const result = await generator.summary({ from: '2026-09-01', to: '2026-09-08', sort: 'name:asc', page: 1, limit: 25 });
+    const result = await generator.summary({ from: '2026-09-01', to: '2026-09-08', sort: 'name:asc', groupBy: 'driver', page: 1, limit: 25 });
 
     expect(result.kpis.drivingDeltaPct).toBeNull();
     expect(result.kpis.violationsDelta).toBeNull();
@@ -109,7 +110,7 @@ describe('ActivitySummaryGenerator (gap B-46)', () => {
     );
     const generator = new ActivitySummaryGenerator(prisma as never);
 
-    const result = await generator.summary({ from: '2026-09-01', to: '2026-09-08', sort: 'name:asc', page: 1, limit: 25 });
+    const result = await generator.summary({ from: '2026-09-01', to: '2026-09-08', sort: 'name:asc', groupBy: 'driver', page: 1, limit: 25 });
 
     expect(result.kpis.drivingDeltaPct).toBeNull();
     // previous had real data (0 violations), so the delta is a real number, not null.
@@ -138,11 +139,55 @@ describe('ActivitySummaryGenerator (gap B-46)', () => {
     );
     const generator = new ActivitySummaryGenerator(prisma as never);
 
-    const result = await generator.summary({ from: '2026-09-01', to: '2026-09-08', sort: 'name:asc', page: 2, limit: 25 });
+    const result = await generator.summary({ from: '2026-09-01', to: '2026-09-08', sort: 'name:asc', groupBy: 'driver', page: 2, limit: 25 });
 
     expect(result.total).toBe(55);
     expect(result.totalPages).toBe(3); // ceil(55 / 25)
     expect(result.page).toBe(2);
     expect(result.limit).toBe(25);
+  });
+
+  it('groupBy=vehicleGroup rolls rows up by the assigned unit\'s group; ungrouped comes back as `groupId: null` / "Ungrouped"', async () => {
+    const totals = [{ driving_sec: 0n, on_sec: 0n, distance_mi: 0n, violations: 0n, has_data: true }];
+    const prisma = buildPrisma(
+      [
+        { groupId: 'vg_1', name_sort: 'Midwest', drivers: 3n, days: 20n, off_sec: 1n, sb_sec: 2n, driving_sec: 3n, on_sec: 4n, distance_mi: 5n, violations: 1n, certified_days: 18n, total: 2n },
+        { groupId: null, name_sort: null, drivers: 1n, days: 4n, off_sec: 0n, sb_sec: 0n, driving_sec: 0n, on_sec: 0n, distance_mi: 0n, violations: 0n, certified_days: 4n, total: 2n },
+      ],
+      totals,
+      totals,
+    );
+    const generator = new ActivitySummaryGenerator(prisma as never);
+
+    const result = await generator.summary({ from: '2026-09-01', to: '2026-09-08', sort: 'name:asc', groupBy: 'vehicleGroup', page: 1, limit: 25 });
+
+    expect(result.groupBy).toBe('vehicleGroup');
+    expect(result.total).toBe(2);
+    expect(result.items).toEqual([
+      { groupId: 'vg_1', name: 'Midwest', drivers: 3, days: 20, offSec: 1, sbSec: 2, drivingSec: 3, onSec: 4, distanceMi: 5, violations: 1, certifiedDays: 18 },
+      { groupId: null, name: 'Ungrouped', drivers: 1, days: 4, offSec: 0, sbSec: 0, drivingSec: 0, onSec: 0, distanceMi: 0, violations: 0, certifiedDays: 4 },
+    ]);
+    const pageSql = (prisma.$queryRaw as unknown as jest.Mock).mock.calls
+      .map(([q]: [{ strings: string[] }]) => q.strings.join(''))
+      .find((sql: string) => sql.includes('WITH agg AS'));
+    expect(pageSql).toContain('LEFT JOIN "VehicleGroup" g');
+    expect(pageSql).toContain('GROUP BY g."id", g."name"');
+  });
+
+  it('vehicleGroupId filters drivers by their assigned unit\'s group in both the page and the KPI totals (bound, never interpolated)', async () => {
+    const totals = [{ driving_sec: 0n, on_sec: 0n, distance_mi: 0n, violations: 0n, has_data: false }];
+    const prisma = buildPrisma([], totals, totals);
+    const generator = new ActivitySummaryGenerator(prisma as never);
+    const groupId = '11111111-1111-4111-8111-111111111111';
+
+    await generator.summary({ from: '2026-09-01', to: '2026-09-08', sort: 'name:asc', groupBy: 'driver', vehicleGroupId: groupId, page: 1, limit: 25 });
+
+    const calls = (prisma.$queryRaw as unknown as jest.Mock).mock.calls as Array<[{ strings: string[]; values: unknown[] }]>;
+    expect(calls).toHaveLength(3);
+    for (const [q] of calls) {
+      expect(q.strings.join('')).toContain('fv."groupId" =');
+      expect(q.strings.join('')).not.toContain(groupId);
+      expect(q.values).toContain(groupId);
+    }
   });
 });

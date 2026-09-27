@@ -105,6 +105,45 @@ Bootstrap, offline sync, duty-status changes, DVIR, signature capture for the dr
 **Done when:** driver app works fully offline for HOS-state and duty-status changes · sync reconciles queued offline actions without loss · DVIR + signature flow works end to end.
 **Depends on:** Phase 2, Phase 5, **Phase 4b (hard prerequisite)**
 
+## Phase 6b — Mobile API gaps (driver app, `mobile/tz.md` §21)
+Every driver-facing gap is closed with a NEW `/mobile/*` route only (decision `mobile/decisions.md`
+MD-001): thin controllers in `mobile.module.ts`, `@UseGuards(DriverGuard)`, calling the existing
+services with `actor = { id, type: 'driver' }`. Existing web routes, `@Perm` matrix, DTOs, response
+shapes and `PermissionGuard` do NOT change. Agents never touch git (see memory).
+**Owner:** `eld-fleet-ops` (MB-2, MB-3, MB-5, MB-10, MB-14) · `eld-realtime-offline` (MB-1, MB-7, MB-8, MB-11, MB-15, MB-19) · `eld-compliance-rods` (MB-4, MB-6, MB-18) · `eld-reports-jobs` (MB-13, MB-16) · `eld-auth-rbac` (MB-9, MB-20, MB-21, MB-22) · support: `eld-qa-test` (contract tests), `eld-security` (review)
+
+Blocking (screens cannot ship without):
+- [x] MB-1 `POST /mobile/push-tokens { token, platform, deviceLabel }` (upsert on unique `token`, `lastSeenAt`) · `DELETE /mobile/push-tokens/:token` (own token only)
+- [x] MB-2 `GET /mobile/bootstrap` adds `availableVehicles[{ id, unitNumber, make, model, deviceSerial }]` · `POST /mobile/select-vehicle { vehicleId }` → `Driver.assignedVehicleId` + `AuditLog`; unit held by another active driver → `409 CONFLICT`
+- [x] MB-3 `bootstrap.coDriver` adds `firstName, lastName, username, currentStatus` · `POST /mobile/co-driver/switch { coDriverPassword }` (verifies via `AuthService`, returns co-driver token pair, swaps primary in `CoDriverPairing`) · `POST /mobile/co-driver/leave` (`endedAt`)
+- [x] MB-4 `POST /mobile/transfers { method, rangeStart, rangeEnd, outputFileComment, recipient? }` → existing `TransfersService.create()` with `driverId = actor.id`, `requestedByType = DRIVER`; response `{ id, status, referenceId, sentAt, fileName }` · `GET /mobile/transfers?limit=5`
+- [x] MB-5 `GET /mobile/trip` (active trip + `stops[]` + `documents[]` = BOLs of trips assigned to this driver) · `PATCH /mobile/trip { shippingDocument, trailerNumber, notes }`
+- [x] MB-15 `GET /mobile/conversations` · `GET /mobile/conversations/:id/messages` · `POST /mobile/conversations/:id/messages { body, clientId }` · `POST /mobile/conversations/:id/read` (sets `ConversationParticipant.lastReadAt` + `Message.readAt`) — thin wrappers over `MessagingService`, driver sees own conversations only
+
+Important (screen works, feature missing):
+- [x] MB-6 **bug** — `POST /mobile/dvir` and sync `dvir` drop `photoAttachmentIds` before `repo.createDvir` (`mobile-dvir.service.ts:49-73`); persist them on `Defect`/`Attachment`
+- [x] MB-7 `GET /mobile/device-health` — active malfunction/diagnostic codes, `storedEventsCount`, last `bleState`, unidentified count, last HOS drift
+- [x] MB-8 sync `certify` payload accepts optional `signatureBase64` (offline certification has no `signatureImageId`)
+- [x] MB-10 `GET /mobile/dvirs?days=14` · `GET /mobile/dvirs/:id` · `GET /mobile/dvirs/:id/pdf` (pdf → `501 NOT_IMPLEMENTED`, no single-DVIR generator exists yet)
+- [x] MB-11 `POST /mobile/sync` accepts optional `backlog: { days, bytes }` → `alert.sync_backlog`
+- [x] MB-13 `Notification.kind` new column (`violation | edit_request | message | trip | unidentified | certify | maintenance`) + `objectType/objectId` populated by `AlertProcessor`; FCM `data.kind`. Existing `type` (rule uuid, D-072) unchanged
+- [x] MB-14 `GET /mobile/contacts` — fleet managers / dispatchers / co-driver / support (name, role, phone)
+- [x] MB-16 `POST /mobile/feedback` · `POST /mobile/support/tickets` · `GET /mobile/support/tickets` → existing `SupportService` with `RequesterContext.type = 'driver'`
+- [x] MB-18 `GET /mobile/logs/:date/export?format=pdf|csv`
+- [x] MB-19 `bootstrap.appUpdate { latestVersion, minVersion, notes, storeUrl }` from config/env
+
+Minor / to agree:
+- [x] MB-9 `POST /auth/login/driver` response adds `driverId`
+- [ ] MB-12 `eld.docs/erods-conformance/` output-file fixtures shared by TS `output-file.spec.ts` and the Dart `output_file_builder` test
+- [ ] MB-17 `GET/POST /mobile/speedtest` (2 MB body)
+- [x] MB-20 `@Throttle` on `POST /auth/refresh`
+- [x] MB-21 honour `JWT_DRIVER_REFRESH_TTL` / `JWT_REFRESH_TTL` env instead of the hardcoded `REFRESH_TTL_MS` map (`auth.service.ts:29-32`)
+- [ ] MB-22 `423 ACCOUNT_LOCKED` is documented but never thrown — decide: implement (affects web login too) or drop from swagger
+- [x] MB-23 fix doc comment on `PATCH /devices/:id/ble-status` (driver app reports BLE via `/ingest/ble-state`)
+- [ ] Contract tests for every new route (`eld-qa-test`) · web contract suite re-run shows 0 diff (`web-qa-a11y`)
+**Done when:** every `mobile/tz.md` §21.1 route answers a driver JWT with the documented shape · a back-office JWT gets `403 DRIVER_CONTEXT_REQUIRED` on all of them · web contract tests unchanged · `mobile/tz.md` §9.2 table updated to ✅.
+**Depends on:** Phase 6. **Blocks** mobile phases 3, 7, 8 (`mobile/tz.md` §20).
+
 ## Phase 7 — DVIR and Service
 Full defect reporting and maintenance workflow.
 **Owner:** `eld-fleet-ops`
@@ -180,6 +219,92 @@ Load, security, monitoring, backup, and long-run HOS verification before product
 - [ ] Final compliance-checklist sign-off pass
 **Done when:** k6 report shows p95 within target · 7-day HOS drift window shows zero unexplained drift · backup restore drill succeeds · all CI gates pass on the release candidate.
 **Depends on:** all prior phases
+
+## Phase 13 — Web panel gaps (`../backend_tasks.md`, 2026-09-24)
+Source: `../backend_tasks.md` (section numbers in brackets). Depends on: Phases 1–12.
+
+### 13A — Schema (eld-prisma-db)
+- [x] One migration covering every new column/table/enum value listed in 13C–13H
+
+### 13B — OpenAPI (eld-architect)
+- [x] [1] zod DTO → `requestBody` schemas + `@ApiQuery` for `@Query(zodBody)` endpoints, `components.schemas` with nullable
+- [x] [1] `GET /trips` documents `q`, `driverId` (B-59)
+- [x] [1] `npm run openapi:gen` regenerates `docs/openapi.json` after all of Phase 13; web `generate-api-types` + `test:contract` pass
+
+### 13C — RODS (eld-compliance-rods)
+- [x] [2] B-39 edit request: `proposedSpecial` NONE/PC/YM, `notifyDriver`, name-only location
+- [x] [3] B-72 `POST /logs/:driverId/events` proposed event on empty day (recordStatus 3, applied false, audit)
+- [x] [4] B-83 `requireDriverConfirmation` on unidentified assign (pending until driver confirms)
+- [x] B-38 `totalEngineHours` in `GET /logs/:driverId/events`
+- [x] B-45 `GET /carrier/transfer-config` (reports / reportsTransfer read) — gated `reports:READ`, see D-095
+
+### 13D — Reports (eld-reports-jobs)
+- [x] [5] B-48 PDF for IFTA/DVIR/ACTIVITY; FMCSA pack `include[]`, `vehicleId`; scheduled `params.window`
+- [x] [6] B-75 `GET /dvir/:id/pdf` (§396.11 record, defects, both signatures)
+- [x] [16] B-14 `ReportType` RODS + IDLE_FUEL generators
+- [x] B-46 `requestedBy { id, name }` on Report and DataTransfer rows
+- [x] B-49 `report.ready` from worker to API process (Redis pub/sub → `user:{id}`)
+
+### 13E — Notifications, alerts, storage (eld-reports-jobs)
+- [x] [15] B-41 `GET /attachments/:id/presign` → `{ url, expiresAt }`, permission-checked
+- [x] [23] B-87 `GET/PATCH /notification-channels` (org-level email/webhook)
+- [x] [24] B-86 alert rule `mutedUntil`
+- [x] [25] B-9 `POST /alert-rules/:id/test` → `{ triggered }`
+- [x] B-56 `POST /notifications/:id/read`
+- [x] B-57 `Notification.category`, `?category=`, `counts`
+- [x] B-58 human `body`, `objectType`/`objectId`, `severity` on alert notifications
+
+### 13F — Vehicles and drivers (eld-fleet-ops)
+- [x] [7] B-4 `GET /vehicles/:id/histories?date=` server-side segmentation
+- [x] B-5 `GET /vehicles/:id/activities`
+- [x] `GET /vehicles/:id/telemetry` read path
+- [x] B-35 device join on vehicles / `GET /devices?vehicleId=`
+- [x] B-7 co-driver pairings list/create/end
+- [x] [8] B-69 import `options` (drivers + vehicles)
+- [x] [10] B-74 `notify` on `POST /vehicles/:id/assign-driver`
+- [x] [11] B-81 `POST /drivers/:id/reset-password` (drivers:FULL, audit)
+- [x] [12] B-94 driver documents API (presigned upload, list, delete)
+- [x] [19] B-82 `sendInvitation` on `POST /drivers`
+- [x] B-71 `PATCH /vehicles/bulk-status`
+- [x] B-29/B-30/B-31 driver email verification, unique email, verified badge data
+
+### 13G — Trips, geofences, messaging (eld-fleet-ops)
+- [x] [9] B-73 trips: `distanceMi`, `rateUsd`, `customer`, `trailerId`, DRAFT status
+- [x] [10] B-74 `notify` on `POST /trips/:id/assign`
+- [x] [17] B-92 `estimatedDriveSec`
+- [x] [14] B-15 geofence `dwellMinutes`, `afterHoursOnly` + evaluator
+- [x] [18] B-93 geofence `ADDRESS` shape / server geocode
+- [x] B-36 trips name joins, unassigned-loads include stops
+- [x] B-37 conversations `lastMessage` + real `unreadCount`; B-67 `POST /conversations/:id/read`
+- [x] B-10 `GET /search?q=&limit=`
+
+### 13H — DVIR, devices, support, integrations, safety (eld-fleet-ops)
+- [x] B-68 defect `resolutionType` REPAIRED / NOT_REQUIRED / DEFERRED
+- [x] B-70 resolve defect: `correctedBy`, `completedAt`, `laborHours`, `partsCostUsd`
+- [x] B-42 work order: `estimatedLaborHours`, `keepOutOfService`, `notifyDriver`, `blockDispatchAssignment`
+- [x] B-47 `GET /dvir?from&to`, `GET /dvir/compliance`
+- [x] B-40 defect assignee
+- [x] [13] B-8 `GET /devices/:id/diagnostics`
+- [x] [22] B-88 device `autoFirmware`, `shareDiagnostics`
+- [x] [26] B-89 `GET /integrations/catalog`
+- [x] [27] B-90 support chat (`POST /support/chats` + socket room)
+- [x] [28] B-91 ticket server-collected attachments
+- [x] B-12 tickets/feedback allowed with `support:READ`
+- [x] B-43 driver-level coaching; B-44 scorecard previous-period baseline
+
+### 13I — Auth, users, account (eld-auth-rbac)
+- [x] B-50 `GET /me/sessions` drops `refreshHash`/`userId`; `DELETE /me/sessions` → `{ revoked }`
+- [x] B-25 `AUTH_MODE` production blocks `POST /auth/login` (403 PASSWORD_LOGIN_DISABLED)
+- [x] [20] B-85 invite `message`, `terminalIds`
+- [x] [21] B-84 `PATCH /users/:id` email (reverify), jobTitle, phone, home terminal
+- [x] [29] B-51 `PATCH /me/profile` jobTitle/phone, avatar upload/delete, `avatarUrl`
+- [x] [30] B-11 `GET/PUT /me/preferences`
+- [x] B-95 `dataTransfer` permission key split from `reportsTransfer`
+- [x] B-34 `/auth/me` profile fields; B-62 audit `actorName`/`actorEmail`; B-13 assign-driver allows `trips:FULL`
+
+### 13J — Verification
+- [x] eld-security review of new endpoints (IDOR, presign scope, reset-password, sessions) — B-090..B-100, D-103, docs/threat-model.md §11a
+- [x] eld-qa-test: tests for every 13C–13I endpoint, full suite green, dev API :3002 restarted on new build
 
 ## Global gates
 From TZ §25 — apply across every phase, not just at the end:

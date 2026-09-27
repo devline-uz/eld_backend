@@ -3,6 +3,12 @@ import { PrismaService } from '../../../core/prisma/prisma.service';
 import { LogsService } from '../../logs/logs.service';
 import type { ActivityReportParamsDto } from '../dto/reports.dto';
 import { csvFromRows } from '../lib/csv-stream';
+import { renderPdf } from '../lib/pdf-render';
+
+/** B-48 — a PDF is rendered as one HTML document (Puppeteer has no row-at-a-time PDF API), so
+ * unlike the CSV export this cannot stream. Capped well under the 250-driver x 8-day (~2000
+ * row) performance target (§19) so a pathological request still can't pin a worker (§22). */
+const PDF_ROW_CAP = 10_000;
 
 export interface ActivityReportRow {
   driverId: string;
@@ -77,5 +83,15 @@ export class ActivityReportGenerator {
       }
     }
     return { stream: csvFromRows(counted()), countRows: () => rowCount };
+  }
+
+  async pdf(params: ActivityReportParamsDto): Promise<{ pdf: Buffer; rowCount: number }> {
+    const rows: ActivityReportRow[] = [];
+    for await (const row of this.rows(params)) {
+      rows.push(row);
+      if (rows.length >= PDF_ROW_CAP) break;
+    }
+    const pdf = await renderPdf('activity-report', { from: params.from, to: params.to, rows });
+    return { pdf, rowCount: rows.length };
   }
 }

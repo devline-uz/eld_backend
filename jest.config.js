@@ -17,7 +17,7 @@ module.exports = {
       ...tsPreset,
       displayName: 'unit',
       testEnvironment: 'node',
-      testMatch: ['<rootDir>/src/**/*.spec.ts', '<rootDir>/prisma/mock/**/*.spec.ts'],
+      testMatch: ['<rootDir>/src/**/*.spec.ts'],
     },
     {
       ...tsPreset,

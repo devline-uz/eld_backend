@@ -21,6 +21,8 @@ describe('AuthService', () => {
   let tokens: MockRepo;
   let firebase: MockRepo & { enabled: boolean };
   let config: MockRepo & { isProduction: boolean };
+  let carrier: MockRepo;
+  let attachments: MockRepo;
 
   const activeUser = {
     id: 'u1',
@@ -51,6 +53,7 @@ describe('AuthService', () => {
       listActiveForUser: jest.fn(),
       revoke: jest.fn(),
       revokeAllForUser: jest.fn(),
+      revokeAllForUserExcept: jest.fn(),
     };
     driverSessions = {
       create: jest.fn(),
@@ -63,9 +66,15 @@ describe('AuthService', () => {
       signDriverAccessToken: jest.fn().mockReturnValue('daccess'),
       signPasswordResetToken: jest.fn().mockReturnValue('reset-token'),
       verifyPasswordResetToken: jest.fn().mockReturnValue({ userId: 'u1', passwordVersion: 'ver' }),
+      // MB-21 — TokenService now owns duration parsing for refresh-token DB expiry.
+      refreshTtlMs: jest.fn((subjectType: 'user' | 'driver') =>
+        subjectType === 'user' ? 30 * 24 * 60 * 60 * 1000 : 90 * 24 * 60 * 60 * 1000,
+      ),
     };
     firebase = { enabled: true, verifyIdToken: jest.fn() } as unknown as MockRepo & { enabled: boolean };
     config = { get: jest.fn(), isProduction: false } as unknown as MockRepo & { isProduction: boolean };
+    carrier = { get: jest.fn() };
+    attachments = { presignKey: jest.fn() };
 
     (passwordUtil.verifyPassword as jest.Mock).mockResolvedValue(true);
     (passwordUtil.hashPassword as jest.Mock).mockResolvedValue('newhash');
@@ -79,6 +88,8 @@ describe('AuthService', () => {
       tokens as never,
       firebase as never,
       config as never,
+      carrier as never,
+      attachments as never,
     );
   });
 
@@ -86,6 +97,19 @@ describe('AuthService', () => {
     it('throws INVALID_CREDENTIALS when user missing', async () => {
       users.findByEmailWithRole.mockResolvedValue(null);
       await expect(service.loginUser('x@y.com', 'pw', {})).rejects.toThrow(AppException);
+    });
+
+    it('B-25 — throws PASSWORD_LOGIN_DISABLED when AUTH_MODE=production, before touching the DB', async () => {
+      config.get.mockImplementation((key: string) => (key === 'AUTH_MODE' ? 'production' : undefined));
+      await expect(service.loginUser('x@y.com', 'pw', {})).rejects.toMatchObject({ code: 'PASSWORD_LOGIN_DISABLED', status: 403 });
+      expect(users.findByEmailWithRole).not.toHaveBeenCalled();
+    });
+
+    it('B-25 — AUTH_MODE=dev (default) allows password login to proceed', async () => {
+      config.get.mockImplementation((key: string) => (key === 'AUTH_MODE' ? 'dev' : undefined));
+      users.findByEmailWithRole.mockResolvedValue(activeUser);
+      sessions.create.mockResolvedValue({ id: 's1' });
+      await expect(service.loginUser('a@b.com', 'pw', {})).resolves.toBeDefined();
     });
 
     it('throws INVALID_CREDENTIALS when no passwordHash', async () => {
@@ -111,6 +135,7 @@ describe('AuthService', () => {
       const result = await service.loginUser('a@b.com', 'pw', { ip: '1.1.1.1' });
       expect(result).toEqual({ accessToken: 'access', refreshToken: 'opaque-refresh', tokenType: 'Bearer' });
       expect(users.touchLastActive).toHaveBeenCalledWith('u1');
+      expect(tokens.refreshTtlMs).toHaveBeenCalledWith('user');
     });
   });
 
@@ -133,11 +158,23 @@ describe('AuthService', () => {
       await expect(service.loginDriver('john', 'bad', {})).rejects.toThrow(AppException);
     });
 
-    it('returns tokens on success', async () => {
+    it('returns tokens plus driverId on success (MB-9)', async () => {
       drivers.findByUsername.mockResolvedValue(driver);
       driverSessions.create.mockResolvedValue({});
       const result = await service.loginDriver('john', 'pw', { userAgent: 'ua' });
-      expect(result).toEqual({ accessToken: 'daccess', refreshToken: 'opaque-refresh', tokenType: 'Bearer' });
+      expect(result).toEqual({
+        accessToken: 'daccess',
+        refreshToken: 'opaque-refresh',
+        tokenType: 'Bearer',
+        driverId: 'd1',
+      });
+    });
+
+    it('uses TokenService.refreshTtlMs(driver) for the session expiry (MB-21)', async () => {
+      drivers.findByUsername.mockResolvedValue(driver);
+      driverSessions.create.mockResolvedValue({});
+      await service.loginDriver('john', 'pw', {});
+      expect(tokens.refreshTtlMs).toHaveBeenCalledWith('driver');
     });
   });
 
@@ -368,10 +405,20 @@ describe('AuthService', () => {
   });
 
   describe('sessions', () => {
-    it('listUserSessions delegates to repository', async () => {
+    it('listUserSessions delegates to repository and marks the caller session current (B-50)', async () => {
+      sessions.listActiveForUser.mockResolvedValue([{ id: 's1' }, { id: 's2' }]);
+      const result = await service.listUserSessions('u1', 's2');
+      expect(result).toEqual([
+        { id: 's1', current: false },
+        { id: 's2', current: true },
+      ]);
+    });
+
+    it('listUserSessions never leaks refreshHash/userId (B-50)', async () => {
       sessions.listActiveForUser.mockResolvedValue([{ id: 's1' }]);
       const result = await service.listUserSessions('u1');
-      expect(result).toEqual([{ id: 's1' }]);
+      expect(result[0]).not.toHaveProperty('refreshHash');
+      expect(result[0]).not.toHaveProperty('userId');
     });
 
     it('revokeUserSession throws notFound when session missing', async () => {
@@ -385,6 +432,13 @@ describe('AuthService', () => {
       await service.revokeUserSession('u1', 's1');
       expect(sessions.revoke).toHaveBeenCalledWith('s1');
     });
+
+    it('revokeAllUserSessions delegates to the repository, keeping the current session (B-50 "Sign out everywhere")', async () => {
+      sessions.revokeAllForUserExcept.mockResolvedValue(3);
+      const revoked = await service.revokeAllUserSessions('u1', 's1');
+      expect(sessions.revokeAllForUserExcept).toHaveBeenCalledWith('u1', 's1');
+      expect(revoked).toBe(3);
+    });
   });
 
   describe('forgotPassword / resetPassword', () => {
@@ -394,15 +448,16 @@ describe('AuthService', () => {
       expect(result).toEqual({});
     });
 
-    it('forgotPassword returns resetToken outside production', async () => {
-      config.isProduction = false;
+    it('forgotPassword echoes resetToken only when echoOneTimeSecrets is on (DEV_ECHO_SECRETS)', async () => {
+      (config as unknown as { echoOneTimeSecrets: boolean }).echoOneTimeSecrets = true;
       users.findByEmailWithRole.mockResolvedValue(activeUser);
       const result = await service.forgotPassword('a@b.com');
       expect(result).toEqual({ resetToken: 'reset-token' });
     });
 
-    it('forgotPassword hides resetToken in production', async () => {
-      config.isProduction = true;
+    it('B-093 — forgotPassword hides resetToken on a non-production host without DEV_ECHO_SECRETS', async () => {
+      config.isProduction = false;
+      (config as unknown as { echoOneTimeSecrets: boolean }).echoOneTimeSecrets = false;
       users.findByEmailWithRole.mockResolvedValue(activeUser);
       const result = await service.forgotPassword('a@b.com');
       expect(result).toEqual({});
@@ -440,6 +495,49 @@ describe('AuthService', () => {
     it('extracts ip and user-agent from the request', () => {
       const req = { ip: '5.5.5.5', headers: { 'user-agent': 'Chrome' } };
       expect(AuthService.meta(req as never)).toEqual({ ip: '5.5.5.5', userAgent: 'Chrome' });
+    });
+  });
+
+  describe('meProfile (B-34 — GET /auth/me topbar fields)', () => {
+    it('enriches a user subject with fullName/email/avatarUrl/carrierName/homeTerminalTimezone', async () => {
+      users.findByIdWithRole.mockResolvedValue({
+        id: 'u1',
+        email: 'a@b.com',
+        firstName: 'Sarah',
+        lastName: 'Chen',
+        avatarKey: 'avatars/u1/x.png',
+      });
+      carrier.get.mockResolvedValue({ name: 'Universal Logistics Inc.', timezone: 'America/New_York' });
+      attachments.presignKey.mockResolvedValue({ url: 'https://minio.local/signed', expiresAt: '2026-01-01T00:00:00.000Z' });
+
+      const result = await service.meProfile({ id: 'u1', type: 'user', role: 'ADMIN', permissions: {} } as never);
+
+      expect(result).toMatchObject({
+        id: 'u1',
+        type: 'user',
+        fullName: 'Sarah Chen',
+        email: 'a@b.com',
+        avatarUrl: 'https://minio.local/signed',
+        carrierName: 'Universal Logistics Inc.',
+        homeTerminalTimezone: 'America/New_York',
+      });
+    });
+
+    it('avatarUrl is null when the user has no avatar (no presign call)', async () => {
+      users.findByIdWithRole.mockResolvedValue({ id: 'u1', email: 'a@b.com', firstName: 'Sarah', lastName: 'Chen', avatarKey: null });
+      carrier.get.mockResolvedValue({ name: 'Carrier', timezone: 'UTC' });
+
+      const result = await service.meProfile({ id: 'u1', type: 'user' } as never);
+
+      expect((result as unknown as { avatarUrl: unknown }).avatarUrl).toBeNull();
+      expect(attachments.presignKey).not.toHaveBeenCalled();
+    });
+
+    it('passes through a driver subject unchanged (B-34 is user-only)', async () => {
+      const driver = { id: 'drv_1', type: 'driver' as const };
+      const result = await service.meProfile(driver);
+      expect(result).toEqual(driver);
+      expect(users.findByIdWithRole).not.toHaveBeenCalled();
     });
   });
 });

@@ -13,6 +13,9 @@ export const CreateDeviceDto = z.object({
   firmware: z.string().max(20).optional(),
   periodicConnectedSec: z.number().int().min(2).max(7200).default(30),
   periodicDisconnectedMin: z.number().int().min(1).max(480).default(30),
+  /** §20 B-88. */
+  autoFirmware: z.boolean().default(true),
+  shareDiagnostics: z.boolean().default(true),
 });
 export type CreateDeviceDto = z.infer<typeof CreateDeviceDto>;
 
@@ -46,6 +49,9 @@ export const DeviceListQueryDto = z.object({
   q: z.string().max(200).optional(),
   status: DeviceStatusEnum.optional(),
   bleState: BleStateEnum.optional(),
+  /** §20 B-35 — `GET /devices?vehicleId=` join so the web fleet table can resolve one unit's
+   * device without pulling the whole registry (W-03 ELD SERIAL column, W-04 ELD device). */
+  vehicleId: z.string().uuid().optional(),
 });
 export type DeviceListQueryDto = z.infer<typeof DeviceListQueryDto>;
 

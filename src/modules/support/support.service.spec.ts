@@ -1,5 +1,8 @@
+import { MessagingRepository } from '../messaging/messaging.repository';
+import { MessagingService } from '../messaging/messaging.service';
 import { SupportRepository } from './support.repository';
 import { SupportService } from './support.service';
+import { TicketAttachmentsService } from './ticket-attachments.service';
 
 function makeTicket(overrides: Partial<Record<string, unknown>> = {}) {
   return {
@@ -17,6 +20,9 @@ describe('SupportService', () => {
   let repo: jest.Mocked<
     Pick<SupportRepository, 'list' | 'findById' | 'create' | 'update' | 'count' | 'createFeedback'>
   >;
+  let attachments: jest.Mocked<Pick<TicketAttachmentsService, 'collect'>>;
+  let messagingRepo: jest.Mocked<Pick<MessagingRepository, 'createConversation'>>;
+  let messaging: jest.Mocked<Pick<MessagingService, 'sendMessage'>>;
   let service: SupportService;
 
   beforeEach(() => {
@@ -28,7 +34,15 @@ describe('SupportService', () => {
       count: jest.fn(),
       createFeedback: jest.fn(),
     };
-    service = new SupportService(repo as unknown as SupportRepository);
+    attachments = { collect: jest.fn().mockResolvedValue(undefined) };
+    messagingRepo = { createConversation: jest.fn() };
+    messaging = { sendMessage: jest.fn() };
+    service = new SupportService(
+      repo as unknown as SupportRepository,
+      attachments as unknown as TicketAttachmentsService,
+      messagingRepo as unknown as MessagingRepository,
+      messaging as unknown as MessagingService,
+    );
   });
 
   it('list parses sort and returns an offset page', async () => {
@@ -84,6 +98,60 @@ describe('SupportService', () => {
 
       expect(repo.create).toHaveBeenCalledTimes(2);
       expect(result.number).toBe('TCK-000002');
+    });
+  });
+
+  describe('create — B-91 server-collected attachments', () => {
+    it('collects the requested attachments after the ticket is created, scoped to vehicleId', async () => {
+      repo.count.mockResolvedValue(0);
+      repo.create.mockResolvedValue(makeTicket({ id: 'tck_9' }) as never);
+
+      await service.create(
+        {
+          subject: 'Device offline',
+          body: 'body',
+          priority: 'NORMAL',
+          vehicleId: 'veh_1',
+          attachments: [{ kind: 'DEVICE_DIAGNOSTICS' }, { kind: 'ELD_EVENTS_24H' }],
+        },
+        { id: 'usr_1', type: 'user' },
+      );
+
+      expect(attachments.collect).toHaveBeenCalledWith('tck_9', 'veh_1', ['DEVICE_DIAGNOSTICS', 'ELD_EVENTS_24H']);
+    });
+
+    it('does not call the collector when no attachments were requested', async () => {
+      repo.count.mockResolvedValue(0);
+      repo.create.mockResolvedValue(makeTicket() as never);
+
+      await service.create({ subject: 'Help', body: 'body', priority: 'NORMAL' }, { id: 'usr_1', type: 'user' });
+
+      expect(attachments.collect).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('createChat (B-90)', () => {
+    it('opens a SUPPORT conversation for the requester and sends the first message', async () => {
+      messagingRepo.createConversation.mockResolvedValue({ id: 'cnv_9' } as never);
+      messaging.sendMessage.mockResolvedValue({ id: 'msg_1' } as never);
+
+      const result = await service.createChat({ subject: 'Need help', message: 'Hi there' }, { id: 'usr_1', type: 'user' });
+
+      expect(messagingRepo.createConversation).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'SUPPORT', title: 'Need help', createdById: 'usr_1' }),
+        [{ userId: 'usr_1' }],
+      );
+      expect(messaging.sendMessage).toHaveBeenCalledWith('cnv_9', { body: 'Hi there' }, { id: 'usr_1', type: 'user' });
+      expect(result).toEqual({ conversationId: 'cnv_9', messageId: 'msg_1' });
+    });
+
+    it('scopes the conversation to a driver participant for a driver requester', async () => {
+      messagingRepo.createConversation.mockResolvedValue({ id: 'cnv_10' } as never);
+      messaging.sendMessage.mockResolvedValue({ id: 'msg_2' } as never);
+
+      await service.createChat({ message: 'Hi' }, { id: 'drv_1', type: 'driver' });
+
+      expect(messagingRepo.createConversation).toHaveBeenCalledWith(expect.anything(), [{ driverId: 'drv_1' }]);
     });
   });
 

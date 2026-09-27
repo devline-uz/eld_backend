@@ -226,6 +226,8 @@ describe('ReportProcessor (real Report row, IFTA end to end)', () => {
       undefined as never, // ACTIVITY generator not exercised by this test
       undefined as never, // DVIR generator not exercised by this test
       undefined as never, // FMCSA_PACK generator not exercised by this test
+      undefined as never, // RODS generator not exercised by this test
+      undefined as never, // IDLE_FUEL generator not exercised by this test
     );
 
     await processor.process({ id: 'job1', name: 'report.generate', data: { reportId: report.id } } as never);

@@ -4,7 +4,7 @@ import { FIGMA_SCREENS } from '../decorators/figma-screens';
 
 /** Minimal document factory — only the fields the auditor reads. */
 function docWith(op: Record<string, unknown>, path = '/api/things'): OpenAPIObject {
-  return { openapi: '3.0.0', info: { title: 't', version: '1' }, paths: { [path]: { get: op } } } as OpenAPIObject;
+  return { openapi: '3.0.0', info: { title: 't', version: '1' }, paths: { [path]: { get: op } } } as unknown as OpenAPIObject;
 }
 
 const goodOp = {

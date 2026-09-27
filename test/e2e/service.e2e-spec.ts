@@ -162,7 +162,7 @@ describe('DVIR / Service (e2e, tz.md §5.10)', () => {
       const res = await request(server())
         .patch(`/api/defects/${defect.id}/resolve`)
         .set(auth())
-        .send({ status: 'REPAIRED', resolutionNote: 'Brakes replaced and re-tested.' });
+        .send({ resolutionType: 'REPAIRED', resolutionNote: 'Brakes replaced and re-tested.' });
       expect(res.status).toBe(200);
       expect(res.body.data.status).toBe('REPAIRED');
 
@@ -194,7 +194,7 @@ describe('DVIR / Service (e2e, tz.md §5.10)', () => {
       expect(blockedClose.status).toBe(409);
       expect(blockedClose.body.code).toBe('DEFECT_NOT_RESOLVED');
 
-      const resolve = await request(server()).patch(`/api/defects/${defect.id}/resolve`).set(auth()).send({ status: 'REPAIRED' });
+      const resolve = await request(server()).patch(`/api/defects/${defect.id}/resolve`).set(auth()).send({ resolutionType: 'REPAIRED' });
       expect(resolve.status).toBe(200);
 
       const closed = await request(server()).post(`/api/work-orders/${workOrderId}/close`).set(auth());

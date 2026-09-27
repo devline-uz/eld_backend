@@ -23,6 +23,9 @@ const PUBLIC_ROUTES = new Set([
   'POST /auth/refresh',
   'POST /auth/password/forgot',
   'POST /auth/password/reset',
+  // B-84 — email re-verification token is self-authenticating (same convention as
+  // password/reset above); no bearer token exists yet if the caller followed the link cold.
+  'POST /auth/email/verify',
   'GET /health/live',
   'GET /health/ready',
   'GET /health/deep',
@@ -40,9 +43,19 @@ const SELF_SCOPED_ROUTES = new Map<string, string>([
   ['GET /me/profile', 'Caller own profile, id taken from the token claims.'],
   ['PATCH /me/profile', 'Caller\'s own name/phone only — never role.'],
   ['GET /me/sessions', 'Caller\'s own sessions.'],
+  ['DELETE /me/sessions', 'B-50 "Sign out everywhere" — every OTHER session of the caller, never another user\'s.'],
   ['DELETE /me/sessions/:id', 'Session id is scoped to the caller inside AuthService.'],
+  ['POST /me/avatar', 'B-51 — caller\'s own avatar, id taken from the token claims.'],
+  ['DELETE /me/avatar', 'B-51 — caller\'s own avatar, id taken from the token claims.'],
+  ['GET /me/preferences', 'B-11 — caller\'s own preferences, id taken from the token claims.'],
+  ['PUT /me/preferences', 'B-11 — caller\'s own preferences, id taken from the token claims.'],
   ['GET /notifications', 'Caller\'s own inbox (§14 bell icon).'],
   ['POST /notifications/read-all', 'Caller\'s own inbox.'],
+  ['POST /notifications/:id/read', 'B-56 — repo update is filtered by the caller\'s own userId/driverId; a foreign id is 404.'],
+  [
+    'GET /attachments/:id/presign',
+    'B-41 — AttachmentsService.mayView walks the owning DVIR/defect/ticket: owning driver, dvir/support READ, or the ticket author; unknown owner chain and foreign ids are 404 (D-096).',
+  ],
   [
     'POST /logs/:driverId/certify',
     'A driver certifies their own day (`driverId` from the token); any other principal is treated as on-behalf and needs hosCertifyOnBehalf = FULL inside LogsService.',
@@ -53,6 +66,7 @@ const SELF_SCOPED_ROUTES = new Map<string, string>([
  * (they append §395 records or an eRODS transfer row and need the richer before/after). */
 const SERVICE_AUDITED_ROUTES = new Set([
   'POST /logs/:driverId/edit-requests',
+  'POST /logs/:driverId/events', // B-72 — LogsService.proposeEvent writes LOG_EVENT_PROPOSED
   'POST /transfers',
   'POST /unidentified/:id/assign',
   'POST /unidentified/:id/annotate',
@@ -60,6 +74,11 @@ const SERVICE_AUDITED_ROUTES = new Set([
   'POST /violations/:id/resolve',
   'POST /integrations/webhook/test',
 ]);
+
+/** Mutations deliberately gated at READ (tz.md §20 B-12): a user who can only *view* support
+ * may still open a ticket/chat or leave feedback about the product — the row is their own and
+ * carries no fleet data. Everything else that writes needs FULL. */
+const READ_LEVEL_MUTATIONS = new Set(['POST /support/tickets', 'POST /support/chats', 'POST /feedback']);
 
 describe('HTTP surface: every route makes an authorization decision', () => {
   it('found the whole controller surface', () => {
@@ -97,6 +116,7 @@ describe('HTTP surface: every route makes an authorization decision', () => {
     const weak = routes
       .filter((route) => ['POST', 'PUT', 'PATCH', 'DELETE'].includes(route.method))
       .filter((route) => route.perm?.level === 'READ')
+      .filter((route) => !READ_LEVEL_MUTATIONS.has(route.route))
       .map((route) => route.route);
     expect(weak).toEqual([]);
   });

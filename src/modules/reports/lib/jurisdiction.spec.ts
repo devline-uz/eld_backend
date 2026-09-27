@@ -1,4 +1,4 @@
-import { haversineMiles, jurisdictionFor, JURISDICTION_BOXES } from './jurisdiction';
+import { haversineMiles, isKnownJurisdiction, jurisdictionFor, JURISDICTION_BOXES, listJurisdictions } from './jurisdiction';
 
 describe('jurisdictionFor (TZ §15 IFTA jurisdiction lookup)', () => {
   it('resolves a well-known point inside Ohio', () => {
@@ -34,5 +34,26 @@ describe('haversineMiles', () => {
     const miles = haversineMiles(39.9612, -82.9988, 38.0406, -84.5037);
     expect(miles).toBeGreaterThan(145);
     expect(miles).toBeLessThan(165);
+  });
+});
+
+describe('listJurisdictions (W-12 `Jurisdiction` menu)', () => {
+  it('lists every resolvable code exactly once, each with a real name', () => {
+    const items = listJurisdictions();
+    expect(items.map((i) => i.code).sort()).toEqual(JURISDICTION_BOXES.map((b) => b.code).sort());
+    for (const item of items) expect(item.name).not.toBe(item.code);
+  });
+
+  it('puts US states first, then Canadian provinces, each sorted by name', () => {
+    const items = listJurisdictions();
+    const firstCa = items.findIndex((i) => i.country === 'CA');
+    expect(items.slice(firstCa).every((i) => i.country === 'CA')).toBe(true);
+    expect(items[0]).toEqual({ code: 'AL', name: 'Alabama', country: 'US' });
+    expect(items.find((i) => i.code === 'ON')).toEqual({ code: 'ON', name: 'Ontario', country: 'CA' });
+  });
+
+  it('isKnownJurisdiction accepts listed codes only', () => {
+    expect(isKnownJurisdiction('OH')).toBe(true);
+    expect(isKnownJurisdiction('ZZ')).toBe(false);
   });
 });

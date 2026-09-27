@@ -5,6 +5,7 @@ import type { Request } from 'express';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Public } from '../../common/decorators/public.decorator';
 import { zodBody } from '../../common/pipes/zod-validation.pipe';
+import type { ContextUser } from '../../core/context/request-context';
 import { AuthService } from './auth.service';
 import { apiError, ApiStandardErrors, ERROR_CODES } from '../../common/errors';
 import { FigmaScreen } from '../../common/decorators/figma-screen.decorator';
@@ -16,6 +17,7 @@ import {
   LogoutDto,
   RefreshTokenDto,
   ResetPasswordDto,
+  VerifyEmailChangeDto,
 } from './dto/auth.dto';
 
 /** TZ §11.1 — auth endpoint list. Every rule lives in AuthService; this stays thin. */
@@ -33,7 +35,7 @@ export class AuthController {
     description: 'Access+refresh tokens.',
     schema: { example: { accessToken: 'eyJ...', refreshToken: 'a1b2...', tokenType: 'Bearer' } },
   })
-  @ApiStandardErrors({ public: true, errors: [{ status: 401, code: ERROR_CODES.INVALID_CREDENTIALS, message: 'Email or password is incorrect.' }, { status: 423, code: ERROR_CODES.ACCOUNT_LOCKED, message: 'Too many failed attempts — the account is temporarily locked.' }, apiError.rateLimited('Login is limited to 5 attempts per minute per IP (TZ §6.5).')] })
+  @ApiStandardErrors({ public: true, errors: [{ status: 401, code: ERROR_CODES.INVALID_CREDENTIALS, message: 'Email or password is incorrect.' }, { status: 423, code: ERROR_CODES.ACCOUNT_LOCKED, message: 'Too many failed attempts — the account is temporarily locked.' }, { status: 403, code: ERROR_CODES.PASSWORD_LOGIN_DISABLED, message: 'AUTH_MODE=production — sign in with Google instead (B-25).' }, apiError.rateLimited('Login is limited to 5 attempts per minute per IP (TZ §6.5).')] })
   login(@Body(zodBody(LoginDto)) dto: LoginDto, @Req() req: Request) {
     return this.auth.loginUser(dto.email, dto.password, AuthService.meta(req));
   }
@@ -43,7 +45,8 @@ export class AuthController {
   @Post('login/driver')
   @ApiOperation({ summary: 'Driver password login (TZ §6.1).' })
   @ApiOkResponse({
-    schema: { example: { accessToken: 'eyJ...', refreshToken: 'a1b2...', tokenType: 'Bearer' } },
+    description: 'MB-9 — `driverId` is additive so the mobile app can name its per-driver offline DB file.',
+    schema: { example: { accessToken: 'eyJ...', refreshToken: 'a1b2...', tokenType: 'Bearer', driverId: 'drv_1' } },
   })
   @ApiStandardErrors({ public: true, errors: [{ status: 401, code: ERROR_CODES.INVALID_CREDENTIALS, message: 'Username or password is incorrect.' }, apiError.rateLimited()] })
   loginDriver(@Body(zodBody(DriverLoginDto)) dto: DriverLoginDto, @Req() req: Request) {
@@ -65,12 +68,17 @@ export class AuthController {
   }
 
   @Public()
+  // MB-20: web polls this every ~14 min (access TTL 15 min) and mobile at most once per 24h
+  // (access TTL 24h), so one legitimate caller needs well under 1 req/min; 30/min/IP gives
+  // headroom for several sessions behind one NAT/proxy while still capping brute-force guessing
+  // of opaque refresh tokens (TZ §6.5).
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Post('refresh')
   @ApiOperation({ summary: 'Rotates a refresh token (TZ §6.5 — rotated on every use).' })
   @ApiOkResponse({
     schema: { example: { accessToken: 'eyJ...', refreshToken: 'a1b2...', tokenType: 'Bearer' } },
   })
-  @ApiStandardErrors({ public: true, errors: [{ status: 401, code: ERROR_CODES.REFRESH_TOKEN_REUSED, message: 'This refresh token was already rotated — the whole session family is revoked (TZ §6.5).' }] })
+  @ApiStandardErrors({ public: true, errors: [{ status: 401, code: ERROR_CODES.REFRESH_TOKEN_REUSED, message: 'This refresh token was already rotated — the whole session family is revoked (TZ §6.5).' }, apiError.rateLimited('Refresh is limited to 30 requests per minute per IP.')] })
   refresh(@Body(zodBody(RefreshTokenDto)) dto: RefreshTokenDto, @Req() req: Request) {
     return this.auth.refresh(dto.refreshToken, dto.subjectType, AuthService.meta(req));
   }
@@ -105,15 +113,25 @@ export class AuthController {
     return { success: true };
   }
 
+  @Public()
+  @Post('email/verify')
+  @ApiOperation({ summary: 'B-84 — completes a `PATCH /users/:id { email }` re-verification.' })
+  @ApiOkResponse({ schema: { example: { success: true } } })
+  @ApiStandardErrors({ public: true, errors: [{ status: 401, code: ERROR_CODES.TOKEN_INVALID, message: 'The verification link is invalid or expired.' }, apiError.conflict(ERROR_CODES.CONFLICT, 'Another user already has this email.')] })
+  async verifyEmailChange(@Body(zodBody(VerifyEmailChangeDto)) dto: VerifyEmailChangeDto) {
+    await this.auth.verifyEmailChange(dto.token);
+    return { success: true };
+  }
+
   @Get('me')
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'The authenticated principal (TZ §6.3 token claims, minus signature).' })
+  @ApiOperation({ summary: 'The authenticated principal (TZ §6.3 token claims), plus B-34 topbar fields for a `user` subject.' })
   @ApiOkResponse({
-    schema: { example: { id: 'usr_1', type: 'user', role: 'ADMIN', permissions: {} } },
+    schema: { example: { id: 'usr_1', type: 'user', role: 'ADMIN', permissions: {}, fullName: 'Sarah Chen', email: 'sarah.chen@universal-logistics.com', avatarUrl: null, carrierName: 'Universal Logistics Inc.', homeTerminalTimezone: 'America/New_York' } },
   })
   @FigmaScreen('web/my-profile')
   @ApiStandardErrors()
-  me(@CurrentUser() user: unknown) {
-    return user;
+  me(@CurrentUser() user: ContextUser) {
+    return this.auth.meProfile(user);
   }
 }

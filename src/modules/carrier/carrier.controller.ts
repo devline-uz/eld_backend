@@ -28,6 +28,21 @@ export class CarrierController {
     return this.carrier.get();
   }
 
+  @Get('transfer-config')
+  // B-45 / decisions.md D-095 — `reports:READ`: every seeded role holding `reportsTransfer`
+  // also holds `reports`, and the four values are non-sensitive display data.
+  @Perm('reports', 'READ')
+  @FigmaScreen('web/send-logs-to-safety-official', 'web/reports-fmcsa-audit-pack')
+  @ApiOperation({
+    summary:
+      'B-45 — eRODS transfer settings for the report/transfer screens: timezone, Appendix A identifiers and the TEST/PRODUCTION mode (read-only).',
+  })
+  @ApiOkResponse({ schema: { example: { timezone: 'America/New_York', eldIdentifier: 'OBK1', eldRegistrationId: null, erodsMode: 'TEST' } } })
+  @ApiStandardErrors()
+  getTransferConfig() {
+    return this.carrier.getTransferConfig();
+  }
+
   @Patch()
   @Perm('carrierSettings', 'FULL')
   @Audit({ object: 'Carrier', action: 'UPDATE' })

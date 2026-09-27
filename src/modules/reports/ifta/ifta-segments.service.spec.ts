@@ -13,8 +13,8 @@ describe('IftaSegmentsService.computeForDate (TZ §15 nightly IftaSegment comput
   }
 
   function buildRepo(points: ReturnType<typeof point>[], existing: { jurisdiction: string; locked: boolean }[] = []) {
-    const upsertSegment = jest.fn(async () => undefined);
-    const lockQuarter = jest.fn(async () => 0);
+    const upsertSegment = jest.fn(async (..._args: unknown[]) => undefined);
+    const lockQuarter = jest.fn(async (..._args: unknown[]) => 0);
     return {
       repo: {
         distinctVehicleIdsWithTelemetry: jest.fn(async () => [{ vehicleId: 'veh_1' }]),

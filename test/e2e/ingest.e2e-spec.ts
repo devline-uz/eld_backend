@@ -137,7 +137,7 @@ describe('Ingest (e2e, TZ §7)', () => {
 
     expect(res.status).toBe(202);
     expect(res.body.data.warnings[0].code).toBe('CHECKSUM_MISMATCH');
-    const stored = await prisma.eldEvent.findFirst({ where: { uuid: bad.uuid as string } });
+    const stored = await prisma.eldEvent.findFirst({ where: { uuid: (bad as Record<string, unknown>).uuid as string } });
     expect(stored).not.toBeNull();
     expect(stored!.diagnosticCode).toBe('3');
   });

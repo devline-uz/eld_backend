@@ -9,6 +9,9 @@ import { EventsModule } from '../../core/events/events.module';
 import { FirebaseModule } from '../../core/firebase/firebase.module';
 import { TokenService } from '../auth/token.service';
 import { RealtimeModule } from './realtime.module';
+import { CommonModule } from '../../common/common.module';
+import { StorageModule } from '../../core/storage/storage.module';
+import { S3StorageService } from '../../core/storage/s3-storage.service';
 
 /**
  * B-0NN regression guard (WB-011 on the web side): `RealtimeGateway` injects `TokenVerifier`
@@ -28,12 +31,22 @@ describe('RealtimeModule wiring', () => {
     });
 
     const moduleRef = await Test.createTestingModule({
-      imports: [AppConfigModule, PrismaModule, EventsModule, FirebaseModule, RealtimeModule],
+      imports: [
+        AppConfigModule,
+        PrismaModule,
+        EventsModule,
+        FirebaseModule,
+        CommonModule,
+        StorageModule,
+        RealtimeModule,
+      ],
     })
       .overrideProvider(AppConfigService)
       .useValue(new AppConfigService(env))
       .overrideProvider(PrismaService)
       .useValue({ $connect: jest.fn(), $disconnect: jest.fn() })
+      .overrideProvider(S3StorageService)
+      .useValue({})
       .compile();
 
     const verifier = moduleRef.get(TokenVerifier);

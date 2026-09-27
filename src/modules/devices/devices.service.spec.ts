@@ -202,4 +202,30 @@ describe('DevicesService', () => {
     );
     expect(devicesRepo.delete).not.toHaveBeenCalled();
   });
+
+  it('diagnostics() 404s for an unknown device', async () => {
+    devicesRepo.findById.mockResolvedValue(null);
+    await expect(service.diagnostics('missing')).rejects.toBeInstanceOf(AppException);
+  });
+
+  it('diagnostics() derives responded:false (not an error) for a device that has never reported', async () => {
+    devicesRepo.findById.mockResolvedValue(makeDevice({ bleState: 'DISCONNECTED', lastSeenAt: null }) as never);
+    await expect(service.diagnostics('dev_1')).resolves.toEqual({ signalStrength: 'poor', gpsLock: false, responded: false });
+  });
+
+  it('create() persists autoFirmware/shareDiagnostics (B-88)', async () => {
+    devicesRepo.findBySerial.mockResolvedValue(null);
+    devicesRepo.create.mockResolvedValue(makeDevice() as never);
+
+    await service.create({
+      serial: 'PT30_A86E',
+      model: 'PT30',
+      periodicConnectedSec: 30,
+      periodicDisconnectedMin: 30,
+      autoFirmware: false,
+      shareDiagnostics: false,
+    } as never);
+
+    expect(devicesRepo.create).toHaveBeenCalledWith(expect.objectContaining({ autoFirmware: false, shareDiagnostics: false }));
+  });
 });

@@ -35,6 +35,8 @@ export interface DvirCreateInput {
     severity: 'MINOR' | 'MAJOR' | 'CRITICAL';
     description: string;
     outOfService: boolean;
+    /** MB-6 — `Attachment.id`s already validated as the driver's own, unlinked DVIR photos. */
+    photoAttachmentIds?: string[];
   }>;
 }
 
@@ -180,6 +182,7 @@ export class MobileRepository extends BaseRepository<
   // ---------------------------------------------------------------------
 
   async createDvir(input: DvirCreateInput): Promise<Dvir> {
+    const photoIds = input.defects.flatMap((defect) => defect.photoAttachmentIds ?? []);
     return this.prisma.dvir.create({
       data: {
         driverId: input.driverId,
@@ -195,20 +198,24 @@ export class MobileRepository extends BaseRepository<
         notes: input.notes ?? null,
         driverSignatureUrl: input.driverSignatureUrl,
         driverSignatureHash: input.driverSignatureHash,
+        // MB-6 — nested `create` (not `createMany`) so each defect can `connect` its photos;
+        // the whole DVIR + defects + photo links land in ONE transaction.
         defects: input.defects.length
           ? {
-              createMany: {
-                data: input.defects.map((defect) => ({
-                  vehicleId: defect.vehicleId,
-                  part: defect.part,
-                  category: defect.category,
-                  severity: defect.severity,
-                  description: defect.description,
-                  outOfService: defect.outOfService,
-                })),
-              },
+              create: input.defects.map((defect) => ({
+                vehicleId: defect.vehicleId,
+                part: defect.part,
+                category: defect.category,
+                severity: defect.severity,
+                description: defect.description,
+                outOfService: defect.outOfService,
+                ...(defect.photoAttachmentIds?.length
+                  ? { photos: { connect: defect.photoAttachmentIds.map((id) => ({ id })) } }
+                  : {}),
+              })),
             }
           : undefined,
+        ...(photoIds.length ? { photos: { connect: photoIds.map((id) => ({ id })) } } : {}),
       },
       include: { defects: true },
     });

@@ -1,6 +1,7 @@
 /**
- * Jest setup for the `e2e` project. Reuses the dev-DB guard from the `integration` setup
- * (these specs boot the real Nest app against `onebook_eld_dev`), but forces
+ * Jest setup for the `e2e` project. Reuses the test-DB guard from the `integration` setup
+ * (these specs boot the real Nest app against the dedicated `onebook_eld_test` DB, D-105),
+ * but forces
  * `LOG_PRETTY=false`: pino-pretty spawns a worker-thread transport by resolving a module
  * path that does not exist under ts-jest's CommonJS output, which hangs/crashes
  * `Test.createTestingModule` before a single request is made. Plain JSON logs are fine

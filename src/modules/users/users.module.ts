@@ -1,5 +1,6 @@
 import { Module, OnModuleInit } from '@nestjs/common';
 import { AuditSnapshotRegistry } from '../../common/audit/audit-snapshot.registry';
+import { AttachmentsModule } from '../attachments/attachments.module';
 import { AuthModule } from '../auth/auth.module';
 import { RolesModule } from '../roles/roles.module';
 import { MeController } from './me.controller';
@@ -8,7 +9,8 @@ import { UsersRepository } from './users.repository';
 import { UsersService } from './users.service';
 
 @Module({
-  imports: [AuthModule, RolesModule],
+  // AttachmentsModule — B-51 avatarUrl reuses the reusable presign helper (AttachmentsService).
+  imports: [AuthModule, RolesModule, AttachmentsModule],
   controllers: [UsersController, MeController],
   providers: [UsersService, UsersRepository],
   exports: [UsersService, UsersRepository],

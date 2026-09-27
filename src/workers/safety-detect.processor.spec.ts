@@ -5,7 +5,13 @@ function buildProcessor(fences: unknown[] = []) {
   const alertJobs: Array<{ name: string; data: unknown }> = [];
   const publishedEvents: string[] = [];
 
-  const prisma = { telemetryPoint: { findFirst: jest.fn(async () => null) } };
+  const prisma = {
+    telemetryPoint: {
+      findFirst: jest.fn(async () => null),
+      findMany: jest.fn(async (): Promise<Array<{ time: Date; latitude: number; longitude: number }>> => []),
+    },
+    carrier: { findFirst: jest.fn(async () => ({ timezone: 'America/New_York' })) },
+  };
   const safety = { createMany: jest.fn(async (rows: unknown[]) => createManyCalls.push(...rows)) };
   const geofences = { activeCircleFences: jest.fn(async () => fences) };
   const events = { publish: jest.fn(async (name: string) => publishedEvents.push(name)) };
@@ -98,5 +104,73 @@ describe('SafetyDetectProcessor — geofences', () => {
       },
     } as never);
     expect(alertJobs.filter((j) => j.name.startsWith('alert.geofence'))).toHaveLength(0);
+  });
+
+  it('§20 B-15 — suppresses an after-hours-only ENTER during business hours (UTC carrier tz)', async () => {
+    const afterHoursFence = { ...fence, afterHoursOnly: true };
+    const { processor, alertJobs, prisma } = buildProcessor([afterHoursFence]);
+    prisma.carrier.findFirst = jest.fn(async () => ({ timezone: 'UTC' }));
+    await processor.process({
+      data: {
+        vehicleId: 'veh_1',
+        driverId: 'drv_1',
+        points: [
+          { time: '2026-09-11T14:00:00.000Z', latitude: 41.0, longitude: -83.0 },
+          { time: '2026-09-11T14:00:01.000Z', latitude: 40.0, longitude: -83.0 },
+        ],
+      },
+    } as never);
+    expect(alertJobs.some((j) => j.name === 'alert.geofence_enter')).toBe(false);
+  });
+
+  it('§20 B-15 — allows an after-hours-only ENTER at 22:00 UTC', async () => {
+    const afterHoursFence = { ...fence, afterHoursOnly: true };
+    const { processor, alertJobs, prisma } = buildProcessor([afterHoursFence]);
+    prisma.carrier.findFirst = jest.fn(async () => ({ timezone: 'UTC' }));
+    await processor.process({
+      data: {
+        vehicleId: 'veh_1',
+        driverId: 'drv_1',
+        points: [
+          { time: '2026-09-11T22:00:00.000Z', latitude: 41.0, longitude: -83.0 },
+          { time: '2026-09-11T22:00:01.000Z', latitude: 40.0, longitude: -83.0 },
+        ],
+      },
+    } as never);
+    expect(alertJobs.some((j) => j.name === 'alert.geofence_enter')).toBe(true);
+  });
+
+  it('§20 B-15 — raises alert.geofence_dwell once the vehicle has been inside long enough', async () => {
+    const dwellFence = { ...fence, alertOnEnter: false, alertOnExit: false, dwellMinutes: 30 };
+    const { processor, alertJobs, prisma } = buildProcessor([dwellFence]);
+    // Already inside for 40 minutes by the time this batch's last point lands.
+    prisma.telemetryPoint.findMany = jest.fn(async () => [
+      { time: new Date('2026-09-11T00:39:00.000Z'), latitude: 40.0, longitude: -83.0 },
+      { time: new Date('2026-09-11T00:00:00.000Z'), latitude: 40.0, longitude: -83.0 },
+    ]);
+    await processor.process({
+      data: {
+        vehicleId: 'veh_1',
+        driverId: 'drv_1',
+        points: [{ time: '2026-09-11T00:40:00.000Z', latitude: 40.0, longitude: -83.0 }],
+      },
+    } as never);
+    expect(alertJobs.some((j) => j.name === 'alert.geofence_dwell')).toBe(true);
+  });
+
+  it('§20 B-15 — no dwell alert while still under the threshold', async () => {
+    const dwellFence = { ...fence, alertOnEnter: false, alertOnExit: false, dwellMinutes: 30 };
+    const { processor, alertJobs, prisma } = buildProcessor([dwellFence]);
+    prisma.telemetryPoint.findMany = jest.fn(async () => [
+      { time: new Date('2026-09-11T00:10:00.000Z'), latitude: 40.0, longitude: -83.0 },
+    ]);
+    await processor.process({
+      data: {
+        vehicleId: 'veh_1',
+        driverId: 'drv_1',
+        points: [{ time: '2026-09-11T00:10:00.000Z', latitude: 40.0, longitude: -83.0 }],
+      },
+    } as never);
+    expect(alertJobs.some((j) => j.name === 'alert.geofence_dwell')).toBe(false);
   });
 });

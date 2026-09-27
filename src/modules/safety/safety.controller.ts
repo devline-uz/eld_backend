@@ -41,8 +41,8 @@ export class SafetyController {
 
   @Get('scorecard')
   @Perm('safety', 'READ')
-  @ApiOperation({ summary: 'Fleet safety score and per-driver ranking ("Driver scorecard", below-70 flagged).' })
-  @ApiOkResponse({ schema: { example: { items: [{ driverId: 'drv_1', score: 68, harshCount: 4, rank: 1 }], periodStart: '2026-08-12', periodEnd: '2026-09-11' } } })
+  @ApiOperation({ summary: 'Fleet safety score and per-driver ranking ("Driver scorecard", below-70 flagged). B-44: each row includes previousScore/trend vs. the prior period of the same length.' })
+  @ApiOkResponse({ schema: { example: { items: [{ driverId: 'drv_1', score: 68, harshCount: 4, rank: 1, previousScore: 74, trend: -6 }], periodStart: '2026-08-12', periodEnd: '2026-09-11' } } })
   @ApiStandardErrors()
   scorecard(@Query(zodBody(ScorecardQueryDto)) query: ScorecardQueryDto) {
     return this.safety.scorecard(query);
@@ -51,9 +51,9 @@ export class SafetyController {
   @Post('coaching')
   @Perm('safety', 'FULL')
   @Audit({ object: 'SafetyEvent', action: 'COACH' })
-  @ApiOperation({ summary: '"Assign coaching" — closes a safety event as COACHED with a note.' })
+  @ApiOperation({ summary: '"Assign coaching" — closes a safety event as COACHED with a note. B-43: pass `driverId` instead of `eventId` to assign at the driver level (coaches that driver\'s most recent open event).' })
   @ApiOkResponse({ schema: { example: { id: 'sfe_1', status: 'COACHED', coachedById: 'usr_1' } } })
-  @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.NOT_FOUND, 'Safety event not found.')] })
+  @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.NOT_FOUND, 'Safety event not found (or no open event for the given driverId).')] })
   coach(@Body(zodBody(AssignCoachingDto)) dto: AssignCoachingDto, @CurrentUser() actor: ContextUser) {
     return this.safety.coach(dto, actor.id);
   }

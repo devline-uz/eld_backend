@@ -4,6 +4,7 @@ import type { Job, Queue } from 'bullmq';
 import { AppConfigService } from '../core/config/config.service';
 import { QUEUES } from '../core/queue/queue.constants';
 import { PrismaService } from '../core/prisma/prisma.service';
+import { resolveScheduleParams } from '../modules/reports/lib/report-window';
 import { ReportSchedulesRepository } from '../modules/reports/reports.repository';
 import { ReportsService, type ReportJobData } from '../modules/reports/reports.service';
 
@@ -63,11 +64,19 @@ export class ReportSchedulerProcessor extends WorkerHost implements OnModuleInit
     let enqueued = 0;
     for (const schedule of due) {
       try {
+        // B-48 — `params.window` is resolved to a concrete `from`/`to` (or `quarter` for
+        // IFTA) HERE, on each tick, in the schedule's own timezone — never once at
+        // schedule-creation time, or every run would re-generate the same fixed period.
+        const params = resolveScheduleParams(schedule.reportType, schedule.params as Record<string, unknown>, schedule.timezone, now);
         const report = await this.prisma.report.create({
           data: {
             type: schedule.reportType,
             format: schedule.format,
-            params: schedule.params as object,
+            // D-102: eslint's projectService type-checks this against a laxer Json type than
+            // `tsc -p tsconfig.build.json` (the real build); without the cast `nest build` fails
+            // with TS2322 (Record<string, unknown> not assignable to Prisma's InputJsonValue).
+            // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
+            params: params as object,
             requestedById: schedule.createdById,
           },
         });

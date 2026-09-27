@@ -41,12 +41,26 @@ export const CreateAlertRuleDto = z.object({
 });
 export type CreateAlertRuleDto = z.infer<typeof CreateAlertRuleDto>;
 
-export const UpdateAlertRuleDto = CreateAlertRuleDto.partial().omit({ key: true });
+export const UpdateAlertRuleDto = CreateAlertRuleDto.partial().omit({ key: true }).extend({
+  /** §20 B-86 — "Mute for 24h" row menu; `null` clears the mute immediately. */
+  mutedUntil: z.coerce.date().nullable().optional(),
+});
 export type UpdateAlertRuleDto = z.infer<typeof UpdateAlertRuleDto>;
+
+/** §20 B-57 — the two segments the notifications panel renders. */
+export const NotificationCategoryEnum = z.enum(['VIOLATIONS', 'MAINTENANCE']);
 
 export const NotificationListQueryDto = z.object({
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(200).default(25),
   unreadOnly: z.coerce.boolean().default(false),
+  category: NotificationCategoryEnum.optional(),
 });
 export type NotificationListQueryDto = z.infer<typeof NotificationListQueryDto>;
+
+/** §20 B-87 — `GET/PATCH /notification-channels` (org-level, `Carrier.notificationChannels`). */
+export const NotificationChannelsDto = z.object({
+  email: z.object({ enabled: z.boolean() }).optional(),
+  webhook: z.object({ enabled: z.boolean(), url: z.string().url().optional() }).optional(),
+});
+export type NotificationChannelsDto = z.infer<typeof NotificationChannelsDto>;

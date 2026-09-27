@@ -5,7 +5,9 @@ import { ActivityReportGenerator } from './generators/activity-report.generator'
 import { ActivitySummaryGenerator } from './generators/activity-summary.generator';
 import { DvirReportGenerator } from './generators/dvir-report.generator';
 import { FmcsaPackGenerator } from './generators/fmcsa-pack.generator';
+import { IdleFuelReportGenerator } from './generators/idle-fuel-report.generator';
 import { IftaReportGenerator } from './generators/ifta-report.generator';
+import { RodsReportGenerator } from './generators/rods-report.generator';
 import { IftaSegmentsRepository } from './ifta/ifta-segments.repository';
 import { IftaSegmentsService } from './ifta/ifta-segments.service';
 import { ReportsController } from './reports.controller';
@@ -31,6 +33,8 @@ import { ReportsService } from './reports.service';
     ActivitySummaryGenerator,
     DvirReportGenerator,
     FmcsaPackGenerator,
+    RodsReportGenerator,
+    IdleFuelReportGenerator,
     IftaSegmentsService,
     IftaSegmentsRepository,
   ],
@@ -43,6 +47,8 @@ import { ReportsService } from './reports.service';
     ActivitySummaryGenerator,
     DvirReportGenerator,
     FmcsaPackGenerator,
+    RodsReportGenerator,
+    IdleFuelReportGenerator,
     IftaSegmentsService,
     IftaSegmentsRepository,
   ],

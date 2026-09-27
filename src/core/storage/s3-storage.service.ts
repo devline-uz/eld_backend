@@ -36,6 +36,9 @@ export class S3StorageService implements StoragePort {
       endpoint: config.get('S3_ENDPOINT'),
       forcePathStyle: config.get('S3_FORCE_PATH_STYLE'),
       credentials: accessKeyId && secretAccessKey ? { accessKeyId, secretAccessKey } : undefined,
+      // B-091 — SDK >= 3.729 otherwise bakes a CRC32 of the *empty* body into every presigned
+      // PUT URL (`x-amz-checksum-crc32=AAAAAA==`), so a real upload fails with BadDigest.
+      requestChecksumCalculation: 'WHEN_REQUIRED',
     });
   }
 
@@ -115,15 +118,22 @@ export class S3StorageService implements StoragePort {
     }
   }
 
-  presignPut(key: string, contentType: string, ttlSec?: number): Promise<string> {
+  presignPut(key: string, contentType: string, ttlSec?: number, contentLength?: number): Promise<string> {
+    // B-091 — without `signableHeaders` the presigner signs only `host`: the uploader could
+    // PUT any Content-Type (stored XSS via `text/html` served from the bucket origin) and
+    // any size. Binding both headers makes S3/MinIO reject a mismatching upload.
     return getSignedUrl(
       this.client,
       new PutObjectCommand({
         Bucket: this.bucket,
         Key: this.withPrefix(key),
         ContentType: contentType,
+        ...(contentLength !== undefined && { ContentLength: contentLength }),
       }),
-      { expiresIn: ttlSec ?? this.defaultTtl },
+      {
+        expiresIn: ttlSec ?? this.defaultTtl,
+        signableHeaders: new Set(['content-type', ...(contentLength !== undefined ? ['content-length'] : [])]),
+      },
     );
   }
 

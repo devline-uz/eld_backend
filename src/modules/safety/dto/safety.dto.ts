@@ -14,11 +14,21 @@ export const SafetyEventListQueryDto = ListQueryDto.extend({
 });
 export type SafetyEventListQueryDto = z.infer<typeof SafetyEventListQueryDto>;
 
-/** TZ eld.docs/web §9 — "Driver scorecard, Assign coaching orqali o'quv tayinlanadi". */
-export const AssignCoachingDto = z.object({
-  eventId: z.string().uuid(),
-  note: z.string().max(1000).optional(),
-});
+/**
+ * TZ eld.docs/web §9 — "Driver scorecard, Assign coaching orqali o'quv tayinlanadi". §20 B-43 —
+ * coaching can be assigned directly at the driver level (`driverId`, e.g. from the scorecard row)
+ * without first picking a specific event; `eventId` is still accepted for the existing
+ * event-driven flow. Exactly one of the two is required.
+ */
+export const AssignCoachingDto = z
+  .object({
+    eventId: z.string().uuid().optional(),
+    driverId: z.string().uuid().optional(),
+    note: z.string().max(1000).optional(),
+  })
+  .refine((v) => Boolean(v.eventId) !== Boolean(v.driverId), {
+    message: 'Provide exactly one of eventId or driverId.',
+  });
 export type AssignCoachingDto = z.infer<typeof AssignCoachingDto>;
 
 export const UpdateSafetyEventDto = z.object({

@@ -8,6 +8,8 @@ export interface DefectListFilter {
   status?: Defect['status'];
   severity?: Defect['severity'];
   outOfService?: boolean;
+  /** §20 B-40. */
+  assigneeId?: string;
 }
 
 export interface DefectListPage {
@@ -37,6 +39,7 @@ export class DefectsRepository extends BaseRepository<
       ...(filter.status && { status: filter.status }),
       ...(filter.severity && { severity: filter.severity }),
       ...(filter.outOfService !== undefined && { outOfService: filter.outOfService }),
+      ...(filter.assigneeId && { assigneeId: filter.assigneeId }),
     };
     const [items, total] = await Promise.all([
       this.prisma.defect.findMany({ where, orderBy, skip: (page - 1) * limit, take: limit }),

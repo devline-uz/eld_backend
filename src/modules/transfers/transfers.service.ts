@@ -203,8 +203,8 @@ export class TransfersService {
     return { transfer: stored, warnings: preSend.warnings, counts: validation.counts };
   }
 
-  list(query: TransferListQueryDto) {
-    return this.repo.listTransfers(
+  async list(query: TransferListQueryDto) {
+    const page = await this.repo.listTransfers(
       {
         ...(query.driverId && { driverId: query.driverId }),
         ...(query.status !== 'ALL' && { status: query.status }),
@@ -212,12 +212,16 @@ export class TransfersService {
       query.page,
       query.limit,
     );
+    const byId = await this.repo.resolveRequestedByMany(page.items);
+    return { ...page, items: page.items.map((item) => withRequestedBy(item, byId)) };
   }
 
-  async get(id: string): Promise<DataTransfer> {
+  /** B-46 — `requestedBy: { id, name }` on read. */
+  async get(id: string) {
     const transfer = await this.repo.findTransfer(id);
     if (!transfer) throw AppException.notFound(`Transfer ${id} not found.`);
-    return transfer;
+    const byId = await this.repo.resolveRequestedByMany([transfer]);
+    return withRequestedBy(transfer, byId);
   }
 
   /**
@@ -280,4 +284,13 @@ export class TransfersService {
       .slice(0, 16)
       .toUpperCase();
   }
+}
+
+/** B-46 — shapes `requestedById`/`requestedByType` into `{ id, name } | null` using the
+ * batched lookup from `TransfersRepository.resolveRequestedByMany`. */
+function withRequestedBy<T extends { requestedById: string | null; requestedByType: 'USER' | 'DRIVER' | 'SYSTEM' }>(
+  transfer: T,
+  byId: Map<string, { id: string; name: string }>,
+): T & { requestedBy: { id: string; name: string } | null } {
+  return { ...transfer, requestedBy: transfer.requestedById ? byId.get(transfer.requestedById) ?? null : null };
 }

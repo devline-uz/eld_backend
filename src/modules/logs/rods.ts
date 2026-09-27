@@ -207,9 +207,15 @@ export function statusInEffectAt(events: RodsEvent[], at: Date): DutyStatus | nu
 }
 
 /** Active DRIVING intervals (§395.30 — the time no edit may ever touch). */
-export function drivingIntervals(events: RodsEvent[], now: Date = new Date()): Array<{ startAt: Date; endAt: Date }> {
+export function drivingIntervals(
+  events: RodsEvent[],
+  now: Date = new Date(),
+): Array<{ startAt: Date; endAt: Date; open: boolean }> {
   const normalized = normalizeEvents(mapEldEventsToNormalized(activeRecords(events)), now);
-  return buildSegments(normalized, now)
-    .filter((segment) => segment.effective === 'D')
-    .map((segment) => ({ startAt: segment.start, endAt: segment.end }));
+  const segments = buildSegments(normalized, now);
+  return segments
+    .map((segment, index) => ({ segment, last: index === segments.length - 1 }))
+    .filter(({ segment }) => segment.effective === 'D')
+    // B-073 / D-089 — the final segment ends at `now`, not at a record: driving still in force.
+    .map(({ segment, last }) => ({ startAt: segment.start, endAt: segment.end, open: last }));
 }

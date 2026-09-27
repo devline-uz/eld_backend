@@ -22,6 +22,12 @@ export class AppConfigService {
     return this.env.NODE_ENV === 'test';
   }
 
+  /** B-093 — whether a one-time secret may be echoed in an API response (dev convenience).
+   * Never in production, and elsewhere only when `DEV_ECHO_SECRETS=true`. */
+  get echoOneTimeSecrets(): boolean {
+    return !this.isProduction && this.env.DEV_ECHO_SECRETS;
+  }
+
   get corsOrigins(): string[] {
     return this.env.CORS_ORIGINS.split(',')
       .map((o) => o.trim())

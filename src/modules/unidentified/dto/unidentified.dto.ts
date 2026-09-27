@@ -4,7 +4,7 @@ import { z } from 'zod';
 const annotation = z.string().trim().min(4).max(60);
 
 export const UnidentifiedListQueryDto = z.object({
-  status: z.enum(['PENDING', 'ASSIGNED', 'REJECTED', 'ANNOTATED', 'ALL']).default('PENDING'),
+  status: z.enum(['PENDING', 'PENDING_CONFIRMATION', 'ASSIGNED', 'REJECTED', 'ANNOTATED', 'ALL']).default('PENDING'),
   vehicleId: z.string().uuid().optional(),
   from: z.coerce.date().optional(),
   to: z.coerce.date().optional(),
@@ -16,6 +16,12 @@ export type UnidentifiedListQueryDto = z.infer<typeof UnidentifiedListQueryDto>;
 export const AssignUnidentifiedDto = z.object({
   driverId: z.string().uuid(),
   annotation: annotation.optional(),
+  /**
+   * B-83 — `true`: nothing is attributed yet. The segment goes to `PENDING_CONFIRMATION`, the
+   * driver is asked in the app, and the records move to their log only when they confirm
+   * (`POST /unidentified/:id/confirm`).
+   */
+  requireDriverConfirmation: z.boolean().optional(),
 });
 export type AssignUnidentifiedDto = z.infer<typeof AssignUnidentifiedDto>;
 

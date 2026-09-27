@@ -21,8 +21,8 @@ export class MobileDvirController {
   constructor(private readonly dvir: MobileDvirService) {}
 
   @Post('signature')
-  @ApiOperation({ summary: 'Uploads captured signature/photo bytes to object storage; returns an id referenced by /mobile/dvir or /mobile/certify.' })
-  @ApiCreatedResponse({ schema: { example: { signatureImageId: 'sig_9c2a', key: 'signatures/drv_1/sig_9c2a.png', sha256: 'a1b2...', sizeBytes: 4821 } } })
+  @ApiOperation({ summary: 'Uploads captured signature/photo bytes to object storage; returns an id referenced by /mobile/dvir or /mobile/certify. purpose = DVIR_PHOTO also creates an Attachment row (attachmentId) to pass in defects[].photoAttachmentIds (MB-6).' })
+  @ApiCreatedResponse({ schema: { example: { signatureImageId: 'sig_9c2a', attachmentId: null, key: 'signatures/drv_1/sig_9c2a.png', sha256: 'a1b2...', sizeBytes: 4821 } } })
   @ApiStandardErrors({ errors: [apiError.unprocessable(ERROR_CODES.VALIDATION_FAILED, 'The base64 payload decoded to zero bytes.')] })
   uploadSignature(@Body(zodBody(SignatureUploadDto)) dto: SignatureUploadDto, @CurrentUser('id') driverId: string) {
     return this.dvir.uploadSignature(driverId, dto);
@@ -32,10 +32,10 @@ export class MobileDvirController {
   @ApiOperation({ summary: 'Driver DVIR submission: inspection, defects and the driver signature.' })
   @ApiCreatedResponse({
     schema: {
-      example: { id: 'dvir_1', vehicleId: 'veh_1', type: 'PRE_TRIP', vehicleCondition: 'DEFECTS_FOUND', defectCount: 1, outOfService: false, applied: true },
+      example: { id: 'dvir_1', vehicleId: 'veh_1', type: 'PRE_TRIP', vehicleCondition: 'DEFECTS_FOUND', defectCount: 1, photoCount: 2, outOfService: false, applied: true },
     },
   })
-  @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.VEHICLE_NOT_FOUND, 'Vehicle not found.')] })
+  @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.VEHICLE_NOT_FOUND, 'Vehicle not found.'), apiError.unprocessable(ERROR_CODES.VALIDATION_FAILED, 'photoAttachmentIds must reference this driver\'s own, not yet attached DVIR_PHOTO uploads (MB-6).')] })
   submit(@Body(zodBody(DvirSubmitDto)) dto: DvirSubmitDto, @CurrentUser() actor: ContextUser) {
     return this.dvir.submit(actor.id, dto, actor);
   }

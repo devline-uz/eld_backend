@@ -19,6 +19,8 @@ export const CreateVehicleDto = z.object({
   odometerMi: z.number().int().min(0).default(0),
   busType: BusTypeEnum.optional(),
   notes: z.string().max(500).optional(),
+  /** Vehicle group (`/vehicle-groups`); `null` on update removes the unit from its group. */
+  groupId: z.string().uuid().nullable().optional(),
 });
 export type CreateVehicleDto = z.infer<typeof CreateVehicleDto>;
 
@@ -39,8 +41,32 @@ export type CalibrateOdometerDto = z.infer<typeof CalibrateOdometerDto>;
 
 export const AssignDriverDto = z.object({
   driverId: z.string().uuid(),
+  effectiveAt: z.coerce.date().optional(),
+  /** §20 B-74 — sends the existing driver-app notification on assignment; defaults to true. */
+  notify: z.boolean().default(true),
 });
 export type AssignDriverDto = z.infer<typeof AssignDriverDto>;
+
+/** §20 B-71 — `PATCH /vehicles/bulk-status`, one transaction per row with per-row errors. */
+export const BulkUpdateVehicleStatusDto = z.object({
+  ids: z.array(z.string().uuid()).min(1).max(500),
+  status: VehicleStatusEnum,
+});
+export type BulkUpdateVehicleStatusDto = z.infer<typeof BulkUpdateVehicleStatusDto>;
+
+/** §20 B-4 — `GET /vehicles/:id/histories?date=`. */
+export const VehicleHistoriesQueryDto = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD'),
+});
+export type VehicleHistoriesQueryDto = z.infer<typeof VehicleHistoriesQueryDto>;
+
+/** §20 B-1 (telemetry read) — `GET /vehicles/:id/telemetry`. */
+export const VehicleTelemetryQueryDto = z.object({
+  from: z.coerce.date().optional(),
+  to: z.coerce.date().optional(),
+  limit: z.coerce.number().int().min(1).max(2000).default(500),
+});
+export type VehicleTelemetryQueryDto = z.infer<typeof VehicleTelemetryQueryDto>;
 
 export const VehicleListQueryFields = ['unitNumber', 'vin', 'make', 'model', 'createdAt'] as const;
 
@@ -50,12 +76,31 @@ export const VehicleListQueryDto = z.object({
   sort: z.string().max(60).optional(),
   q: z.string().max(200).optional(),
   status: VehicleStatusEnum.optional(),
+  /** A group id, or `none` for units in no group. */
+  groupId: z.union([z.string().uuid(), z.literal('none')]).optional(),
 });
 export type VehicleListQueryDto = z.infer<typeof VehicleListQueryDto>;
 
+/** §20 B-69 — options that actually change import behavior, not just carried along. */
+export const ImportVehiclesOptionsDto = z.object({
+  duplicateStrategy: z.enum(['UPDATE_BY_VIN', 'SKIP', 'CREATE']).default('UPDATE_BY_VIN'),
+  defaultTerminal: z.string().max(120).optional(),
+  pairDevices: z.boolean().default(false),
+  emailSummary: z.boolean().default(false),
+});
+export type ImportVehiclesOptionsDto = z.infer<typeof ImportVehiclesOptionsDto>;
+
+/** A row can additionally carry a `deviceSerial` to pair — only consumed when
+ * `options.pairDevices` is true (§20 B-69); `CreateVehicleDto`/`POST /vehicles` stay untouched. */
+export const ImportVehicleRowDto = CreateVehicleDto.extend({
+  deviceSerial: z.string().max(60).optional(),
+});
+export type ImportVehicleRowDto = z.infer<typeof ImportVehicleRowDto>;
+
 /** Fleet import (TZ Phase 2 — "fleet import"/"fleet export" round-trip without loss). */
 export const ImportVehiclesDto = z.object({
-  vehicles: z.array(CreateVehicleDto).min(1).max(1000),
+  vehicles: z.array(ImportVehicleRowDto).min(1).max(1000),
+  options: ImportVehiclesOptionsDto.optional(),
 });
 export type ImportVehiclesDto = z.infer<typeof ImportVehiclesDto>;
 
@@ -74,3 +119,27 @@ export const ImportTrailersDto = z.object({
   trailers: z.array(CreateTrailerDto).min(1).max(1000),
 });
 export type ImportTrailersDto = z.infer<typeof ImportTrailersDto>;
+
+/** Vehicle groups — web W-12 IFTA `Vehicle group` filter, W-13 Activity `Group by`. */
+export const CreateVehicleGroupDto = z.object({
+  name: z.string().trim().min(1).max(80),
+  description: z.string().max(300).nullable().optional(),
+  /** Display colour for the group chip, `#RRGGBB`. */
+  color: z
+    .string()
+    .regex(/^#[0-9a-fA-F]{6}$/, 'color must be #RRGGBB')
+    .nullable()
+    .optional(),
+  /** Units to put in the group on create (each moves out of any previous group). */
+  vehicleIds: z.array(z.string().uuid()).max(1000).optional(),
+});
+export type CreateVehicleGroupDto = z.infer<typeof CreateVehicleGroupDto>;
+
+export const UpdateVehicleGroupDto = CreateVehicleGroupDto.omit({ vehicleIds: true }).partial();
+export type UpdateVehicleGroupDto = z.infer<typeof UpdateVehicleGroupDto>;
+
+/** `PUT /vehicle-groups/:id/vehicles` — replaces the group's membership with exactly these units. */
+export const SetVehicleGroupMembersDto = z.object({
+  vehicleIds: z.array(z.string().uuid()).max(1000),
+});
+export type SetVehicleGroupMembersDto = z.infer<typeof SetVehicleGroupMembersDto>;

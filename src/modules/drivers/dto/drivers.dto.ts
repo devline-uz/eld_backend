@@ -35,6 +35,9 @@ export const CreateDriverDto = z.object({
 
   /** Optional; a random temp password is generated (and hashed, never returned) if omitted. */
   password: z.string().min(8).max(72).optional(),
+
+  /** §20 B-82 — defaults true (current behavior: always invite). */
+  sendInvitation: z.boolean().default(true),
 });
 export type CreateDriverDto = z.infer<typeof CreateDriverDto>;
 
@@ -62,7 +65,47 @@ export const DriverRosterQueryDto = DriverListQueryDto.extend({
 });
 export type DriverRosterQueryDto = z.infer<typeof DriverRosterQueryDto>;
 
+/** §20 B-69 — options that actually change import behavior, not just carried along. */
+export const ImportDriversOptionsDto = z.object({
+  duplicateStrategy: z.enum(['SKIP', 'UPDATE', 'CREATE']).default('UPDATE'),
+  defaultHomeTerminalName: z.string().min(1).max(120).optional(),
+  sendInvitations: z.boolean().default(false),
+  applyDefaultExemptions: z.boolean().default(false),
+});
+export type ImportDriversOptionsDto = z.infer<typeof ImportDriversOptionsDto>;
+
 export const ImportDriversDto = z.object({
   drivers: z.array(CreateDriverDto).min(1).max(1000),
+  options: ImportDriversOptionsDto.optional(),
 });
 export type ImportDriversDto = z.infer<typeof ImportDriversDto>;
+
+/** §20 B-94 (tz.md §20 B-16) — driver qualification documents (CDL scan, medical card, ...). */
+export const DriverDocumentTypeEnum = z.enum(['CDL', 'MEDICAL_CARD', 'MVR', 'OTHER']);
+
+/** B-091 — the only MIME types a driver qualification document may be uploaded as. Anything
+ * a browser would render as active content (`text/html`, `image/svg+xml`, ...) is refused. */
+export const DRIVER_DOCUMENT_CONTENT_TYPES = {
+  'application/pdf': 'pdf',
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/heic': 'heic',
+  'image/webp': 'webp',
+} as const;
+export const DRIVER_DOCUMENT_MAX_BYTES = 10 * 1024 * 1024;
+
+export const CreateDriverDocumentDto = z.object({
+  type: DriverDocumentTypeEnum,
+  /** Display name only — never part of the storage key (B-091). */
+  fileName: z.string().min(1).max(200),
+  contentType: z.enum(Object.keys(DRIVER_DOCUMENT_CONTENT_TYPES) as [keyof typeof DRIVER_DOCUMENT_CONTENT_TYPES, ...(keyof typeof DRIVER_DOCUMENT_CONTENT_TYPES)[]]),
+  /** Exact byte size of the file; signed into the presigned PUT as `content-length`. */
+  sizeBytes: z.number().int().min(1).max(DRIVER_DOCUMENT_MAX_BYTES),
+  expiresAt: z.coerce.date().optional(),
+});
+export type CreateDriverDocumentDto = z.infer<typeof CreateDriverDocumentDto>;
+
+export const VerifyDriverEmailDto = z.object({
+  token: z.string().min(1),
+});
+export type VerifyDriverEmailDto = z.infer<typeof VerifyDriverEmailDto>;

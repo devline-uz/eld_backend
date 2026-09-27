@@ -24,7 +24,7 @@ export class AuditController {
   @ApiOkResponse({
     schema: {
       example: {
-        items: [{ id: '42', actorType: 'USER', action: 'UPDATE', objectType: 'Role', objectId: 'role_1' }],
+        items: [{ id: '42', actorType: 'USER', actorName: 'Sarah Chen', actorEmail: 'sarah.chen@universal-logistics.com', action: 'UPDATE', objectType: 'Role', objectId: 'role_1' }],
         nextCursor: null,
       },
     },

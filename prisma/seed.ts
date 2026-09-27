@@ -72,11 +72,15 @@ function anchorPlus(hh: number, mm: number): DateTime {
 // ---------------------------------------------------------------------------
 
 type PermissionLevel = 'NONE' | 'READ' | 'FULL';
+// B-95 — `dataTransfer` is an additive 23rd key split from `reportsTransfer`
+// (src/common/decorators/permission.types.ts); ADMIN's `Object.fromEntries` below gives it
+// FULL automatically, the other three roles are listed explicitly.
 const PERMISSION_KEYS = [
   'dashboard', 'liveFleet', 'vehicles', 'drivers', 'hos', 'hosEdit',
   'hosCertifyOnBehalf', 'dvir', 'maintenance', 'safety', 'trips',
   'reports', 'reportsTransfer', 'messaging', 'devices', 'alertRules',
   'users', 'roles', 'integrations', 'auditLog', 'support', 'carrierSettings',
+  'dataTransfer',
 ] as const;
 
 const ROLE_MATRIX: Record<string, Record<(typeof PERMISSION_KEYS)[number], PermissionLevel>> = {
@@ -89,21 +93,21 @@ const ROLE_MATRIX: Record<string, Record<(typeof PERMISSION_KEYS)[number], Permi
     hosEdit: 'FULL', hosCertifyOnBehalf: 'NONE', dvir: 'FULL', maintenance: 'FULL',
     safety: 'FULL', trips: 'FULL', reports: 'FULL', reportsTransfer: 'FULL', messaging: 'FULL',
     devices: 'FULL', alertRules: 'FULL', users: 'NONE', roles: 'NONE', integrations: 'NONE',
-    auditLog: 'NONE', support: 'FULL', carrierSettings: 'NONE',
+    auditLog: 'NONE', support: 'FULL', carrierSettings: 'NONE', dataTransfer: 'FULL',
   },
   DISPATCHER: {
     dashboard: 'FULL', liveFleet: 'FULL', vehicles: 'READ', drivers: 'READ', hos: 'READ',
     hosEdit: 'NONE', hosCertifyOnBehalf: 'NONE', dvir: 'READ', maintenance: 'READ',
     safety: 'READ', trips: 'FULL', reports: 'READ', reportsTransfer: 'NONE', messaging: 'FULL',
     devices: 'READ', alertRules: 'NONE', users: 'NONE', roles: 'NONE', integrations: 'NONE',
-    auditLog: 'NONE', support: 'FULL', carrierSettings: 'NONE',
+    auditLog: 'NONE', support: 'FULL', carrierSettings: 'NONE', dataTransfer: 'NONE',
   },
   VIEWER: {
     dashboard: 'READ', liveFleet: 'READ', vehicles: 'READ', drivers: 'READ', hos: 'READ',
     hosEdit: 'NONE', hosCertifyOnBehalf: 'NONE', dvir: 'READ', maintenance: 'READ',
     safety: 'READ', trips: 'NONE', reports: 'READ', reportsTransfer: 'NONE', messaging: 'NONE',
     devices: 'NONE', alertRules: 'NONE', users: 'NONE', roles: 'NONE', integrations: 'NONE',
-    auditLog: 'NONE', support: 'READ', carrierSettings: 'NONE',
+    auditLog: 'NONE', support: 'READ', carrierSettings: 'NONE', dataTransfer: 'NONE',
   },
 };
 
@@ -722,6 +726,45 @@ async function main(): Promise<void> {
         body: 'Critical brake defect — WO-2214 opened.',
         objectType: 'Vehicle',
         objectId: unit110Id,
+      },
+    });
+  }
+
+  // §12.7/§14 — B-39/B-74/B-83/B-15 default delivery: a background driver app only gets FCM
+  // when SOME AlertRule matches the job name (`AlertProcessor.findByEvent`). No such rule
+  // existed for these three driver-subject events, so a driver with the app closed got nothing
+  // (D-095 follow-up). `subjectDriver: true` + IN_APP resolves to that driver and triggers
+  // `AlertProcessor.send`'s existing IN_APP-notification + FCM pairing; `notifyDriver`/`notify`
+  // false already short-circuits at the call site (no job is ever enqueued), so these rules
+  // never need their own suppression logic.
+  const defaultDriverAlertRules: Array<{
+    key: string;
+    name: string;
+    severity: 'CRITICAL' | 'WARNING' | 'INFO';
+    event: string;
+  }> = [
+    { key: 'default_edit_request', name: 'Log edit request', severity: 'WARNING', event: 'alert.edit_request' },
+    {
+      key: 'default_unidentified_confirmation_requested',
+      name: 'Unidentified driving confirmation requested',
+      severity: 'WARNING',
+      event: 'alert.unidentified_confirmation_requested',
+    },
+    { key: 'default_trip_assigned', name: 'Trip assigned', severity: 'INFO', event: 'alert.trip_assigned' },
+  ];
+  for (const rule of defaultDriverAlertRules) {
+    await prisma.alertRule.upsert({
+      where: { key: rule.key },
+      update: {},
+      create: {
+        key: rule.key,
+        name: rule.name,
+        severity: rule.severity,
+        conditions: [{ event: rule.event }],
+        channels: ['IN_APP'],
+        recipients: { subjectDriver: true },
+        enabled: true,
+        isSystem: true,
       },
     });
   }

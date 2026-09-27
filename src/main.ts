@@ -6,6 +6,7 @@ import helmet from 'helmet';
 import { Logger } from 'nestjs-pino';
 import { AppModule } from './app.module';
 import { AppConfigService } from './core/config/config.service';
+import { applyZodSwagger, attachZodComponents } from './common/swagger/zod-swagger';
 
 /**
  * Shared app wiring (prefix, pipes, CORS, helmet) between the real entrypoint and e2e
@@ -60,7 +61,9 @@ async function bootstrap(): Promise<void> {
  * serves at `/docs` (tasks.md Global gate: every endpoint documented with examples).
  */
 export function buildOpenApiDocument(app: INestApplication, prefix: string): OpenAPIObject {
-  return SwaggerModule.createDocument(
+  // Phase 13B — zod DTOs → requestBody / query params / components.schemas.
+  applyZodSwagger(app);
+  const doc = SwaggerModule.createDocument(
     app,
     new DocumentBuilder()
       .setTitle('OneBook ELD API')
@@ -70,6 +73,7 @@ export function buildOpenApiDocument(app: INestApplication, prefix: string): Ope
       .addServer(`/${prefix}`)
       .build(),
   );
+  return attachZodComponents(doc);
 }
 
 function setupSwagger(app: INestApplication, prefix: string): void {

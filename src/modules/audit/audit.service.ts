@@ -8,6 +8,10 @@ export interface AuditLogView {
   id: string;
   actorId: string;
   actorType: EditorType;
+  /** B-62 — `null` for `SYSTEM` actors (API keys) and for a `USER`/`DRIVER` row that no
+   * longer exists (deleted since the audit entry was written). */
+  actorName: string | null;
+  actorEmail: string | null;
   action: string;
   objectType: string;
   objectId: string;
@@ -67,8 +71,19 @@ export class AuditService implements OnModuleInit {
     });
   }
 
+  /** B-62 — the `USER ustuni "USER" ko'rsatadi` gap: resolves `actorName`/`actorEmail` for
+   * every row in one extra pair of batched queries (never per-row). */
   async list(filter: AuditLogFilter, limit: number, cursor?: string): Promise<{ items: AuditLogView[]; nextCursor: string | null }> {
     const { items, nextCursor } = await this.repo.list(filter, limit, cursor);
-    return { items: items.map((i) => ({ ...i, id: String(i.id) })), nextCursor };
+    const userIds = items.filter((i) => i.actorType === EditorType.USER).map((i) => i.actorId);
+    const driverIds = items.filter((i) => i.actorType === EditorType.DRIVER).map((i) => i.actorId);
+    const actors = await this.repo.findActorNames(userIds, driverIds);
+    return {
+      items: items.map((i) => {
+        const actor = actors.get(i.actorId);
+        return { ...i, id: String(i.id), actorName: actor?.name ?? null, actorEmail: actor?.email ?? null };
+      }),
+      nextCursor,
+    };
   }
 }

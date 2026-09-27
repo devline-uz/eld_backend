@@ -38,7 +38,7 @@ export interface PreSendContext {
   driverExists: boolean;
   rangeStart: Date;
   rangeEnd: Date;
-  /** Unidentified segments touching the range that are still PENDING. */
+  /** Unidentified segments touching the range that are still unresolved (PENDING / PENDING_CONFIRMATION). */
   unresolvedUnidentifiedCount: number;
   /** Days in the range whose `DailyLog.certified` is false. */
   uncertifiedDayCount: number;

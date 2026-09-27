@@ -91,7 +91,16 @@ describe('S3StorageService', () => {
     getSignedUrl.mockResolvedValue('https://signed-put-url');
     const url = await service.presignPut('reports/x.pdf', 'application/pdf', 120);
     expect(url).toBe('https://signed-put-url');
-    expect(getSignedUrl).toHaveBeenCalledWith(expect.anything(), expect.anything(), { expiresIn: 120 });
+    expect(getSignedUrl).toHaveBeenCalledWith(expect.anything(), expect.anything(), { expiresIn: 120, signableHeaders: new Set(['content-type']) });
+  });
+
+  it('B-091 — presignPut() signs content-type and content-length so the upload cannot swap either', async () => {
+    const service = new S3StorageService(makeConfig() as never);
+    getSignedUrl.mockResolvedValue('https://signed-put-url');
+    await service.presignPut('driver-documents/d/x.pdf', 'application/pdf', 900, 2048);
+    const [, command, options] = getSignedUrl.mock.calls.at(-1) as [unknown, { input: Record<string, unknown> }, { signableHeaders: Set<string> }];
+    expect(command.input).toMatchObject({ ContentType: 'application/pdf', ContentLength: 2048 });
+    expect([...options.signableHeaders].sort()).toEqual(['content-length', 'content-type']);
   });
 
   it('presignGet() falls back to the configured default ttl when none is given', async () => {

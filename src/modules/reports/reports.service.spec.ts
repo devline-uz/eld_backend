@@ -11,6 +11,7 @@ describe('ReportsService (TZ §15)', () => {
       create: jest.fn(async (data: object) => ({ id: 'rpt_1', status: 'QUEUED', ...data })),
       list: jest.fn(async () => ({ items: [], total: 0 })),
       findById: jest.fn(async () => null),
+      findByIdWithRequestedBy: jest.fn(async (): Promise<Record<string, unknown> | null> => null),
     };
     const schedules = {
       create: jest.fn(async (data: object) => ({ id: 'sch_1', ...data })),
@@ -100,22 +101,28 @@ describe('ReportsService (TZ §15)', () => {
     });
   });
 
-  it('rejects a non-FMCSA_PACK report requested as PDF', async () => {
+  it('B-48 — allows IFTA/ACTIVITY/DVIR to be requested as PDF, not just CSV', async () => {
+    const { service, repo } = build();
+    await service.generate({ type: 'IFTA', format: 'PDF', params: { quarter: '2026-Q3' } }, actor);
+    expect(repo.create).toHaveBeenCalledWith(expect.objectContaining({ type: 'IFTA', format: 'PDF' }));
+  });
+
+  it('rejects a format outside REPORT_TYPE_FORMATS for the type (e.g. RODS as CSV)', async () => {
     const { service } = build();
-    await expect(service.generate({ type: 'IFTA', format: 'PDF', params: {} }, actor)).rejects.toMatchObject({
-      code: ERROR_CODES.VALIDATION_FAILED,
-    });
+    await expect(service.generate({ type: 'RODS', format: 'CSV', params: { from: '2026-09-01', to: '2026-09-08' } }, actor)).rejects.toMatchObject(
+      { code: ERROR_CODES.VALIDATION_FAILED },
+    );
   });
 
   it('download() 409s with REPORT_NOT_READY when the report has not finished', async () => {
     const { service, repo } = build();
-    repo.findById.mockResolvedValueOnce({ id: 'rpt_1', status: 'QUEUED', fileKey: null });
+    repo.findByIdWithRequestedBy.mockResolvedValueOnce({ id: 'rpt_1', status: 'QUEUED', fileKey: null, requestedBy: null });
     await expect(service.download('rpt_1')).rejects.toMatchObject({ code: ERROR_CODES.REPORT_NOT_READY });
   });
 
   it('download() returns a fresh 7-day presigned URL once READY', async () => {
     const { service, repo, storage } = build();
-    repo.findById.mockResolvedValueOnce({ id: 'rpt_1', status: 'READY', fileKey: 'reports/rpt_1.csv' });
+    repo.findByIdWithRequestedBy.mockResolvedValueOnce({ id: 'rpt_1', status: 'READY', fileKey: 'reports/rpt_1.csv', requestedBy: null });
     const result = await service.download('rpt_1');
     expect(result.downloadUrl).toBe('https://minio.local/signed');
     expect(storage.presignGet).toHaveBeenCalledWith('reports/rpt_1.csv', 7 * 24 * 60 * 60);

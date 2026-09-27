@@ -29,6 +29,14 @@ export class MessagingService {
     return this.repo.createConversation({ type: dto.type, title: dto.title, createdById: actor.id }, participants);
   }
 
+  /** §20 B-67 — `POST /conversations/:id/read`. */
+  async markRead(conversationId: string, actor: ContextUser) {
+    await this.assertParticipant(conversationId, actor);
+    const readAt = new Date();
+    await this.repo.markRead(conversationId, toParticipant(actor), readAt);
+    return { conversationId, lastReadAt: readAt };
+  }
+
   private async assertParticipant(conversationId: string, actor: ContextUser): Promise<void> {
     const conversation = await this.repo.findById(conversationId);
     if (!conversation) throw new AppException(ERROR_CODES.NOT_FOUND, 'Conversation not found.', 404);

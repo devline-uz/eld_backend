@@ -5,9 +5,12 @@
  */
 import {
   ActivityReportParamsDto,
+  ActivityReportQueryDto,
   ActivitySummaryQueryDto,
   DvirReportParamsDto,
+  DvirReportQueryDto,
   FmcsaPackParamsDto,
+  IftaReportQueryDto,
   MAX_FMCSA_PACK_RANGE_DAYS,
   MAX_REPORT_RANGE_DAYS,
 } from './reports.dto';
@@ -92,5 +95,33 @@ describe('ActivitySummaryQueryDto (gap B-46 — GET /reports/activity/summary)',
       expect(parsed.data.limit).toBe(50);
     }
     expect(ActivitySummaryQueryDto.safeParse({ from: '2026-09-01', to: '2026-09-08', limit: '500' }).success).toBe(false);
+  });
+});
+
+// B-96 (web/backend-gaps.md) — GET /reports/{ifta,activity,dvir} accept `?format=PDF` so a
+// READ-only caller (VIEWER) can get a PDF without needing `reports:FULL` (POST /reports/generate).
+describe('B-96 — report shortcut ?format=CSV|PDF query DTOs', () => {
+  it('IftaReportQueryDto defaults format to CSV when omitted and accepts PDF explicitly', () => {
+    const defaulted = IftaReportQueryDto.safeParse({ quarter: '2026-Q3' });
+    expect(defaulted.success).toBe(true);
+    if (defaulted.success) expect(defaulted.data.format).toBe('CSV');
+
+    const pdf = IftaReportQueryDto.safeParse({ quarter: '2026-Q3', format: 'PDF' });
+    expect(pdf.success).toBe(true);
+    if (pdf.success) expect(pdf.data.format).toBe('PDF');
+
+    expect(IftaReportQueryDto.safeParse({ quarter: '2026-Q3', format: 'XLSX' }).success).toBe(false);
+  });
+
+  it('ActivityReportQueryDto accepts format alongside the existing range cap', () => {
+    expect(
+      ActivityReportQueryDto.safeParse({ from: '2026-09-01', to: '2026-09-08', format: 'PDF' }).success,
+    ).toBe(true);
+    expect(ActivityReportQueryDto.safeParse({ from: '1900-01-01', to: '2999-12-31', format: 'PDF' }).success).toBe(false);
+  });
+
+  it('DvirReportQueryDto accepts format alongside the existing range cap', () => {
+    expect(DvirReportQueryDto.safeParse({ from: '2026-09-01', to: '2026-09-08', format: 'PDF' }).success).toBe(true);
+    expect(DvirReportQueryDto.safeParse({ from: '1900-01-01', to: '2999-12-31', format: 'PDF' }).success).toBe(false);
   });
 });

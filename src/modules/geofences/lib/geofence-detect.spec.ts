@@ -1,4 +1,4 @@
-import { detectGeofenceTransitions, isInsideGeofence } from './geofence-detect';
+import { detectGeofenceTransitions, isAfterHours, isDwellExceeded, isInsideGeofence } from './geofence-detect';
 
 const fence = {
   id: 'gf_1',
@@ -67,5 +67,57 @@ describe('detectGeofenceTransitions', () => {
     const silent = { ...fence, alertOnEnter: false, alertOnExit: false };
     const points = [{ lat: 41.0, lon: -83.0 }, { lat: 40.0, lon: -83.0 }];
     expect(detectGeofenceTransitions(points, silent, false)).toEqual([]);
+  });
+
+  it('§20 B-15 — afterHoursOnly suppresses an ENTER during business hours', () => {
+    const afterHours = { ...fence, afterHoursOnly: true };
+    const points = [
+      { lat: 41.0, lon: -83.0, time: '2026-09-11T14:00:00.000Z' },
+      { lat: 40.0, lon: -83.0, time: '2026-09-11T14:00:01.000Z' },
+    ];
+    expect(detectGeofenceTransitions(points, afterHours, false, 'UTC')).toEqual([]);
+  });
+
+  it('§20 B-15 — afterHoursOnly allows an ENTER at 22:00 local', () => {
+    const afterHours = { ...fence, afterHoursOnly: true };
+    const points = [
+      { lat: 41.0, lon: -83.0, time: '2026-09-11T22:00:00.000Z' },
+      { lat: 40.0, lon: -83.0, time: '2026-09-11T22:00:01.000Z' },
+    ];
+    expect(detectGeofenceTransitions(points, afterHours, false, 'UTC')).toEqual([{ geofenceId: 'gf_1', kind: 'ENTER' }]);
+  });
+
+  it('§20 B-15 — afterHoursOnly never filters an untimed point (legacy callers)', () => {
+    const afterHours = { ...fence, afterHoursOnly: true };
+    const points = [{ lat: 41.0, lon: -83.0 }, { lat: 40.0, lon: -83.0 }];
+    expect(detectGeofenceTransitions(points, afterHours, false)).toEqual([{ geofenceId: 'gf_1', kind: 'ENTER' }]);
+  });
+});
+
+describe('isAfterHours', () => {
+  it('is true before 06:00 local', () => {
+    expect(isAfterHours(new Date('2026-09-11T05:59:00.000Z'), 'UTC')).toBe(true);
+  });
+  it('is false at 06:00 local (boundary)', () => {
+    expect(isAfterHours(new Date('2026-09-11T06:00:00.000Z'), 'UTC')).toBe(false);
+  });
+  it('is false at 19:59 local', () => {
+    expect(isAfterHours(new Date('2026-09-11T19:59:00.000Z'), 'UTC')).toBe(false);
+  });
+  it('is true at 20:00 local (boundary)', () => {
+    expect(isAfterHours(new Date('2026-09-11T20:00:00.000Z'), 'UTC')).toBe(true);
+  });
+});
+
+describe('isDwellExceeded', () => {
+  const enteredAt = new Date('2026-09-11T00:00:00.000Z');
+  it('is false before the threshold', () => {
+    expect(isDwellExceeded(enteredAt, new Date('2026-09-11T00:29:00.000Z'), 30)).toBe(false);
+  });
+  it('is true exactly at the threshold', () => {
+    expect(isDwellExceeded(enteredAt, new Date('2026-09-11T00:30:00.000Z'), 30)).toBe(true);
+  });
+  it('is true past the threshold', () => {
+    expect(isDwellExceeded(enteredAt, new Date('2026-09-11T01:00:00.000Z'), 30)).toBe(true);
   });
 });

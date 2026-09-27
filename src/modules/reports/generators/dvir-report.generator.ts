@@ -2,6 +2,11 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../../core/prisma/prisma.service';
 import type { DvirReportParamsDto } from '../dto/reports.dto';
 import { csvFromRows } from '../lib/csv-stream';
+import { renderPdf } from '../lib/pdf-render';
+
+/** B-48 — see the identical cap on `ActivityReportGenerator.pdf` (Puppeteer has no
+ * row-at-a-time PDF API, so this cannot stream like the CSV export). */
+const PDF_ROW_CAP = 10_000;
 
 export interface DvirReportRow {
   dvirId: string;
@@ -68,5 +73,15 @@ export class DvirReportGenerator {
 
   stream(params: DvirReportParamsDto): { stream: NodeJS.ReadableStream } {
     return { stream: csvFromRows(this.rows(params)) };
+  }
+
+  async pdf(params: DvirReportParamsDto): Promise<{ pdf: Buffer; rowCount: number }> {
+    const rows: DvirReportRow[] = [];
+    for await (const row of this.rows(params)) {
+      rows.push(row);
+      if (rows.length >= PDF_ROW_CAP) break;
+    }
+    const pdf = await renderPdf('dvir-report', { from: params.from, to: params.to, rows });
+    return { pdf, rowCount: rows.length };
   }
 }

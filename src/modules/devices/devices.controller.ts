@@ -32,6 +32,7 @@ export class DevicesController {
   @ApiQuery({ name: 'q', required: false })
   @ApiQuery({ name: 'status', required: false })
   @ApiQuery({ name: 'bleState', required: false })
+  @ApiQuery({ name: 'vehicleId', required: false, description: 'B-35 — join a single unit\'s device (device<->vehicle binding lives only on Device.vehicleId).' })
   @ApiOperation({ summary: 'Lists PT30/PT40 devices with connected/offline BLE state and firmware.' })
   @ApiOkResponse({ schema: { example: { items: [{ id: 'dev_1', serial: 'PT30_A86E', model: 'PT30', bleState: 'CONNECTED', firmwareOutdated: false }], page: 1, limit: 25, total: 1, totalPages: 1 } } })
   @ApiStandardErrors()
@@ -55,6 +56,15 @@ export class DevicesController {
   @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.DEVICE_NOT_FOUND, 'Device not found.')] })
   get(@Param('id') id: string) {
     return this.devices.get(id);
+  }
+
+  @Get(':id/diagnostics')
+  @Perm('devices', 'READ')
+  @ApiOperation({ summary: "Reads the device's latest connectivity/GPS diagnostics (derived from recorded status, not a live round-trip). B-8." })
+  @ApiOkResponse({ description: 'An unresponsive device is `responded: false`, not an error.', schema: { example: { signalStrength: 'good', gpsLock: true, responded: true } } })
+  @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.DEVICE_NOT_FOUND, 'Device not found.')] })
+  diagnostics(@Param('id') id: string) {
+    return this.devices.diagnostics(id);
   }
 
   @Post()
@@ -100,7 +110,7 @@ export class DevicesController {
   @Patch(':id/ble-status')
   @Perm('devices', 'FULL')
   @Audit({ object: 'Device', action: 'UPDATE_BLE_STATUS' })
-  @ApiOperation({ summary: 'Records the BLE connection state reported by the app (CONNECTED/OUT_OF_RANGE/DISCONNECTED).' })
+  @ApiOperation({ summary: 'Back-office override of the BLE connection state (CONNECTED/OUT_OF_RANGE/DISCONNECTED). The driver app itself reports BLE state via POST /ingest/ble-state — this endpoint is for manual back-office correction only (MB-23).' })
   @ApiOkResponse({ schema: { example: { id: 'dev_1', bleState: 'OUT_OF_RANGE', lastHeartbeatAt: '2026-09-11T15:41:00.000Z' } } })
   @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.DEVICE_NOT_FOUND, 'Device not found.')] })
   updateBleStatus(@Param('id') id: string, @Body(zodBody(UpdateBleStatusDto)) dto: UpdateBleStatusDto) {

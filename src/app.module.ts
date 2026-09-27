@@ -33,6 +33,7 @@ import { ApiKeysAuthAdapter } from './modules/api-keys/api-keys-auth.adapter';
 import { DriversModule } from './modules/drivers/drivers.module';
 import { VehiclesModule } from './modules/vehicles/vehicles.module';
 import { DevicesModule } from './modules/devices/devices.module';
+import { CoDriverPairingsModule } from './modules/co-driver-pairings/co-driver-pairings.module';
 import { IngestModule } from './modules/ingest/ingest.module';
 import { HosStateModule } from './modules/hos-state/hos-state.module';
 import { TelemetryModule } from './modules/telemetry/telemetry.module';
@@ -49,6 +50,7 @@ import { TripsModule } from './modules/trips/trips.module';
 import { SafetyModule } from './modules/safety/safety.module';
 import { GeofencesModule } from './modules/geofences/geofences.module';
 import { MessagingModule } from './modules/messaging/messaging.module';
+import { SearchModule } from './modules/search/search.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { RealtimeModule } from './modules/realtime/realtime.module';
 import { DtcModule } from './modules/dtc/dtc.module';
@@ -56,6 +58,7 @@ import { ServiceModule } from './modules/service/service.module';
 import { ReportsModule } from './modules/reports/reports.module';
 import { LiveFleetModule } from './modules/live/live-fleet.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
+import { AttachmentsModule } from './modules/attachments/attachments.module';
 
 /**
  * Module tree per TZ §3.4. Feature modules are added by their owning phase.
@@ -85,6 +88,7 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
     DriversModule,
     VehiclesModule,
     DevicesModule,
+    CoDriverPairingsModule,
     // Phase 3 — Ingest (TZ §7). TelemetryModule holds the Virtual Dashboard write path that
     // `/ingest/telemetry` feeds; IngestModule imports it. DtcModule (Phase 7, TZ §5.7) is
     // imported here too since `GET /vehicles/:id/dtc` is its own route tree.
@@ -127,8 +131,13 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
     SafetyModule,
     GeofencesModule,
     MessagingModule,
+    // §20 B-10 — 11.28 command-palette search.
+    SearchModule,
     NotificationsModule,
     RealtimeModule,
+    // §20 B-41 — permission-checked presigned download URLs for `Attachment` rows.
+    // `AttachmentsService` is exported for reuse by driver-document/DVIR-photo reads.
+    AttachmentsModule,
     // web/tz.md §20 B-3 — `GET /live/fleet` snapshot for W-01/W-02 (D-053).
     LiveFleetModule,
     // Perf plan item 3 — `GET /dashboard/summary`, the W-01 open-screen aggregate.

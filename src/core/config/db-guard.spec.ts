@@ -2,6 +2,7 @@ import { assertDatabaseTarget } from './db-guard';
 
 const dev = 'postgresql://eld_dev:pw@localhost:5432/onebook_eld_dev';
 const prod = 'postgresql://eld_prod:pw@localhost:5432/onebook_eld';
+const test = 'postgresql://eld_test:pw@localhost:5432/onebook_eld_test';
 
 describe('db-guard (TZ §22.3.4)', () => {
   it('accepts dev env on dev DB', () => {
@@ -42,5 +43,28 @@ describe('db-guard (TZ §22.3.4)', () => {
         NODE_ENV: 'production',
       }),
     ).toThrow(/DB foydalanuvchisi/);
+  });
+
+  // D-105 — dedicated onebook_eld_test DB, only ever valid under NODE_ENV=test.
+  it('accepts test env on the dedicated test DB', () => {
+    expect(() => assertDatabaseTarget({ DATABASE_URL: test, NODE_ENV: 'test' })).not.toThrow();
+  });
+
+  it('rejects prod env pointed at the test DB', () => {
+    expect(() => assertDatabaseTarget({ DATABASE_URL: test, NODE_ENV: 'production' })).toThrow(
+      /prod rejimi TEST DB/,
+    );
+  });
+
+  it('rejects test env pointed at the dev DB', () => {
+    expect(() => assertDatabaseTarget({ DATABASE_URL: dev, NODE_ENV: 'test' })).toThrow(
+      /NODE_ENV=test faqat TEST DB/,
+    );
+  });
+
+  it('rejects a test-env-labelled connection to a non-test DB name', () => {
+    expect(() => assertDatabaseTarget({ DATABASE_URL: test, NODE_ENV: 'development' })).toThrow(
+      /TEST DB faqat NODE_ENV=test/,
+    );
   });
 });

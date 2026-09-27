@@ -16,12 +16,34 @@ import { CarrierRepository } from './carrier.repository';
  *   entered without an `eldRegistrationId`, because the Appendix A header segment would
  *   then be emitted empty and the file rejected (tz.md §10.1 lists both as steps 2-3).
  */
+export interface TransferConfigView {
+  timezone: string;
+  eldIdentifier: string;
+  eldRegistrationId: string | null;
+  erodsMode: Carrier['erodsMode'];
+}
+
 @Injectable()
 export class CarrierService {
   constructor(private readonly repo: CarrierRepository) {}
 
   async get(): Promise<Carrier> {
     return (await this.repo.get()) ?? this.repo.ensure();
+  }
+
+  /**
+   * B-45 — the eRODS transfer settings a report/transfer screen needs (TEST/PRODUCTION banner,
+   * Appendix A header identifiers), without exposing the whole carrier profile, which is
+   * `carrierSettings`-gated (ADMIN only).
+   */
+  async getTransferConfig(): Promise<TransferConfigView> {
+    const carrier = await this.get();
+    return {
+      timezone: carrier.timezone,
+      eldIdentifier: carrier.eldIdentifier,
+      eldRegistrationId: carrier.eldRegistrationId,
+      erodsMode: carrier.erodsMode,
+    };
   }
 
   async update(dto: UpdateCarrierDto): Promise<Carrier> {

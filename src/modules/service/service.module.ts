@@ -7,6 +7,7 @@ import { DefectsService } from './defects.service';
 import { DvirAdminController } from './dvir-admin.controller';
 import { DvirAdminRepository } from './dvir-admin.repository';
 import { DvirAdminService } from './dvir-admin.service';
+import { DvirPdfBuilder } from './dvir-pdf.builder';
 import { MaintenanceSchedulesController } from './maintenance-schedules.controller';
 import { MaintenanceSchedulesRepository } from './maintenance-schedules.repository';
 import { MaintenanceSchedulesService } from './maintenance-schedules.service';
@@ -26,6 +27,7 @@ import { WorkOrdersService } from './work-orders.service';
   providers: [
     DvirAdminRepository,
     DvirAdminService,
+    DvirPdfBuilder,
     DefectsRepository,
     DefectsService,
     WorkOrdersRepository,

@@ -6,6 +6,8 @@ import { PrismaService } from '../../core/prisma/prisma.service';
 export interface VehicleListFilter {
   status?: Vehicle['status'];
   q?: string;
+  /** A group id, or `'none'` for units in no group. */
+  groupId?: string;
 }
 
 export interface VehicleListPage {
@@ -51,6 +53,7 @@ export class VehiclesRepository extends BaseRepository<
   ): Promise<VehicleListPage> {
     const where: Prisma.VehicleWhereInput = {
       ...(filter.status && { status: filter.status }),
+      ...(filter.groupId && { groupId: filter.groupId === 'none' ? null : filter.groupId }),
       ...(filter.q && {
         OR: [
           { unitNumber: { contains: filter.q, mode: 'insensitive' } },
@@ -68,6 +71,10 @@ export class VehiclesRepository extends BaseRepository<
     return { items, total };
   }
 
+  async groupExists(id: string): Promise<boolean> {
+    return (await this.prisma.vehicleGroup.count({ where: { id } })) > 0;
+  }
+
   listAll(): Promise<Vehicle[]> {
     return this.prisma.vehicle.findMany({ orderBy: { unitNumber: 'asc' } });
   }
@@ -82,6 +89,68 @@ export class VehiclesRepository extends BaseRepository<
     return this.prisma.defect.findMany({
       where: { vehicleId, status: 'OPEN', severity: 'CRITICAL' },
       select: { id: true },
+    });
+  }
+
+  /**
+   * §20 B-5 — "Unit activity" feed. Reads the `AuditLog` rows already recorded against this
+   * vehicle plus its DVIR submissions directly (not via `DefectsModule`/an audit service) for
+   * the same acyclic-graph reason as `findOpenCriticalDefectIds` above: `VehiclesModule` stays
+   * the leaf `DevicesModule`/`ServiceModule` depend on, never the reverse.
+   */
+  findAuditRows(vehicleId: string, limit = 100) {
+    return this.prisma.auditLog.findMany({
+      where: { objectType: 'Vehicle', objectId: vehicleId },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+    });
+  }
+
+  findDvirRows(vehicleId: string, limit = 100) {
+    return this.prisma.dvir.findMany({
+      where: { vehicleId },
+      orderBy: { submittedAt: 'desc' },
+      take: limit,
+      include: { driver: { select: { firstName: true, lastName: true } } },
+    });
+  }
+
+  /**
+   * §20 B-69 `pairDevices` import option — queried directly against `Device` (not via
+   * `DevicesModule`, which already depends one-directionally on `VehiclesModule`; the reverse
+   * import would be a cycle). Mirrors `findOpenCriticalDefectIds`.
+   */
+  findDeviceBySerial(serial: string) {
+    return this.prisma.device.findUnique({ where: { serial } });
+  }
+
+  pairDevice(deviceId: string, vehicleId: string) {
+    return this.prisma.device.update({
+      where: { id: deviceId },
+      data: { vehicleId, status: 'ASSIGNED', pairedAt: new Date() },
+    });
+  }
+
+  /**
+   * §20 B-4 / telemetry read — queried directly against `TelemetryPoint` rather than via
+   * `TelemetryModule` (`TelemetryModule -> DtcModule -> VehiclesModule` would cycle). Same
+   * acyclic-graph pattern as `findOpenCriticalDefectIds`.
+   */
+  findTelemetryRange(vehicleId: string, from: Date, to: Date) {
+    return this.prisma.telemetryPoint.findMany({
+      where: { vehicleId, time: { gte: from, lt: to } },
+      orderBy: { time: 'asc' },
+    });
+  }
+
+  findTelemetryRecent(vehicleId: string, limit: number, from?: Date, to?: Date) {
+    return this.prisma.telemetryPoint.findMany({
+      where: {
+        vehicleId,
+        ...((from || to) && { time: { ...(from && { gte: from }), ...(to && { lte: to }) } }),
+      },
+      orderBy: { time: 'desc' },
+      take: limit,
     });
   }
 }

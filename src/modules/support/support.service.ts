@@ -2,8 +2,11 @@ import { Injectable } from '@nestjs/common';
 import type { Feedback, Prisma, SupportTicket } from '@prisma/client';
 import { AppException } from '../../common/errors/app.exception';
 import { OffsetPage, parseSort, toOffsetPage } from '../../common/dto/list-query.dto';
-import { CreateFeedbackDto, CreateSupportTicketDto, SupportTicketListQueryDto, UpdateSupportTicketDto } from './dto/support.dto';
+import { MessagingRepository } from '../messaging/messaging.repository';
+import { MessagingService } from '../messaging/messaging.service';
+import { CreateFeedbackDto, CreateSupportChatDto, CreateSupportTicketDto, SupportTicketListQueryDto, UpdateSupportTicketDto } from './dto/support.dto';
 import { SupportRepository } from './support.repository';
+import { TicketAttachmentsService } from './ticket-attachments.service';
 
 const SORTABLE_FIELDS = ['createdAt', 'priority', 'status', 'number'] as const;
 
@@ -15,7 +18,12 @@ export interface RequesterContext {
 /** TZ §5.10, §11.7 — support tickets (gated by `support`) and in-app feedback. */
 @Injectable()
 export class SupportService {
-  constructor(private readonly repo: SupportRepository) {}
+  constructor(
+    private readonly repo: SupportRepository,
+    private readonly attachments: TicketAttachmentsService,
+    private readonly messagingRepo: MessagingRepository,
+    private readonly messaging: MessagingService,
+  ) {}
 
   async list(query: SupportTicketListQueryDto): Promise<OffsetPage<SupportTicket>> {
     const orderBy = parseSort(query.sort, SORTABLE_FIELDS, { createdAt: 'desc' });
@@ -38,6 +46,16 @@ export class SupportService {
    * count-based sequence) — up to a handful of attempts, which is more than enough headroom
    * for realistic write rates on this table. */
   async create(dto: CreateSupportTicketDto, requester: RequesterContext): Promise<SupportTicket> {
+    const ticket = await this.createTicketRow(dto, requester);
+    // §20 B-91 — collected after the ticket exists (attachments FK to ticketId); best-effort,
+    // never blocks the ticket itself.
+    if (dto.attachments?.length) {
+      await this.attachments.collect(ticket.id, dto.vehicleId, dto.attachments.map((a) => a.kind));
+    }
+    return ticket;
+  }
+
+  private async createTicketRow(dto: CreateSupportTicketDto, requester: RequesterContext): Promise<SupportTicket> {
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const number = await this.nextTicketNumber();
       try {
@@ -55,6 +73,20 @@ export class SupportService {
     }
     /* unreachable */
     throw new Error('Failed to allocate a support ticket number.');
+  }
+
+  /** §20 B-90 — opens (or continues) a real-time support conversation. Reuses
+   * `Conversation`/`Message` (`type: 'SUPPORT'`) and the existing socket room plumbing
+   * (`conversation:{id}`, wired by `MessagingService.sendMessage`) rather than a bespoke chat
+   * model/provider integration. */
+  async createChat(dto: CreateSupportChatDto, requester: RequesterContext) {
+    const participant = requester.type === 'driver' ? { driverId: requester.id } : { userId: requester.id };
+    const conversation = await this.messagingRepo.createConversation(
+      { type: 'SUPPORT', title: dto.subject ?? 'Support chat', createdById: requester.id },
+      [participant],
+    );
+    const message = await this.messaging.sendMessage(conversation.id, { body: dto.message }, requester);
+    return { conversationId: conversation.id, messageId: message.id };
   }
 
   async update(id: string, dto: UpdateSupportTicketDto): Promise<SupportTicket> {

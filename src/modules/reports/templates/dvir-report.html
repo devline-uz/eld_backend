@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  body { font-family: Helvetica, Arial, sans-serif; font-size: 11px; color: #1a1a1a; }
+  h1 { font-size: 18px; margin-bottom: 0; }
+  .meta { color: #555; margin-bottom: 16px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+  th, td { border: 1px solid #ccc; padding: 5px 6px; text-align: left; }
+  th { background: #f2f2f2; }
+</style>
+</head>
+<body>
+  <h1>DVIR Report</h1>
+  <div class="meta">Period: {{from}} — {{to}}</div>
+  <table>
+    <thead>
+      <tr><th>Submitted</th><th>Type</th><th>Vehicle</th><th>Driver</th><th>Odometer</th><th>Condition</th><th>Repair status</th><th>Defects</th><th>Open</th><th>Critical open</th></tr>
+    </thead>
+    <tbody>
+      {{#each rows}}
+      <tr>
+        <td>{{submittedAt}}</td>
+        <td>{{type}}</td>
+        <td>{{vehicleId}}</td>
+        <td>{{driverId}}</td>
+        <td>{{odometerMi}}</td>
+        <td>{{vehicleCondition}}</td>
+        <td>{{repairStatus}}</td>
+        <td>{{defectCount}}</td>
+        <td>{{openDefects}}</td>
+        <td>{{criticalOpenDefects}}</td>
+      </tr>
+      {{/each}}
+    </tbody>
+  </table>
+</body>
+</html>

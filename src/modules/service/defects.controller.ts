@@ -7,7 +7,7 @@ import { Perm } from '../../common/decorators/perm.decorator';
 import { apiError, ApiStandardErrors, ERROR_CODES } from '../../common/errors';
 import { zodBody } from '../../common/pipes/zod-validation.pipe';
 import { DefectsService } from './defects.service';
-import { DefectListQueryDto, LinkDefectWorkOrderDto, ResolveDefectDto } from './dto/service.dto';
+import { AssignDefectDto, DefectListQueryDto, LinkDefectWorkOrderDto, ResolveDefectDto } from './dto/service.dto';
 
 /** TZ §5.10 — defect reporting complement to `POST /mobile/dvir` (driver submission): list,
  * inspect and resolve defects raised by a DVIR. Resolving the last OPEN CRITICAL defect on a
@@ -28,6 +28,7 @@ export class DefectsController {
   @ApiQuery({ name: 'status', required: false })
   @ApiQuery({ name: 'severity', required: false })
   @ApiQuery({ name: 'outOfService', required: false })
+  @ApiQuery({ name: 'assigneeId', required: false })
   @ApiOperation({ summary: 'Lists defects raised on DVIRs.' })
   @ApiOkResponse({ schema: { example: { items: [{ id: 'def_1', vehicleId: 'veh_1', severity: 'CRITICAL', status: 'OPEN', outOfService: true }], page: 1, limit: 25, total: 1, totalPages: 1 } } })
   @ApiStandardErrors()
@@ -47,11 +48,21 @@ export class DefectsController {
   @Patch(':id/resolve')
   @Perm('dvir', 'FULL')
   @Audit({ object: 'Defect', action: 'RESOLVE' })
-  @ApiOperation({ summary: 'Resolves a defect (REPAIRED/DEFERRED). Restores the unit from OUT_OF_SERVICE if it was the last open CRITICAL defect.' })
-  @ApiOkResponse({ schema: { example: { id: 'def_1', status: 'REPAIRED', resolvedAt: '2026-09-11T15:41:00.000Z' } } })
+  @ApiOperation({ summary: 'Resolves a defect (resolutionType REPAIRED/NOT_REQUIRED/DEFERRED, plus B-70 repair-record fields). Restores the unit from OUT_OF_SERVICE if it was the last open CRITICAL defect. NOT_REQUIRED is never recorded as a repair.' })
+  @ApiOkResponse({ schema: { example: { id: 'def_1', status: 'REPAIRED', resolutionType: 'REPAIRED', resolvedAt: '2026-09-11T15:41:00.000Z' } } })
   @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.DEFECT_NOT_FOUND, 'Defect not found.')] })
   resolve(@Param('id') id: string, @Body(zodBody(ResolveDefectDto)) dto: ResolveDefectDto, @CurrentUser('id') userId: string) {
     return this.defects.resolve(id, dto, userId);
+  }
+
+  @Patch(':id/assign')
+  @Perm('dvir', 'FULL')
+  @Audit({ object: 'Defect', action: 'ASSIGN' })
+  @ApiOperation({ summary: 'Sets (or clears, with `assigneeId: null`) the defect assignee/shop (B-40, W-09 ASSIGNED TO).' })
+  @ApiOkResponse({ schema: { example: { id: 'def_1', assigneeId: 'usr_2' } } })
+  @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.DEFECT_NOT_FOUND, 'Defect not found.')] })
+  assign(@Param('id') id: string, @Body(zodBody(AssignDefectDto)) dto: AssignDefectDto) {
+    return this.defects.assign(id, dto);
   }
 
   @Patch(':id/work-order')

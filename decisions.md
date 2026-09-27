@@ -1972,3 +1972,357 @@ enters the picture.
 end state `migrate dev` would have produced, without touching the unrelated drift or the mock
 dataset. The drift on `eldevent_drop_foreign_keys` is left exactly as found for whoever owns that
 migration to investigate; nothing here masks or resolves it.
+
+## D-084 — MB-20 refresh-endpoint rate limit; MB-21 duration parsing for refresh-token DB expiry (2026-09-21)
+
+**Problem 1 (MB-20).** `POST /auth/refresh` had no `@Throttle` at all (only the global 600/min/token
+default, which does not even apply here since `refresh` is `@Public()` — no token yet). Need a
+per-IP limit tight enough to blunt brute-forcing of a stolen/guessed opaque refresh token, loose
+enough not to break legitimate multi-session callers.
+**Options.** (a) Match login's 5/min — far too tight: `JWT_ACCESS_TTL` defaults to 15m for `User`,
+so a web client alone calls `/auth/refresh` roughly every ~14 min per open tab; several tabs/users
+behind one office NAT could plausibly exceed 5/min. (b) No limit beyond the global default — leaves
+the endpoint effectively unthrottled since it is public. (c) 30/min/IP.
+**Chosen: (c) 30/min/IP.** One legitimate caller needs well under 1 req/min (web: ~1 per 14 min;
+mobile driver: at most 1 per 24h, `JWT_DRIVER_ACCESS_TTL` default). 30/min/IP comfortably covers
+many simultaneous back-office sessions/tabs sharing one office IP while still capping an attacker
+hammering a single stolen refresh token to 30 guesses/min before hitting `429 RATE_LIMITED`.
+Reflected in `auth.controller.ts` and `auth.controller.throttle.spec.ts`.
+
+**Problem 2 (MB-21).** `AuthService`'s `REFRESH_TTL_MS` map hardcoded 30d/90d and never read
+`JWT_REFRESH_TTL` / `JWT_DRIVER_REFRESH_TTL` (`env.schema.ts`), even though `TokenService` reads
+those exact keys for the sibling access-token TTLs (`JWT_ACCESS_TTL`/`JWT_DRIVER_ACCESS_TTL`) —
+logged as B-070. Needed a duration-string parser (`'30d'` → ms) to match.
+**Options.** (a) Hand-roll a regex parser in `auth.service.ts`. (b) Pull in the `ms` package
+directly. (c) Keep using `jwt.sign`'s own internal parsing somehow (not exposed as a public API).
+**Chosen: (b) `ms`.** `jsonwebtoken` (already a direct dependency) declares `ms: ^2.1.1` itself and
+uses it internally for its own `expiresIn` strings, so behaviour stays byte-identical to what
+`signUserAccessToken`/`signDriverAccessToken` already do with the same env values — no second
+parsing dialect to keep in sync. Promoted `ms` from transitive-only to a direct dependency (plus
+`@types/ms`) in `package.json`/`package-lock.json` since relying on an un-declared transitive
+package for new first-party code is fragile across future `npm install`s. New method
+`TokenService.refreshTtlMs('user' | 'driver')` centralizes the parsing (with a thrown error on an
+invalid string) so `AuthService` never touches `ms` directly.
+
+## D-085 — MB-4 mobile transfer receipt is the row as generated (`status = QUEUED`); MB-18 PDF export answers 501 (2026-09-21)
+**Problem 1 (MB-4).** `mobile/tz.md` M-28 expects `POST /mobile/transfers` to answer
+`{ id, status: TEST_ONLY|SENT|ACCEPTED, referenceId, sentAt }` for S-10, but the eRODS send step is
+a BullMQ job (`transfer.processor.ts`, TZ §10 — generation is synchronous so the file exists at
+roadside immediately; the send/TEST toggle is the queued part). At response time the row is
+`QUEUED` with `referenceId = null`.
+**Options.** (a) Block the request until the worker finishes (couples an inspector-facing request to
+Redis/worker health). (b) Run the send step inline for the mobile route only (two code paths for
+the same compliance rule — forbidden by MD-001 "delegate to existing services"). (c) Return the
+row as it stands plus the pre-send `warnings[]`, and let the app poll `GET /mobile/transfers`
+(limit 5) for the TEST_ONLY/SENT/ACCEPTED receipt.
+**Chosen: (c).** Identical semantics to the web route; the app already keeps a `transfer_queue`
+and shows S-10 when the receipt arrives (mobile/tz.md §8.5 point 4). Documented in the swagger
+`description`. `GET /mobile/transfers` is scoped to `driverId = token subject`; storage internals
+(`fileKey`, `checksum`) are not exposed. The driver's own download of the Appendix A file stays on
+`GET /transfers/:id/download` semantics — not added to mobile because the app generates the
+on-screen/printed file locally (§8.5 point 3) and the officer receives the server copy via eRODS.
+
+**Problem 2 (MB-18).** `GET /mobile/logs/:date/export?format=pdf|csv`. The only PDF generator is
+`reports/lib/pdf-render.ts` (puppeteer) with a single template (`fmcsa-pack.html`); there is no
+per-day RODS template, and the dev host has no Chrome binary (`puppeteer.executablePath()` points
+at a missing file), so a new template could not be verified.
+**Options.** (a) Write a `rods-day.html` template and ship it unverified. (b) `501 NOT_IMPLEMENTED`
+for `pdf`, full CSV now. (c) Drop `pdf` from the enum.
+**Chosen: (b).** The brief allows 501 when no usable generator exists; the enum keeps `pdf` so the
+app contract does not change when the template lands. CSV is the inspection-packet day list
+(`LogsRepository.findEvents`, half-open home-terminal day, every record incl. superseded), headers
+`sequenceId,eventType,eventCode,eventDateTime,status,location,odometerMi,engineHours,origin,recordStatus,annotation`,
+CRLF, RFC 4180 quoting, `RODS_<date>.csv`. It is explicitly NOT the §395 Appendix A output file
+— that stays `transfers/output-file.ts` and reaches an officer only through the eRODS transfer.
+
+## D-086 — MB-2/3/5/10/14: `MobileFleetOpsRepository`, trailer-number resolution, per-DVIR PDF (2026-09-21)
+**Problem 1 (shared file, MD-001).** These five gaps each need new `Prisma` reads/writes, but
+`mobile.repository.ts` and `mobile.dto.ts` are edited concurrently by other Phase 6b agents.
+**Chosen:** a single new `MobileFleetOpsRepository` + `dto/mobile-fleet-ops.dto.ts` hold ALL DB
+access / DTOs for MB-2/3/5/10/14, imported into `mobile.module.ts` alongside the existing
+`MobileRepository` (reused as-is for `findDriver`/`findActivePairing`/`findVehicle`/`findCarrier`
+— never modified). Kept the co-driver's live duty status to one indexed `EldEvent` read
+(`eventType = 1`, latest `eventDateTime`) rather than running the full HOS engine
+(`computeCurrentState`) just to show a status chip on S-11/S-18/S-19 — the field is display-only.
+
+**Problem 2 (MB-5).** `PATCH /mobile/trip { trailerNumber }` — `Trip` has `trailerId`, not a
+free-text trailer field, and TZ §5.3/§27.3 forbid adding schema columns without necessity.
+**Chosen:** resolve `trailerNumber` to an existing `Trailer.number`; no match → `422
+TRAILER_NOT_FOUND` (new code, `common/errors/codes.ts`, append-only). No schema change. The app
+already only lets a driver type a trailer number that exists in the fleet roster it synced.
+
+**Problem 3 (MB-10 pdf).** `GET /mobile/dvirs/:id/pdf` has no single-record generator to reuse:
+`ReportsModule`'s `DvirReportGenerator` only builds the fleet-wide CSV job (`GET /reports/dvir`),
+never a PDF with an embedded signature image for one DVIR.
+**Chosen:** `501 NOT_IMPLEMENTED` (ownership is still checked first — 404 `DVIR_NOT_FOUND` for a
+DVIR that is not the caller's own, so the 501 never leaks whether another driver's id exists).
+List/detail (`GET /mobile/dvirs`, `GET /mobile/dvirs/:id`) are fully implemented, including
+presigned (15 min) URLs for the driver signature and every defect/DVIR photo via the existing
+`StoragePort`.
+
+**Problem 4 (MB-3).** Verifying the co-driver's password for `POST /mobile/co-driver/switch`
+without duplicating password hashing.
+**Chosen:** call `AuthService.loginDriver(coDriver.username, dto.coDriverPassword, meta)` directly
+— the exact path `POST /auth/login/driver` uses — and return ITS token pair. A wrong password
+surfaces the existing `401 INVALID_CREDENTIALS` with no second code to maintain. The pairing swap
+never mutates the row: the active `CoDriverPairing` is ended (`endedAt`) and a new one is created
+with primary/co-driver swapped, consistent with "time-bounded pairings, never mutated in place."
+
+## D-088 — MB-13/MB-16 migration applied by hand-writing the migration + `prisma migrate resolve`, not `prisma migrate dev` (2026-09-21)
+
+**Problem.** `prisma migrate dev --name notification_kind` (needed for `Notification.kind` +
+`SupportTicket.updatedAt`) failed every attempt with `FATAL: too many connections for role
+"eld_dev"` — the shared dev Postgres role's connection budget was saturated by other parallel
+Phase 6b agents' own migrations/tests/servers (`migrate dev` also opens a shadow-database
+connection on top of the main one, doubling the pressure). Retried ~25 times over several minutes
+with backoff; never cleared.
+
+**Options.** (a) Keep retrying `migrate dev` until the other agents finish (unbounded wait, blocks
+this task). (b) `db push` (against the explicit house rule — no proper migration history). (c)
+Write the migration folder by hand (`migration.sql` + `down.sql`, same convention as
+`20260911170000_ifta_segment_locked` / D-083's `Dvir.submittedAt` precedent), apply the raw SQL
+with a single short-lived `psql` connection, then `prisma migrate resolve --applied <name>` to
+register it with Prisma's own history (no shadow-db diff, one connection instead of two).
+
+**Chosen: (c).** Same end state as `migrate dev` (`prisma migrate status` → "up to date",
+`prisma generate` clean) with a fraction of the connection footprint and no dependency on the
+other agents' DB usage settling down. Migration:
+`prisma/migrations/20260921100000_notification_kind_and_ticket_updated_at` — adds
+`NotificationKind` enum + nullable `Notification.kind` (no backfill possible — old `type` is the
+`AlertRule` id, not an event name, so there is nothing to derive `kind` from) and `SupportTicket
+.updatedAt` (backfilled from `createdAt`, then `NOT NULL`).
+
+## D-087 — MB-1/MB-7/MB-8/MB-11/MB-15/MB-19: own repositories, reused idle capacity in `EventBusService`/`Queue.ALERT`, in-memory per-day backlog de-dupe (2026-09-21)
+
+**Problem 1 (MB-1/MB-7/MB-15 file boundaries).** `PushToken` upsert/delete, the device-health
+read model, and the driver-facing conversation list/unread-count all need queries that neither
+belong on the shared `MobileRepository` (push tokens, device health) nor on `MessagingRepository`
+(which `messaging.controller.ts` — off limits — already depends on, and whose shapes are the web
+contract, not the driver one).
+**Chosen:** three new, self-contained repositories — `PushTokensRepository`,
+`DeviceHealthRepository`, `MobileMessagingRepository` — each with direct `PrismaService` access,
+per the Phase 6b rule to grow new files instead of shared ones. `MobileMessagingService` still
+calls into the existing `MessagingRepository.isParticipant`/`findById` for the participant check
+and `MessagingService.sendMessage` for sending (so `message.new` realtime push and the audit
+trail stay in exactly one place) — only the read shapes (`listForDriver` with unread count,
+cursor-paginated `listMessagesCursor`, `markRead`) are new.
+
+**Problem 2 (MB-7 "confirmation request ids").** mobile/tz.md asks for "pending unidentified
+confirmation request ids for this driver" but there is no separate confirmation-request table —
+`UnidentifiedService.confirm()` (§7.4 rule 2) answers directly on a `PENDING` `UnidentifiedSegment`
+via `POST /unidentified/:id/confirm`.
+**Chosen:** the pending `PENDING` segments on the driver's assigned vehicle within the last 8 days
+ARE the confirmation requests; `device-health.service.ts` returns their ids as
+`unidentified.pendingConfirmationRequestIds` and reuses the same query for `pendingCount`. No new
+table, no new write path — this is a read-only endpoint.
+
+**Problem 3 (MB-11 idempotent-per-driver-per-day).** No dedicated table exists to record "did we
+already raise `alert.sync_backlog` for this driver today", and adding one is out of proportion for
+a single warning alert.
+**Chosen:** a bounded, same-process `Map<driverId, dayKey>` inside `MobileSyncService` (documented
+as best-effort: a process restart can re-raise once, but never suppresses a genuine new-day
+backlog). Mirrors the existing `alert.device_backlog` pattern in `ingest.service.ts` exactly
+(`events.publish` + best-effort `alertQueue.add`), just triggered off the app's self-reported
+`backlog.days`/`backlog.bytes` instead of `Device.storedEventsCount`.
+
+**Problem 4 (MB-8 "purpose CERTIFICATION").** The task brief says "store it through the existing
+SignatureService (purpose CERTIFICATION)", but `SignatureService.store()` takes a storage
+`prefix` (`'signatures' | 'dvir-photos'`), not a `purpose` enum — `purpose` only exists on
+`SignatureUploadDto`/`mobile-dvir.service.ts`'s `uploadSignature`, where `CERTIFICATION` already
+maps to the `'signatures'` prefix.
+**Chosen:** call `signatures.store('signatures', driverId, ...)` directly from
+`MobileSyncService.dispatch()`'s `certify` case — same prefix `CERTIFICATION` purpose already
+resolves to, no need to round-trip through `uploadSignature()` just to re-derive it. Only applies
+when `signatureImageId` is absent, so an already-uploaded signature (has an id) is never re-stored
+or overwritten.
+
+**Problem 5 (MB-19 half-filled `appUpdate`).** Most envs will never set every
+`MOBILE_APP_*` var; a partially-filled object (e.g. `latestVersion` set, `storeUrl` both null)
+risks the app showing an update banner with nowhere to send the driver.
+**Chosen:** `bootstrap.appUpdate` is `null` unless at least `latestVersion` or `minVersion` is
+configured; every other missing sub-field is `null` (never omitted), so the mobile client always
+sees the same shape and only has to null-check the top-level object once.
+
+## D-089 — B-073: how "now" inside a still-open Driving segment is treated for an open driver self-entry (2026-09-22)
+**Problem:** an open self-entry (no `endAt`) starting inside a D segment shortens driving and must be
+refused (B-073). But the app's duty-status button (D-030) is also an open self-entry at "now". When
+the ELD has not yet closed the D segment, the server sees D running to its own `now`, so a tap at the
+client's "now" (a few seconds earlier) always lands inside that projected segment.
+**Options:**
+1. Refuse every open entry inside an open D — "only the ELD ends driving".
+2. Allow any open entry inside the open D after the last ELD evidence of driving.
+3. Allow only a live tap: no `originalEventId`, the segment is the one still in force, and
+   `now - startAt <= LIVE_STATUS_TOLERANCE_MS` (2 min); everything else refused.
+**Choice:** option 3.
+**Why:** §395 wins over the brief's suggested "reject". Appendix A 4.3.1.2 requires the ELD to let a
+stationary driver in D "enter the proper duty status" before the 1-minute auto-ON, and §395.24 lets
+the driver enter duty status changes; the app sends that answer through `/mobile/duty-status`.
+Option 1 would 422 a lawful status change. The part of an open segment after `startAt` is the
+segment extrapolated to server `now`, never recorded driving, so ending it at the present shortens
+nothing recorded. Option 2 would let a crafted back-dated entry hide up to ~1 h of driving
+(intermediate logs are hourly). Option 3 bounds any exposure to the tolerance (network latency +
+PT30/server-offset clock skew); the app's motion lock blocks taps while moving and, if the CMV moves
+again, the ELD writes a new D record. The rule fails closed: no `now`, a closed segment, or a
+correction of an existing record gets no tolerance.
+**Trade-off:** a `duty_status` tap queued offline and uploaded more than 2 min later while the server
+still sees D open is refused `422 OVERLAPS_DRIVING` (records stay conservative: D runs on until the
+next record). Handling that case is up to the app. It can let the ELD auto-ON (origin 1, via
+`/ingest/events`) or re-enter after the ELD closes D. This has been flagged to the mobile team.
+The normal case, a tap after the ELD recorded the D end, is unaffected.
+
+## D-090 — Phase 13A: no `Terminal` table; `User`/`Driver` keep a plain `homeTerminalName` string (2026-09-24)
+**Problem:** B-85 (`terminalIds` on user invite) and B-84 (`PATCH /users/:id` home terminal) both need a
+"terminal" concept, but `backend_tasks.md` §20 flags it explicitly as an open product question — whether
+a terminal is a real scoped entity or just a display/filter string — and says to decide before building it.
+**Options:** 1) new `Terminal` model + M:N join tables on `User`/`Driver`. 2) keep it a plain string, same
+pattern `Driver.homeTerminalName` already uses, plus a `String[]` scope list for invite-time multi-terminal
+access. **Choice:** option 2 — `User.homeTerminalName String?`, `User.terminalScope String[]`.
+**Why:** `Driver.homeTerminalName` is already a bare string (not a relation) and drives the RODS-day-boundary
+timezone; a `Terminal` entity would need a migration + backfill of every existing driver row to stay
+consistent, which is exactly the kind of one-way commitment the open product question warns against. A
+string list is additive, trivially upgradable to a real `Terminal` table later (feature agent can migrate
+strings -> FK once the scope question is settled), and unblocks 13F/13I today.
+**Trade-off:** no referential integrity on terminal names (typos won't be caught by the DB); acceptable for
+a display/filter concept that is not yet a security boundary.
+
+## D-091 — Phase 13A: org notification channels live on `Carrier`, not a new table (2026-09-24)
+**Problem:** B-87 wants `GET/PATCH /notification-channels` → `{ email: { enabled }, webhook: { enabled, url } }`,
+an org-wide (not per-rule) setting.
+**Choice:** `Carrier.notificationChannels Json? @default("{}")` rather than a new `NotificationChannel` table.
+**Why:** `Carrier` is already the singleton row for every other org-wide setting (§5.1); a 1-row table with
+one JSON blob would be identical in effect but adds a join for every alert delivery check. SMS is explicitly
+out of scope (Q-2, `backend_tasks.md` §20), so the shape has exactly two keys and no growth pressure that
+would justify normalizing it.
+
+## D-092 — Phase 13A: `DataTransfer.requestedById` stays a plain scalar, no Prisma relation to `User` (2026-09-24)
+**Problem:** tried adding `DataTransfer.requestedBy User? @relation(...)` for B-46 (`requestedBy: { id, name }`
+on read), matching what `Report.requestedById` got. Applying the migration failed:
+`insert or update on table "DataTransfer" violates foreign key constraint` — dev data has 198 rows with
+`requestedByType = DRIVER` whose `requestedById` is a `Driver.id`, not a `User.id` (drivers can trigger their
+own eRODS transfer). `Report.requestedById` has no such split (0/226 dev rows fail a `User` join) so it kept
+its new relation.
+**Choice:** keep `DataTransfer.requestedById` a bare string; the `requestedBy` object in the API response is
+resolved by the reports/transfers feature agent with an app-level lookup keyed on `requestedByType`
+(`USER` -> `User`, `DRIVER` -> `Driver`), the same polymorphic-actor pattern already used for `editorType`
+elsewhere in this schema (e.g. `AuditLog.actorType`, `DailyLog.certifierType`).
+**Why:** a hard FK can only point at one table; forcing `requestedById` to always be a `User` would either
+break the 198 existing driver-initiated dev rows or require inventing a synthetic `User` row per driver,
+which is out of scope here and contradicts the User/Driver subject split the rest of the schema keeps (§6.1).
+
+## D-093 — Phase 13A: migration applied by hand + `prisma migrate resolve`, not `prisma migrate dev` (2026-09-24)
+**Problem:** `prisma migrate dev` refused to run — it reported migration
+`20260911140000_eldevent_drop_foreign_keys` as "modified after it was applied" (checksum mismatch between
+the file on disk and `_prisma_migrations`), and offered only `prisma migrate reset` (drops all dev data,
+unacceptable — other agents have concurrent uncommitted work in this same dev DB per `bugs.md`/CLAUDE.md).
+**Choice:** generated the raw SQL with `prisma migrate diff --from-url $DATABASE_URL --to-schema-datamodel
+prisma/schema.prisma --script`, hand-wrote it into
+`prisma/migrations/20260924120000_phase13_web_gaps_schema/migration.sql`, applied it with `prisma db execute
+--file ... --schema prisma/schema.prisma`, then recorded it as applied with `prisma migrate resolve --applied
+20260924120000_phase13_web_gaps_schema`. Same approach as D-088.
+**Why:** avoids the destructive reset entirely; `prisma migrate diff` against the live dev DB does not go
+through the shadow-database checksum-replay path that `migrate dev` uses, so the pre-existing, unrelated
+checksum drift on an older migration does not block this one. Verified after the fact: `prisma migrate diff
+--from-url $DATABASE_URL --to-schema-datamodel prisma/schema.prisma --script` now returns only one
+unrelated, pre-existing line (`SupportTicket.updatedAt DROP DEFAULT`, from migration
+`20260921100000_notification_kind_and_ticket_updated_at`, not touched by this task) — confirming the dev DB
+matches `schema.prisma` for every Phase 13A change.
+
+## D-094 — Phase 13B: zod DTOs documented in OpenAPI by a generic pass, not per-controller decorators (2026-09-24)
+**Problem.** Every request DTO is a zod schema (TZ §6.5), invisible to `@nestjs/swagger`: `docs/openapi.json`
+had no `requestBody`, no query params for `@Query(zodBody(X))`, no `components.schemas` (web B-1/B-3/B-59).
+**Options.** (a) hand-written `@ApiBody`/`@ApiQuery` on ~120 handlers; (b) add `zod-to-json-schema` /
+`@anatine/zod-openapi` + a decorator per DTO; (c) one pass before `SwaggerModule.createDocument` that reads
+the route-arg metadata Nest already stores (`__routeArguments__` keeps the `ZodValidationPipe` instances),
+converts each schema and applies `ApiBody`/`ApiQuery` programmatically.
+**Choice.** (c): `src/common/swagger/zod-openapi.ts` (own zod v3 → OpenAPI 3.0 converter, input side:
+effects transparent, `.default()`/`.optional()` not required, `.nullable()` → `nullable: true`, `$ref` +
+`allOf` for nullable refs) and `zod-swagger.ts` (`applyZodSwagger` / `attachZodComponents`, wired in
+`buildOpenApiDocument`). Component names are the exported DTO constant names, found by scanning loaded
+`src/` modules in `require.cache`; a clash with a different schema gets a numeric suffix
+(`HosRulesetEnum2`); unnamed schemas stay inline.
+**Why.** Zero controller edits (13C–13I agents edit controllers concurrently) and new endpoints are covered
+automatically. No new dependency: zod is 3.25 with v3 schemas, so zod's own `toJSONSchema` (v4 only) does not
+apply, and a small converter emits OpenAPI 3.0 `nullable` directly. Hand-written `@ApiBody`/`@ApiQuery` win;
+a bare `@ApiQuery({ name })` gets its type filled from zod. `@Param(zodBody(...))` and `@Body('field', pipe)`
+are left to swagger's own path/named-param output. Response DTOs stay example-based (no zod response schemas exist).
+
+## D-095 — Phase 13C RODS: how PC/YM proposals, empty-day proposals and driver-confirmed assignment are stored (2026-09-24)
+**Problem.** B-39/B-72/B-83 need per-proposal data `EldEvent` has no column for (proposed end, PC/YM category, "insert vs. replace"), a place to keep a carrier's "please confirm" assignment, and a permission for `GET /carrier/transfer-config` that allows `reports` OR `reportsTransfer` — while `schema.prisma` and `common/` are off-limits this phase.
+**Options.** (a) new columns / a proposals table (schema change — not allowed now); (b) two-row proposals (eventType 1 + eventType 3, both recordStatus 3); (c) key=value tokens in the proposal row's free-text `comment`, extending the existing `proposedEnd=` convention.
+**Choice.** (c) `comment = "proposedEnd=<iso> proposedSpecial=PC|YM"` (`edit-plan.ts formatProposalMeta/parseProposalMeta`); an INSERT proposal is a recordStatus-3 row with `supersedesId = null`. On accept the category becomes its own Appendix A record — eventType 3 code 1 (PC) / 2 (YM), origin 3, same instant, after the duty record — plus a code-0 clear at the proposed end (or at the next active record), so the category never outlives the edited interval. PC ⇒ status OFF, YM ⇒ status ON (zod refine); PC/YM over recorded driving is still `422 DRIVING_TIME_IMMUTABLE`. A proposed record may not be in the future and may not overlap active driving; an accepted interval on an empty day restores OFF at its end (§395.8(a)). B-83 uses the existing columns: `status = PENDING_CONFIRMATION`, `assignedDriverId` = the driver asked, `assignedById` = the carrier requester, `assignedAt = null`, `confirmationRequestedAt`; NO records are written until the driver confirms, and the segment still counts as unresolved everywhere (`hasUnassigned`, `hos-recalc`, pre-send `UNRESOLVED_UNIDENTIFIED`). `notifyDriver = false` suppresses only the push (socket + `alert.edit_request`); the proposal is still listed in the driver app and still needs the driver's answer. `transfer-config` is `@Perm('reports','READ')`: `@Perm` takes one key and `common/` is being edited by the OpenAPI pass; every seeded role holding `reportsTransfer` also holds `reports`.
+**Why.** No schema change, no new Appendix A record type, append-only preserved, old rows (only `proposedEnd=`) still parse. Follow-ups: `GET /mobile/device-health` `pendingConfirmationRequestIds` (mobile module) should also list `PENDING_CONFIRMATION` segments addressed to the driver — the new `GET /unidentified/confirmation-requests` covers it meanwhile; an AlertRule for `alert.edit_request` / `alert.unidentified_confirmation_requested` with `subjectDriver: true` is needed for FCM when the app is backgrounded (no seed rule exists).
+
+## D-096 — Phase 13E: `NotificationKind` → `Notification.category` mapping, and the attachment-presign authorization default (2026-09-24)
+**Problem.** B-57 wants exactly two segments (`VIOLATIONS`/`MAINTENANCE`, per `web/src/shared/api/notifications.ts`), but nine `NotificationKind` values exist; B-41's presign endpoint has no explicit rule for which permission covers a DVIR-vs-defect-vs-ticket attachment, or what to do for an `Attachment` with none of `dvirId`/`defectId`/`ticketId` set (message/fuel-purchase photos — no read endpoint exists yet).
+**Options (category).** (a) 1:1 `kind`→category, adding new enum values the frontend doesn't render; (b) map every compliance-risk kind (VIOLATION, WARNING, CERTIFY, UNIDENTIFIED) to `VIOLATIONS` and every equipment-health kind (MAINTENANCE, DEVICE) to `MAINTENANCE`, leave dispatch/messaging/edit-request/other uncategorized (still counted in `all`).
+**Options (presign default).** (a) allow any authenticated caller through when the owner chain is unknown; (b) deny by default.
+**Choice.** (b) for both: `deriveNotificationCategory` (`modules/notifications/lib/notification-kind.ts`) buckets as above; `AttachmentsService.mayView` requires `dvir` permission (or the owning driver) for DVIR/defect photos, `support` permission (or the ticket's own author) for ticket attachments, and refuses (404, not 403 — never confirms the id exists) anything with no recognized owner chain.
+**Why.** Frontend only renders two tabs — inventing more categories adds dead UI state; DEVICE→MAINTENANCE keeps ELD/device trouble next to maintenance rather than uncategorized, matching the settings-page grouping intent. Deny-by-default on presign is the conservative IDOR-safe choice per the brief; when fleet-ops later exposes message/fuel-purchase attachment reads they add the matching branch to `mayView` (or call `AttachmentsService.presignKey` directly once *they've* checked ownership — that escape hatch is why `presignKey` is exported separately from `presignAttachment`).
+
+## D-097 — Phase 13H: DVIR compliance definition, B-91 ticket-attachment scoping, B-90 chat model, B-43 driver-level coaching (2026-09-24)
+**Problem.** Several B-40/42/47/68/70/88/89/90/91/43/44 items are shapes-only ("taxminiy") in the TZ, with no schema change allowed this phase (`prisma/schema.prisma` frozen for 13H): (1) `GET /dvir/compliance` never defines what "expected" means; (2) `POST /support/tickets { attachments }` names two kinds but no field says which vehicle/device to pull them from; (3) B-90 "support chat" names no chat provider/model; (4) B-43 "driver-level coaching" has no `driverId` column anywhere a coaching decision could live, only `SafetyEvent.status/coachedById/coachedAt`.
+**Options.** Compliance: (a) expected = trips scheduled (no trip-DVIR link exists), (b) expected = one PRE_TRIP DVIR per ACTIVE vehicle per calendar day in range. Ticket attachments: (a) infer vehicle from the requester's current assignment (driver-only, no signal for a `user` requester), (b) add an optional `vehicleId` to `CreateSupportTicketDto`, required only when `attachments` is non-empty; missing scope silently skips (never fails ticket creation). Chat: (a) new `SupportChat`/`SupportChatMessage` tables (schema change, disallowed), (b) reuse `Conversation`/`Message` via the already-added `ConversationType.SUPPORT` and the existing `realtime.push` socket-room plumbing. Coaching: (a) schema change adding driver-level coaching rows (disallowed), (b) `driverId` on `AssignCoachingDto` resolves to that driver's most recent `NEW`/`REVIEWED` `SafetyEvent` and coaches it — still one real, auditable event row, never a phantom record.
+**Choice.** (b) for all four. Compliance: `DvirAdminRepository.activeVehicles()` × `enumerateDates(from, to)` (capped 366 days) diffed against actual PRE_TRIP submissions per vehicle/day; `missing` capped at 500 rows. Ticket attachments: `vehicleId` added to `CreateSupportTicketDto`; `TicketAttachmentsService.collect()` logs and returns (not throws) when scope or the paired device is missing — a ticket must never fail to open because an attachment couldn't be built. Chat: `SupportModule` imports `MessagingModule` (already exports `MessagingRepository`/`MessagingService`) instead of duplicating conversation/message logic; `POST /support/chats` creates a `SUPPORT` conversation for the caller and sends the first message through the existing pipeline. Coaching: `SafetyRepository.findLatestOpenForDriver`; `AssignCoachingDto` requires exactly one of `eventId`/`driverId` (zod `.refine`); no open event for that driver is `404 NOT_FOUND`, not a silent no-op.
+**Why.** All four stay inside the frozen schema and the existing module boundaries (`DevicesModule`/`MessagingModule` already exported what was needed — no new cross-module coupling beyond an `imports: []` entry). Compliance's per-vehicle/day definition is the one thing "Missing pre-trip" rows (W-14) can mean given only `Dvir.type`/`submittedAt`/`vehicleId` exist; it directly matches TZ §5.10's daily pre-trip requirement. B-91 and B-43's best-effort/404-on-nothing-to-act-on split matches the rest of the codebase's rule that a side attachment never blocks its parent write, while an explicit action with no valid target is a real error, not a silent success.
+
+## D-098 — Phase 13G: draft-trip publish path, `notify` scope, geofence dwell/after-hours evaluator, ADDRESS geocoding, `radiusMeters` alias, and B-10 search's ungated/no-fabrication choices (2026-09-24)
+**Problem.** Six B-15/36/37/67/73/74/92/93/10 items each needed a design call the TZ leaves open, with `prisma/schema.prisma` already migrated (20260924120000) but no service-layer behaviour built on it yet: (1) B-73 names no dedicated "publish" endpoint for a draft trip; (2) B-74 doesn't say whether `notify` also has to cover `POST /vehicles/:id/assign-driver` (owned by the 13F agent, not this one); (3) B-15's `dwellMinutes`/`afterHoursOnly` need a live detector, but `TelemetryPoint` batches carry no "how long has this vehicle been inside" state and no per-carrier business-hours config exists; (4) B-93 needs a geocoder, but the brief forbids wiring a paid vendor without config; (5) the web `CreateGeofenceModal` payload's radius field is literally named `radiusMeters` (though its UI label says "mi" and `GeofencesListResponse` documents `radiusMi` on the wire — a pre-existing web-side naming bug, not this agent's file to fix); (6) B-10 has no permission key in the §6.4 22-key matrix, and `SearchDriverHit.dutyStatus`/`openWarnings` have no cheap, correct, N+1-safe source.
+**Options.** Publish: (a) a new `POST /trips/:id/publish` route, (b) reuse `PATCH /trips/:id { status: 'PLANNED' }` by adding `DRAFT` to `ALLOWED_TRANSITIONS`. Notify: (a) this agent also edits `vehicles.controller.ts`/`.service.ts` for the `assign-driver` half, (b) only `POST /trips/:id/assign` here; the vehicles half is left to 13F/vehicles ownership. Dwell: (a) a new schema column to persist "entered at" (disallowed — schema frozen), (b) walk `TelemetryPoint` history backward (capped 300 rows) from the batch's last point to find the earliest continuously-inside point, re-checked on every batch (relies on the matching `AlertRule`'s own cooldown to avoid repeat deliveries, same as every other `alert.*` job). After-hours: (a) a per-carrier configurable business-hours window (schema change, disallowed), (b) a hardcoded 06:00–20:00 local window (subject's/carrier's IANA zone, same `resolveZone` pattern as `AlertProcessor`). Geocoder: (a) a paid vendor key required, (b) a `GEOCODER_URL` env seam (Nominatim-shaped `/search?q=&format=json`), `422 GEOCODER_NOT_CONFIGURED` when unset. `radiusMeters`: (a) reject/ignore it, forcing a later web fix before ADDRESS/CIRCLE via this form ever works, (b) accept it server-side as an alias of `radiusMi` (no unit conversion — the value is already miles despite the field's name). Search: permission — (a) require `drivers`+`vehicles` READ via two `@Perm` checks (not supported — `@Perm` takes one key) or a new 23rd key (schema/common-adjacent, avoided), (b) no `@Perm` at all, same as `notifications`. `dutyStatus`/`openWarnings` — (a) derive from a per-row `EldEvent`/violation-type query (N+1 across up to `limit` rows), (b) leave `null` (`openViolations` still computed, batched via one `groupBy`).
+**Choice.** (b) throughout. `TripStatus.DRAFT` slots into `ALLOWED_TRANSITIONS` as `DRAFT → PLANNED | CANCELLED`; `CreateTripDto.draft` forces `status: 'DRAFT'` even when a `driverId` is present (never silently ASSIGNED). `AssignTripDto.notify` (default `true`) only gates the existing `alert.trip_assigned` BullMQ job. `SafetyDetectProcessor.detectDwell` re-derives the entry point every batch; `isAfterHours`/`isDwellExceeded` are pure, unit-tested functions in `geofence-detect.ts`; `activeCircleFences()` now also pulls in dwell-only fences (no enter/exit flag) via `dwellMinutes: { not: null }`. `GeofencesService.create/update` geocode `type: 'ADDRESS'` inline (no separate `/geocode` route) and accept `radiusMeters` as a `radiusMi` alias on both CIRCLE and ADDRESS. `SearchController` has no `@Perm`; `SearchService` fills `dutyStatus`/`openWarnings` with `null` and `openViolations` from one batched `HosViolation.groupBy`.
+**Why.** No schema edits, no new tables, no new cross-module coupling beyond what already existed; every new alert/geocode/search path fails loud (`GEOCODER_NOT_CONFIGURED`, `null` fields) rather than fabricating data it cannot back up, matching the "truthful, not guessed" precedent the web client already set for these exact fields (`trips.ts` `blocksAssignment`, `search.ts` proposed shape). The `assign-driver` half of B-74 is left out on purpose — `vehicles.controller.ts`/`.service.ts` are 13F's files this phase; flagged here so it is not silently dropped.
+
+## D-099 — Phase 13F: telemetry-read cycle avoidance, driver reset-password/invite as a rotated one-time code, email-required relaxed, import `options` shapes (2026-09-24)
+**Problem.** Five B-4/29-31/69/81/82 items needed a design call `prisma/schema.prisma` (frozen this phase) could not settle: (1) `GET /vehicles/:id/histories` and the telemetry read path need `TelemetryPoint` rows, but `VehiclesModule -> TelemetryModule -> DtcModule -> VehiclesModule` is a cycle (`DtcModule` already imports `VehiclesModule` for its own `GET /vehicles/:id/dtc` 404 check); (2) B-81 "carrier resets a driver's app password" and B-82/import `sendInvitation(s)` both need to hand the driver *something* to log in with, but there is no SMTP client (Phase 1, `mail.port.ts`) and no persistent "invite token" column on `Driver`; (3) tz.md B-29/30/31 calls `Driver.email` "majburiy" (required) but the schema comment (and 60 seeded rows) is explicitly nullable+unique; (4) `POST /vehicles/import` / `POST /drivers/import` `options` need one field each (`defaultTerminal`, `pairDevices`) that has no matching column (`Vehicle` has no terminal field, and an import row has no device-serial field).
+**Options.** Telemetry cycle: (a) `forwardRef()` between `VehiclesModule`/`TelemetryModule` (project convention explicitly avoids `forwardRef`, see `vehicles.module.ts`/`devices.module.ts` comments), (b) `VehiclesRepository` queries `TelemetryPoint` directly, same acyclic pattern as `findOpenCriticalDefectIds`. Reset/invite: (a) a stateless JWT the driver pastes into the app (unreadable over a phone call), (b) rotate `Driver.passwordHash` to a fresh 6-digit code immediately, email it when `Driver.email` exists, else return it in the response for a dispatcher to read aloud (matches tz.md's own parenthetical). Email required: (a) enforce `min(1)` (breaks existing rows/imports with no email), (b) keep it optional, add a pre-write uniqueness check (`findByEmail`) so the `@unique` constraint surfaces as `CONFLICT` instead of an unhandled `P2002`. Import extras: (a) silently ignore `defaultTerminal`/`pairDevices` (fails "opsiya haqiqatan ta'sir qiladi"), (b) `defaultTerminal` backfills `Vehicle.notes` when the row has none (`Terminal: X`); `ImportVehicleRowDto` adds an optional `deviceSerial` (import-only, not on `POST /vehicles`) that `pairDevices: true` pairs post-create/update, best-effort (never fails the row).
+**Choice.** (b) throughout. `VehiclesRepository.findTelemetryRange`/`findTelemetryRecent` query `prisma.telemetryPoint` directly; `VehiclesModule` never imports `TelemetryModule`. `DriversService.resetPassword`/`dispatchOneTimeCode` both rotate the hash and return `{ emailedTo, code? }` (`code` only outside production, mirroring `AuthService.forgotPassword`'s existing dev-token convention) — always `@Audit`-ed. `Driver.email` stays optional; `assertEmailAvailable()` runs before every create/update/import row. `defaultTerminal`/`pairDevices` land as described above.
+**Why.** No schema edits, no new module cycle, no behavior change for a caller that sends no `options`/no `sendInvitation`. The reset/invite code is deliberately short-lived and re-rotated on every call (never a standing secret an old email can leak); flagging tz.md's "majburiy" as not-applied (backend_tasks.md §20 note on B-29/30/31 already calls this ambiguous) avoids breaking `npm run db:seed`'s 60 no-email drivers and any existing driver-app account with no email on file.
+
+## D-101 — Phase 13I: AUTH_MODE default, B-95 dataTransfer split point, B-84 email re-verification without a schema field, B-51 avatar validation without an image library, B-13 OR-permission (2026-09-24)
+**Problem.** Six 13I items each needed a call the brief left open, with `prisma/schema.prisma` frozen this phase (only `User.avatarKey`/`homeTerminalName`/`terminalScope`/`preferences` and `Role.permissions` Json were pre-migrated, D-090): (1) B-25 needs an `AUTH_MODE` but no default is specified and flipping it wrong breaks every seeded dev login; (2) B-95's `dataTransfer` key needs to replace `reportsTransfer` on *some* endpoint(s) but `reportsTransfer` itself must stay intact (tz.md §6.4 verbatim); (3) B-84 "email change re-verifies" has no `emailVerifiedAt`-equivalent column on `User` to stage a pending address; (4) B-51 "PNG/JPG ≥ 256×256" needs image dimensions with no `sharp`/`image-size` dependency in the tree; (5) B-13 needs `vehicles:FULL` **or** `trips:FULL`, but `@Perm`/`PermissionGuard` only ever compared one key; (6) B-50's `current` session flag needs the caller's own session identified from an access token that carried no session id.
+**Options.** AUTH_MODE: (a) default `production` (safe-by-default, but breaks every existing dev/seed password login the moment this lands), (b) default `dev` (matches today's behaviour everywhere until an operator opts in). dataTransfer: (a) apply to every `transfers.*` route, (b) only `POST /transfers` (the actual *send*); `GET`/`:id`/`download` stay on `reportsTransfer` (the *export/view* side — matches "FMCSA pack eksport" vs "data transfer yuborish" wording in backend_tasks.md row 850). Email re-verify: (a) apply the new email immediately and hope re-verification is a formality (weakens the guarantee), (b) never write `User.email` outside one path (`AuthService.verifyEmailChange`), issuing a JWT-encoded pending-email token the same way `forgotPassword` already issues a reset token (returned outside production only — no mailer in Phase 1, documented gap). Avatar dims: (a) add `sharp`/`image-size` as a dependency, (b) hand-roll a ~50-line PNG/JPEG header parser (both formats keep width/height at a fixed, well-known offset). Perm: (a) leave `@Perm` single-key and special-case `assign-driver` with manual logic in the controller, (b) extend `PermRequirement` to optionally be an array (`PermAny`) and make `PermissionGuard` pass on ANY match, backward-compatible with every existing single-key `@Perm`. Session id: (a) infer "current" by heuristic (most recent `lastSeenAt`) — wrong whenever two tabs are open, (b) sign a `sid` claim (the `Session.id`) into the User access token at issuance, compare it server-side.
+**Choice.** (b) throughout: `AUTH_MODE` defaults to `dev`; `POST /transfers` requires `dataTransfer:FULL`, the three GET/download routes keep `reportsTransfer:READ`; `User.email` is written only by `verifyEmailChange`, `PATCH /users/:id { email }` returns `{ ...user, emailVerification: { pendingEmail, verifyToken? } }` and clears `googleUid` on the eventual write (old Google identity must not silently carry over); `readImageDimensions()` (`modules/users/lib/image-dimensions.util.ts`) parses PNG IHDR / JPEG SOF0 directly; `Perm`/`PermAny` + `PermissionGuard` OR-support, applied to `POST /vehicles/:id/assign-driver`; `sid` added to `AccessTokenClaims`/`UserTokenSubject`/`ContextUser`, set on login and every refresh rotation.
+**Why.** Every choice is either the documented existing convention (forgotPassword's "no mailer, return outside prod" pattern; §17's short-lived presigned GET) extended by analogy, or the option that cannot silently break something already working (AUTH_MODE default, backward-compatible `@Perm`). No schema edits were needed for any of the six. Avatar dims and the `sid` claim both avoid a new dependency/migration respectively, in favor of the smallest correct primitive.
+
+## D-100 — Phase 13D: `realtime.push` needed a cross-process bridge, not just a local re-listen; FMCSA pack `include`/`vehicleId` semantics; RODS/IDLE_FUEL data sources (2026-09-24)
+**Problem.** B-49 asked for "`report.ready` from worker to API process (Redis pub/sub → `user:{id}`)", but `report.processor.ts` already called `EventBusService.publish('realtime.push', ...)` and `RealtimeGateway` already listened for it — that looked done. It wasn't: `EventBusService` (`core/events/event-bus.service.ts`) is a plain in-process `Map` of handlers with no I/O, and `worker.ts`/`app.module.ts` are separate Node processes (TZ §3.3) with separate `EventBusService` instances. A worker-only processor's publish (`report`, `alert`, `safety-detect`) never reached the API process's `RealtimeGateway` at all — the socket event was silently dropped, not just delayed. Separately, B-48 required `FmcsaPackParamsDto.include[]`/`vehicleId` to "really change contents", but the existing Appendix A generator has no per-section toggle (a §395 output file IS the RODS record, not a section of one) and no vehicle filter (events are fetched per-driver, not per-vehicle).
+**Choice.** Added `RealtimePubSubService` (`core/events/realtime-pubsub.service.ts`, exported from the `@Global` `EventsModule`) as the ONLY thing that bridges `realtime.push` across processes: it subscribes locally to `realtime.push` and re-publishes the payload on a Redis pub/sub channel (`realtime:push`), and separately subscribes to that channel and exposes `onRelayed()`. `RealtimeGateway` now emits from `onRelayed()` instead of `EventBusService.on('realtime.push', ...)` directly — every existing caller (`trips`, `messaging`, `ingest`, `alert`, `safety-detect`, `report`) is relayed identically regardless of which process published, with zero call-site changes. For FMCSA pack: `vehicleId` filters WHICH DRIVERS are in the pack (only drivers with at least one event tied to that unit in the period — computed before the pre-send check runs, so an unrelated driver never produces a spurious `SKIPPED` row); `include` controls the cover-PDF metadata columns (`UNIDENTIFIED`→count, `EDITS`→editor count, `DVIR`→open defect count, `MALFUNCTIONS`→codes) and, for `RODS` specifically, whether the Appendix A CSV is generated/stored at all (excluding it keeps the cover-page row but skips the file). No `include` ⇒ every section, unchanged from before. RODS/IDLE_FUEL generators: `RodsReportGenerator` reuses `LogsService.getRange`/`getEvents` (same reuse rule `ActivityReportGenerator` already follows, so the printed sheet can never disagree with the online RODS view); `IdleFuelReportGenerator` reads `TelemetryPoint` directly (never `IftaSegment`) since idle/fuel-waste is an operational report that may legitimately age out with the 13-month telemetry retention window, not a 4-year compliance record.
+**Why.** The bridge is the smallest change that makes EVERY existing/future `realtime.push` publisher work across the process boundary without touching call sites, rather than a one-off fix scoped to `report.processor.ts` alone (which would have left `alert`/`safety-detect` — both worker-only — silently broken the same way). The FMCSA pack choices are the ones that make `include`/`vehicleId` a real content change while respecting that Appendix A itself cannot be partially generated (`RODS` is the file, not a section of it) and that a vehicle-driven pack has no meaning for a driver who never touched that vehicle.
+
+## D-102 — Phase 13C leftovers: default FCM delivery for `alert.edit_request`/`alert.unidentified_confirmation_requested`, `alert.trip_assigned`; B-83 device-health visibility; assign-driver FCM (2026-09-24)
+**Problem.** D-095 flagged two gaps left open when it landed: (1) no seeded `AlertRule` matched `alert.edit_request`/`alert.unidentified_confirmation_requested`/`alert.trip_assigned`, so `AlertProcessor.findByEvent` returned nothing and a driver with the app backgrounded got no FCM for any of the three (nor for 13G's `alert.trip_assigned` reuse) — the socket event alone reached only a foregrounded app; (2) `GET /mobile/device-health`'s `pendingConfirmationRequestIds` only queried `UnidentifiedSegment.status = PENDING` on the driver's assigned vehicle, missing a B-83 `PENDING_CONFIRMATION` segment addressed to the driver (see B-079); separately, 13F's `POST /vehicles/:id/assign-driver { notify: true }` wrote a `Notification` row directly (`NotificationsRepository.create`), never through the alert/FCM pipeline at all (B-080).
+**Options.** Default delivery: (a) a per-carrier "system default" fallback path in `AlertProcessor` that fires when zero rules match a known driver-subject event (implicit behaviour, invisible in `GET /alert-rules`, harder to mute/audit), (b) seed three `isSystem: true` `AlertRule` rows (`recipients: { subjectDriver: true }`, `channels: ['IN_APP']`) in `prisma/seed.ts`, reusing the existing `AlertProcessor.send` IN_APP+FCM pairing verbatim. Assign-driver FCM: (a) route it through the alert queue as a new `alert.vehicle_assigned` job (consistent with every other driver push, but widens this phase's touched surface with a new event name/kind/objectRef and a fourth seeded rule), (b) keep the existing direct `Notification.create` (zero behavior change to `GET /notifications`/existing tests) and add a direct best-effort FCM fan-out next to it, reading `MobileRepository.findPushTokens` (already cross-module-exported for exactly this) via a new one-directional `VehiclesModule -> MobileModule` import.
+**Choice.** (b) for both. Seeded `default_edit_request`/`default_unidentified_confirmation_requested`/`default_trip_assigned` — real, visible, editable/mutable rows in `alert-rules` admin UI, not a hidden fallback; `notifyDriver`/`notify: false` still suppress at the call site (no job enqueued) exactly as before, unchanged. `VehiclesService.assignDriver` now also fans out `FirebaseService.sendToToken` to every active `PushToken` for the driver when `FirebaseService.enabled`, same best-effort `Promise.allSettled` shape `AlertProcessor.send` uses, without moving the notification write off `NotificationsRepository` (keeps `type: 'ASSIGNMENT'`/`category: 'assignment'` stable for the existing `assignDriver — B-74 notify` tests). `DeviceHealthRepository.findPendingUnidentifiedSegments` now takes `driverId` and ORs in `status: PENDING_CONFIRMATION AND assignedDriverId = driverId` (any vehicle) alongside the existing assigned-vehicle PENDING pool, and runs even with no assigned vehicle.
+**Why.** A seeded rule is inspectable/auditable the same way every other alert is (mute, disable, throttle all already work on it) instead of a special-cased code path only this phase's three events get; it costs nothing behaviourally to a caller that already sets `notifyDriver`/`notify: false`. Reusing the direct-write path for assign-driver (rather than a new alert event) avoids inventing a fourth "default" rule and a new `NotificationKind`/`ObjectRef` branch for a single call site, while still closing the actual gap (FCM to a backgrounded app) — `MobileModule` exporting `MobileRepository` for cross-module reads is an already-established pattern (`PushTokensRepository`'s own doc comment names it), and `MobileModule` has no import back to `VehiclesModule` anywhere in its dependency chain, so the module graph stays acyclic.
+
+## D-103 — Phase 13J: one-time secrets are echoed only on explicit opt-in (`DEV_ECHO_SECRETS`), never on "not production" (2026-09-24)
+**Problem.** `forgotPassword`, `issueUserEmailVerifyToken`, driver `resetPassword`/`sendVerification`/`dispatchOneTimeCode` returned the secret whenever `NODE_ENV !== 'production'` (no mailer in Phase 1). The internet-facing API (`eldapi.stackyard.uz` → `:3002`) runs `NODE_ENV=development` against the seeded DB, so the unauthenticated forgot-password endpoint handed out live reset tokens (bugs.md B-093).
+**Options.** (a) flip the public host to `NODE_ENV=production` (changes logging, Swagger, db-guard and other behaviour of a box that is a dev environment by design); (b) remove echoing altogether (no way to test the flows until a mailer exists); (c) a dedicated opt-in flag, default off, still ignored in production.
+**Choice.** (c) `DEV_ECHO_SECRETS` (bool, default `false`) → `AppConfigService.echoOneTimeSecrets = !isProduction && DEV_ECHO_SECRETS`. A developer's local `.env` may set it; a shared/public host must not. The "no email on file → dispatcher reads the code aloud" response of `POST /drivers/:id/reset-password` is unchanged (it is the feature, gated `drivers:FULL` and audited).
+**Why.** The safety property should not depend on a deployment remembering which `NODE_ENV` it runs; "secure unless explicitly loosened" is the only default that holds on the box we actually have.
+
+## D-104 — Phase 13J lint follow-up: kept the `params as object` cast in `report-scheduler.processor.ts` with a targeted eslint-disable (2026-09-24)
+**Problem.** `npm run lint`'s `no-unnecessary-type-assertion` flagged `params: params as object` (Json write for `Report.create`) as unnecessary, but removing it breaks `npm run build` (`nest build` via `tsc -p tsconfig.build.json`): `Type 'Record<string, unknown>' is not assignable to type 'JsonNull | InputJsonValue'`. ESLint's `projectService` type-checks this expression against a different (laxer) resolved type than the real build's `tsconfig.build.json`, so the two type-checkers disagree on the same line.
+**Options.** (a) remove the assertion to satisfy lint (breaks `npm run build`, not acceptable), (b) change the cast to `as Prisma.InputJsonValue` (a Prisma-specific type import here would work for the build but does not change ESLint's independently-resolved laxer type, so the false positive stays), (c) keep the cast (build-correct), silence the rule for this one line with a comment naming this decision.
+**Choice.** (c). `// eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion` directly above `params: params as object,` with a comment pointing here.
+**Why.** The assertion is provably required by the actual build (`npm run build` fails without it); disabling the rule for exactly this one line is narrower and more honest than either breaking the build to satisfy lint or reaching for a wider assertion that would not even fix ESLint's own (separately-configured) type resolution.
+
+## D-105 — Phase 13J follow-up: dedicated `onebook_eld_test` DB/`eld_test` role, isolated Redis DB + BullMQ prefix, `.env.test` (2026-09-24)
+**Problem.** `test:integration`/`test:e2e` shared `onebook_eld_dev` with the live mock simulator (`eld-simulator` pm2 process, continuous writes) and pm2's own `eld-api`/`eld-worker` (same Redis/BullMQ queue), causing row-count assertions and queue-ordering assertions to race non-deterministically (bugs.md B-102/B-107). `eld_dev`'s role has a hard `CONNECTION LIMIT 10` already mostly consumed by the three live processes.
+**Options.** (a) stop the simulator/worker for test runs (out of scope — other agents/production depend on them, explicitly forbidden by the task brief), (b) filter/relax assertions to tolerate a live consumer (loses the guarantee the assertions exist to check), (c) a fully separate DB + role + Redis DB index + BullMQ prefix, so nothing running against dev can ever observe or be observed by a test run.
+**Choice.** (c). Provisioned via `docker exec onebook-postgres` (superuser): `CREATE ROLE eld_test ... CONNECTION LIMIT 8` (separate budget from eld_dev's 10) and `CREATE DATABASE onebook_eld_test OWNER eld_test`; `prisma migrate deploy` + `prisma/seed.ts` run against it (full demo seed, not a hand-rolled minimal one — `test/e2e/*.e2e-spec.ts` already hardcode seeded emails/ids like `carlos.ramirez@universal-logistics.example`, so "minimal" would have broken ~90 existing e2e assertions; re-seeding is idempotent and takes <5s). `test/setup/integration.setup.ts` now loads `.env.test` (`override: true`) and hard-fails unless `DATABASE_URL`'s database name is exactly `onebook_eld_test` — refuses `onebook_eld_dev` AND `onebook_eld` (prod) equally. `.env.test` sets `REDIS_DB=2` (dev=1, prod=0) AND `QUEUE_PREFIX=onebook-test` (BullMQ key namespace) — belt-and-suspenders so a misconfigured REDIS_DB alone can't let a test run's queue jobs collide with the live dev worker's. `scripts/bootstrap-test-db.sql` (run once via `npm run db:test:lockdown`) closes the one gap `prisma/migrations/.../append_only_revoke_hardening/migration.sql` couldn't cover — its REVOKE role list is hardcoded to `['eld_dev','eld_prod']` (written before `eld_test` existed) and REVOKE-from-PUBLIC alone does not restrict a table's OWNER (`eld_test` owns onebook_eld_test's tables), so `EldEvent`/`AuditLog` append-only enforcement needed the same REVOKE re-applied by name for `eld_test`, plus `create_monthly_partition()` redefined (this DB only) to include `eld_test` in the partitions it creates going forward. `npm run db:check-drift` is unaffected (compares only dev vs prod, never touches test).
+**Why.** A same-box, separately-owned DB/role/Redis-namespace is the only option that keeps the simulator/worker running untouched (explicit constraint) while giving test runs a completely private write surface — no assertion needs to become "tolerant" of a live process it was never meant to share state with. Reusing the full seed (rather than a bespoke minimal one) keeps every existing e2e assertion valid instead of rewriting ~90 of them to a new fixture shape.
+
+## D-106 — Phase 13J follow-up: dev `GEOCODER_URL` points at public Nominatim, never set in production (2026-09-24)
+**Problem.** `ADDRESS`-type geofences return `422 GEOCODER_NOT_CONFIGURED` whenever `GEOCODER_URL` is unset (by design, D- decisions.md precedent — "no paid vendor wired in"); dev had no value set at all, so the create-geofence happy path was unverifiable in dev.
+**Choice.** `.env.development`/`.env.development.example` set `GEOCODER_URL=https://nominatim.openstreetmap.org`. `.env.production`/`.env.production.example` are untouched (left unset). `src/modules/geofences/lib/geocoder.ts` already sent an identifying `User-Agent: onebook-eld/1.0` header (Nominatim usage-policy requirement) and already bounds the outbound call (`GEOCODER_TIMEOUT_MS`, `GEOCODER_MAX_RESPONSE_BYTES`, `redirect: 'error'` for SSRF) — nothing to add there.
+**Why.** Nominatim's public instance forbids heavy/production use (documented usage policy, ~1 req/sec, no bulk geocoding) but is the correct free choice for occasional dev verification; a real deployment must configure its own geocoder (self-hosted Nominatim, Pelias, or a commercial API) rather than inherit the public instance by accident.
+
+## D-107 — Vehicle groups, IFTA jurisdiction list/filters, activity `groupBy`, W-22 marketplace providers connectable (2026-09-25)
+**Problem.** Web W-12 `Jurisdiction` / `Vehicle group`, W-13 `Group by` and W-22 `Connect` for Pacific Track / DAT / Geotab / Zapier were disabled because the backend had no vehicle-group model, no jurisdiction list and listed those four providers `available: false` (`web/backend-gaps.md` "Still open").
+**Choice.** (1) `VehicleGroup` table + nullable `Vehicle.groupId` (FK `ON DELETE SET NULL`, one group per unit), CRUD at `/vehicle-groups` gated by `vehicles` (READ/FULL, audited as `VehicleGroup`), `PUT /vehicle-groups/:id/vehicles` replaces membership; `groupId` on `POST/PATCH /vehicles` (+ import), `GET /vehicles?groupId=<id|none>`. (2) `GET /reports/ifta/jurisdictions` returns every code `jurisdictionFor` can resolve with names; `vehicleGroupId` + `jurisdiction` accepted by `GET /reports/ifta`, `/reports/ifta/summary` and `POST /reports/generate` IFTA params. `jurisdiction` narrows rows/miles/gallons/receipts; fleet MPG stays fleet-wide (IFTA formula). (3) `GET /reports/activity/summary` takes `vehicleGroupId` and `groupBy=driver|vehicleGroup`. (4) `pacific-track`, `dat`, `geotab`, `zapier` joined `INTEGRATION_PROVIDERS`, catalog `available: true`.
+**Why.** `DailyLog` carries no unit, so activity grouping uses the driver's **current** `assignedVehicleId` — a driver who switched units mid-range counts wholly toward the present unit's group (documented in the endpoint description). The four new providers are connected exactly like McLeod/WEX/QuickBooks today (encrypted `config`, CONNECTED status) — none of the providers runs a sync job yet, so this is parity, not a new promise.
+
+## D-108 — Mock dataset and `prisma/mock/` generator code removed (2026-09-26)
+**Problem.** The user no longer wants the 200-driver / 6-month mock dataset (D-055) or its live simulator in the project.
+**Choice.** Dev DB `onebook_eld_dev` was reset via `scripts/db-reset-dev.sh` (drop → migrate → `prisma/seed.ts`; 1049 MB → 15 MB, seed only). `prisma/mock/` (generators + live simulator), the `db:mock` / `db:mock:live` npm scripts and the `prisma/mock/**/*.spec.ts` entry in `jest.config.js` `testMatch` were deleted. D-055 and related entries remain as history only.
+**Why.** The user explicitly asked for it. Reset rather than row-level DELETE because `EldEvent`/`AuditLog` are append-only for `eld_dev`; the append-only REVOKEs are recreated by the migrations.

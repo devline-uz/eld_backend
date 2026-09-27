@@ -9,10 +9,9 @@ function permOf(method: keyof TransfersController): PermRequirement | undefined 
     | undefined;
 }
 
-/** TZ §6.4 — `reportsTransfer`: ADMIN/FLEET_MANAGER FULL, DISPATCHER/VIEWER NONE. */
+/** TZ §6.4 — `reportsTransfer` gates read/download; B-95 `dataTransfer` gates sending. */
 describe('TransfersController permissions', () => {
   it.each([
-    ['create', 'FULL'],
     ['list', 'READ'],
     ['get', 'READ'],
     ['download', 'READ'],
@@ -20,11 +19,20 @@ describe('TransfersController permissions', () => {
     expect(permOf(method)).toEqual({ key: 'reportsTransfer', level });
   });
 
+  it('create requires dataTransfer:FULL (B-95 — split from reportsTransfer)', () => {
+    expect(permOf('create')).toEqual({ key: 'dataTransfer', level: 'FULL' });
+  });
+
   it('is reachable only by ADMIN and FLEET_MANAGER per the §6.4 matrix', () => {
-    const levels = Object.fromEntries(
+    const readLevels = Object.fromEntries(
       Object.entries(DEFAULT_ROLE_MATRIX).map(([role, perms]) => [role, perms.reportsTransfer]),
     );
-    expect(levels).toMatchObject({ ADMIN: 'FULL', FLEET_MANAGER: 'FULL', DISPATCHER: 'NONE', VIEWER: 'NONE' });
+    expect(readLevels).toMatchObject({ ADMIN: 'FULL', FLEET_MANAGER: 'FULL', DISPATCHER: 'NONE', VIEWER: 'NONE' });
+
+    const sendLevels = Object.fromEntries(
+      Object.entries(DEFAULT_ROLE_MATRIX).map(([role, perms]) => [role, perms.dataTransfer]),
+    );
+    expect(sendLevels).toMatchObject({ ADMIN: 'FULL', FLEET_MANAGER: 'FULL', DISPATCHER: 'NONE', VIEWER: 'NONE' });
   });
 });
 

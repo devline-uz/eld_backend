@@ -24,18 +24,90 @@ export const LocationDto = z.object({
   name: z.string().max(120).optional(),
 });
 
+/**
+ * B-39 — a carrier proposal may correct the location by NAME only (a dispatcher rarely has
+ * coordinates). Coordinates are optional but come as a pair; with none, `name` is required.
+ */
+export const ProposalLocationDto = z
+  .object({
+    lat: z.number().min(-90).max(90).optional(),
+    lon: z.number().min(-180).max(180).optional(),
+    name: z.string().trim().min(1).max(120).optional(),
+  })
+  .refine((value) => (value.lat === undefined) === (value.lon === undefined), {
+    message: '`lat` and `lon` must be sent together',
+  })
+  .refine((value) => value.lat !== undefined || Boolean(value.name), {
+    message: 'A location needs `name` or `lat`/`lon`',
+  });
+export type ProposalLocationDto = z.infer<typeof ProposalLocationDto>;
+
+/**
+ * B-39 — §395.1(e) special driving category of a proposal. Personal conveyance is an OFF-duty
+ * category and yard move an ON-duty one (Appendix A eventType 3, codes 1/2), so the base
+ * status must match: PC ⇒ OFF, YM ⇒ ON.
+ */
+export const ProposedSpecialEnum = z.enum(['NONE', 'PC', 'YM']);
+export type ProposedSpecial = z.infer<typeof ProposedSpecialEnum>;
+
+function checkSpecial(status: string, special: ProposedSpecial | undefined, ctx: z.RefinementCtx, path: string): void {
+  if (special === 'PC' && status !== 'OFF') {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: [path], message: 'Personal conveyance (PC) requires status OFF (§395.1(e)(1))' });
+  }
+  if (special === 'YM' && status !== 'ON') {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: [path], message: 'Yard move (YM) requires status ON (§395.1(e)(2))' });
+  }
+}
+
 /** TZ §9.1 — the carrier's §395.30 edit proposal. */
-export const CreateEditRequestDto = z.object({
-  originalEventId: z.string().regex(/^\d+$/, 'Expected an event id'),
-  proposedStatus: DutyStatusEnum,
-  proposedStart: isoDateTime,
-  proposedEnd: isoDateTime.optional(),
-  location: LocationDto.optional(),
-  odometerMi: z.number().int().min(0).max(9_999_999).optional(),
-  engineHours: z.number().min(0).max(99_999).optional(),
-  reason: annotationSchema,
-});
-export type CreateEditRequestDto = z.infer<typeof CreateEditRequestDto>;
+export const CreateEditRequestDto = z
+  .object({
+    originalEventId: z.string().regex(/^\d+$/, 'Expected an event id'),
+    proposedStatus: DutyStatusEnum,
+    /** B-39 — PC/YM; stored as the Appendix A eventType 3 indication once the driver accepts. */
+    proposedSpecial: ProposedSpecialEnum.default('NONE'),
+    proposedStart: isoDateTime,
+    proposedEnd: isoDateTime.optional(),
+    location: ProposalLocationDto.optional(),
+    odometerMi: z.number().int().min(0).max(9_999_999).optional(),
+    engineHours: z.number().min(0).max(99_999).optional(),
+    reason: annotationSchema,
+    /** B-39 — `false` suppresses the push only; the proposal still waits in the driver app. */
+    notifyDriver: z.boolean().default(true),
+  })
+  .superRefine((value, ctx) => {
+    checkSpecial(value.proposedStatus, value.proposedSpecial, ctx, 'proposedSpecial');
+    if (value.proposedEnd && value.proposedEnd.getTime() <= value.proposedStart.getTime()) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['proposedEnd'], message: '`proposedEnd` must be after `proposedStart`' });
+    }
+  });
+/** Input shape: `proposedSpecial` / `notifyDriver` may be absent when called in-process (defaults applied by the service). */
+export type CreateEditRequestDto = z.input<typeof CreateEditRequestDto>;
+
+/**
+ * B-72 — `POST /logs/:driverId/events`: the carrier proposes a NEW record (typically on a RODS
+ * day with no duty record yet). Same §395.30 flow as an edit request: stored inert
+ * (`recordStatus = 3`), applied only when the driver accepts.
+ */
+export const ProposeEventDto = z
+  .object({
+    status: DutyStatusEnum,
+    proposedSpecial: ProposedSpecialEnum.default('NONE'),
+    eventDateTime: isoDateTime,
+    endDateTime: isoDateTime.optional(),
+    location: ProposalLocationDto.optional(),
+    odometerMi: z.number().int().min(0).max(9_999_999).optional(),
+    engineHours: z.number().min(0).max(99_999).optional(),
+    annotation: annotationSchema,
+    notifyDriver: z.boolean().default(true),
+  })
+  .superRefine((value, ctx) => {
+    checkSpecial(value.status, value.proposedSpecial, ctx, 'proposedSpecial');
+    if (value.endDateTime && value.endDateTime.getTime() <= value.eventDateTime.getTime()) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['endDateTime'], message: '`endDateTime` must be after `eventDateTime`' });
+    }
+  });
+export type ProposeEventDto = z.input<typeof ProposeEventDto>;
 
 export const ResolveEditRequestDto = z.object({ note: annotationSchema.optional() });
 export type ResolveEditRequestDto = z.infer<typeof ResolveEditRequestDto>;
@@ -69,3 +141,9 @@ export const EditRequestListQueryDto = z.object({
   to: dayKeySchema.optional(),
 });
 export type EditRequestListQueryDto = z.infer<typeof EditRequestListQueryDto>;
+
+/** mobile/tz.md MB-18 — `GET /mobile/logs/:date/export?format=csv|pdf`. */
+export const LogExportDateParamDto = z.object({ date: dayKeySchema });
+export type LogExportDateParamDto = z.infer<typeof LogExportDateParamDto>;
+export const LogExportFormatQueryDto = z.object({ format: z.enum(['csv', 'pdf']).default('csv') });
+export type LogExportFormatQueryDto = z.infer<typeof LogExportFormatQueryDto>;

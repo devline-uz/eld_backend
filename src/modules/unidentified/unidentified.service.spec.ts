@@ -104,6 +104,7 @@ function build() {
   const events = { publish: jest.fn(async () => undefined) };
   const hosQueue = { add: jest.fn(async () => ({})) };
   const logs = { recordLogChange: jest.fn(async () => ['2026-06-01']) };
+  const alertQueue = { add: jest.fn(async () => ({})) };
   const service = new UnidentifiedService(
     repo as unknown as UnidentifiedRepository,
     writer as unknown as RodsEventWriter,
@@ -111,8 +112,9 @@ function build() {
     events as unknown as EventBusService,
     hosQueue as never,
     logs as unknown as LogsService,
+    alertQueue as never,
   );
-  return { service, repo, writer, audit, events, hosQueue, logs };
+  return { service, repo, writer, audit, events, hosQueue, logs, alertQueue };
 }
 
 const actor = { id: 'user-1', type: 'user' as const };
@@ -337,5 +339,105 @@ describe('annotation and driver confirmation', () => {
       'veh-1',
       new Date('2026-06-01T13:00:00Z'),
     );
+  });
+});
+
+describe('B-83 — assignment that waits for the driver to confirm (§395.32)', () => {
+  const driverActor = { id: DRIVER, type: 'driver' as const };
+
+  async function requested() {
+    const ctx = build();
+    await ctx.service.assign('seg-1', { driverId: DRIVER, requireDriverConfirmation: true }, actor);
+    return ctx;
+  }
+
+  it('attributes NOTHING: no record is written, the driver log is untouched, the segment is PENDING_CONFIRMATION', async () => {
+    const { repo, writer, logs, hosQueue } = await requested();
+    expect(writer.calls).toHaveLength(0);
+    expect(logs.recordLogChange).not.toHaveBeenCalled();
+    expect(hosQueue.add).not.toHaveBeenCalled();
+    expect(repo.segment).toMatchObject({
+      status: 'PENDING_CONFIRMATION',
+      assignedDriverId: DRIVER,
+      assignedById: 'user-1',
+      assignedAt: null,
+    });
+    expect(repo.segment.confirmationRequestedAt).toBeInstanceOf(Date);
+  });
+
+  it('audits the request and pushes it to the driver app (socket + alert pipeline)', async () => {
+    const { audit, events, alertQueue } = await requested();
+    expect(audit.insert).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'UNIDENTIFIED_CONFIRMATION_REQUESTED', objectId: 'seg-1' }),
+    );
+    expect(events.publish).toHaveBeenCalledWith(
+      'realtime.push',
+      expect.objectContaining({ room: `driver:${DRIVER}`, event: 'unidentified.confirmation_requested' }),
+    );
+    expect(alertQueue.add).toHaveBeenCalledWith(
+      'alert.unidentified_confirmation_requested',
+      expect.objectContaining({ segmentId: 'seg-1', driverId: DRIVER }),
+    );
+  });
+
+  it('the asked driver confirming attributes the records with origin 1, keeping the carrier as assignedById', async () => {
+    const ctx = await requested();
+    ctx.repo.hasDriverVehicleAssociation.mockClear();
+    const view = await ctx.service.confirm('seg-1', { accept: true }, driverActor);
+    expect(view.status).toBe('ASSIGNED');
+    expect(ctx.repo.segment).toMatchObject({ assignedDriverId: DRIVER, assignedById: 'user-1' });
+    const attributed = ctx.writer.calls.find((call) => call.ctx.driverId === DRIVER);
+    expect(attributed?.rows.filter((row) => row.kind === 'NEW_ACTIVE').every((row) => row.recordOrigin === 1)).toBe(true);
+    expect(ctx.writer.rows.some((row) => row.recordOrigin === 2)).toBe(false);
+    expect(ctx.logs.recordLogChange).toHaveBeenCalled();
+    expect(ctx.audit.insert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'UNIDENTIFIED_ASSIGNED',
+        after: expect.objectContaining({ confirmedByDriver: true, assignedById: 'user-1' }) as unknown,
+      }),
+    );
+  });
+
+  it('the asked driver declining returns the segment to PENDING and writes nothing', async () => {
+    const ctx = await requested();
+    const view = await ctx.service.confirm('seg-1', { accept: false }, driverActor);
+    expect(view.status).toBe('PENDING');
+    expect(ctx.repo.segment).toMatchObject({ assignedDriverId: null, confirmationRequestedAt: null });
+    expect(ctx.writer.calls).toHaveLength(0);
+    expect(ctx.audit.insert).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'UNIDENTIFIED_CONFIRMATION_DECLINED' }),
+    );
+  });
+
+  it('another driver cannot answer a request addressed to someone else', async () => {
+    const ctx = await requested();
+    await expect(
+      ctx.service.confirm('seg-1', { accept: true }, { id: 'driver-2', type: 'driver' }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN', status: 403 });
+    expect(ctx.writer.calls).toHaveLength(0);
+  });
+
+  it('a carrier rejection withdraws the pending request', async () => {
+    const ctx = await requested();
+    await ctx.service.reject('seg-1', {}, actor);
+    expect(ctx.repo.segment).toMatchObject({ status: 'REJECTED', assignedDriverId: null, confirmationRequestedAt: null });
+    expect(ctx.writer.calls).toHaveLength(0);
+  });
+
+  it('lists the requests addressed to the calling driver only', async () => {
+    const { service, repo } = build();
+    await service.listConfirmationRequests(driverActor);
+    expect(repo.listSegments).toHaveBeenCalledWith(
+      { status: 'PENDING_CONFIRMATION', assignedDriverId: DRIVER },
+      1,
+      200,
+    );
+  });
+
+  it('without the flag the assignment is immediate, as before', async () => {
+    const { service, repo, writer } = build();
+    await service.assign('seg-1', { driverId: DRIVER, requireDriverConfirmation: false }, actor);
+    expect(repo.segment.status).toBe('ASSIGNED');
+    expect(writer.calls.length).toBeGreaterThan(0);
   });
 });

@@ -160,6 +160,15 @@ describe('buildDailyLogHeaders', () => {
     expect(flags).toEqual([true, true, false]);
   });
 
+  it('B-83: a segment awaiting driver confirmation is still unassigned and raises the flag', () => {
+    const segments = [
+      { status: 'PENDING_CONFIRMATION', startAt: new Date('2026-06-01T14:00:00Z'), endAt: new Date('2026-06-01T15:00:00Z') },
+      { status: 'REJECTED', startAt: new Date('2026-06-02T14:00:00Z'), endAt: new Date('2026-06-02T15:00:00Z') },
+    ];
+    const flags = build([], '2026-06-01', '2026-06-02', { segments }).map((b) => b.header.hasUnassigned);
+    expect(flags).toEqual([true, false]);
+  });
+
   it('a segment ending exactly at midnight does not flag the next day', () => {
     const segments = [{ status: 'PENDING', startAt: new Date('2026-06-02T03:00:00Z'), endAt: new Date('2026-06-02T04:00:00Z') }];
     const flags = build([], '2026-06-01', '2026-06-02', { segments }).map((b) => b.header.hasUnassigned);

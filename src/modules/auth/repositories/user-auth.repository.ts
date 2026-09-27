@@ -28,4 +28,15 @@ export class UserAuthRepository {
   updatePasswordHash(id: string, passwordHash: string): Promise<User> {
     return this.prisma.user.update({ where: { id }, data: { passwordHash } });
   }
+
+  findByEmail(email: string): Promise<User | null> {
+    return this.prisma.user.findUnique({ where: { email } });
+  }
+
+  /** B-84 — applies a re-verified email change. `googleUid` is cleared: the old Google
+   * identity was bound to the previous address and must not silently authenticate the new
+   * one (TZ §6.2 — no auto-registration/identity-hijack path). */
+  applyVerifiedEmail(id: string, email: string): Promise<User> {
+    return this.prisma.user.update({ where: { id }, data: { email, googleUid: null } });
+  }
 }

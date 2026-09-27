@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { Driver, Prisma } from '@prisma/client';
+import type { Driver, DriverDocument, Prisma } from '@prisma/client';
 import { BaseRepository, ModelDelegate } from '../../core/prisma/base.repository';
 import { PrismaService } from '../../core/prisma/prisma.service';
 
@@ -45,6 +45,12 @@ export class DriversRepository extends BaseRepository<
 
   findByUsername(username: string): Promise<Driver | null> {
     return this.prisma.driver.findUnique({ where: { username } });
+  }
+
+  /** §20 B-29/B-30 — `Driver.email` is `@unique`; checked pre-write so a collision surfaces as
+   * a clean `CONFLICT` instead of an unhandled Prisma `P2002`. */
+  findByEmail(email: string): Promise<Driver | null> {
+    return this.prisma.driver.findUnique({ where: { email } });
   }
 
   async list(
@@ -124,5 +130,34 @@ export class DriversRepository extends BaseRepository<
 
   listAll(): Promise<Driver[]> {
     return this.prisma.driver.findMany({ orderBy: { username: 'asc' } });
+  }
+
+  // -------------------------------------------------------------------
+  // §20 B-94 (tz.md §20 B-16) — driver qualification documents.
+  // -------------------------------------------------------------------
+
+  listDocuments(driverId: string): Promise<DriverDocument[]> {
+    return this.prisma.driverDocument.findMany({ where: { driverId }, orderBy: { createdAt: 'desc' } });
+  }
+
+  findDocument(id: string): Promise<DriverDocument | null> {
+    return this.prisma.driverDocument.findUnique({ where: { id } });
+  }
+
+  createDocument(data: Prisma.DriverDocumentCreateInput): Promise<DriverDocument> {
+    return this.prisma.driverDocument.create({ data });
+  }
+
+  deleteDocument(id: string): Promise<DriverDocument> {
+    return this.prisma.driverDocument.delete({ where: { id } });
+  }
+
+  /** B-094 — revokes every live `DriverSession` (refresh token) of one driver. */
+  async revokeAllSessions(driverId: string): Promise<number> {
+    const result = await this.prisma.driverSession.updateMany({
+      where: { driverId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+    return result.count;
   }
 }

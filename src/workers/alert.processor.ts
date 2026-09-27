@@ -9,7 +9,19 @@ import { PrismaService } from '../core/prisma/prisma.service';
 import { MobileRepository } from '../modules/mobile/mobile.repository';
 import { AlertDeliveryRepository, AlertRulesRepository } from '../modules/notifications/notifications.repository';
 import { evaluateAlertPolicy, startOfLocalDay } from '../modules/notifications/lib/alert-policy';
+import {
+  deriveNotificationBody,
+  deriveNotificationCategory,
+  deriveNotificationKind,
+  deriveObjectRef,
+} from '../modules/notifications/lib/notification-kind';
 import { WebhooksService } from '../modules/webhooks/webhooks.service';
+
+/** TZ §20 B-87 shape stored at `Carrier.notificationChannels`. Missing entry = enabled. */
+interface OrgNotificationChannels {
+  email?: { enabled?: boolean };
+  webhook?: { enabled?: boolean; url?: string };
+}
 
 interface AlertRecipient {
   kind: 'user' | 'driver';
@@ -49,7 +61,7 @@ export class AlertProcessor extends WorkerHost {
     for (const rule of matchingRules) {
       const recipients = await this.resolveRecipients(rule, payload);
       for (const recipient of recipients) {
-        await this.deliverToRecipient(rule, recipient, payload);
+        await this.deliverToRecipient(rule, recipient, payload, eventName);
       }
     }
   }
@@ -99,6 +111,14 @@ export class AlertProcessor extends WorkerHost {
     return carrier?.timezone ?? 'America/New_York';
   }
 
+  /** TZ §20 B-87 — reads the singleton `Carrier.notificationChannels`; absent key = enabled. */
+  private async isOrgChannelEnabled(channel: 'EMAIL' | 'WEBHOOK'): Promise<boolean> {
+    const carrier = await this.prisma.carrier.findFirst({ select: { notificationChannels: true } });
+    const channels = (carrier?.notificationChannels ?? {}) as OrgNotificationChannels;
+    const entry = channel === 'EMAIL' ? channels.email : channels.webhook;
+    return entry?.enabled !== false;
+  }
+
   private async deliverToRecipient(
     rule: {
       id: string;
@@ -109,6 +129,7 @@ export class AlertProcessor extends WorkerHost {
     },
     recipient: AlertRecipient,
     payload: Record<string, unknown>,
+    eventName: string,
   ): Promise<void> {
     const recipientKey = `${recipient.kind}:${recipient.id}`;
     const zone = await this.resolveZone(recipient);
@@ -148,8 +169,16 @@ export class AlertProcessor extends WorkerHost {
         continue;
       }
 
+      // TZ §20 B-87 — an org-level channel toggle suppresses EMAIL/WEBHOOK delivery even
+      // when the rule itself and the throttle/quiet-hours policy both allow it. IN_APP is
+      // never gated here — the bell inbox always fills, per the settings page copy.
+      if ((channel === 'EMAIL' || channel === 'WEBHOOK') && !(await this.isOrgChannelEnabled(channel))) {
+        await this.deliveries.markSuppressed(delivery.id, 'CHANNEL_DISABLED');
+        continue;
+      }
+
       try {
-        await this.send(channel, recipient, payload, rule);
+        await this.send(channel, recipient, payload, rule, eventName);
         await this.deliveries.markSent(delivery.id);
       } catch (err) {
         this.logger.error({ err, ruleId: rule.id, channel, recipient: recipientKey }, 'Alert delivery failed');
@@ -162,15 +191,25 @@ export class AlertProcessor extends WorkerHost {
     channel: string,
     recipient: AlertRecipient,
     payload: Record<string, unknown>,
-    rule: { id: string },
+    rule: { id: string; severity: string },
+    eventName: string,
   ): Promise<void> {
     if (channel === 'IN_APP') {
+      const kind = deriveNotificationKind(eventName);
+      const ref = deriveObjectRef(eventName, payload);
+      const category = deriveNotificationCategory(kind);
       const notification = await this.prisma.notification.create({
         data: {
           ...(recipient.kind === 'user' ? { userId: recipient.id } : { driverId: recipient.id }),
           type: rule.id,
+          kind,
           title: typeof payload.title === 'string' ? payload.title : 'Alert',
-          body: JSON.stringify(payload).slice(0, 500),
+          // TZ §20 B-58 — human-readable, not `JSON.stringify(payload)`; clickable via
+          // objectType/objectId below, CRITICAL severity drives the toast.
+          body: deriveNotificationBody(eventName, payload).slice(0, 500),
+          severity: rule.severity as Prisma.NotificationCreateInput['severity'],
+          ...(category && { category }),
+          ...(ref && { objectType: ref.objectType, objectId: ref.objectId }),
         },
       });
       await this.events.publish('realtime.push', {
@@ -186,7 +225,7 @@ export class AlertProcessor extends WorkerHost {
             this.firebase.sendToToken(
               t.token,
               { title: notification.title, body: notification.body },
-              { type: notification.type, id: notification.id, driverId: recipient.id },
+              { type: notification.type, id: notification.id, driverId: recipient.id, kind },
             ),
           ),
         );

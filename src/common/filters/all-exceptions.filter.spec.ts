@@ -93,7 +93,7 @@ describe('AllExceptionsFilter', () => {
   it('maps an unrecognized 5xx HttpException status to INTERNAL_ERROR', () => {
     const { host, res } = makeHost();
     class WeirdException extends BadRequestException {
-      getStatus(): number {
+      override getStatus(): number {
         return 599;
       }
     }

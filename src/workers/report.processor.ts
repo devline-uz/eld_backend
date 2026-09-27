@@ -10,8 +10,17 @@ import { EventBusService } from '../core/events/event-bus.service';
 import { ActivityReportGenerator } from '../modules/reports/generators/activity-report.generator';
 import { DvirReportGenerator } from '../modules/reports/generators/dvir-report.generator';
 import { FmcsaPackGenerator } from '../modules/reports/generators/fmcsa-pack.generator';
+import { IdleFuelReportGenerator } from '../modules/reports/generators/idle-fuel-report.generator';
 import { IftaReportGenerator } from '../modules/reports/generators/ifta-report.generator';
-import type { ActivityReportParamsDto, DvirReportParamsDto, FmcsaPackParamsDto, IftaReportParamsDto } from '../modules/reports/dto/reports.dto';
+import { RodsReportGenerator } from '../modules/reports/generators/rods-report.generator';
+import type {
+  ActivityReportParamsDto,
+  DvirReportParamsDto,
+  FmcsaPackParamsDto,
+  IdleFuelReportParamsDto,
+  IftaReportParamsDto,
+  RodsReportParamsDto,
+} from '../modules/reports/dto/reports.dto';
 import type { ReportJobData } from '../modules/reports/reports.service';
 import { REPORT_RETENTION_MONTHS } from '../modules/reports/reports.service';
 
@@ -33,6 +42,8 @@ export class ReportProcessor extends WorkerHost {
     private readonly activityGen: ActivityReportGenerator,
     private readonly dvirGen: DvirReportGenerator,
     private readonly fmcsaGen: FmcsaPackGenerator,
+    private readonly rodsGen: RodsReportGenerator,
+    private readonly idleFuelGen: IdleFuelReportGenerator,
   ) {
     super();
   }
@@ -49,7 +60,7 @@ export class ReportProcessor extends WorkerHost {
     await this.prisma.report.update({ where: { id: reportId }, data: { status: 'RUNNING' } });
 
     try {
-      const { fileKey, fileSizeBytes, rowCount } = await this.produce(report.id, report.type, report.params as Record<string, unknown>);
+      const { fileKey, fileSizeBytes, rowCount } = await this.produce(report.id, report.type, report.format, report.params as Record<string, unknown>);
       // B-0xx: `Date.prototype.getMonth`/`setMonth` read/write the SERVER's local calendar,
       // not UTC (tasks.md compliance checklist "All timestamps stored in UTC..."). Under a
       // non-UTC `TZ`, that could shift `expiresAt` by up to a day around a month boundary.
@@ -78,23 +89,49 @@ export class ReportProcessor extends WorkerHost {
   private async produce(
     reportId: string,
     type: string,
+    format: string,
     params: Record<string, unknown>,
   ): Promise<{ fileKey: string; fileSizeBytes: number; rowCount: number | null }> {
     switch (type) {
       case 'IFTA': {
+        if (format === 'PDF') {
+          const { pdf, rowCount } = await this.iftaGen.pdf(params as unknown as IftaReportParamsDto);
+          const key = await this.storage.put(`reports/${reportId}.pdf`, pdf, { contentType: 'application/pdf' });
+          return { fileKey: key, fileSizeBytes: pdf.length, rowCount };
+        }
         const { stream, rowCount } = await this.iftaGen.stream(params as unknown as IftaReportParamsDto);
         const { key, sizeBytes } = await this.storage.putStream!(`reports/${reportId}.csv`, stream, { contentType: 'text/csv' });
         return { fileKey: key, fileSizeBytes: sizeBytes, rowCount };
       }
       case 'ACTIVITY': {
+        if (format === 'PDF') {
+          const { pdf, rowCount } = await this.activityGen.pdf(params as unknown as ActivityReportParamsDto);
+          const key = await this.storage.put(`reports/${reportId}.pdf`, pdf, { contentType: 'application/pdf' });
+          return { fileKey: key, fileSizeBytes: pdf.length, rowCount };
+        }
         const { stream, countRows } = await this.activityGen.stream(params as unknown as ActivityReportParamsDto);
         const { key, sizeBytes } = await this.storage.putStream!(`reports/${reportId}.csv`, stream, { contentType: 'text/csv' });
         return { fileKey: key, fileSizeBytes: sizeBytes, rowCount: countRows() };
       }
       case 'DVIR': {
+        if (format === 'PDF') {
+          const { pdf, rowCount } = await this.dvirGen.pdf(params as unknown as DvirReportParamsDto);
+          const key = await this.storage.put(`reports/${reportId}.pdf`, pdf, { contentType: 'application/pdf' });
+          return { fileKey: key, fileSizeBytes: pdf.length, rowCount };
+        }
         const { stream } = this.dvirGen.stream(params as unknown as DvirReportParamsDto);
         const { key, sizeBytes } = await this.storage.putStream!(`reports/${reportId}.csv`, stream, { contentType: 'text/csv' });
         return { fileKey: key, fileSizeBytes: sizeBytes, rowCount: null };
+      }
+      case 'RODS': {
+        const { pdf, rowCount } = await this.rodsGen.pdf(params as unknown as RodsReportParamsDto);
+        const key = await this.storage.put(`reports/${reportId}.pdf`, pdf, { contentType: 'application/pdf' });
+        return { fileKey: key, fileSizeBytes: pdf.length, rowCount };
+      }
+      case 'IDLE_FUEL': {
+        const { pdf, rowCount } = await this.idleFuelGen.pdf(params as unknown as IdleFuelReportParamsDto);
+        const key = await this.storage.put(`reports/${reportId}.pdf`, pdf, { contentType: 'application/pdf' });
+        return { fileKey: key, fileSizeBytes: pdf.length, rowCount };
       }
       case 'FMCSA_PACK': {
         const { coverPdf, driverEntries } = await this.fmcsaGen.build(params as unknown as FmcsaPackParamsDto, reportId);

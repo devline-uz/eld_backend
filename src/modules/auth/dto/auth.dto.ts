@@ -38,3 +38,9 @@ export const ResetPasswordDto = z.object({
   newPassword: z.string().min(8),
 });
 export type ResetPasswordDto = z.infer<typeof ResetPasswordDto>;
+
+/** B-84 — `PATCH /users/:id { email }` re-verification, `POST /auth/email/verify`. */
+export const VerifyEmailChangeDto = z.object({
+  token: z.string().min(1),
+});
+export type VerifyEmailChangeDto = z.infer<typeof VerifyEmailChangeDto>;

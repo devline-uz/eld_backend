@@ -18,8 +18,11 @@ export interface AppendContext {
   editedById: string;
   editorType: EditorType;
   editReason?: string | null;
-  location?: { lat: number; lon: number; name?: string } | null;
+  /** B-39 — coordinates are optional: a carrier may correct a location by name only. */
+  location?: { lat?: number | null; lon?: number | null; name?: string | null } | null;
   totalVehicleMiles?: number | null;
+  /** B-72 — engine hours the proposer entered (Appendix A "total engine hours"). */
+  totalEngineHours?: number | null;
   /** Personal Conveyance coarsens the stored position to 10 miles BEFORE the write (§23). */
   personalConveyance?: boolean;
   comment?: string | null;
@@ -53,9 +56,11 @@ export class RodsEventWriter {
       const uuid = randomUUID();
       uuidByKind.set(`${row.kind}:${originalIndex}`, uuid);
       const precisionMi = ctx.personalConveyance ? 10 : 1;
-      const position = ctx.location
+      const hasCoordinates =
+        typeof ctx.location?.lat === 'number' && typeof ctx.location?.lon === 'number';
+      const position = hasCoordinates
         ? coarsenLocation(
-            { lat: ctx.location.lat, lon: ctx.location.lon },
+            { lat: ctx.location!.lat as number, lon: ctx.location!.lon as number },
             ctx.personalConveyance ? 'TEN_MILE' : 'ONE_MILE',
           )
         : null;
@@ -70,7 +75,7 @@ export class RodsEventWriter {
         latitude: position ? position.lat : null,
         longitude: position ? position.lon : null,
         rawDeviceOdometerKm: null,
-        totalEngineHours: null,
+        totalEngineHours: ctx.totalEngineHours ?? null,
       };
       return {
         ...base,

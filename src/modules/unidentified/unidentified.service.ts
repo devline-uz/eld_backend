@@ -45,6 +45,7 @@ export class UnidentifiedService {
     private readonly events: EventBusService,
     @InjectQueue(QUEUES.HOS_RECALC) private readonly hosRecalcQueue: Queue,
     private readonly logs: LogsService,
+    @InjectQueue(QUEUES.ALERT) private readonly alertQueue: Queue,
   ) {}
 
   async list(query: UnidentifiedListQueryDto) {
@@ -109,7 +110,90 @@ export class UnidentifiedService {
       );
     }
 
-    const annotation = dto.annotation ?? `Unidentified driving assigned to ${driver.username}`;
+    if (dto.requireDriverConfirmation) {
+      return this.requestConfirmation(segment, driver, dto.annotation ?? null, actor);
+    }
+    return this.attribute(segment, pool, driver, dto.annotation ?? null, actor, {
+      assignedById: actor.id,
+      confirmedByDriver: false,
+    });
+  }
+
+  /**
+   * B-83 — the carrier picked a driver but asked for their confirmation first. NOTHING is
+   * attributed: the records stay in the unidentified pool (origin 4, still reported as
+   * unidentified in eRODS and still flagging `hasUnassigned`) until the driver confirms in the
+   * app. The segment waits in `PENDING_CONFIRMATION` with the asked driver and the requester.
+   */
+  private async requestConfirmation(
+    segment: UnidentifiedSegment,
+    driver: { id: string; username: string },
+    annotation: string | null,
+    actor: ContextUser,
+  ) {
+    const requestedAt = new Date();
+    const updated = await this.repo.updateSegment(segment.id, {
+      status: 'PENDING_CONFIRMATION',
+      assignedDriverId: driver.id,
+      assignedById: actor.id,
+      assignedAt: null,
+      confirmationRequestedAt: requestedAt,
+      ...(annotation ? { annotation: annotation.slice(0, 60) } : {}),
+    });
+    await this.writeAudit(actor, 'UNIDENTIFIED_CONFIRMATION_REQUESTED', segment.id, {
+      before: { status: segment.status, assignedDriverId: segment.assignedDriverId },
+      after: {
+        status: 'PENDING_CONFIRMATION',
+        requestedDriverId: driver.id,
+        confirmationRequestedAt: requestedAt.toISOString(),
+      },
+      detail: 'Carrier asked the driver to confirm this unidentified driving; nothing is attributed until they do (§395.32).',
+    });
+    const payload = {
+      segmentId: segment.id,
+      driverId: driver.id,
+      vehicleId: segment.vehicleId,
+      startAt: segment.startAt.toISOString(),
+      endAt: segment.endAt.toISOString(),
+      durationSec: segment.durationSec,
+      requestedById: actor.id,
+    };
+    await this.events.publish('unidentified.confirmation_requested', payload);
+    // The driver-app prompt (S-21 "Was this you?"): socket now, IN_APP + FCM through the alert
+    // pipeline (kind UNIDENTIFIED, objectRef = the segment).
+    await this.events.publish('realtime.push', {
+      room: `driver:${driver.id}`,
+      event: 'unidentified.confirmation_requested',
+      payload,
+    });
+    await this.raiseAlert('alert.unidentified_confirmation_requested', payload);
+    return this.toView(updated);
+  }
+
+  /** B-83 — the driver-app list of segments a carrier asked THIS driver to confirm. */
+  async listConfirmationRequests(actor: ContextUser) {
+    const page = await this.repo.listSegments(
+      { status: 'PENDING_CONFIRMATION', assignedDriverId: actor.id },
+      1,
+      200,
+    );
+    return { items: page.items.map((item) => this.toView(item)) };
+  }
+
+  /**
+   * Attributes the pool records to `driver` (the actual §7.4 assignment). `assignedById` is the
+   * carrier user who made the decision — the requester when a driver confirms a B-83 request.
+   */
+  private async attribute(
+    segment: UnidentifiedSegment,
+    pool: EldEvent[],
+    driver: { id: string; username: string; homeTerminalTimezone: string },
+    requestedAnnotation: string | null,
+    actor: ContextUser,
+    opts: { assignedById: string; confirmedByDriver: boolean },
+  ) {
+    const id = segment.id;
+    const annotation = requestedAnnotation ?? `Unidentified driving assigned to ${driver.username}`;
     const timezone = driver.homeTerminalTimezone;
 
     // 1) Retire the pool records — append-only, so the originals themselves are untouched.
@@ -185,7 +269,7 @@ export class UnidentifiedService {
     const updated = await this.repo.updateSegment(id, {
       status: 'ASSIGNED',
       assignedDriverId: driver.id,
-      assignedById: actor.id,
+      assignedById: opts.assignedById,
       assignedAt: new Date(),
       annotation: annotation.slice(0, 60),
     });
@@ -195,6 +279,8 @@ export class UnidentifiedService {
       after: {
         status: 'ASSIGNED',
         assignedDriverId: driver.id,
+        assignedById: opts.assignedById,
+        confirmedByDriver: opts.confirmedByDriver,
         recordOrigin: RECORD_ORIGIN.ELD_AUTOMATIC,
         events: pool.length,
       },
@@ -224,10 +310,14 @@ export class UnidentifiedService {
     const annotation = dto.reason ?? 'Unidentified driving assignment rejected';
 
     if (segment.status !== 'ASSIGNED' || !segment.assignedDriverId) {
-      // Nothing was ever attributed: the segment simply stays in the pool.
+      // Nothing was ever attributed: the segment simply stays in the pool. A B-83 request that
+      // was still waiting for the driver is withdrawn with it.
       const updated = await this.repo.updateSegment(id, {
         status: 'REJECTED',
         annotation: annotation.slice(0, 60),
+        ...(segment.status === 'PENDING_CONFIRMATION'
+          ? { assignedDriverId: null, assignedById: null, confirmationRequestedAt: null }
+          : {}),
       });
       await this.writeAudit(actor, 'UNIDENTIFIED_REJECTED', id, {
         before: { status: segment.status },
@@ -333,6 +423,9 @@ export class UnidentifiedService {
   /** §7.4 rule 2 — the driver's answer to "was this you?". */
   async confirm(id: string, dto: ConfirmUnidentifiedDto, actor: ContextUser) {
     const segment = await this.requireSegment(id);
+    if (segment.status === 'PENDING_CONFIRMATION') {
+      return this.answerConfirmationRequest(segment, dto, actor);
+    }
     if (dto.accept) {
       // §395.32 — a self-claim is only credible on a unit this driver actually operated.
       // A carrier user assigning through `POST /unidentified/:id/assign` (hosEdit = FULL) is a
@@ -366,7 +459,72 @@ export class UnidentifiedService {
     return this.toView(segment);
   }
 
+  /**
+   * B-83 — the asked driver answers a carrier's confirmation request. Accept: the records are
+   * attributed now (origin 1, never 2), `assignedById` stays the carrier user who decided.
+   * Decline: nothing was ever attributed, the segment goes back to `PENDING` for the carrier.
+   * Only the driver who was asked may answer.
+   */
+  private async answerConfirmationRequest(segment: UnidentifiedSegment, dto: ConfirmUnidentifiedDto, actor: ContextUser) {
+    if (segment.assignedDriverId !== actor.id) {
+      throw new AppException(
+        ERROR_CODES.FORBIDDEN,
+        'This unidentified driving is awaiting confirmation from another driver.',
+        403,
+        { segmentId: segment.id },
+      );
+    }
+    if (dto.accept) {
+      const driver = await this.repo.findDriver(actor.id);
+      if (!driver) {
+        throw new AppException(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.', 404, { driverId: actor.id });
+      }
+      const pool = await this.activePoolRecords(segment);
+      if (!pool.length) {
+        throw new AppException(
+          ERROR_CODES.CONFLICT,
+          'This segment has no active unidentified records left to assign.',
+          409,
+          { id: segment.id },
+        );
+      }
+      return this.attribute(segment, pool, driver, dto.annotation ?? segment.annotation ?? null, actor, {
+        assignedById: segment.assignedById ?? actor.id,
+        confirmedByDriver: true,
+      });
+    }
+
+    const updated = await this.repo.updateSegment(segment.id, {
+      status: 'PENDING',
+      assignedDriverId: null,
+      assignedById: null,
+      confirmationRequestedAt: null,
+    });
+    await this.writeAudit(actor, 'UNIDENTIFIED_CONFIRMATION_DECLINED', segment.id, {
+      before: {
+        status: 'PENDING_CONFIRMATION',
+        requestedDriverId: actor.id,
+        requestedById: segment.assignedById,
+        confirmationRequestedAt: segment.confirmationRequestedAt?.toISOString() ?? null,
+      },
+      after: { status: 'PENDING', assignedDriverId: null, annotation: dto.annotation ?? null },
+      detail: 'Driver declined the carrier assignment; the records stay unidentified (recordOrigin 4).',
+    });
+    const payload = { segmentId: segment.id, driverId: actor.id, requestedById: segment.assignedById };
+    await this.events.publish('unidentified.confirmation_declined', payload);
+    await this.raiseAlert('alert.unidentified_confirmation_declined', payload);
+    return this.toView(updated);
+  }
+
   // ---------------------------------------------------------------- helpers
+
+  private async raiseAlert(name: string, payload: Record<string, unknown>): Promise<void> {
+    try {
+      await this.alertQueue.add(name, payload);
+    } catch (err) {
+      this.logger.error({ err, alert: name }, 'Failed to enqueue alert');
+    }
+  }
 
   /**
    * The records that currently represent this segment in the pool: the original event, or the
@@ -452,6 +610,8 @@ export class UnidentifiedService {
       assignedById: segment.assignedById,
       assignedAt: segment.assignedAt,
       annotation: segment.annotation,
+      /** B-83 — set while the segment waits for the asked driver (`PENDING_CONFIRMATION`). */
+      confirmationRequestedAt: segment.confirmationRequestedAt,
       /** §23 — true when these records came out of the PT30's memory. Never dropped. */
       fromStoredEvents: segment.fromStoredEvents,
       eventIds: segment.eventIds.map((id) => String(id)),

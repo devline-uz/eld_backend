@@ -44,7 +44,7 @@ describe('HosRecalcRepository', () => {
     expect(args.select).toMatchObject({ recordStatus: true, recordOrigin: true, supersedesId: true, totalVehicleMiles: true, vehicleId: true });
   });
 
-  it('B-059: reads only PENDING segments on the given units, and nothing without units', async () => {
+  it('B-059: reads only unresolved (PENDING / B-83 PENDING_CONFIRMATION) segments on the given units, and nothing without units', async () => {
     expect(await repo.findUnidentifiedSegments([], new Date(), new Date())).toEqual([]);
     expect(prisma.unidentifiedSegment.findMany).not.toHaveBeenCalled();
     const from = new Date('2025-01-05T00:00:00Z');
@@ -52,7 +52,7 @@ describe('HosRecalcRepository', () => {
     await repo.findUnidentifiedSegments(['veh-1'], from, to);
     expect(lastArgs(prisma.unidentifiedSegment.findMany).where).toEqual({
       vehicleId: { in: ['veh-1'] },
-      status: 'PENDING',
+      status: { in: ['PENDING', 'PENDING_CONFIRMATION'] },
       startAt: { lte: to },
       endAt: { gte: from },
     });

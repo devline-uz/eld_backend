@@ -15,6 +15,8 @@ const PERMISSION_KEY_LIST: PermissionKey[] = [
   'hosCertifyOnBehalf', 'dvir', 'maintenance', 'safety', 'trips',
   'reports', 'reportsTransfer', 'messaging', 'devices', 'alertRules',
   'users', 'roles', 'integrations', 'auditLog', 'support', 'carrierSettings',
+  // B-95 — additive 23rd key, split from `reportsTransfer` (see permission.types.ts).
+  'dataTransfer',
 ];
 
 function allFull(): PermissionMatrix {
@@ -29,20 +31,20 @@ export const DEFAULT_ROLE_MATRIX: Record<'ADMIN' | 'FLEET_MANAGER' | 'DISPATCHER
     hosEdit: 'FULL', hosCertifyOnBehalf: 'NONE', dvir: 'FULL', maintenance: 'FULL',
     safety: 'FULL', trips: 'FULL', reports: 'FULL', reportsTransfer: 'FULL', messaging: 'FULL',
     devices: 'FULL', alertRules: 'FULL', users: 'NONE', roles: 'NONE', integrations: 'NONE',
-    auditLog: 'NONE', support: 'FULL', carrierSettings: 'NONE',
+    auditLog: 'NONE', support: 'FULL', carrierSettings: 'NONE', dataTransfer: 'FULL',
   },
   DISPATCHER: {
     dashboard: 'FULL', liveFleet: 'FULL', vehicles: 'READ', drivers: 'READ', hos: 'READ',
     hosEdit: 'NONE', hosCertifyOnBehalf: 'NONE', dvir: 'READ', maintenance: 'READ',
     safety: 'READ', trips: 'FULL', reports: 'READ', reportsTransfer: 'NONE', messaging: 'FULL',
     devices: 'READ', alertRules: 'NONE', users: 'NONE', roles: 'NONE', integrations: 'NONE',
-    auditLog: 'NONE', support: 'FULL', carrierSettings: 'NONE',
+    auditLog: 'NONE', support: 'FULL', carrierSettings: 'NONE', dataTransfer: 'NONE',
   },
   VIEWER: {
     dashboard: 'READ', liveFleet: 'READ', vehicles: 'READ', drivers: 'READ', hos: 'READ',
     hosEdit: 'NONE', hosCertifyOnBehalf: 'NONE', dvir: 'READ', maintenance: 'READ',
     safety: 'READ', trips: 'NONE', reports: 'READ', reportsTransfer: 'NONE', messaging: 'NONE',
     devices: 'NONE', alertRules: 'NONE', users: 'NONE', roles: 'NONE', integrations: 'NONE',
-    auditLog: 'NONE', support: 'READ', carrierSettings: 'NONE',
+    auditLog: 'NONE', support: 'READ', carrierSettings: 'NONE', dataTransfer: 'NONE',
   },
 };

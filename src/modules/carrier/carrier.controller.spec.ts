@@ -16,18 +16,27 @@ describe('CarrierController permissions', () => {
   ] as const)('%s requires carrierSettings:%s', (method, level) => {
     expect(permOf(method)).toEqual({ key: 'carrierSettings', level });
   });
+
+  it('B-45: getTransferConfig is readable with reports:READ, not carrierSettings', () => {
+    expect(permOf('getTransferConfig')).toEqual({ key: 'reports', level: 'READ' });
+  });
 });
 
 describe('CarrierController — delegates to CarrierService', () => {
   const service = {
     get: jest.fn().mockResolvedValue({ id: 'carrier' }),
     update: jest.fn().mockResolvedValue({ id: 'carrier', name: 'New Name' }),
+    getTransferConfig: jest.fn().mockResolvedValue({ erodsMode: 'TEST' }),
   };
   const controller = new CarrierController(service as never);
 
   it('get', async () => {
     await controller.get();
     expect(service.get).toHaveBeenCalled();
+  });
+
+  it('getTransferConfig', async () => {
+    await expect(controller.getTransferConfig()).resolves.toEqual({ erodsMode: 'TEST' });
   });
 
   it('update', async () => {

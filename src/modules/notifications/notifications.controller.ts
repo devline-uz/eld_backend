@@ -1,7 +1,7 @@
-import { Controller, Get, Post, Query } from '@nestjs/common';
+import { Controller, Get, Param, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { apiError, ApiStandardErrors } from '../../common/errors';
+import { apiError, ApiStandardErrors, ERROR_CODES } from '../../common/errors';
 import { zodBody } from '../../common/pipes/zod-validation.pipe';
 import type { ContextUser } from '../../core/context/request-context';
 import { NotificationListQueryDto } from './dto/notifications.dto';
@@ -21,8 +21,9 @@ export class NotificationsController {
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
   @ApiQuery({ name: 'unreadOnly', required: false })
-  @ApiOperation({ summary: 'Lists the caller\'s own in-app notifications.' })
-  @ApiOkResponse({ schema: { example: { items: [{ id: 'ntf_1', type: 'hos_violation', title: 'HOS violation', body: 'Driving limit exceeded.', readAt: null }], page: 1, limit: 25, total: 1, totalPages: 1 } } })
+  @ApiQuery({ name: 'category', required: false, enum: ['VIOLATIONS', 'MAINTENANCE'] })
+  @ApiOperation({ summary: "Lists the caller's own in-app notifications, with segment counts." })
+  @ApiOkResponse({ schema: { example: { items: [{ id: 'ntf_1', type: 'hos_violation', kind: 'VIOLATION', title: 'HOS violation', body: 'An HOS violation was detected.', objectType: 'Driver', objectId: 'drv_1', category: 'VIOLATIONS', severity: 'CRITICAL', readAt: null }], page: 1, limit: 25, total: 1, totalPages: 1, counts: { all: 12, violations: 5, maintenance: 3 } } } })
   @ApiStandardErrors({ errors: [apiError.unauthorized()] })
   list(@Query(zodBody(NotificationListQueryDto)) query: NotificationListQueryDto, @CurrentUser() actor: ContextUser) {
     return this.notifications.list(actor, query);
@@ -34,5 +35,13 @@ export class NotificationsController {
   @ApiStandardErrors({ errors: [apiError.unauthorized()] })
   readAll(@CurrentUser() actor: ContextUser) {
     return this.notifications.readAll(actor);
+  }
+
+  @Post(':id/read')
+  @ApiOperation({ summary: "Marks one of the caller's own notifications as read." })
+  @ApiOkResponse({ schema: { example: { id: 'ntf_1', readAt: '2026-09-24T15:41:00.000Z' } } })
+  @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.NOT_FOUND, 'Notification not found.')] })
+  markRead(@Param('id') id: string, @CurrentUser() actor: ContextUser) {
+    return this.notifications.markRead(actor, id);
   }
 }

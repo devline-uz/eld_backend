@@ -2,6 +2,9 @@ import { z } from 'zod';
 
 export const DefectStatusEnum = z.enum(['OPEN', 'IN_PROGRESS', 'REPAIRED', 'DEFERRED']);
 export const DefectSeverityEnum = z.enum(['MINOR', 'MAJOR', 'CRITICAL']);
+/** §20 B-68 — distinct from `DefectStatusEnum` so "no repair needed" is never recorded as REPAIRED
+ * in the §396.11 record (report generators must read `resolutionType`, not `status`, for display). */
+export const DefectResolutionTypeEnum = z.enum(['REPAIRED', 'NOT_REQUIRED', 'DEFERRED']);
 export const WorkOrderStatusEnum = z.enum(['OPEN', 'IN_PROGRESS', 'DONE', 'CANCELLED']);
 export const WorkOrderPriorityEnum = z.enum(['LOW', 'NORMAL', 'HIGH', 'URGENT']);
 export const RepairStatusEnum = z.enum(['NOT_REQUIRED', 'PENDING', 'REPAIRED', 'DEFERRED']);
@@ -15,8 +18,19 @@ export const DvirListQueryDto = z.object({
   vehicleId: z.string().uuid().optional(),
   driverId: z.string().uuid().optional(),
   repairStatus: RepairStatusEnum.optional(),
+  /** §20 B-47. */
+  from: z.string().date().optional(),
+  to: z.string().date().optional(),
 });
 export type DvirListQueryDto = z.infer<typeof DvirListQueryDto>;
+
+/** §20 B-47 — `GET /dvir/compliance`: "expected vs submitted pre-trip DVIRs" for the active
+ * fleet over a date range (W-14 "Missing pre-trip" / "Not submitted" rows, compliance % chip). */
+export const DvirComplianceQueryDto = z.object({
+  from: z.string().date(),
+  to: z.string().date(),
+});
+export type DvirComplianceQueryDto = z.infer<typeof DvirComplianceQueryDto>;
 
 /** TZ §396.13 — mechanic reviews defects found on a DVIR and signs off; the next driver's
  * review of that sign-off is recorded separately (`nextDriverReviewedAt`). */
@@ -42,14 +56,25 @@ export const DefectListQueryDto = z.object({
   status: DefectStatusEnum.optional(),
   severity: DefectSeverityEnum.optional(),
   outOfService: z.coerce.boolean().optional(),
+  /** §20 B-40. */
+  assigneeId: z.string().uuid().optional(),
 });
 export type DefectListQueryDto = z.infer<typeof DefectListQueryDto>;
 
-/** Resolving a defect (`REPAIRED`/`DEFERRED`) is the trigger for the out-of-service restore
- * check (TZ §5.10 — "Defekt yopilganda status avtomatik tiklanadi"). */
+/**
+ * Resolving a defect is the trigger for the out-of-service restore check (TZ §5.10 — "Defekt
+ * yopilganda status avtomatik tiklanadi"). §20 B-68 — `resolutionType: 'NOT_REQUIRED'` records
+ * that no repair was needed without ever writing `REPAIRED` into the §396.11 record for a
+ * defect nothing was done to. §20 B-70 — the repair-record fields (`correctedBy`, `completedAt`,
+ * `laborHours`, `partsCostUsd`) complete that record.
+ */
 export const ResolveDefectDto = z.object({
-  status: z.enum(['REPAIRED', 'DEFERRED']),
+  resolutionType: DefectResolutionTypeEnum,
   resolutionNote: z.string().max(500).optional(),
+  correctedBy: z.string().max(120).optional(),
+  completedAt: z.string().datetime({ offset: true }).optional(),
+  laborHours: z.number().min(0).max(999).optional(),
+  partsCostUsd: z.number().min(0).max(1_000_000).optional(),
 });
 export type ResolveDefectDto = z.infer<typeof ResolveDefectDto>;
 
@@ -57,6 +82,12 @@ export const LinkDefectWorkOrderDto = z.object({
   workOrderId: z.string().uuid().nullable(),
 });
 export type LinkDefectWorkOrderDto = z.infer<typeof LinkDefectWorkOrderDto>;
+
+/** §20 B-40 — defect assignee/shop (`W-09 ASSIGNED TO`). `null` clears the assignment. */
+export const AssignDefectDto = z.object({
+  assigneeId: z.string().uuid().nullable(),
+});
+export type AssignDefectDto = z.infer<typeof AssignDefectDto>;
 
 // --- Work orders -------------------------------------------------------------------------
 
@@ -71,6 +102,11 @@ export const CreateWorkOrderDto = z.object({
   dueAt: z.string().datetime({ offset: true }).optional(),
   /** Open defects to attach at creation time — TZ §5.10 "Create work order" screen. */
   defectIds: z.array(z.string().uuid()).max(50).optional(),
+  /** §20 B-42. */
+  estimatedLaborHours: z.number().min(0).max(999).optional(),
+  keepOutOfService: z.boolean().default(false),
+  notifyDriver: z.boolean().default(true),
+  blockDispatchAssignment: z.boolean().default(false),
 });
 export type CreateWorkOrderDto = z.infer<typeof CreateWorkOrderDto>;
 
@@ -83,6 +119,11 @@ export const UpdateWorkOrderDto = z.object({
   costUsd: z.number().min(0).max(1_000_000).optional(),
   odometerMi: z.number().int().min(0).optional(),
   dueAt: z.string().datetime({ offset: true }).nullable().optional(),
+  /** §20 B-42. */
+  estimatedLaborHours: z.number().min(0).max(999).optional(),
+  keepOutOfService: z.boolean().optional(),
+  notifyDriver: z.boolean().optional(),
+  blockDispatchAssignment: z.boolean().optional(),
 });
 export type UpdateWorkOrderDto = z.infer<typeof UpdateWorkOrderDto>;
 

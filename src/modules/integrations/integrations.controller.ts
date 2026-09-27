@@ -9,7 +9,7 @@ import { apiError, ApiStandardErrors, ERROR_CODES } from '../../common/errors';
 import { FigmaScreen } from '../../common/decorators/figma-screen.decorator';
 
 /**
- * TZ §16 `/integrations` — TMS/McLeod, WEX/Comdata, QuickBooks, Slack, generic webhook.
+ * TZ §16 `/integrations` — TMS/McLeod, WEX/Comdata, QuickBooks, Slack, generic webhook, Pacific Track, DAT, Geotab, Zapier.
  * Gated by the `integrations` permission key. Config secrets never appear in a response —
  * see `IntegrationsService`/`redactConfigSecrets`.
  */
@@ -27,6 +27,15 @@ export class IntegrationsController {
   @ApiStandardErrors()
   list() {
     return this.integrations.list();
+  }
+
+  @Get('catalog')
+  @Perm('integrations', 'READ')
+  @ApiOperation({ summary: 'B-89 — marketplace catalog (every connectable provider, incl. Pacific Track, DAT, Geotab, Zapier). Declared before `:provider` so it is never swallowed.' })
+  @ApiOkResponse({ schema: { example: [{ provider: 'mcleod', name: 'McLeod', description: 'TMS load and dispatch sync.', category: 'TMS', available: true }, { provider: 'zapier', name: 'Zapier', description: 'Automate with 6,000+ apps.', category: 'Developer', available: true }] } })
+  @ApiStandardErrors()
+  catalog() {
+    return this.integrations.catalog();
   }
 
   @Get(':provider')

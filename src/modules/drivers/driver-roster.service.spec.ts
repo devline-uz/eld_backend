@@ -138,7 +138,8 @@ describe('DriverRosterService.roster', () => {
     expect(first.dutyStatus).toBe('DRIVING');
     expect(first.unit).toEqual({ id: 'veh_1', unitNumber: '101' });
     expect(first.openViolations).toBe(2);
-    expect(first.emailVerified).toBeNull();
+    // has an email on file but no `emailVerifiedAt` yet (§20 B-31).
+    expect(first.emailVerified).toBe(false);
     // 4 h drive used, shift opened 5 h ago.
     expect(first.hos).toEqual({ driveRemainingSec: 11 * H - 4 * H, shiftRemainingSec: 14 * H - 5 * H, cycleRemainingSec: 70 * H - 5 * H });
 

@@ -5,6 +5,8 @@ import { LogsController } from './logs.controller';
 import { LogsRepository } from './logs.repository';
 import { LogsService } from './logs.service';
 import { MobileLogsController } from './mobile-logs.controller';
+import { MobileLogsExportController } from './mobile-logs-export.controller';
+import { MobileLogsExportService } from './mobile-logs-export.service';
 import { RodsEventWriter } from './rods-event-writer';
 
 /**
@@ -13,8 +15,8 @@ import { RodsEventWriter } from './rods-event-writer';
  */
 @Module({
   imports: [IngestModule, AuditModule],
-  controllers: [LogsController, MobileLogsController],
-  providers: [LogsService, LogsRepository, RodsEventWriter],
+  controllers: [LogsController, MobileLogsController, MobileLogsExportController],
+  providers: [LogsService, LogsRepository, RodsEventWriter, MobileLogsExportService],
   exports: [LogsService, LogsRepository, RodsEventWriter],
 })
 export class LogsModule {}

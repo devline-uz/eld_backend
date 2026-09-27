@@ -10,8 +10,10 @@ import { QUEUES } from '../../core/queue/queue.constants';
 import { AssignTripDto, CreateTripDto, TripListQueryDto, UpdateTripDto } from './dto/trips.dto';
 import { TripsRepository } from './trips.repository';
 
-/** Valid forward transitions of `Trip.status` (TZ §11.5 dispatch lifecycle). */
+/** Valid forward transitions of `Trip.status` (TZ §11.5 dispatch lifecycle).
+ * §20 B-73 — `DRAFT` is the pre-publish state: `PATCH { status: 'PLANNED' }` publishes it. */
 const ALLOWED_TRANSITIONS: Record<string, string[]> = {
+  DRAFT: ['PLANNED', 'CANCELLED'],
   PLANNED: ['ASSIGNED', 'CANCELLED'],
   ASSIGNED: ['IN_PROGRESS', 'CANCELLED', 'PLANNED'],
   IN_PROGRESS: ['DELIVERED', 'CANCELLED'],
@@ -52,11 +54,12 @@ export class TripsService {
     const existing = await this.repo.findByNumber(dto.number);
     if (existing) throw new AppException(ERROR_CODES.CONFLICT, 'A trip with this number already exists.', 409);
 
-    const { stops, driverId, vehicleId, trailerId, ...rest } = dto;
+    const { stops, driverId, vehicleId, trailerId, draft, ...rest } = dto;
     const trip = await this.repo.createWithStops(
       {
         ...rest,
-        status: driverId ? 'ASSIGNED' : 'PLANNED',
+        // §20 B-73 — a draft always starts DRAFT, even with a driver on it (not yet published).
+        status: draft ? 'DRAFT' : driverId ? 'ASSIGNED' : 'PLANNED',
         createdById,
         ...(driverId && { driver: { connect: { id: driverId } } }),
         ...(vehicleId && { vehicle: { connect: { id: vehicleId } } }),
@@ -110,7 +113,10 @@ export class TripsService {
       },
     );
     await this.publishStatusChanged(updated.id, updated.status, updated.etaAt);
-    await this.alertQueue.add('alert.trip_assigned', { tripId: updated.id, driverId: dto.driverId });
+    // §20 B-74 — `notify: false` skips the driver-app assignment notification entirely.
+    if (dto.notify) {
+      await this.alertQueue.add('alert.trip_assigned', { tripId: updated.id, driverId: dto.driverId });
+    }
     return updated;
   }
 
@@ -123,7 +129,7 @@ export class TripsService {
     for (const load of loads) {
       const driverId = pool.shift();
       if (!driverId) break;
-      await this.assign(load.id, { driverId });
+      await this.assign(load.id, { driverId, notify: true });
       assigned.push({ tripId: load.id, driverId });
     }
     return { assigned, skipped: loads.length - assigned.length };

@@ -60,6 +60,10 @@ model Carrier {
   eldRegistrationId String?   @db.VarChar(4)
   erodsMode         ErodsMode @default(TEST)
 
+  /// §20 B-87 — org-level notification channels, e.g. `{ email: { enabled }, webhook: { enabled, url } }`.
+  /// Carrier is a singleton row, so this belongs here rather than a dedicated table (D-0xx).
+  notificationChannels Json? @default("{}")
+
   updatedAt DateTime @updatedAt
 }
 
@@ -84,10 +88,20 @@ model User {
   invitedAt        DateTime?
   createdAt        DateTime     @default(now())
 
-  role           Role      @relation(fields: [roleId], references: [id])
+  /// §20 B-51 — profile avatar (S3/MinIO object key, presigned on read).
+  avatarKey String?
+  /// §20 B-85 — decision D-0xx: no dedicated Terminal table yet (product question open).
+  /// Mirrors `Driver.homeTerminalName` / a lightweight scope list of terminal names.
+  homeTerminalName String?
+  terminalScope    String[] @default([])
+  /// §20 B-11 — `{ language, timezone, dateFormat, distanceUnit, savedViews, tableColumns }`.
+  preferences Json?
+
+  role           Role       @relation(fields: [roleId], references: [id])
   sessions       Session[]
-  managedDrivers Driver[]  @relation("DriverFleetManager")
+  managedDrivers Driver[]   @relation("DriverFleetManager")
   apiKeys        ApiKey[]
+  reports        Report[]
 
   @@index([status])
 }
@@ -147,7 +161,10 @@ model Driver {
   passwordHash String
   firstName    String
   lastName     String
-  email        String?
+  /// §20 B-29/B-30/B-31 — unique so a driver's Google-auth email can't collide; dev data checked
+  /// clean (206 distinct non-null / 60 null, Postgres treats NULLs as distinct under @unique).
+  email          String?   @unique
+  emailVerifiedAt DateTime?
   phone        String?
   cdlNumber    String
   cdlState     String
@@ -188,6 +205,7 @@ model Driver {
   pairingsAsCo      CoDriverPairing[]  @relation("PairingCo")
   sessions          DriverSession[]
   syncedChanges     SyncedChange[]
+  documents         DriverDocument[]
 
   @@index([status])
 }
@@ -210,6 +228,22 @@ model CoDriverPairing {
   @@index([primaryDriverId, startedAt])
   @@index([coDriverId, startedAt])
   @@index([vehicleId, startedAt])
+}
+
+/// §20 B-94 (tz.md §20 B-16) — driver qualification files (CDL scan, medical card, ...).
+model DriverDocument {
+  id           String    @id @default(uuid())
+  driverId     String
+  type         String
+  fileName     String
+  fileKey      String
+  expiresAt    DateTime?
+  uploadedById String?
+  createdAt    DateTime  @default(now())
+
+  driver Driver @relation(fields: [driverId], references: [id], onDelete: Cascade)
+
+  @@index([driverId])
 }
 
 model PushToken {
@@ -250,6 +284,11 @@ model Vehicle {
   activatedAt DateTime?
   createdAt   DateTime      @default(now())
 
+  /// Vehicle groups (web W-12 `Vehicle group`, W-13 `Group by`) — a unit belongs to at most one
+  /// group; deleting the group leaves its units ungrouped.
+  groupId String?
+  group   VehicleGroup? @relation(fields: [groupId], references: [id], onDelete: SetNull)
+
   // Device <-> Vehicle link exists ONLY on Device.vehicleId.
   device     Device?
   driver     Driver?               @relation("VehicleDriver")
@@ -261,6 +300,19 @@ model Vehicle {
   trips      Trip[]
 
   @@index([status])
+  @@index([groupId])
+}
+
+/// Named set of units used to filter IFTA and group the activity report (web W-12/W-13).
+model VehicleGroup {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  description String?
+  color       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  vehicles Vehicle[]
 }
 
 model Trailer {
@@ -292,6 +344,10 @@ model Device {
 
   periodicConnectedSec    Int @default(30)
   periodicDisconnectedMin Int @default(30)
+
+  /// §20 B-88.
+  autoFirmware     Boolean @default(true)
+  shareDiagnostics Boolean @default(true)
 
   pairedAt  DateTime?
   createdAt DateTime  @default(now())
@@ -538,6 +594,9 @@ model UnidentifiedSegment {
   assignedDriverId String?
   assignedById     String?
   assignedAt       DateTime?
+  /// §20 B-83 — set when a carrier assignment required driver confirmation (status goes to
+  /// PENDING_CONFIRMATION instead of ASSIGNED until the driver acts in the app).
+  confirmationRequestedAt DateTime?
   annotation       String?            @db.VarChar(60)
   eventIds         BigInt[]
   fromStoredEvents Boolean            @default(false)
@@ -603,6 +662,13 @@ model Defect {
   resolvedAt     DateTime?
   resolvedById   String?
   resolutionNote String?
+  /// §20 B-68 / B-70.
+  resolutionType DefectResolutionType?
+  correctedBy    String?
+  completedAt    DateTime?
+  laborHours     Decimal?       @db.Decimal(6, 2)
+  partsCostUsd   Decimal?       @db.Decimal(10, 2)
+  assigneeId     String?
   createdAt      DateTime       @default(now())
 
   dvir      Dvir         @relation(fields: [dvirId], references: [id], onDelete: Cascade)
@@ -629,6 +695,12 @@ model WorkOrder {
   openedAt    DateTime          @default(now())
   dueAt       DateTime?
   closedAt    DateTime?
+
+  /// §20 B-42.
+  estimatedLaborHours     Decimal? @db.Decimal(6, 2)
+  keepOutOfService        Boolean  @default(false)
+  notifyDriver            Boolean  @default(true)
+  blockDispatchAssignment Boolean  @default(false)
 
   vehicle Vehicle  @relation(fields: [vehicleId], references: [id])
   defects Defect[]
@@ -673,6 +745,11 @@ model Trip {
   etaAt            DateTime?
   onTime           Boolean?
   notes            String?    @db.VarChar(500)
+  /// §20 B-73 / B-92.
+  distanceMi        Decimal?   @db.Decimal(8, 2)
+  rateUsd           Decimal?   @db.Decimal(10, 2)
+  customer          String?
+  estimatedDriveSec Int?
   createdById      String
   createdAt        DateTime   @default(now())
 
@@ -715,6 +792,11 @@ model Geofence {
   category     String?
   alertOnEnter Boolean      @default(false)
   alertOnExit  Boolean      @default(false)
+  /// §20 B-15.
+  dwellMinutes   Int?
+  afterHoursOnly Boolean @default(false)
+  /// §20 B-93 — raw input for `type: ADDRESS`; server geocodes into centerLat/centerLon/radiusMi.
+  address      String?
   enabled      Boolean      @default(true)
   createdAt    DateTime     @default(now())
 }
@@ -814,6 +896,8 @@ model AlertRule {
   quietHours Json?
   enabled    Boolean       @default(true)
   isSystem   Boolean       @default(false)
+  /// §20 B-86 — "Mute for 24h"; the evaluator skips a rule while `mutedUntil` is in the future.
+  mutedUntil DateTime?
   createdAt  DateTime      @default(now())
 
   deliveries AlertDelivery[]
@@ -840,19 +924,25 @@ model AlertDelivery {
 }
 
 model Notification {
-  id         String    @id @default(uuid())
+  id         String            @id @default(uuid())
   userId     String?
   driverId   String?
   type       String
+  kind       NotificationKind?
   title      String
   body       String
   objectType String?
   objectId   String?
+  /// §20 B-57 — coarse grouping for `?category=` + sidebar counts (e.g. "violations", "maintenance").
+  category   String?
+  /// §20 B-58 — human severity for the row + `notification.new` CRITICAL toast.
+  severity   AlertSeverity?
   readAt     DateTime?
-  createdAt  DateTime  @default(now())
+  createdAt  DateTime          @default(now())
 
   @@index([userId, readAt])
   @@index([driverId, readAt])
+  @@index([category])
 }
 
 model Report {
@@ -869,6 +959,9 @@ model Report {
   requestedAt   DateTime     @default(now())
   completedAt   DateTime?
   expiresAt     DateTime?
+
+  /// §20 B-46 — `requestedBy: { id, name }` on read.
+  requestedBy User @relation(fields: [requestedById], references: [id])
 
   @@index([requestedById, requestedAt])
   @@index([status])
@@ -910,6 +1003,10 @@ model DataTransfer {
   requestedByType   EditorType
   createdAt         DateTime       @default(now())
   sentAt            DateTime?
+
+  // §20 B-46 — `requestedBy: { id, name }` on read. NOT a Prisma relation: `requestedById` is
+  // polymorphic (`requestedByType` USER or DRIVER — dev data has both), so it is resolved with an
+  // app-level lookup against User/Driver, same pattern as `resolvedById` elsewhere in this schema.
 
   @@index([driverId, createdAt])
   @@index([status])
@@ -1008,16 +1105,23 @@ model Attachment {
   defectId       String?
   messageId      String?
   fuelPurchaseId String?
+  /// §20 B-91 — support ticket attachments, server-collected only (never client-uploaded).
+  ticketId       String?
+  /// §20 B-91 — semantic kind for server-collected ticket attachments, e.g. DEVICE_DIAGNOSTICS /
+  /// ELD_EVENTS_24H; null for ordinary DVIR/defect photos.
+  kind           String?
 
   uploadedById   String?
   uploadedByType EditorType
   createdAt      DateTime   @default(now())
 
-  dvir   Dvir?   @relation(fields: [dvirId], references: [id], onDelete: Cascade)
-  defect Defect? @relation(fields: [defectId], references: [id], onDelete: Cascade)
+  dvir   Dvir?          @relation(fields: [dvirId], references: [id], onDelete: Cascade)
+  defect Defect?        @relation(fields: [defectId], references: [id], onDelete: Cascade)
+  ticket SupportTicket? @relation(fields: [ticketId], references: [id], onDelete: Cascade)
 
   @@index([dvirId])
   @@index([defectId])
+  @@index([ticketId])
 }
 
 model SupportTicket {
@@ -1032,7 +1136,10 @@ model SupportTicket {
   createdByDriverId String?
   assignedToId      String?
   createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
   resolvedAt        DateTime?
+
+  attachments Attachment[]
 }
 
 model Feedback {
@@ -1221,6 +1328,7 @@ enum ViolationStatus {
 
 enum UnidentifiedStatus {
   PENDING
+  PENDING_CONFIRMATION
   ASSIGNED
   REJECTED
   ANNOTATED
@@ -1262,6 +1370,13 @@ enum DefectStatus {
   DEFERRED
 }
 
+/// §20 B-68 — distinct from `DefectStatus` so "no repair needed" is never recorded as REPAIRED.
+enum DefectResolutionType {
+  REPAIRED
+  NOT_REQUIRED
+  DEFERRED
+}
+
 enum WorkOrderPriority {
   LOW
   NORMAL
@@ -1277,6 +1392,7 @@ enum WorkOrderStatus {
 }
 
 enum TripStatus {
+  DRAFT
   PLANNED
   ASSIGNED
   IN_PROGRESS
@@ -1302,6 +1418,7 @@ enum StopStatus {
 enum GeofenceType {
   CIRCLE
   POLYGON
+  ADDRESS
 }
 
 enum SafetyEventType {
@@ -1323,12 +1440,27 @@ enum ConversationType {
   DIRECT
   GROUP
   BROADCAST
+  /// §20 B-90 — support chat reuses Conversation/Message + the existing socket room plumbing.
+  SUPPORT
 }
 
 enum AlertSeverity {
   CRITICAL
   WARNING
   INFO
+}
+
+enum NotificationKind {
+  VIOLATION
+  WARNING
+  EDIT_REQUEST
+  MESSAGE
+  TRIP
+  UNIDENTIFIED
+  CERTIFY
+  MAINTENANCE
+  DEVICE
+  OTHER
 }
 
 enum DeliveryStatus {
@@ -1345,6 +1477,8 @@ enum ReportType {
   FMCSA_PACK
   UNIDENTIFIED
   SAFETY
+  RODS
+  IDLE_FUEL
 }
 
 enum ReportFormat {

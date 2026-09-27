@@ -36,14 +36,14 @@ describe('DevicesRepository', () => {
     device.findMany.mockResolvedValue([{ id: 'd1' }]);
     device.count.mockResolvedValue(1);
     const result = await repo.list(
-      { status: 'ACTIVE', bleState: 'PAIRED', q: 'firmware-x' },
+      { status: 'ASSIGNED', bleState: 'CONNECTED', q: 'firmware-x' },
       1,
       25,
       { serial: 'asc' },
     );
     const where = (device.findMany.mock.calls[0] as [{ where: Record<string, unknown> }])[0].where;
-    expect(where.status).toBe('ACTIVE');
-    expect(where.bleState).toBe('PAIRED');
+    expect(where.status).toBe('ASSIGNED');
+    expect(where.bleState).toBe('CONNECTED');
     expect(where.OR).toEqual(expect.arrayContaining([{ firmware: { contains: 'firmware-x', mode: 'insensitive' } }]));
     expect(result).toEqual({ items: [{ id: 'd1' }], total: 1 });
   });

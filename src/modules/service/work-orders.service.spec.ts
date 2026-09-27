@@ -32,7 +32,12 @@ describe('WorkOrdersService (TZ §5.10 — defect resolution workflow tied to a 
   describe('create', () => {
     it('404s for an unknown vehicle', async () => {
       vehicles.findById.mockResolvedValue(null);
-      await expect(service.create({ vehicleId: 'veh_x', title: 'Brake service', priority: 'NORMAL' }, 'user_1')).rejects.toBeInstanceOf(AppException);
+      await expect(
+        service.create(
+          { vehicleId: 'veh_x', title: 'Brake service', priority: 'NORMAL', keepOutOfService: false, notifyDriver: true, blockDispatchAssignment: false },
+          'user_1',
+        ),
+      ).rejects.toBeInstanceOf(AppException);
     });
 
     it('assigns a sequential number and attaches given defects', async () => {
@@ -43,10 +48,36 @@ describe('WorkOrdersService (TZ §5.10 — defect resolution workflow tied to a 
       repo.findById.mockResolvedValue(created as never); // attachDefect -> getOrThrow
       defects.findById.mockResolvedValue({ id: 'def_1' } as never);
 
-      await service.create({ vehicleId: 'veh_1', title: 'Brake service', priority: 'NORMAL', defectIds: ['def_1'] }, 'user_1');
+      await service.create(
+        { vehicleId: 'veh_1', title: 'Brake service', priority: 'NORMAL', defectIds: ['def_1'], keepOutOfService: false, notifyDriver: true, blockDispatchAssignment: false },
+        'user_1',
+      );
 
       expect(repo.create).toHaveBeenCalledWith(expect.objectContaining({ number: 'WO-0002', title: 'Brake service' }));
       expect(defects.update).toHaveBeenCalledWith({ id: 'def_1' }, { workOrder: { connect: { id: 'wo_2' } } });
+    });
+
+    it('B-42 — persists estimatedLaborHours/keepOutOfService/notifyDriver/blockDispatchAssignment', async () => {
+      vehicles.findById.mockResolvedValue({ id: 'veh_1' } as never);
+      repo.nextNumber.mockResolvedValue('WO-0003');
+      repo.create.mockResolvedValue(makeWorkOrder({ id: 'wo_3', number: 'WO-0003' }) as never);
+
+      await service.create(
+        {
+          vehicleId: 'veh_1',
+          title: 'Brake service',
+          priority: 'NORMAL',
+          estimatedLaborHours: 3.5,
+          keepOutOfService: true,
+          notifyDriver: false,
+          blockDispatchAssignment: true,
+        },
+        'user_1',
+      );
+
+      expect(repo.create).toHaveBeenCalledWith(
+        expect.objectContaining({ estimatedLaborHours: 3.5, keepOutOfService: true, notifyDriver: false, blockDispatchAssignment: true }),
+      );
     });
   });
 

@@ -115,6 +115,31 @@ describe('PermissionGuard — every role (TZ §6.4)', () => {
     );
   });
 
+  // -----------------------------------------------------------------------
+  // B-13 — `@PermAny` (array metadata): passes if the caller meets ANY requirement.
+  // -----------------------------------------------------------------------
+  describe('PermAny (array requirement — B-13)', () => {
+    it('grants access when only the second requirement is met (dispatcher: vehicles:READ, trips:FULL)', () => {
+      const dispatcher: ContextUser = { id: 'usr_dispatcher', type: 'user', role: 'DISPATCHER', permissions: DEFAULT_ROLE_MATRIX.DISPATCHER };
+      expect(
+        runAs(dispatcher, [
+          { key: 'vehicles', level: 'FULL' },
+          { key: 'trips', level: 'FULL' },
+        ] as never),
+      ).toBe(true);
+    });
+
+    it('rejects when none of the requirements are met', () => {
+      const viewer: ContextUser = { id: 'usr_viewer', type: 'user', role: 'VIEWER', permissions: DEFAULT_ROLE_MATRIX.VIEWER };
+      expect(() =>
+        runAs(viewer, [
+          { key: 'vehicles', level: 'FULL' },
+          { key: 'trips', level: 'FULL' },
+        ] as never),
+      ).toThrow(AppException);
+    });
+  });
+
   it('unauthenticated (no RequestContext.user) is rejected with UNAUTHORIZED, not FORBIDDEN', () => {
     let threw: unknown;
     RequestContext.run({ requestId: 'r', traceId: 't', startedAt: Date.now() }, () => {

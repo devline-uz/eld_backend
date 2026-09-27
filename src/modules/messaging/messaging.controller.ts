@@ -71,6 +71,21 @@ export class MessagingController {
     return this.messaging.sendMessage(id, dto, actor);
   }
 
+  @Post('conversations/:id/read')
+  @Perm('messaging', 'FULL')
+  @Audit({ object: 'Conversation', action: 'READ' })
+  @ApiOperation({ summary: "Marks the caller's own copy of a conversation read up to now (§20 B-67)." })
+  @ApiOkResponse({ schema: { example: { conversationId: 'cnv_1', lastReadAt: '2026-09-24T15:05:00.000Z' } } })
+  @ApiStandardErrors({
+    errors: [
+      apiError.notFound(ERROR_CODES.NOT_FOUND, 'Conversation not found.'),
+      apiError.forbidden('Not a participant of this conversation.'),
+    ],
+  })
+  markRead(@Param('id') id: string, @CurrentUser() actor: ContextUser) {
+    return this.messaging.markRead(id, actor);
+  }
+
   @Post('messages/broadcast')
   @Perm('messaging', 'FULL')
   @Audit({ object: 'Message', action: 'BROADCAST' })

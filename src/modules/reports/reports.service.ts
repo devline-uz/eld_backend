@@ -15,9 +15,12 @@ import {
   DvirReportParamsDto,
   FmcsaPackParamsDto,
   GenerateReportDto,
+  IdleFuelReportParamsDto,
   IftaReportParamsDto,
   IftaSummaryParamsDto,
   ReportListQueryDto,
+  REPORT_TYPE_FORMATS,
+  RodsReportParamsDto,
   UpdateReportScheduleDto,
 } from './dto/reports.dto';
 import type { ActivitySummaryResult } from './generators/activity-summary.generator';
@@ -85,13 +88,20 @@ export class ReportsService {
       ...(query.status ? { status: query.status } : {}),
     };
     const { items, total } = await this.repo.list(where, query.page, query.limit);
-    return { items, page: query.page, limit: query.limit, total, totalPages: Math.ceil(total / query.limit) };
+    return {
+      items: items.map((item) => withRequestedBy(item)),
+      page: query.page,
+      limit: query.limit,
+      total,
+      totalPages: Math.ceil(total / query.limit),
+    };
   }
 
-  async get(id: string): Promise<Report> {
-    const report = await this.repo.findById({ id });
+  /** B-46 — `requestedBy: { id, name }` on read. */
+  async get(id: string) {
+    const report = await this.repo.findByIdWithRequestedBy(id);
     if (!report) throw AppException.notFound('Report not found.', undefined);
-    return report;
+    return withRequestedBy(report);
   }
 
   /** Returns a fresh 7-day presigned URL (TZ §15) — never a stored/stale one. */
@@ -161,17 +171,14 @@ export class ReportsService {
     }
   }
 
+  /** B-48 — `IFTA`/`ACTIVITY`/`DVIR` now allow CSV or PDF; `FMCSA_PACK`/`RODS`/`IDLE_FUEL`
+   * stay single-format (see `REPORT_TYPE_FORMATS`). */
   private assertFormatAllowed(type: string, format: string): void {
-    if (type === 'FMCSA_PACK' && format !== 'PDF') {
+    const allowed = REPORT_TYPE_FORMATS[type as keyof typeof REPORT_TYPE_FORMATS];
+    if (!allowed?.includes(format as 'CSV' | 'PDF')) {
       throw AppException.unprocessable(
         ERROR_CODES.VALIDATION_FAILED,
-        'FMCSA_PACK is generated as PDF only (the cover sheet); Appendix A output files are CSV by definition and attached per driver.',
-      );
-    }
-    if (type !== 'FMCSA_PACK' && format !== 'CSV') {
-      throw AppException.unprocessable(
-        ERROR_CODES.VALIDATION_FAILED,
-        `${type} reports are generated as CSV in this version (streaming export, TZ §15).`,
+        `${type} reports support ${allowed?.join('/') ?? 'no'} format(s) in this version, not "${format}".`,
       );
     }
   }
@@ -182,7 +189,21 @@ const REPORT_PARAM_SCHEMAS = {
   ACTIVITY: ActivityReportParamsDto,
   DVIR: DvirReportParamsDto,
   FMCSA_PACK: FmcsaPackParamsDto,
+  RODS: RodsReportParamsDto,
+  IDLE_FUEL: IdleFuelReportParamsDto,
 } as const;
+
+/** B-46 — shapes the `User` relation loaded by `REQUESTED_BY_INCLUDE` into `{ id, name }`;
+ * never leaks the rest of the `User` row (email, roleId, ...) into a report response. */
+function withRequestedBy<T extends { requestedBy?: { id: string; firstName: string; lastName: string } | null }>(
+  report: T,
+): Omit<T, 'requestedBy'> & { requestedBy: { id: string; name: string } | null } {
+  const { requestedBy, ...rest } = report;
+  return {
+    ...rest,
+    requestedBy: requestedBy ? { id: requestedBy.id, name: `${requestedBy.firstName} ${requestedBy.lastName}` } : null,
+  };
+}
 
 /** Parses `params` with the schema of the requested report type (range caps included). */
 export function assertReportParams(type: keyof typeof REPORT_PARAM_SCHEMAS, params: unknown): unknown {

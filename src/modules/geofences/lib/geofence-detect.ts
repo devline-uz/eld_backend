@@ -1,3 +1,4 @@
+import { DateTime } from 'luxon';
 import { distanceMi } from '../../../common/units';
 
 /** TZ §11.5 (`GET/POST /geofences`) + §12.5 `trip.status_changed`-style event stream.
@@ -10,11 +11,28 @@ export interface CircleGeofence {
   radiusMi: number;
   alertOnEnter: boolean;
   alertOnExit: boolean;
+  /** §20 B-15 — when set, ENTER/EXIT only alert during "after hours"; see `isAfterHours`. */
+  afterHoursOnly?: boolean;
 }
 
 export interface Point {
   lat: number;
   lon: number;
+}
+
+/** §20 B-15 "After-hours entry" — outside the fixed 06:00–20:00 local business-hours window.
+ * No per-carrier business-hours config exists yet, so this window is hardcoded and documented
+ * (decisions.md) rather than left silently unimplemented. */
+export function isAfterHours(at: Date, zone: string): boolean {
+  const local = DateTime.fromJSDate(at, { zone });
+  const minutes = local.hour * 60 + local.minute;
+  return minutes < 6 * 60 || minutes >= 20 * 60;
+}
+
+/** §20 B-15 "Dwell longer than N min" — true once `atTime` is `dwellMinutes` or more after
+ * `enteredAt`. Pure so the threshold boundary is unit-testable without a clock/DB. */
+export function isDwellExceeded(enteredAt: Date, atTime: Date, dwellMinutes: number): boolean {
+  return (atTime.getTime() - enteredAt.getTime()) / 60_000 >= dwellMinutes;
 }
 
 export type GeofenceTransitionKind = 'ENTER' | 'EXIT';
@@ -38,9 +56,10 @@ export function isInsideGeofence(point: Point, fence: CircleGeofence): boolean {
  * only the net transition is alert-worthy.
  */
 export function detectGeofenceTransitions(
-  points: Point[],
+  points: Array<Point & { time?: string }>,
   fence: CircleGeofence,
   wasInside: boolean | null,
+  zone = 'UTC',
 ): GeofenceTransition[] {
   if (!fence.alertOnEnter && !fence.alertOnExit) return [];
 
@@ -50,7 +69,11 @@ export function detectGeofenceTransitions(
     const inside = isInsideGeofence(point, fence);
     if (prev !== null && inside !== prev) {
       const kind: GeofenceTransitionKind = inside ? 'ENTER' : 'EXIT';
-      if ((kind === 'ENTER' && fence.alertOnEnter) || (kind === 'EXIT' && fence.alertOnExit)) {
+      const gated = (kind === 'ENTER' && fence.alertOnEnter) || (kind === 'EXIT' && fence.alertOnExit);
+      // §20 B-15 "After-hours entry" — a timed point is filtered to after-hours only; an
+      // untimed one (legacy callers/tests) is never filtered, preserving prior behaviour.
+      const withinHours = !fence.afterHoursOnly || !point.time || isAfterHours(new Date(point.time), zone);
+      if (gated && withinHours) {
         // Only the LAST net direction change in the batch is alert-worthy.
         net = { geofenceId: fence.id, kind };
       }

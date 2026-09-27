@@ -1,26 +1,86 @@
 import { Module } from '@nestjs/common';
 import { AuditModule } from '../audit/audit.module';
+import { AuthModule } from '../auth/auth.module';
+import { MessagingModule } from '../messaging/messaging.module';
+import { DeviceHealthController } from './device-health.controller';
+import { DeviceHealthRepository } from './device-health.repository';
+import { DeviceHealthService } from './device-health.service';
+import { DvirPhotosRepository } from './dvir-photos.repository';
 import { HosRecalcModule } from '../hos-recalc/hos-recalc.module';
 import { LogsModule } from '../logs/logs.module';
 import { MobileBootstrapController } from './mobile-bootstrap.controller';
 import { MobileBootstrapService } from './mobile-bootstrap.service';
+import { MobileCoDriverController } from './mobile-codriver.controller';
+import { MobileCoDriverService } from './mobile-codriver.service';
+import { MobileContactsController } from './mobile-contacts.controller';
+import { MobileContactsService } from './mobile-contacts.service';
 import { MobileDutyStatusController } from './mobile-duty-status.controller';
 import { MobileDvirController } from './mobile-dvir.controller';
+import { MobileDvirHistoryController } from './mobile-dvir-history.controller';
+import { MobileDvirHistoryService } from './mobile-dvir-history.service';
 import { MobileDvirService } from './mobile-dvir.service';
+import { MobileFleetOpsRepository } from './mobile-fleet-ops.repository';
+import { MobileMessagingController } from './mobile-messaging.controller';
+import { MobileMessagingRepository } from './mobile-messaging.repository';
+import { MobileMessagingService } from './mobile-messaging.service';
 import { MobileSyncController } from './mobile-sync.controller';
 import { MobileSyncService } from './mobile-sync.service';
+import { MobileTripController } from './mobile-trip.controller';
+import { MobileTripService } from './mobile-trip.service';
+import { MobileVehicleController } from './mobile-vehicle.controller';
+import { MobileVehicleService } from './mobile-vehicle.service';
 import { MobileRepository } from './mobile.repository';
+import { PushTokensController } from './push-tokens.controller';
+import { PushTokensRepository } from './push-tokens.repository';
+import { PushTokensService } from './push-tokens.service';
 import { SignatureService } from './signature.service';
 
 /**
  * TZ §6 (tasks.md Phase 6) — Mobile API: bootstrap, offline sync, duty-status, DVIR +
  * signature. `HosStateModule` (§8.6 point 5, `POST /mobile/hos-state`) is registered
  * separately in `app.module.ts` — it predates this module and is left untouched.
+ *
+ * Phase 6b (mobile/tz.md §21.1, `mobile/decisions.md` MD-001) additions — MB-2/MB-3/MB-5/
+ * MB-10/MB-14 — each live in their own controller/service file; `MobileFleetOpsRepository`
+ * is their shared DB-access point, kept separate from `MobileRepository` on purpose.
  */
 @Module({
-  imports: [HosRecalcModule, LogsModule, AuditModule],
-  controllers: [MobileBootstrapController, MobileSyncController, MobileDutyStatusController, MobileDvirController],
-  providers: [MobileRepository, MobileBootstrapService, MobileSyncService, MobileDvirService, SignatureService],
-  exports: [MobileRepository, SignatureService],
+  imports: [HosRecalcModule, LogsModule, AuditModule, AuthModule, MessagingModule],
+  controllers: [
+    MobileBootstrapController,
+    MobileSyncController,
+    MobileDutyStatusController,
+    MobileDvirController,
+    MobileVehicleController,
+    MobileCoDriverController,
+    MobileTripController,
+    MobileDvirHistoryController,
+    MobileContactsController,
+    PushTokensController,
+    DeviceHealthController,
+    MobileMessagingController,
+  ],
+  providers: [
+    MobileRepository,
+    MobileBootstrapService,
+    MobileSyncService,
+    MobileDvirService,
+    SignatureService,
+    DvirPhotosRepository,
+    MobileFleetOpsRepository,
+    MobileVehicleService,
+    MobileCoDriverService,
+    MobileTripService,
+    MobileDvirHistoryService,
+    MobileContactsService,
+    // MB-1 (push tokens), MB-7 (device health), MB-15 (driver-facing messaging) — Phase 6b.
+    PushTokensRepository,
+    PushTokensService,
+    DeviceHealthRepository,
+    DeviceHealthService,
+    MobileMessagingRepository,
+    MobileMessagingService,
+  ],
+  exports: [MobileRepository, SignatureService, MobileFleetOpsRepository],
 })
 export class MobileModule {}

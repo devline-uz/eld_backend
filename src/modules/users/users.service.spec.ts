@@ -1,4 +1,6 @@
 import { AppException } from '../../common/errors/app.exception';
+import type { StoragePort } from '../../core/storage/storage.port';
+import type { AttachmentsService } from '../attachments/attachments.service';
 import { AuthService } from '../auth/auth.service';
 import { RolesRepository } from '../roles/roles.repository';
 import { UsersRepository } from './users.repository';
@@ -22,7 +24,9 @@ function makeUser(overrides: Partial<Record<string, unknown>> = {}) {
 describe('UsersService', () => {
   let users: jest.Mocked<Pick<UsersRepository, 'listWithRoles' | 'findByIdWithRole' | 'findByEmail' | 'create' | 'update' | 'delete'>>;
   let roles: jest.Mocked<Pick<RolesRepository, 'findById'>>;
-  let auth: jest.Mocked<Pick<AuthService, 'issueResetToken'>>;
+  let auth: jest.Mocked<Pick<AuthService, 'issueResetToken' | 'issueUserEmailVerifyToken'>>;
+  let storage: jest.Mocked<Pick<StoragePort, 'put' | 'get' | 'delete' | 'exists' | 'presignPut' | 'presignGet'>>;
+  let attachments: jest.Mocked<Pick<AttachmentsService, 'presignKey'>>;
   let service: UsersService;
 
   beforeEach(() => {
@@ -35,8 +39,28 @@ describe('UsersService', () => {
       delete: jest.fn(),
     };
     roles = { findById: jest.fn() };
-    auth = { issueResetToken: jest.fn().mockReturnValue('invite-token') };
-    service = new UsersService(users as unknown as UsersRepository, roles as unknown as RolesRepository, auth as unknown as AuthService);
+    auth = {
+      issueResetToken: jest.fn().mockReturnValue('invite-token'),
+      issueUserEmailVerifyToken: jest.fn().mockReturnValue('verify-token'),
+    };
+    storage = {
+      put: jest.fn().mockResolvedValue('avatars/usr_1/x.png'),
+      get: jest.fn(),
+      delete: jest.fn().mockResolvedValue(undefined),
+      exists: jest.fn(),
+      presignPut: jest.fn(),
+      presignGet: jest.fn().mockResolvedValue('https://minio.local/signed'),
+    };
+    attachments = {
+      presignKey: jest.fn().mockResolvedValue({ url: 'https://minio.local/signed', expiresAt: '2026-01-01T00:00:00.000Z' }),
+    };
+    service = new UsersService(
+      users as unknown as UsersRepository,
+      roles as unknown as RolesRepository,
+      auth as unknown as AuthService,
+      storage,
+      attachments as unknown as AttachmentsService,
+    );
   });
 
   it('list passes through the lean rows the repository already selected (perf: no passwordHash/permissions round-trip)', async () => {
@@ -90,6 +114,19 @@ describe('UsersService', () => {
       expect(result.user).not.toHaveProperty('passwordHash');
       expect(auth.issueResetToken).toHaveBeenCalledWith('usr_1', null);
     });
+
+    it('B-85 — passes terminalIds through to terminalScope', async () => {
+      roles.findById.mockResolvedValue({ id: 'role_1', key: 'VIEWER' } as never);
+      users.findByEmail.mockResolvedValue(null);
+      users.create.mockResolvedValue(makeUser({ role: undefined }) as never);
+
+      await service.invite(
+        { email: 'new@b.com', firstName: 'New', lastName: 'User', roleId: 'role_1', terminalIds: ['Dallas', 'Reno'] },
+        'admin_1',
+      );
+
+      expect(users.create).toHaveBeenCalledWith(expect.objectContaining({ terminalScope: ['Dallas', 'Reno'] }));
+    });
   });
 
   describe('resendInvite', () => {
@@ -130,6 +167,39 @@ describe('UsersService', () => {
         { firstName: 'Jane', role: { connect: { id: 'role_2' } }, status: 'ACTIVE' },
       );
     });
+
+    it('applies homeTerminalName directly (no re-verification needed)', async () => {
+      users.findByIdWithRole.mockResolvedValue(makeUser() as never);
+      users.update.mockResolvedValue({} as never);
+      await service.update('usr_1', { homeTerminalName: 'Dallas, TX' });
+      expect(users.update).toHaveBeenCalledWith({ id: 'usr_1' }, { homeTerminalName: 'Dallas, TX' });
+    });
+
+    it('B-84 — an email change does not touch User.email; it issues a re-verification token instead', async () => {
+      users.findByIdWithRole.mockResolvedValue(makeUser({ email: 'old@b.com' }) as never);
+      users.findByEmail.mockResolvedValue(null);
+      users.update.mockResolvedValue({} as never);
+
+      const result = await service.update('usr_1', { email: 'new@b.com' });
+
+      expect(users.update).toHaveBeenCalledWith({ id: 'usr_1' }, {});
+      expect(auth.issueUserEmailVerifyToken).toHaveBeenCalledWith('usr_1', 'new@b.com');
+      expect(result.emailVerification).toEqual({ pendingEmail: 'new@b.com', verifyToken: 'verify-token' });
+    });
+
+    it('B-84 — throws conflict when the new email is already taken by someone else', async () => {
+      users.findByIdWithRole.mockResolvedValue(makeUser({ email: 'old@b.com' }) as never);
+      users.findByEmail.mockResolvedValue(makeUser({ id: 'usr_2', email: 'new@b.com' }) as never);
+      await expect(service.update('usr_1', { email: 'new@b.com' })).rejects.toThrow(AppException);
+    });
+
+    it('B-84 — no-op when the email in the dto matches the current email', async () => {
+      users.findByIdWithRole.mockResolvedValue(makeUser({ email: 'same@b.com' }) as never);
+      users.update.mockResolvedValue({} as never);
+      const result = await service.update('usr_1', { email: 'same@b.com' });
+      expect(auth.issueUserEmailVerifyToken).not.toHaveBeenCalled();
+      expect(result.emailVerification).toBeUndefined();
+    });
   });
 
   describe('remove', () => {
@@ -161,6 +231,101 @@ describe('UsersService', () => {
 
     it('is false when roleId is absent', () => {
       expect(service.isRoleChange({})).toBe(false);
+    });
+  });
+
+  describe('avatar (B-51)', () => {
+    function fakePng(width: number, height: number): Buffer {
+      const buf = Buffer.alloc(33);
+      buf.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+      buf.writeUInt32BE(13, 8);
+      buf.write('IHDR', 12, 'ascii');
+      buf.writeUInt32BE(width, 16);
+      buf.writeUInt32BE(height, 20);
+      return buf;
+    }
+
+    it('rejects a missing file', async () => {
+      await expect(service.uploadAvatar('usr_1', undefined)).rejects.toThrow(AppException);
+    });
+
+    it('rejects an image smaller than 256x256', async () => {
+      const file = { buffer: fakePng(100, 100), mimetype: 'image/png', size: 33 };
+      await expect(service.uploadAvatar('usr_1', file)).rejects.toMatchObject({ code: 'IMAGE_TOO_SMALL' });
+    });
+
+    it('rejects a non-image buffer', async () => {
+      const file = { buffer: Buffer.from('not an image'), mimetype: 'image/png', size: 12 };
+      await expect(service.uploadAvatar('usr_1', file)).rejects.toMatchObject({ code: 'UNSUPPORTED_FILE_TYPE' });
+    });
+
+    it('B-095 — rejects a declared pixel size above 8192 (decompression bomb)', async () => {
+      const file = { buffer: fakePng(65535, 65535), mimetype: 'image/png', size: 33 };
+      await expect(service.uploadAvatar('usr_1', file)).rejects.toMatchObject({ code: 'UNSUPPORTED_FILE_TYPE' });
+      expect(storage.put).not.toHaveBeenCalled();
+    });
+
+    it('rejects an oversized upload', async () => {
+      const file = { buffer: fakePng(512, 512), mimetype: 'image/png', size: 6 * 1024 * 1024 };
+      await expect(service.uploadAvatar('usr_1', file)).rejects.toMatchObject({ code: 'FILE_TOO_LARGE' });
+    });
+
+    it('stores a valid PNG, deletes the previous object, and returns the fresh view with avatarUrl', async () => {
+      users.findByIdWithRole
+        .mockResolvedValueOnce(makeUser({ avatarKey: 'avatars/usr_1/old.png' }) as never) // getRaw (current)
+        .mockResolvedValueOnce(makeUser({ avatarKey: 'avatars/usr_1/new.png' }) as never); // get (fresh view)
+      users.update.mockResolvedValue({} as never);
+
+      const file = { buffer: fakePng(512, 512), mimetype: 'image/png', size: 33 };
+      const result = await service.uploadAvatar('usr_1', file);
+
+      const [putKey] = storage.put.mock.calls[0] as [string, Buffer, unknown];
+      expect(putKey).toMatch(/^avatars\/usr_1\/.+\.png$/);
+      expect(storage.put).toHaveBeenCalledWith(putKey, file.buffer, { contentType: 'image/png' });
+      const [, updateData] = users.update.mock.calls[0] as [{ id: string }, { avatarKey: string }];
+      expect(updateData.avatarKey).toMatch(/^avatars\/usr_1\//);
+      expect(storage.delete).toHaveBeenCalledWith('avatars/usr_1/old.png');
+      expect(result.avatarUrl).toBe('https://minio.local/signed');
+    });
+
+    it('deleteAvatar clears avatarKey and deletes the object when one exists', async () => {
+      users.findByIdWithRole
+        .mockResolvedValueOnce(makeUser({ avatarKey: 'avatars/usr_1/old.png' }) as never)
+        .mockResolvedValueOnce(makeUser({ avatarKey: null }) as never);
+      users.update.mockResolvedValue({} as never);
+
+      await service.deleteAvatar('usr_1');
+
+      expect(storage.delete).toHaveBeenCalledWith('avatars/usr_1/old.png');
+      expect(users.update).toHaveBeenCalledWith({ id: 'usr_1' }, { avatarKey: null });
+    });
+
+    it('deleteAvatar is a no-op when there is no avatar', async () => {
+      users.findByIdWithRole.mockResolvedValue(makeUser({ avatarKey: null }) as never);
+      await service.deleteAvatar('usr_1');
+      expect(storage.delete).not.toHaveBeenCalled();
+      expect(users.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('preferences (B-11)', () => {
+    it('getPreferences returns {} when unset', async () => {
+      users.findByIdWithRole.mockResolvedValue(makeUser({ preferences: null }) as never);
+      await expect(service.getPreferences('usr_1')).resolves.toEqual({});
+    });
+
+    it('getPreferences returns the stored blob', async () => {
+      users.findByIdWithRole.mockResolvedValue(makeUser({ preferences: { language: 'en', distanceUnit: 'MILES' } }) as never);
+      await expect(service.getPreferences('usr_1')).resolves.toEqual({ language: 'en', distanceUnit: 'MILES' });
+    });
+
+    it('updatePreferences persists and echoes the new blob', async () => {
+      users.findByIdWithRole.mockResolvedValue(makeUser() as never);
+      users.update.mockResolvedValue({} as never);
+      const dto = { language: 'en', timezone: 'America/Chicago' };
+      const result = await service.updatePreferences('usr_1', dto);
+      expect(users.update).toHaveBeenCalledWith({ id: 'usr_1' }, { preferences: dto });
+      expect(result).toEqual(dto);
     });
   });
 });

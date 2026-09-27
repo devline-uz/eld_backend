@@ -1,5 +1,6 @@
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
+import type { ContextUser } from '../../core/context/request-context';
 import { AlertRulesService } from './alert-rules.service';
 import type { CreateAlertRuleDto } from './dto/notifications.dto';
 
@@ -12,7 +13,18 @@ function buildService(overrides: { findByKey?: unknown; findById?: unknown } = {
     update: jest.fn(async (_where: unknown, data: unknown) => ({ id: 'alr_1', ...(data as object) })),
     delete: jest.fn(async () => ({ id: 'alr_1' })),
   };
-  return { service: new AlertRulesService(repo as never), repo };
+  const notifications = {
+    create: jest.fn(async (data: Record<string, unknown>) => ({ id: 'ntf_test', readAt: null, ...data })),
+  };
+  const events = { publish: jest.fn(async () => undefined) };
+  const webhooks = { notify: jest.fn(async () => null) };
+  return {
+    service: new AlertRulesService(repo as never, notifications as never, events as never, webhooks as never),
+    repo,
+    notifications,
+    events,
+    webhooks,
+  };
 }
 
 const baseDto: CreateAlertRuleDto = {
@@ -76,5 +88,50 @@ describe('AlertRulesService — key conflict', () => {
   it('rejects creating a rule with a duplicate key', async () => {
     const { service } = buildService({ findByKey: { id: 'alr_existing' } });
     await expect(service.create(baseDto)).rejects.toMatchObject({ code: ERROR_CODES.CONFLICT });
+  });
+});
+
+const backOfficeActor: ContextUser = { id: 'usr_1', type: 'user' };
+const driverActor: ContextUser = { id: 'drv_1', type: 'driver' };
+
+describe('AlertRulesService — test rule (TZ §20 B-9)', () => {
+  it('sends through every configured channel and returns { triggered: true }', async () => {
+    const { service, notifications, events, webhooks } = buildService({
+      findById: { id: 'alr_1', isSystem: false, enabled: true, name: 'HOS violation', severity: 'CRITICAL', channels: ['IN_APP', 'WEBHOOK'] },
+    });
+    const result = await service.testRule('alr_1', backOfficeActor);
+    expect(result).toEqual({ triggered: true });
+    expect(notifications.create).toHaveBeenCalledTimes(1);
+    expect(notifications.create).toHaveBeenCalledWith(expect.objectContaining({ userId: 'usr_1', severity: 'CRITICAL' }));
+    expect(events.publish).toHaveBeenCalledWith('realtime.push', expect.objectContaining({ room: 'user:usr_1', event: 'notification.new' }));
+    expect(webhooks.notify).toHaveBeenCalledWith('alert.test', expect.objectContaining({ ruleId: 'alr_1' }));
+  });
+
+  it('addresses a driver actor by driverId, not userId', async () => {
+    const { service, notifications } = buildService({
+      findById: { id: 'alr_1', isSystem: false, enabled: true, name: 'HOS violation', severity: 'WARNING', channels: ['IN_APP'] },
+    });
+    await service.testRule('alr_1', driverActor);
+    expect(notifications.create).toHaveBeenCalledWith(expect.objectContaining({ driverId: 'drv_1' }));
+  });
+
+  it('never sends through SMS even if somehow present on the row', async () => {
+    const { service, notifications, webhooks } = buildService({
+      findById: { id: 'alr_1', isSystem: false, enabled: true, name: 'X', severity: 'INFO', channels: ['SMS'] },
+    });
+    const result = await service.testRule('alr_1', backOfficeActor);
+    expect(result).toEqual({ triggered: false });
+    expect(notifications.create).not.toHaveBeenCalled();
+    expect(webhooks.notify).not.toHaveBeenCalled();
+  });
+
+  it('a disabled rule triggers nothing', async () => {
+    const { service, notifications, webhooks } = buildService({
+      findById: { id: 'alr_1', isSystem: false, enabled: false, name: 'X', severity: 'INFO', channels: ['IN_APP', 'WEBHOOK'] },
+    });
+    const result = await service.testRule('alr_1', backOfficeActor);
+    expect(result).toEqual({ triggered: false });
+    expect(notifications.create).not.toHaveBeenCalled();
+    expect(webhooks.notify).not.toHaveBeenCalled();
   });
 });

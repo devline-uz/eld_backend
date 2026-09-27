@@ -1,8 +1,14 @@
 import { Injectable } from '@nestjs/common';
 import { DateTime } from 'luxon';
+import { AppException } from '../../../common/errors/app.exception';
+import { ERROR_CODES } from '../../../common/errors/codes';
 import { PrismaService } from '../../../core/prisma/prisma.service';
 import type { IftaReportParamsDto, IftaSummaryParamsDto } from '../dto/reports.dto';
+
+/** `vehicleId` filter shared by every `IftaSegment`/`FuelPurchase` query of one request. */
+type VehicleScope = { vehicleId?: string | { in: string[] } };
 import { csvFromRows } from '../lib/csv-stream';
+import { renderPdf } from '../lib/pdf-render';
 
 export interface IftaReportRow {
   jurisdiction: string;
@@ -88,7 +94,7 @@ export class IftaReportGenerator {
 
   async rows(params: IftaReportParamsDto): Promise<IftaReportRow[]> {
     const { start, end } = quarterRange(params.quarter);
-    const vehicleFilter = params.vehicleId ? { vehicleId: params.vehicleId } : {};
+    const vehicleFilter = await this.vehicleScope(params);
 
     const segments = await this.prisma.iftaSegment.groupBy({
       by: ['jurisdiction'],
@@ -108,8 +114,10 @@ export class IftaReportGenerator {
     const totalGallonsBurned = purchases.reduce((sum, p) => sum + Number(p._sum.gallons ?? 0), 0);
     const fleetMpg = totalGallonsBurned > 0 ? totalMiles / totalGallonsBurned : 0;
 
+    // Fleet MPG stays fleet-wide (the IFTA formula), `jurisdiction` only narrows the rows.
     return segments
       .filter((s) => (s._sum.distanceMi ?? 0) > 0)
+      .filter((s) => !params.jurisdiction || s.jurisdiction === params.jurisdiction)
       .map((s) => {
         const miles = s._sum.distanceMi ?? 0;
         const fuelPurchased = purchasedByJurisdiction.get(s.jurisdiction) ?? 0;
@@ -134,6 +142,15 @@ export class IftaReportGenerator {
     return { stream: csvFromRows(gen()), rowCount: rows.length };
   }
 
+  /** B-48 — PDF variant. One jurisdiction table per quarter; `rows()` is already a bounded
+   * groupBy aggregate (one row per jurisdiction that had miles), never per-event, so this
+   * never approaches the "millions of rows" case the CSV streaming rule (§15) guards against. */
+  async pdf(params: IftaReportParamsDto): Promise<{ pdf: Buffer; rowCount: number }> {
+    const rows = await this.rows(params);
+    const pdf = await renderPdf('ifta-report', { quarter: params.quarter, vehicleId: params.vehicleId ?? 'ALL', rows });
+    return { pdf, rowCount: rows.length };
+  }
+
   /**
    * JSON summary for the W-12 IFTA screen (gap B-46) — `POST /reports/generate` still queues
    * the CSV asynchronously per §15; this is a synchronous read of the SAME persisted
@@ -143,23 +160,39 @@ export class IftaReportGenerator {
    * all) — a report screen must never show an invented number.
    */
   async summary(params: IftaSummaryParamsDto): Promise<IftaSummary> {
-    const { quarter, vehicleId } = params;
+    const { quarter, jurisdiction } = params;
     const { start, end } = quarterRange(quarter);
     const prevRange = quarterRange(previousQuarter(quarter));
-    const vehicleFilter = vehicleId ? { vehicleId } : {};
+    const vehicleFilter = await this.vehicleScope(params);
+    const jurisdictionFilter = jurisdiction ? { jurisdiction } : {};
 
-    const [current, previous, unitRows] = await Promise.all([
+    const [current, previous, unitRows, jurisdictionReceipts] = await Promise.all([
       this.quarterTotals(start, end, vehicleFilter),
       this.quarterTotals(prevRange.start, prevRange.end, vehicleFilter),
       this.prisma.iftaSegment.findMany({
-        where: { ...vehicleFilter, date: { gte: start, lte: end } },
+        where: { ...vehicleFilter, ...jurisdictionFilter, date: { gte: start, lte: end } },
         distinct: ['vehicleId'],
         select: { vehicleId: true },
       }),
+      jurisdiction
+        ? this.prisma.fuelPurchase.count({ where: { ...vehicleFilter, jurisdiction, purchasedAt: { gte: start, lte: end } } })
+        : Promise.resolve(null),
     ]);
+
+    // `jurisdiction` narrows rows, miles, gallons and receipts to that one jurisdiction; fleet
+    // MPG (and its vs-prev chip) stays fleet-wide — IFTA taxable gallons are always miles in a
+    // jurisdiction divided by the fleet's MPG, never a per-jurisdiction MPG.
+    const scopedMiles = jurisdiction
+      ? current.segments.find((s) => s.jurisdiction === jurisdiction)?._sum.distanceMi ?? 0
+      : current.totalMiles;
+    const scopedGallons = jurisdiction
+      ? current.purchasedByJurisdiction.get(jurisdiction) ?? 0
+      : current.totalGallonsBurned;
+    const scopedReceipts = jurisdictionReceipts ?? current.receiptCount;
 
     const rows: IftaSummaryRow[] = current.segments
       .filter((s) => (s._sum.distanceMi ?? 0) > 0)
+      .filter((s) => !jurisdiction || s.jurisdiction === jurisdiction)
       .map((s) => {
         const miles = s._sum.distanceMi ?? 0;
         const fuelGal = current.purchasedByJurisdiction.get(s.jurisdiction) ?? 0;
@@ -178,30 +211,44 @@ export class IftaReportGenerator {
       quarter,
       unitCount: unitRows.length,
       kpis: {
-        totalMiles: current.totalMiles,
-        taxableMiles: current.totalMiles,
-        taxablePct: current.totalMiles > 0 ? 100 : null,
-        fuelGal: current.hasFuelData ? Number(current.totalGallonsBurned.toFixed(2)) : null,
-        receiptCount: current.hasFuelData ? current.receiptCount : null,
+        totalMiles: scopedMiles,
+        taxableMiles: scopedMiles,
+        taxablePct: scopedMiles > 0 ? 100 : null,
+        fuelGal: current.hasFuelData ? Number(scopedGallons.toFixed(2)) : null,
+        receiptCount: current.hasFuelData ? scopedReceipts : null,
         fleetMpg: current.fleetMpg === null ? null : Number(current.fleetMpg.toFixed(2)),
         fleetMpgPrev: previous.fleetMpg === null ? null : Number(previous.fleetMpg.toFixed(2)),
       },
       rows,
       totals: {
-        totalMiles: current.totalMiles,
-        taxableMiles: current.totalMiles,
-        fuelGal: current.hasFuelData ? Number(current.totalGallonsBurned.toFixed(2)) : null,
+        totalMiles: scopedMiles,
+        taxableMiles: scopedMiles,
+        fuelGal: current.hasFuelData ? Number(scopedGallons.toFixed(2)) : null,
         mpg: current.fleetMpg === null ? null : Number(current.fleetMpg.toFixed(2)),
         taxDueUsd: null,
       },
     };
   }
 
+  /** `vehicleId` and/or `vehicleGroupId` -> one `vehicleId` where-fragment. A group resolves to
+   * its current units (an empty group matches nothing, never "all units"); with both set, the
+   * unit must also be in the group. */
+  private async vehicleScope(params: { vehicleId?: string; vehicleGroupId?: string }): Promise<VehicleScope> {
+    if (!params.vehicleGroupId) return params.vehicleId ? { vehicleId: params.vehicleId } : {};
+    const group = await this.prisma.vehicleGroup.findUnique({
+      where: { id: params.vehicleGroupId },
+      select: { vehicles: { select: { id: true } } },
+    });
+    if (!group) throw new AppException(ERROR_CODES.VEHICLE_GROUP_NOT_FOUND, 'Vehicle group not found.', 404);
+    const ids = group.vehicles.map((v) => v.id).filter((id) => !params.vehicleId || id === params.vehicleId);
+    return { vehicleId: { in: ids } };
+  }
+
   /** Shared aggregate used by `summary()` for both the requested quarter and the previous one. */
   private async quarterTotals(
     start: Date,
     end: Date,
-    vehicleFilter: { vehicleId?: string },
+    vehicleFilter: VehicleScope,
   ): Promise<{
     segments: { jurisdiction: string; _sum: { distanceMi: number | null } }[];
     purchasedByJurisdiction: Map<string, number>;

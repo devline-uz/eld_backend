@@ -21,8 +21,10 @@ export interface StoragePort {
   get(key: string): Promise<Buffer>;
   delete(key: string): Promise<void>;
   exists(key: string): Promise<boolean>;
-  /** Presigned PUT for direct client upload (TZ §17). */
-  presignPut(key: string, contentType: string, ttlSec?: number): Promise<string>;
+  /** Presigned PUT for direct client upload (TZ §17). `content-type` — and `content-length`
+   * when `contentLength` is given — are part of the signature, so the uploader cannot swap
+   * in another MIME type (e.g. `text/html`) or a larger body than was authorized (B-091). */
+  presignPut(key: string, contentType: string, ttlSec?: number, contentLength?: number): Promise<string>;
   /** Presigned GET; all objects are private, default TTL 15 min (TZ §17). */
   presignGet(key: string, ttlSec?: number): Promise<string>;
 }
