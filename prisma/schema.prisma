@@ -816,6 +816,10 @@ model Geofence {
   afterHoursOnly Boolean @default(false)
   /// §20 B-93 — raw input for `type: ADDRESS`; server geocodes into centerLat/centerLon/radiusMi.
   address      String?
+  /// Map colour picked in the web "Create a geofence" modal (overlay 11.1).
+  colour          GeofenceColour @default(BLUE)
+  /// Time a unit spends inside counts as on-duty yard move (web overlay 11.1 footer checkbox).
+  countAsYardMove Boolean        @default(false)
   enabled      Boolean      @default(true)
   createdAt    DateTime     @default(now())
 }
@@ -1438,6 +1442,14 @@ enum GeofenceType {
   CIRCLE
   POLYGON
   ADDRESS
+}
+
+enum GeofenceColour {
+  BLUE
+  GREEN
+  AMBER
+  RED
+  VIOLET
 }
 
 enum SafetyEventType {

@@ -23,7 +23,7 @@ export class GeofencesController {
   @Get()
   @Perm('liveFleet', 'READ')
   @ApiOperation({ summary: 'Lists all geofences drawn on the Live Fleet map.' })
-  @ApiOkResponse({ schema: { example: { items: [{ id: 'gf_1', name: 'Columbus Terminal', type: 'CIRCLE', radiusMi: 1, alertOnEnter: true }] } } })
+  @ApiOkResponse({ schema: { example: { items: [{ id: 'gf_1', name: 'Columbus Terminal', type: 'CIRCLE', radiusMi: 1, alertOnEnter: true, colour: 'BLUE', countAsYardMove: false }] } } })
   @ApiStandardErrors()
   list() {
     return this.geofences.list();
@@ -32,7 +32,7 @@ export class GeofencesController {
   @Get(':id')
   @Perm('liveFleet', 'READ')
   @ApiOperation({ summary: 'One geofence.' })
-  @ApiOkResponse({ schema: { example: { id: 'gf_1', name: 'Columbus Terminal', type: 'CIRCLE' } } })
+  @ApiOkResponse({ schema: { example: { id: 'gf_1', name: 'Columbus Terminal', type: 'CIRCLE', colour: 'BLUE', countAsYardMove: false } } })
   @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.NOT_FOUND, 'Geofence not found.')] })
   get(@Param('id') id: string) {
     return this.geofences.get(id);
@@ -42,7 +42,7 @@ export class GeofencesController {
   @Perm('liveFleet', 'FULL')
   @Audit({ object: 'Geofence', action: 'CREATE' })
   @ApiOperation({ summary: 'Draws a new terminal/customer geofence (circle or polygon).' })
-  @ApiCreatedResponse({ schema: { example: { id: 'gf_2', name: 'Cust. dock 4', type: 'CIRCLE', radiusMi: 0.5 } } })
+  @ApiCreatedResponse({ schema: { example: { id: 'gf_2', name: 'Cust. dock 4', type: 'CIRCLE', radiusMi: 0.5, colour: 'GREEN', countAsYardMove: true } } })
   @ApiStandardErrors({ errors: [apiError.validation('CIRCLE requires centerLat/centerLon/radiusMi; POLYGON requires polygon points.')] })
   create(@Body(zodBody(CreateGeofenceDto)) dto: CreateGeofenceDto) {
     return this.geofences.create(dto);
