@@ -1,10 +1,9 @@
 import { Injectable, Logger, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
 import { Gauge, Counter } from 'prom-client';
-import { Queue, QueueEvents } from 'bullmq';
+import { QueueEvents } from 'bullmq';
 import { AppConfigService } from '../../core/config/config.service';
 import { QUEUES } from '../../core/queue/queue.constants';
 import { SentryService } from '../../core/observability/sentry.service';
-import { describeError } from '../../core/observability/describe-error';
 import { MetricsService } from './metrics.service';
 
 /**
@@ -29,8 +28,6 @@ export class WorkerHeartbeatService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(WorkerHeartbeatService.name);
   private timer?: NodeJS.Timeout;
   private readonly listeners: QueueEvents[] = [];
-  /** Lazily opened, only to read a failed job's stacktrace when `failedReason` is empty. */
-  private readonly lookupQueues = new Map<string, Queue>();
   private lastHeartbeatMs = 0;
 
   private readonly heartbeat: Gauge<string>;
@@ -73,9 +70,15 @@ export class WorkerHeartbeatService implements OnModuleInit, OnModuleDestroy {
         prefix: this.config.get('QUEUE_PREFIX'),
       });
       events.on('completed', () => this.lastCompleted.set({ queue }, Date.now() / 1000));
-      events.on('failed', ({ jobId, failedReason }) => {
+      events.on('failed', ({ failedReason }) => {
         this.failedTotal.inc({ queue });
-        void this.reportFailure(queue, jobId, failedReason);
+        this.sentry.capture({
+          message: 'worker.job_failed',
+          level: 'error',
+          fingerprint: ['worker_job_failed', queue],
+          tags: { queue },
+          extra: { failedReason },
+        });
       });
       events.on('error', (err) => this.logger.warn({ err, queue }, 'QueueEvents connection error'));
       this.listeners.push(events);
@@ -86,60 +89,6 @@ export class WorkerHeartbeatService implements OnModuleInit, OnModuleDestroy {
   async onModuleDestroy(): Promise<void> {
     if (this.timer) clearInterval(this.timer);
     await Promise.all(this.listeners.map((e) => e.close().catch(() => undefined)));
-    await Promise.all([...this.lookupQueues.values()].map((q) => q.close().catch(() => undefined)));
-  }
-
-  /**
-   * `worker.job_failed` must always carry the real error. `failedReason` is BullMQ's copy of
-   * `err.message`, which is "" for e.g. a Node `AggregateError [ECONNREFUSED]`. In that case
-   * read the job's stored `stacktrace` (whose first line names the error) so the log/Sentry
-   * record is never blank.
-   */
-  private async reportFailure(queue: string, jobId: string | undefined, failedReason: string | undefined): Promise<void> {
-    let reason = (failedReason ?? '').trim();
-    let stack: string | undefined;
-    let jobName: string | undefined;
-    let attemptsMade: number | undefined;
-    if (jobId) {
-      try {
-        const q = this.lookupQueue(queue);
-        const job = await q.getJob(jobId);
-        if (job) {
-          jobName = job.name;
-          attemptsMade = job.attemptsMade;
-          const traces = Array.isArray(job.stacktrace) ? job.stacktrace.filter(Boolean) : [];
-          stack = traces[traces.length - 1];
-          if (!reason) reason = (job.failedReason ?? '').trim();
-        }
-      } catch (err) {
-        this.logger.warn({ queue, jobId, error: describeError(err) }, 'could not load failed job details');
-      }
-    }
-    if (!reason) reason = stack?.split('\n')[0]?.trim() || '(no error message recorded)';
-    try {
-      this.sentry.capture({
-        message: 'worker.job_failed',
-        level: 'error',
-        fingerprint: ['worker_job_failed', queue],
-        tags: { queue },
-        extra: { jobId, jobName, attemptsMade, failedReason: reason, stack },
-      });
-    } catch {
-      /* capture never throws, but a listener must not crash the worker */
-    }
-  }
-
-  private lookupQueue(queue: string): Queue {
-    let q = this.lookupQueues.get(queue);
-    if (!q) {
-      q = new Queue(queue, {
-        connection: { url: this.config.get('REDIS_URL'), db: this.config.get('REDIS_DB') },
-        prefix: this.config.get('QUEUE_PREFIX'),
-      });
-      q.on('error', (err) => this.logger.warn({ queue, error: describeError(err) }, 'lookup Queue connection error'));
-      this.lookupQueues.set(queue, q);
-    }
-    return q;
   }
 
   private tick(): void {

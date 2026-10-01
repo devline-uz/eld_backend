@@ -7,7 +7,6 @@ import { PrismaService } from '../core/prisma/prisma.service';
 import { QUEUES } from '../core/queue/queue.constants';
 import { STORAGE_PORT, StoragePort } from '../core/storage/storage.port';
 import { EventBusService } from '../core/events/event-bus.service';
-import { toDescriptiveError } from '../core/observability/describe-error';
 import { ActivityReportGenerator } from '../modules/reports/generators/activity-report.generator';
 import { DvirReportGenerator } from '../modules/reports/generators/dvir-report.generator';
 import { FmcsaPackGenerator } from '../modules/reports/generators/fmcsa-pack.generator';
@@ -79,16 +78,10 @@ export class ReportProcessor extends WorkerHost {
         payload: { reportId: updated.id, type: updated.type, status: updated.status },
       });
       this.logger.log({ reportId, type: report.type, fileSizeBytes, rowCount }, 'report.generate completed');
-    } catch (caught) {
-      // Node network errors (e.g. S3/MinIO unreachable) are often an `AggregateError` with an
-      // EMPTY message; BullMQ copies `err.message` into `failedReason`, which then read "".
-      // Normalise to an Error whose message names the real cause (code + nested errors).
-      const err = toDescriptiveError(caught);
-      await this.prisma.report.update({ where: { id: reportId }, data: { status: 'FAILED', error: err.message } });
-      this.logger.error(
-        { reportId, attempt: job.attemptsMade + 1, error: err.message, stack: err.stack },
-        'report.generate failed',
-      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await this.prisma.report.update({ where: { id: reportId }, data: { status: 'FAILED', error: message } });
+      this.logger.error({ reportId, err }, 'report.generate failed');
       throw err;
     }
   }
