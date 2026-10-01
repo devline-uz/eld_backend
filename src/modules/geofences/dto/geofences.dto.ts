@@ -1,8 +1,6 @@
 import { z } from 'zod';
 
 export const GeofenceTypeEnum = z.enum(['CIRCLE', 'POLYGON', 'ADDRESS']);
-/** Map colour from the web "Create a geofence" modal (overlay 11.1) — Prisma `GeofenceColour`. */
-export const GeofenceColourEnum = z.enum(['BLUE', 'GREEN', 'AMBER', 'RED', 'VIOLET']);
 
 /** §20 B-93 — the web form's `radiusMeters` field actually carries miles (WD naming bug, not
  * ours to fix here); accepted as an alias of `radiusMi` on both create and update so the real
@@ -29,9 +27,6 @@ export const CreateGeofenceDto = z
     /** §20 B-15. */
     dwellMinutes: z.number().int().positive().max(1440).optional(),
     afterHoursOnly: z.boolean().default(false),
-    colour: GeofenceColourEnum.default('BLUE'),
-    /** Time a unit spends inside counts as on-duty yard move (overlay 11.1 footer checkbox). */
-    countAsYardMove: z.boolean().default(false),
   })
   .refine(
     (v) => {
@@ -55,8 +50,6 @@ export const UpdateGeofenceDto = z.object({
   alertOnExit: z.boolean().optional(),
   dwellMinutes: z.number().int().positive().max(1440).nullable().optional(),
   afterHoursOnly: z.boolean().optional(),
-  colour: GeofenceColourEnum.optional(),
-  countAsYardMove: z.boolean().optional(),
   enabled: z.boolean().optional(),
 });
 export type UpdateGeofenceDto = z.infer<typeof UpdateGeofenceDto>;
