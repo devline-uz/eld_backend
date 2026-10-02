@@ -52252,7 +52252,9 @@
                         "name": "Columbus Terminal",
                         "type": "CIRCLE",
                         "radiusMi": 1,
-                        "alertOnEnter": true
+                        "alertOnEnter": true,
+                        "colour": "BLUE",
+                        "countAsYardMove": false
                       }
                     ]
                   }
@@ -52451,7 +52453,9 @@
                     "id": "gf_2",
                     "name": "Cust. dock 4",
                     "type": "CIRCLE",
-                    "radiusMi": 0.5
+                    "radiusMi": 0.5,
+                    "colour": "GREEN",
+                    "countAsYardMove": true
                   }
                 }
               }
@@ -52648,7 +52652,9 @@
                   "example": {
                     "id": "gf_1",
                     "name": "Columbus Terminal",
-                    "type": "CIRCLE"
+                    "type": "CIRCLE",
+                    "colour": "BLUE",
+                    "countAsYardMove": false
                   }
                 }
               }
@@ -58377,6 +58383,13 @@
           "afterHoursOnly": {
             "type": "boolean",
             "default": false
+          },
+          "colour": {
+            "$ref": "#/components/schemas/GeofenceColourEnum"
+          },
+          "countAsYardMove": {
+            "type": "boolean",
+            "default": false
           }
         },
         "required": [
@@ -59314,6 +59327,16 @@
         },
         "required": [
           "type"
+        ]
+      },
+      "GeofenceColourEnum": {
+        "type": "string",
+        "enum": [
+          "BLUE",
+          "GREEN",
+          "AMBER",
+          "RED",
+          "VIOLET"
         ]
       },
       "GeofenceTypeEnum": {
@@ -61625,6 +61648,12 @@
             "nullable": true
           },
           "afterHoursOnly": {
+            "type": "boolean"
+          },
+          "colour": {
+            "$ref": "#/components/schemas/GeofenceColourEnum"
+          },
+          "countAsYardMove": {
             "type": "boolean"
           },
           "enabled": {
