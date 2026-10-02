@@ -1,0 +1,3 @@
+ALTER TABLE "Geofence" DROP COLUMN IF EXISTS "countAsYardMove";
+ALTER TABLE "Geofence" DROP COLUMN IF EXISTS "colour";
+DROP TYPE IF EXISTS "GeofenceColour";
