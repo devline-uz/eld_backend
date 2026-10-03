@@ -17,7 +17,7 @@ import { SessionRepository } from './repositories/session.repository';
 import { UserAuthRepository, UserWithRole } from './repositories/user-auth.repository';
 
 /** How long a back-office invite stays acceptable after `invitedAt` (web §11.18 footer copy). */
-const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+export const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 export interface RequestMeta {
   ip?: string;

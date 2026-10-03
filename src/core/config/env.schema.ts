@@ -64,6 +64,19 @@ export const envSchema = z.object({
    * unauthenticated `POST /auth/password/forgot` a live reset token. */
   DEV_ECHO_SECRETS: bool('false'),
 
+  // --- transactional email (back-office invites) ----------------------------
+  /** Unset = no outbound email: `SmtpMailTransport` logs and reports `NO_MAIL_TRANSPORT`.
+   * Does NOT affect eRODS email transfer, which has its own (logging-only) `MAIL_PORT`. */
+  SMTP_HOST: z.string().optional(),
+  SMTP_PORT: z.coerce.number().int().positive().default(587),
+  /** `true` for implicit TLS (usually port 465); `false` upgrades with STARTTLS (587). */
+  SMTP_SECURE: bool('false'),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASS: z.string().optional(),
+  MAIL_FROM: z.string().default('OneBook ELD <no-reply@localhost>'),
+  /** Web panel origin used for links in emails (the invite's "Sign in" link). */
+  WEB_APP_URL: z.string().url().default('http://localhost:5173'),
+
   // --- integrations (TZ §16) ------------------------------------------------
   /** Base64-encoded 32-byte AES-256-GCM key that encrypts `Integration.config` secrets at
    * rest. Prod value lives in the server secrets folder (this project's `.env`, not

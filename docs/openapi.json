@@ -4286,7 +4286,7 @@
                       "id": "usr_1",
                       "status": "INVITED"
                     },
-                    "inviteToken": "eyJ..."
+                    "emailDelivered": true
                   }
                 }
               }
@@ -5322,13 +5322,7 @@
               "application/json": {
                 "schema": {
                   "example": {
-                    "user": {
-                      "id": "usr_8",
-                      "email": "anna.weiss@universal-logistics.com",
-                      "status": "INVITED"
-                    },
-                    "inviteToken": "eyJ...",
-                    "expiresAt": "2026-09-15T15:41:00.000Z"
+                    "emailDelivered": true
                   }
                 }
               }
@@ -5584,7 +5578,7 @@
             "bearer": []
           }
         ],
-        "summary": "Reissues the invite token for a user still in INVITED status.",
+        "summary": "Re-sends the invite email and restarts the 7-day window for a user still in INVITED status.",
         "tags": [
           "users"
         ],

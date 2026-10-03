@@ -1,4 +1,6 @@
 import { AppException } from '../../common/errors/app.exception';
+import type { AppConfigService } from '../../core/config/config.service';
+import type { TransactionalMailPort } from '../../core/mail/mail.port';
 import type { StoragePort } from '../../core/storage/storage.port';
 import type { AttachmentsService } from '../attachments/attachments.service';
 import { AuthService } from '../auth/auth.service';
@@ -16,7 +18,7 @@ function makeUser(overrides: Partial<Record<string, unknown>> = {}) {
     phone: null,
     status: 'ACTIVE',
     passwordHash: 'hash',
-    role: { id: 'role_1', key: 'ADMIN' },
+    role: { id: 'role_1', key: 'ADMIN', name: 'Administrator' },
     ...overrides,
   };
 }
@@ -27,6 +29,8 @@ describe('UsersService', () => {
   let auth: jest.Mocked<Pick<AuthService, 'issueResetToken' | 'issueUserEmailVerifyToken'>>;
   let storage: jest.Mocked<Pick<StoragePort, 'put' | 'get' | 'delete' | 'exists' | 'presignPut' | 'presignGet'>>;
   let attachments: jest.Mocked<Pick<AttachmentsService, 'presignKey'>>;
+  let mail: jest.Mocked<TransactionalMailPort>;
+  let config: { get: jest.Mock; echoOneTimeSecrets: boolean };
   let service: UsersService;
 
   beforeEach(() => {
@@ -55,12 +59,16 @@ describe('UsersService', () => {
     attachments = {
       presignKey: jest.fn().mockResolvedValue({ url: 'https://minio.local/signed', expiresAt: '2026-01-01T00:00:00.000Z' }),
     };
+    mail = { send: jest.fn().mockResolvedValue({ delivered: true, reference: 'msg-1' }) };
+    config = { get: jest.fn().mockReturnValue('https://panel.example.com'), echoOneTimeSecrets: false };
     service = new UsersService(
       users as unknown as UsersRepository,
       roles as unknown as RolesRepository,
       auth as unknown as AuthService,
       storage,
       attachments as unknown as AttachmentsService,
+      mail,
+      config as unknown as AppConfigService,
     );
   });
 
@@ -94,17 +102,56 @@ describe('UsersService', () => {
     });
 
     it('throws conflict when the email is already taken', async () => {
-      roles.findById.mockResolvedValue({ id: 'role_1', key: 'VIEWER' } as never);
+      roles.findById.mockResolvedValue({ id: 'role_1', key: 'VIEWER', name: 'Viewer' } as never);
       users.findByEmail.mockResolvedValue(makeUser() as never);
       await expect(service.invite({ email: 'a@b.com', roleId: 'role_1' } as never, 'admin_1')).rejects.toThrow(
         AppException,
       );
     });
 
-    it('creates the user and returns an inviteToken', async () => {
-      roles.findById.mockResolvedValue({ id: 'role_1', key: 'VIEWER' } as never);
+    it('creates the user and emails the invite without echoing the token', async () => {
+      roles.findById.mockResolvedValue({ id: 'role_1', key: 'VIEWER', name: 'Viewer' } as never);
       users.findByEmail.mockResolvedValue(null);
-      users.create.mockResolvedValue(makeUser({ role: undefined }) as never);
+      users.create.mockResolvedValue(makeUser({ role: undefined, email: 'new@b.com', invitedById: 'admin_1', invitedAt: new Date() }) as never);
+      users.findByIdWithRole.mockResolvedValue(makeUser({ firstName: 'Ada', lastName: 'Admin' }) as never);
+
+      const result = await service.invite(
+        { email: 'new@b.com', firstName: 'New', lastName: 'User', roleId: 'role_1', message: 'Welcome aboard' },
+        'admin_1',
+      );
+
+      expect(result.emailDelivered).toBe(true);
+      expect(result).not.toHaveProperty('inviteToken');
+      expect(result.user).not.toHaveProperty('passwordHash');
+      expect(auth.issueResetToken).not.toHaveBeenCalled();
+      const [sent] = mail.send.mock.calls[0];
+      expect(sent.to).toBe('new@b.com');
+      expect(sent.text).toContain('Ada Admin has invited you');
+      expect(sent.text).toContain('as Viewer');
+      expect(sent.text).toContain('Welcome aboard');
+      expect(sent.text).toContain('https://panel.example.com/sign-in');
+    });
+
+    it('reports emailDelivered=false when the mail is not sent, and still creates the user', async () => {
+      roles.findById.mockResolvedValue({ id: 'role_1', key: 'VIEWER', name: 'Viewer' } as never);
+      users.findByEmail.mockResolvedValue(null);
+      users.create.mockResolvedValue(makeUser({ role: undefined, invitedById: null }) as never);
+      mail.send.mockResolvedValue({ delivered: false, reference: 'NO_MAIL_TRANSPORT' });
+
+      const result = await service.invite(
+        { email: 'new@b.com', firstName: 'New', lastName: 'User', roleId: 'role_1' },
+        'admin_1',
+      );
+
+      expect(result.emailDelivered).toBe(false);
+      expect(result.user.id).toBe('usr_1');
+    });
+
+    it('echoes the inviteToken only when one-time secrets may be echoed', async () => {
+      config.echoOneTimeSecrets = true;
+      roles.findById.mockResolvedValue({ id: 'role_1', key: 'VIEWER', name: 'Viewer' } as never);
+      users.findByEmail.mockResolvedValue(null);
+      users.create.mockResolvedValue(makeUser({ role: undefined, passwordHash: null }) as never);
 
       const result = await service.invite(
         { email: 'new@b.com', firstName: 'New', lastName: 'User', roleId: 'role_1' },
@@ -112,12 +159,11 @@ describe('UsersService', () => {
       );
 
       expect(result.inviteToken).toBe('invite-token');
-      expect(result.user).not.toHaveProperty('passwordHash');
       expect(auth.issueResetToken).toHaveBeenCalledWith('usr_1', null);
     });
 
     it('B-85 — passes terminalIds through to terminalScope', async () => {
-      roles.findById.mockResolvedValue({ id: 'role_1', key: 'VIEWER' } as never);
+      roles.findById.mockResolvedValue({ id: 'role_1', key: 'VIEWER', name: 'Viewer' } as never);
       users.findByEmail.mockResolvedValue(null);
       users.create.mockResolvedValue(makeUser({ role: undefined }) as never);
 
@@ -136,18 +182,27 @@ describe('UsersService', () => {
       await expect(service.resendInvite('missing')).rejects.toThrow(AppException);
     });
 
-    it('reissues a reset token bound to the current password hash', async () => {
+    it('throws conflict for a user who is no longer INVITED', async () => {
       users.findByIdWithRole.mockResolvedValue(makeUser() as never);
+      await expect(service.resendInvite('usr_1')).rejects.toMatchObject({ code: 'CONFLICT' });
+      expect(users.update).not.toHaveBeenCalled();
+      expect(mail.send).not.toHaveBeenCalled();
+    });
+
+    it('restarts the invite window and re-sends the email', async () => {
+      users.findByIdWithRole.mockResolvedValue(makeUser({ status: 'INVITED', invitedById: null }) as never);
+      const result = await service.resendInvite('usr_1');
+      expect(users.update).toHaveBeenCalledWith({ id: 'usr_1' }, { invitedAt: expect.any(Date) as Date });
+      expect(mail.send).toHaveBeenCalledWith(expect.objectContaining({ to: 'a@b.com' }));
+      expect(result).toEqual({ emailDelivered: true });
+    });
+
+    it('echoes a reset token bound to the current password hash when allowed', async () => {
+      config.echoOneTimeSecrets = true;
+      users.findByIdWithRole.mockResolvedValue(makeUser({ status: 'INVITED' }) as never);
       const result = await service.resendInvite('usr_1');
       expect(result.inviteToken).toBe('invite-token');
       expect(auth.issueResetToken).toHaveBeenCalledWith('usr_1', 'hash');
-      expect(users.update).not.toHaveBeenCalled();
-    });
-
-    it('restarts the invite window for a user still INVITED', async () => {
-      users.findByIdWithRole.mockResolvedValue(makeUser({ status: 'INVITED' }) as never);
-      await service.resendInvite('usr_1');
-      expect(users.update).toHaveBeenCalledWith({ id: 'usr_1' }, { invitedAt: expect.any(Date) });
     });
   });
 
