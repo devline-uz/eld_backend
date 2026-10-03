@@ -16,6 +16,9 @@ import { DriverSessionRepository } from './repositories/driver-session.repositor
 import { SessionRepository } from './repositories/session.repository';
 import { UserAuthRepository, UserWithRole } from './repositories/user-auth.repository';
 
+/** How long a back-office invite stays acceptable after `invitedAt` (web §11.18 footer copy). */
+const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
 export interface RequestMeta {
   ip?: string;
   userAgent?: string;
@@ -139,7 +142,20 @@ export class AuthService {
     }
 
     // Rule 1 (TZ §6.2) — no auto-registration. Unknown email => 403 USER_NOT_INVITED.
-    const user = await this.users.findByEmailWithRole(email);
+    let user = await this.users.findByEmailWithRole(email);
+    // An invite is accepted by the first Google sign-in with the invited address, within the
+    // invite window (web §11.18 "expires in 7 days"; `POST /users/:id/resend-invite` renews it).
+    if (user?.status === 'INVITED') {
+      const invitedAt = user.invitedAt?.getTime();
+      if (invitedAt === undefined || Date.now() - invitedAt > INVITE_TTL_MS) {
+        throw new AppException(
+          ERROR_CODES.USER_NOT_INVITED,
+          'This invitation has expired. Ask an administrator to resend it.',
+          403,
+        );
+      }
+      user = await this.users.activateInvited(user.id);
+    }
     if (!user || user.status !== 'ACTIVE') {
       throw new AppException(
         ERROR_CODES.USER_NOT_INVITED,

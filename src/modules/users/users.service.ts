@@ -107,6 +107,8 @@ export class UsersService {
   /** `@Audit({ object: 'User', action: 'INVITE' })` on the controller — a resend is still an invite. */
   async resendInvite(id: string): Promise<{ inviteToken?: string }> {
     const user = await this.getRaw(id);
+    // Restarts the invite window `AuthService.loginGoogle` checks against `invitedAt`.
+    if (user.status === 'INVITED') await this.users.update({ id }, { invitedAt: new Date() });
     return { inviteToken: this.auth.issueResetToken(user.id, user.passwordHash) };
   }
 

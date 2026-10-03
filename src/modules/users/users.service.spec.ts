@@ -141,6 +141,13 @@ describe('UsersService', () => {
       const result = await service.resendInvite('usr_1');
       expect(result.inviteToken).toBe('invite-token');
       expect(auth.issueResetToken).toHaveBeenCalledWith('usr_1', 'hash');
+      expect(users.update).not.toHaveBeenCalled();
+    });
+
+    it('restarts the invite window for a user still INVITED', async () => {
+      users.findByIdWithRole.mockResolvedValue(makeUser({ status: 'INVITED' }) as never);
+      await service.resendInvite('usr_1');
+      expect(users.update).toHaveBeenCalledWith({ id: 'usr_1' }, { invitedAt: expect.any(Date) });
     });
   });
 
