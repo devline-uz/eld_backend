@@ -39,6 +39,7 @@ describe('AuthService', () => {
       findByEmailWithRole: jest.fn(),
       findByIdWithRole: jest.fn(),
       setGoogleUid: jest.fn(),
+      activateInvited: jest.fn(),
       touchLastActive: jest.fn(),
       updatePasswordHash: jest.fn(),
     };
@@ -240,6 +241,38 @@ describe('AuthService', () => {
       });
       users.findByEmailWithRole.mockResolvedValue({ ...activeUser, status: 'SUSPENDED' });
       await expect(service.loginGoogle('tok', {})).rejects.toThrow(AppException);
+    });
+
+    it('activates an INVITED user on first sign-in within the invite window', async () => {
+      firebase.verifyIdToken.mockResolvedValue({
+        firebase: { sign_in_provider: 'google.com' },
+        email_verified: true,
+        email: 'a@b.com',
+        uid: 'guid-1',
+      });
+      const invited = { ...activeUser, status: 'INVITED', invitedAt: new Date(Date.now() - 60_000) };
+      users.findByEmailWithRole.mockResolvedValue(invited);
+      users.activateInvited.mockResolvedValue({ ...invited, status: 'ACTIVE' });
+      sessions.create.mockResolvedValue({});
+      const result = await service.loginGoogle('tok', {});
+      expect(users.activateInvited).toHaveBeenCalledWith('u1');
+      expect(users.setGoogleUid).toHaveBeenCalledWith('u1', 'guid-1');
+      expect(result).toEqual({ accessToken: 'access', refreshToken: 'opaque-refresh', tokenType: 'Bearer' });
+    });
+
+    it.each([
+      ['older than 7 days', new Date(Date.now() - 8 * 24 * 60 * 60 * 1000)],
+      ['with no invitedAt', null],
+    ])('rejects an INVITED user %s without activating', async (_label, invitedAt) => {
+      firebase.verifyIdToken.mockResolvedValue({
+        firebase: { sign_in_provider: 'google.com' },
+        email_verified: true,
+        email: 'a@b.com',
+      });
+      users.findByEmailWithRole.mockResolvedValue({ ...activeUser, status: 'INVITED', invitedAt });
+      await expect(service.loginGoogle('tok', {})).rejects.toMatchObject({ code: 'USER_NOT_INVITED' });
+      expect(users.activateInvited).not.toHaveBeenCalled();
+      expect(sessions.create).not.toHaveBeenCalled();
     });
 
     it('sets googleUid when missing and logs in', async () => {

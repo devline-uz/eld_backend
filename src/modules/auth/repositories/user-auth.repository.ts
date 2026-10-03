@@ -21,6 +21,11 @@ export class UserAuthRepository {
     return this.prisma.user.update({ where: { id }, data: { googleUid } });
   }
 
+  /** Invite acceptance — `INVITED` → `ACTIVE` on the first Google sign-in (`AuthService.loginGoogle`). */
+  activateInvited(id: string): Promise<UserWithRole> {
+    return this.prisma.user.update({ where: { id }, data: { status: 'ACTIVE' }, include: { role: true } });
+  }
+
   touchLastActive(id: string): Promise<User> {
     return this.prisma.user.update({ where: { id }, data: { lastActiveAt: new Date() } });
   }
