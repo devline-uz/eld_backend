@@ -263,7 +263,8 @@ describe('Auth / Roles / Users / Audit / API keys (e2e)', () => {
       const userId = invite.body.data.user.id as string;
 
       try {
-        expect(invite.body.data.inviteToken).toEqual(expect.any(String));
+        // Delivery depends on the host's SMTP_* settings; a failed send never fails the invite.
+        expect(invite.body.data.emailDelivered).toEqual(expect.any(Boolean));
         expect(invite.body.data.user.passwordHash).toBeUndefined();
 
         const auditRes = await request(server())

@@ -3,11 +3,14 @@ import type { Prisma } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
+import { AppConfigService } from '../../core/config/config.service';
+import { TRANSACTIONAL_MAIL, TransactionalMailPort } from '../../core/mail/mail.port';
 import { STORAGE_PORT, StoragePort } from '../../core/storage/storage.port';
 import { AttachmentsService } from '../attachments/attachments.service';
-import { AuthService } from '../auth/auth.service';
+import { AuthService, INVITE_TTL_MS } from '../auth/auth.service';
 import { RolesRepository } from '../roles/roles.repository';
 import { readImageDimensions, stripImageMetadata } from './lib/image-dimensions.util';
+import { buildInviteEmail } from './lib/invite-email';
 import { CreateUserDto, PreferencesDto, UpdateMyProfileDto, UpdateUserDto } from './dto/users.dto';
 import { UserListItem, UsersRepository, UserWithRole } from './users.repository';
 
@@ -48,6 +51,8 @@ export class UsersService {
     private readonly auth: AuthService,
     @Inject(STORAGE_PORT) private readonly storage: StoragePort,
     private readonly attachments: AttachmentsService,
+    @Inject(TRANSACTIONAL_MAIL) private readonly mail: TransactionalMailPort,
+    private readonly config: AppConfigService,
   ) {}
 
   /** W-18 Users table — trimmed payload (TZ perf plan item 2): no `passwordHash`, no
@@ -75,7 +80,10 @@ export class UsersService {
   }
 
   /** `@Audit({ object: 'User', action: 'INVITE' })` lives on the controller (TZ §18). */
-  async invite(dto: CreateUserDto, invitedById: string): Promise<{ user: UserView; inviteToken?: string }> {
+  async invite(
+    dto: CreateUserDto,
+    invitedById: string,
+  ): Promise<{ user: UserView; emailDelivered: boolean; inviteToken?: string }> {
     const role = await this.roles.findById({ id: dto.roleId });
     if (!role) throw AppException.notFound('Role not found.');
     const existing = await this.users.findByEmail(dto.email);
@@ -94,22 +102,49 @@ export class UsersService {
       terminalScope: dto.terminalIds ?? [],
     });
     const withRole = { ...user, role };
-    const inviteToken = this.auth.issueResetToken(user.id, null);
-    if (dto.message) {
-      // B-85 — no outbound-mail transport exists yet (same Phase-1 gap as
-      // `AuthService.forgotPassword`); the message is logged so it is at least
-      // observable/testable until a mailer is wired.
-      this.logger.log({ userId: user.id, email: user.email, message: dto.message }, 'Invite message (no mailer wired in Phase 1)');
-    }
-    return { user: toView(withRole), inviteToken };
+    const emailDelivered = await this.sendInviteEmail(withRole, dto.message);
+    return { user: toView(withRole), emailDelivered, ...this.echoInviteToken(withRole) };
   }
 
   /** `@Audit({ object: 'User', action: 'INVITE' })` on the controller — a resend is still an invite. */
-  async resendInvite(id: string): Promise<{ inviteToken?: string }> {
+  async resendInvite(id: string): Promise<{ emailDelivered: boolean; inviteToken?: string }> {
     const user = await this.getRaw(id);
+    if (user.status !== 'INVITED') throw AppException.conflict('User is not in INVITED status.');
     // Restarts the invite window `AuthService.loginGoogle` checks against `invitedAt`.
-    if (user.status === 'INVITED') await this.users.update({ id }, { invitedAt: new Date() });
-    return { inviteToken: this.auth.issueResetToken(user.id, user.passwordHash) };
+    const invitedAt = new Date();
+    await this.users.update({ id }, { invitedAt });
+    const emailDelivered = await this.sendInviteEmail({ ...user, invitedAt });
+    return { emailDelivered, ...this.echoInviteToken(user) };
+  }
+
+  /** Best effort: the user exists either way, so a mail failure is reported, not thrown. */
+  private async sendInviteEmail(user: UserWithRole, message?: string): Promise<boolean> {
+    const inviter = user.invitedById
+      ? await this.users.findByIdWithRole(user.invitedById).catch(() => null)
+      : null;
+    const result = await this.mail.send(
+      buildInviteEmail({
+        to: user.email,
+        firstName: user.firstName,
+        roleName: user.role.name,
+        inviterName: inviter ? `${inviter.firstName} ${inviter.lastName}`.trim() : undefined,
+        message,
+        signInUrl: new URL('/sign-in', this.config.get('WEB_APP_URL')).toString(),
+        expiresAt: new Date((user.invitedAt ?? new Date()).getTime() + INVITE_TTL_MS),
+      }),
+    );
+    if (!result.delivered) {
+      this.logger.warn({ userId: user.id, reason: result.reference }, 'Invite email was not delivered');
+    }
+    return result.delivered;
+  }
+
+  /** The invite token is a password-reset token — echoed only where one-time secrets may be
+   * (B-093), never on a shared host. Invites are accepted through Google sign-in. */
+  private echoInviteToken(user: UserWithRole): { inviteToken?: string } {
+    return this.config.echoOneTimeSecrets
+      ? { inviteToken: this.auth.issueResetToken(user.id, user.passwordHash) }
+      : {};
   }
 
   /**

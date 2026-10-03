@@ -16,6 +16,7 @@ import { AppConfigModule } from './core/config/config.module';
 import { AppConfigService } from './core/config/config.service';
 import { EventsModule } from './core/events/events.module';
 import { FirebaseModule } from './core/firebase/firebase.module';
+import { MailModule } from './core/mail/mail.module';
 import { AppLoggerModule } from './core/logger/logger.module';
 import { ObservabilityModule } from './core/observability/observability.module';
 import { PrismaModule } from './core/prisma/prisma.module';
@@ -75,6 +76,7 @@ import { AttachmentsModule } from './modules/attachments/attachments.module';
     QueueModule,
     StorageModule,
     FirebaseModule,
+    MailModule,
     EventsModule,
     CommonModule,
     HealthModule,

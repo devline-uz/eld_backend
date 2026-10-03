@@ -39,7 +39,7 @@ export class UsersController {
   @Perm('users', 'FULL')
   @Audit({ object: 'User', action: 'INVITE' })
   @ApiOperation({ summary: 'Invites a new back-office user (TZ §18 — audited).' })
-  @ApiOkResponse({ schema: { example: { user: { id: 'usr_1', status: 'INVITED' }, inviteToken: 'eyJ...' } } })
+  @ApiOkResponse({ schema: { example: { user: { id: 'usr_1', status: 'INVITED' }, emailDelivered: true } } })
   @ApiStandardErrors({ errors: [apiError.conflict(ERROR_CODES.CONFLICT, 'A user with this email already exists.')] })
   create(@Body(zodBody(CreateUserDto)) dto: CreateUserDto, @CurrentUser('id') invitedById: string) {
     return this.users.invite(dto, invitedById);
@@ -48,8 +48,8 @@ export class UsersController {
   @Post(':id/resend-invite')
   @Perm('users', 'FULL')
   @Audit({ object: 'User', action: 'INVITE' })
-  @ApiOperation({ summary: 'Reissues the invite token for a user still in INVITED status.' })
-  @ApiCreatedResponse({ schema: { example: { user: { id: 'usr_8', email: 'anna.weiss@universal-logistics.com', status: 'INVITED' }, inviteToken: 'eyJ...', expiresAt: '2026-09-15T15:41:00.000Z' } } })
+  @ApiOperation({ summary: 'Re-sends the invite email and restarts the 7-day window for a user still in INVITED status.' })
+  @ApiCreatedResponse({ schema: { example: { emailDelivered: true } } })
   @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.NOT_FOUND, 'User not found.'), apiError.conflict(ERROR_CODES.CONFLICT, 'User is not in INVITED status.')] })
   resendInvite(@Param('id') id: string) {
     return this.users.resendInvite(id);
