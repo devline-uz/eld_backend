@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { createTransport, type Transporter } from 'nodemailer';
 import { AppConfigService } from '../config/config.service';
 import { TransactionalMail, TransactionalMailPort, TransactionalMailResult } from './mail.port';
@@ -9,7 +9,7 @@ import { TransactionalMail, TransactionalMailPort, TransactionalMailResult } fro
  * returned, never thrown: callers decide whether an undelivered email fails their request.
  */
 @Injectable()
-export class SmtpMailTransport implements TransactionalMailPort {
+export class SmtpMailTransport implements TransactionalMailPort, OnApplicationBootstrap {
   private readonly logger = new Logger(SmtpMailTransport.name);
   private readonly transporter: Transporter | null;
   private readonly from: string;
@@ -29,6 +29,20 @@ export class SmtpMailTransport implements TransactionalMailPort {
           disableUrlAccess: true,
         })
       : null;
+  }
+
+  /** Checks the SMTP login once at boot so a misconfigured server shows up in the logs, not on the first invite. */
+  async onApplicationBootstrap(): Promise<void> {
+    if (!this.transporter) {
+      this.logger.warn('SMTP_HOST is not set — invite emails will NOT be sent.');
+      return;
+    }
+    try {
+      await this.transporter.verify();
+      this.logger.log('SMTP connection verified — invite emails are enabled.');
+    } catch (error) {
+      this.logger.error({ err: error }, 'SMTP verification failed — invite emails will not be delivered.');
+    }
   }
 
   get configured(): boolean {
