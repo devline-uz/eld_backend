@@ -7,6 +7,7 @@ import { AppConfigService } from './core/config/config.service';
 import { EventsModule } from './core/events/events.module';
 import { FirebaseModule } from './core/firebase/firebase.module';
 import { AppLoggerModule } from './core/logger/logger.module';
+import { MailModule } from './core/mail/mail.module';
 import { ObservabilityModule } from './core/observability/observability.module';
 import { PrismaModule } from './core/prisma/prisma.module';
 import { QueueModule } from './core/queue/queue.module';
@@ -35,6 +36,7 @@ import { WorkersModule } from './workers/workers.module';
     QueueModule,
     StorageModule,
     FirebaseModule,
+    MailModule,
     EventsModule,
     HealthModule,
     WorkersModule,
