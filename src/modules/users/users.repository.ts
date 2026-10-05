@@ -61,8 +61,13 @@ export class UsersRepository extends BaseRepository<
     return this.prisma.user.findUnique({ where: { email } });
   }
 
-  /** Active users holding the ADMIN role — the last-admin guard in `UsersService.update`. */
+  /** Active users holding a privileged role (ADMIN or SUPER_ADMIN) — the last-admin guard. */
   countActiveAdmins(): Promise<number> {
-    return this.prisma.user.count({ where: { status: 'ACTIVE', role: { key: 'ADMIN' } } });
+    return this.prisma.user.count({ where: { status: 'ACTIVE', role: { key: { in: ['ADMIN', 'SUPER_ADMIN'] } } } });
+  }
+
+  /** Active SUPER_ADMIN users — the system must never be left without one. */
+  countActiveSuperAdmins(): Promise<number> {
+    return this.prisma.user.count({ where: { status: 'ACTIVE', role: { key: 'SUPER_ADMIN' } } });
   }
 }

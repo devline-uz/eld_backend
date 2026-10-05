@@ -5,7 +5,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Perm } from '../../common/decorators/perm.decorator';
 import { zodBody } from '../../common/pipes/zod-validation.pipe';
 import { CreateUserDto, UpdateUserDto } from './dto/users.dto';
-import { UsersService } from './users.service';
+import { Actor, UsersService } from './users.service';
 import { apiError, ApiStandardErrors, ERROR_CODES } from '../../common/errors';
 import { FigmaScreen } from '../../common/decorators/figma-screen.decorator';
 
@@ -41,8 +41,8 @@ export class UsersController {
   @ApiOperation({ summary: 'Invites a new back-office user (TZ §18 — audited).' })
   @ApiOkResponse({ schema: { example: { user: { id: 'usr_1', status: 'INVITED' }, emailDelivered: true } } })
   @ApiStandardErrors({ errors: [apiError.conflict(ERROR_CODES.CONFLICT, 'A user with this email already exists.')] })
-  create(@Body(zodBody(CreateUserDto)) dto: CreateUserDto, @CurrentUser('id') invitedById: string) {
-    return this.users.invite(dto, invitedById);
+  create(@Body(zodBody(CreateUserDto)) dto: CreateUserDto, @CurrentUser() actor: Actor) {
+    return this.users.invite(dto, actor);
   }
 
   @Post(':id/resend-invite')
@@ -51,8 +51,8 @@ export class UsersController {
   @ApiOperation({ summary: 'Re-sends the invite email and restarts the 7-day window for a user still in INVITED status.' })
   @ApiCreatedResponse({ schema: { example: { emailDelivered: true } } })
   @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.NOT_FOUND, 'User not found.'), apiError.conflict(ERROR_CODES.CONFLICT, 'User is not in INVITED status.')] })
-  resendInvite(@Param('id') id: string) {
-    return this.users.resendInvite(id);
+  resendInvite(@Param('id') id: string, @CurrentUser() actor: Actor) {
+    return this.users.resendInvite(id, actor);
   }
 
   @Patch(':id')
@@ -61,8 +61,8 @@ export class UsersController {
   @ApiOperation({ summary: 'Updates a user, including role assignment (TZ §18 — audited as a role change).' })
   @ApiOkResponse({ schema: { example: { id: 'usr_3', firstName: 'Dana', lastName: 'Ford', status: 'ACTIVE', role: { key: 'DISPATCHER', name: 'Dispatcher' } } } })
   @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.NOT_FOUND, 'User not found.'), apiError.conflict(ERROR_CODES.ROLE_IMMUTABLE, 'The ADMIN system role cannot be reassigned away from the last administrator.')] })
-  update(@Param('id') id: string, @Body(zodBody(UpdateUserDto)) dto: UpdateUserDto) {
-    return this.users.update(id, dto);
+  update(@Param('id') id: string, @Body(zodBody(UpdateUserDto)) dto: UpdateUserDto, @CurrentUser() actor: Actor) {
+    return this.users.update(id, dto, actor);
   }
 
   @Delete(':id')
@@ -71,8 +71,8 @@ export class UsersController {
   @ApiOperation({ summary: 'Deletes a back-office user.' })
   @ApiOkResponse({ schema: { example: { success: true } } })
   @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.NOT_FOUND, 'User not found.')] })
-  async remove(@Param('id') id: string) {
-    await this.users.remove(id);
+  async remove(@Param('id') id: string, @CurrentUser() actor: Actor) {
+    await this.users.remove(id, actor);
     return { success: true };
   }
 }

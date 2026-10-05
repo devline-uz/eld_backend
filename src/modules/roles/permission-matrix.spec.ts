@@ -4,8 +4,8 @@ import { DEFAULT_ROLE_MATRIX } from './permission-matrix';
 describe('DEFAULT_ROLE_MATRIX (TZ §6.4 — 22-key matrix, all 4 roles)', () => {
   const roles = Object.keys(DEFAULT_ROLE_MATRIX) as (keyof typeof DEFAULT_ROLE_MATRIX)[];
 
-  it('defines exactly the 4 seeded roles', () => {
-    expect(roles.sort()).toEqual(['ADMIN', 'DISPATCHER', 'FLEET_MANAGER', 'VIEWER']);
+  it('defines exactly the 5 seeded roles', () => {
+    expect(roles.sort()).toEqual(['ADMIN', 'DISPATCHER', 'FLEET_MANAGER', 'SUPER_ADMIN', 'VIEWER']);
   });
 
   it.each(roles)('%s has all 22 permission keys with a valid level', (role) => {

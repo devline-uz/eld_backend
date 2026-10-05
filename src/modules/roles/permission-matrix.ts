@@ -24,7 +24,8 @@ function allFull(): PermissionMatrix {
   return Object.fromEntries(PERMISSION_KEY_LIST.map((k) => [k, level])) as PermissionMatrix;
 }
 
-export const DEFAULT_ROLE_MATRIX: Record<'ADMIN' | 'FLEET_MANAGER' | 'DISPATCHER' | 'VIEWER', PermissionMatrix> = {
+export const DEFAULT_ROLE_MATRIX: Record<'SUPER_ADMIN' | 'ADMIN' | 'FLEET_MANAGER' | 'DISPATCHER' | 'VIEWER', PermissionMatrix> = {
+  SUPER_ADMIN: allFull(),
   ADMIN: allFull(),
   FLEET_MANAGER: {
     dashboard: 'FULL', liveFleet: 'FULL', vehicles: 'FULL', drivers: 'FULL', hos: 'FULL',

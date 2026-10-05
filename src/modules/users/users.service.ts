@@ -14,6 +14,21 @@ import { buildInviteEmail } from './lib/invite-email';
 import { CreateUserDto, PreferencesDto, UpdateMyProfileDto, UpdateUserDto } from './dto/users.dto';
 import { UserListItem, UsersRepository, UserWithRole } from './users.repository';
 
+/** The authenticated caller, as passed from the controller (`@CurrentUser()`). */
+export interface Actor {
+  id: string;
+  role?: string;
+}
+
+export const SUPER_ADMIN_KEY = 'SUPER_ADMIN';
+/** Roles that only a SUPER_ADMIN may assign, hold-edit, disable or delete. */
+export const PRIVILEGED_ROLE_KEYS: readonly string[] = ['ADMIN', SUPER_ADMIN_KEY];
+export const isPrivilegedRole = (key: string | undefined): boolean => !!key && PRIVILEGED_ROLE_KEYS.includes(key);
+
+function assertSuperAdmin(actor: Actor | undefined): void {
+  if (actor?.role !== SUPER_ADMIN_KEY) throw AppException.forbidden('Only a Super Admin can manage administrators.');
+}
+
 export type UserView = Omit<UserWithRole, 'passwordHash'> & { avatarUrl?: string | null };
 
 /** Never let a password hash leave this module (TZ §6.5). */
@@ -82,10 +97,12 @@ export class UsersService {
   /** `@Audit({ object: 'User', action: 'INVITE' })` lives on the controller (TZ §18). */
   async invite(
     dto: CreateUserDto,
-    invitedById: string,
+    actor: Actor,
   ): Promise<{ user: UserView; emailDelivered: boolean; inviteToken?: string }> {
+    const invitedById = actor.id;
     const role = await this.roles.findById({ id: dto.roleId });
     if (!role) throw AppException.notFound('Role not found.');
+    if (isPrivilegedRole(role.key)) assertSuperAdmin(actor);
     const existing = await this.users.findByEmail(dto.email);
     if (existing) throw AppException.conflict(`A user with email "${dto.email}" already exists.`);
 
@@ -107,8 +124,9 @@ export class UsersService {
   }
 
   /** `@Audit({ object: 'User', action: 'INVITE' })` on the controller — a resend is still an invite. */
-  async resendInvite(id: string): Promise<{ emailDelivered: boolean; inviteToken?: string }> {
+  async resendInvite(id: string, actor: Actor): Promise<{ emailDelivered: boolean; inviteToken?: string }> {
     const user = await this.getRaw(id);
+    if (isPrivilegedRole(user.role.key)) assertSuperAdmin(actor);
     if (user.status !== 'INVITED') throw AppException.conflict('User is not in INVITED status.');
     // Restarts the invite window `AuthService.loginGoogle` checks against `invitedAt`.
     const invitedAt = new Date();
@@ -158,7 +176,7 @@ export class UsersService {
    * re-verification. `emailVerification` on the return value carries the token the same way
    * `invite()`/`forgotPassword()` do (outside production only — no mailer in Phase 1).
    */
-  async update(id: string, dto: UpdateUserDto): Promise<UserView & { emailVerification?: { pendingEmail: string; verifyToken?: string } }> {
+  async update(id: string, dto: UpdateUserDto, actor: Actor): Promise<UserView & { emailVerification?: { pendingEmail: string; verifyToken?: string } }> {
     const current = await this.getRaw(id);
     let nextRoleKey = current.role.key;
     if (dto.roleId) {
@@ -166,15 +184,12 @@ export class UsersService {
       if (!role) throw AppException.notFound('Role not found.');
       nextRoleKey = role.key;
     }
-    // The web panel refuses to demote or disable the last active ADMIN (it would lock every user
-    // out of Settings); the server enforces the same rule so a stale tab or a direct call can't.
-    const losesAdmin = nextRoleKey !== 'ADMIN' || (dto.status !== undefined && dto.status !== 'ACTIVE');
-    if (current.role.key === 'ADMIN' && current.status === 'ACTIVE' && losesAdmin) {
-      const activeAdmins = await this.users.countActiveAdmins();
-      if (activeAdmins <= 1) {
-        throw AppException.conflict('This is the last active admin. Promote another user to Admin first.');
-      }
-    }
+    // Only a SUPER_ADMIN may touch a privileged user, or move anyone to/from a privileged role.
+    if (isPrivilegedRole(current.role.key) || isPrivilegedRole(nextRoleKey)) assertSuperAdmin(actor);
+    // Never leave the system without an active SUPER_ADMIN (nor without any active administrator):
+    // the server enforces it so a stale tab or a direct call can't lock every user out of Settings.
+    const losesStatus = dto.status !== undefined && dto.status !== 'ACTIVE';
+    await this.assertNotLastAdmin(current, nextRoleKey, losesStatus);
     let emailVerification: { pendingEmail: string; verifyToken?: string } | undefined;
     if (dto.email !== undefined && dto.email !== current.email) {
       const existing = await this.users.findByEmail(dto.email);
@@ -201,8 +216,25 @@ export class UsersService {
     return emailVerification ? { ...view, emailVerification } : view;
   }
 
-  async remove(id: string): Promise<void> {
-    await this.getRaw(id);
+  /** 409 when the change would remove the last active SUPER_ADMIN, or the last active ADMIN/SUPER_ADMIN. */
+  private async assertNotLastAdmin(current: UserWithRole, nextRoleKey: string | null, losesStatus: boolean): Promise<void> {
+    if (current.status !== 'ACTIVE') return;
+    if (current.role.key === SUPER_ADMIN_KEY && (nextRoleKey !== SUPER_ADMIN_KEY || losesStatus)) {
+      if ((await this.users.countActiveSuperAdmins()) <= 1) {
+        throw AppException.conflict('This is the last active Super Admin. Promote another user to Super Admin first.');
+      }
+    }
+    if (isPrivilegedRole(current.role.key) && (!isPrivilegedRole(nextRoleKey ?? undefined) || losesStatus)) {
+      if ((await this.users.countActiveAdmins()) <= 1) {
+        throw AppException.conflict('This is the last active admin. Promote another user to Admin first.');
+      }
+    }
+  }
+
+  async remove(id: string, actor: Actor): Promise<void> {
+    const current = await this.getRaw(id);
+    if (isPrivilegedRole(current.role.key)) assertSuperAdmin(actor);
+    await this.assertNotLastAdmin(current, null, true);
     await this.users.delete({ id });
   }
 

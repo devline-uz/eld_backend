@@ -23,8 +23,11 @@ function makeUser(overrides: Partial<Record<string, unknown>> = {}) {
   };
 }
 
+const SA = { id: 'sa_1', role: 'SUPER_ADMIN' };
+const ADM = { id: 'adm_1', role: 'ADMIN' };
+
 describe('UsersService', () => {
-  let users: jest.Mocked<Pick<UsersRepository, 'listWithRoles' | 'findByIdWithRole' | 'findByEmail' | 'create' | 'update' | 'delete' | 'countActiveAdmins'>>;
+  let users: jest.Mocked<Pick<UsersRepository, 'listWithRoles' | 'findByIdWithRole' | 'findByEmail' | 'create' | 'update' | 'delete' | 'countActiveAdmins' | 'countActiveSuperAdmins'>>;
   let roles: jest.Mocked<Pick<RolesRepository, 'findById'>>;
   let auth: jest.Mocked<Pick<AuthService, 'issueResetToken' | 'issueUserEmailVerifyToken'>>;
   let storage: jest.Mocked<Pick<StoragePort, 'put' | 'get' | 'delete' | 'exists' | 'presignPut' | 'presignGet'>>;
@@ -42,6 +45,7 @@ describe('UsersService', () => {
       update: jest.fn(),
       delete: jest.fn(),
       countActiveAdmins: jest.fn().mockResolvedValue(2),
+      countActiveSuperAdmins: jest.fn().mockResolvedValue(2),
     };
     roles = { findById: jest.fn() };
     auth = {
@@ -96,7 +100,7 @@ describe('UsersService', () => {
   describe('invite', () => {
     it('throws notFound when the role does not exist', async () => {
       roles.findById.mockResolvedValue(null);
-      await expect(service.invite({ email: 'x@y.com', roleId: 'missing' } as never, 'admin_1')).rejects.toThrow(
+      await expect(service.invite({ email: 'x@y.com', roleId: 'missing' } as never, SA)).rejects.toThrow(
         AppException,
       );
     });
@@ -104,7 +108,7 @@ describe('UsersService', () => {
     it('throws conflict when the email is already taken', async () => {
       roles.findById.mockResolvedValue({ id: 'role_1', key: 'VIEWER', name: 'Viewer' } as never);
       users.findByEmail.mockResolvedValue(makeUser() as never);
-      await expect(service.invite({ email: 'a@b.com', roleId: 'role_1' } as never, 'admin_1')).rejects.toThrow(
+      await expect(service.invite({ email: 'a@b.com', roleId: 'role_1' } as never, SA)).rejects.toThrow(
         AppException,
       );
     });
@@ -112,12 +116,12 @@ describe('UsersService', () => {
     it('creates the user and emails the invite without echoing the token', async () => {
       roles.findById.mockResolvedValue({ id: 'role_1', key: 'VIEWER', name: 'Viewer' } as never);
       users.findByEmail.mockResolvedValue(null);
-      users.create.mockResolvedValue(makeUser({ role: undefined, email: 'new@b.com', invitedById: 'admin_1', invitedAt: new Date() }) as never);
+      users.create.mockResolvedValue(makeUser({ role: undefined, email: 'new@b.com', invitedById: SA, invitedAt: new Date() }) as never);
       users.findByIdWithRole.mockResolvedValue(makeUser({ firstName: 'Ada', lastName: 'Admin' }) as never);
 
       const result = await service.invite(
         { email: 'new@b.com', firstName: 'New', lastName: 'User', roleId: 'role_1', message: 'Welcome aboard' },
-        'admin_1',
+        SA,
       );
 
       expect(result.emailDelivered).toBe(true);
@@ -140,7 +144,7 @@ describe('UsersService', () => {
 
       const result = await service.invite(
         { email: 'new@b.com', firstName: 'New', lastName: 'User', roleId: 'role_1' },
-        'admin_1',
+        SA,
       );
 
       expect(result.emailDelivered).toBe(false);
@@ -155,7 +159,7 @@ describe('UsersService', () => {
 
       const result = await service.invite(
         { email: 'new@b.com', firstName: 'New', lastName: 'User', roleId: 'role_1' },
-        'admin_1',
+        SA,
       );
 
       expect(result.inviteToken).toBe('invite-token');
@@ -169,7 +173,7 @@ describe('UsersService', () => {
 
       await service.invite(
         { email: 'new@b.com', firstName: 'New', lastName: 'User', roleId: 'role_1', terminalIds: ['Dallas', 'Reno'] },
-        'admin_1',
+        SA,
       );
 
       expect(users.create).toHaveBeenCalledWith(expect.objectContaining({ terminalScope: ['Dallas', 'Reno'] }));
@@ -179,19 +183,19 @@ describe('UsersService', () => {
   describe('resendInvite', () => {
     it('throws when user missing', async () => {
       users.findByIdWithRole.mockResolvedValue(null);
-      await expect(service.resendInvite('missing')).rejects.toThrow(AppException);
+      await expect(service.resendInvite('missing', SA)).rejects.toThrow(AppException);
     });
 
     it('throws conflict for a user who is no longer INVITED', async () => {
       users.findByIdWithRole.mockResolvedValue(makeUser() as never);
-      await expect(service.resendInvite('usr_1')).rejects.toMatchObject({ code: 'CONFLICT' });
+      await expect(service.resendInvite('usr_1', SA)).rejects.toMatchObject({ code: 'CONFLICT' });
       expect(users.update).not.toHaveBeenCalled();
       expect(mail.send).not.toHaveBeenCalled();
     });
 
     it('restarts the invite window and re-sends the email', async () => {
       users.findByIdWithRole.mockResolvedValue(makeUser({ status: 'INVITED', invitedById: null }) as never);
-      const result = await service.resendInvite('usr_1');
+      const result = await service.resendInvite('usr_1', SA);
       expect(users.update).toHaveBeenCalledWith({ id: 'usr_1' }, { invitedAt: expect.any(Date) as Date });
       expect(mail.send).toHaveBeenCalledWith(expect.objectContaining({ to: 'a@b.com' }));
       expect(result).toEqual({ emailDelivered: true });
@@ -200,7 +204,7 @@ describe('UsersService', () => {
     it('echoes a reset token bound to the current password hash when allowed', async () => {
       config.echoOneTimeSecrets = true;
       users.findByIdWithRole.mockResolvedValue(makeUser({ status: 'INVITED' }) as never);
-      const result = await service.resendInvite('usr_1');
+      const result = await service.resendInvite('usr_1', SA);
       expect(result.inviteToken).toBe('invite-token');
       expect(auth.issueResetToken).toHaveBeenCalledWith('usr_1', 'hash');
     });
@@ -209,13 +213,13 @@ describe('UsersService', () => {
   describe('update', () => {
     it('throws when user missing', async () => {
       users.findByIdWithRole.mockResolvedValue(null);
-      await expect(service.update('missing', {})).rejects.toThrow(AppException);
+      await expect(service.update('missing', {}, SA)).rejects.toThrow(AppException);
     });
 
     it('throws notFound when the new role does not exist', async () => {
       users.findByIdWithRole.mockResolvedValueOnce(makeUser() as never);
       roles.findById.mockResolvedValue(null);
-      await expect(service.update('usr_1', { roleId: 'missing' })).rejects.toThrow(AppException);
+      await expect(service.update('usr_1', { roleId: 'missing' }, SA)).rejects.toThrow(AppException);
     });
 
     it('applies a partial diff including a role change', async () => {
@@ -223,7 +227,7 @@ describe('UsersService', () => {
       roles.findById.mockResolvedValue({ id: 'role_2', key: 'VIEWER' } as never);
       users.update.mockResolvedValue({} as never);
 
-      await service.update('usr_1', { firstName: 'Jane', roleId: 'role_2', status: 'ACTIVE' } as never);
+      await service.update('usr_1', { firstName: 'Jane', roleId: 'role_2', status: 'ACTIVE' } as never, SA);
 
       expect(users.update).toHaveBeenCalledWith(
         { id: 'usr_1' },
@@ -235,8 +239,8 @@ describe('UsersService', () => {
       users.findByIdWithRole.mockResolvedValue(makeUser({ status: 'ACTIVE', role: { id: 'role_admin', key: 'ADMIN' } }) as never);
       users.countActiveAdmins.mockResolvedValue(1);
       roles.findById.mockResolvedValue({ id: 'role_2', key: 'VIEWER' } as never);
-      await expect(service.update('usr_1', { roleId: 'role_2' })).rejects.toThrow('last active admin');
-      await expect(service.update('usr_1', { status: 'DISABLED' } as never)).rejects.toThrow('last active admin');
+      await expect(service.update('usr_1', { roleId: 'role_2' }, SA)).rejects.toThrow('last active admin');
+      await expect(service.update('usr_1', { status: 'DISABLED' } as never, SA)).rejects.toThrow('last active admin');
       expect(users.update).not.toHaveBeenCalled();
     });
 
@@ -244,14 +248,14 @@ describe('UsersService', () => {
       users.findByIdWithRole.mockResolvedValue(makeUser({ status: 'ACTIVE', role: { id: 'role_admin', key: 'ADMIN' } }) as never);
       users.countActiveAdmins.mockResolvedValue(1);
       users.update.mockResolvedValue({} as never);
-      await service.update('usr_1', { firstName: 'Jane' });
+      await service.update('usr_1', { firstName: 'Jane' }, SA);
       expect(users.update).toHaveBeenCalledWith({ id: 'usr_1' }, { firstName: 'Jane' });
     });
 
     it('applies homeTerminalName directly (no re-verification needed)', async () => {
       users.findByIdWithRole.mockResolvedValue(makeUser() as never);
       users.update.mockResolvedValue({} as never);
-      await service.update('usr_1', { homeTerminalName: 'Dallas, TX' });
+      await service.update('usr_1', { homeTerminalName: 'Dallas, TX' }, SA);
       expect(users.update).toHaveBeenCalledWith({ id: 'usr_1' }, { homeTerminalName: 'Dallas, TX' });
     });
 
@@ -260,7 +264,7 @@ describe('UsersService', () => {
       users.findByEmail.mockResolvedValue(null);
       users.update.mockResolvedValue({} as never);
 
-      const result = await service.update('usr_1', { email: 'new@b.com' });
+      const result = await service.update('usr_1', { email: 'new@b.com' }, SA);
 
       expect(users.update).toHaveBeenCalledWith({ id: 'usr_1' }, {});
       expect(auth.issueUserEmailVerifyToken).toHaveBeenCalledWith('usr_1', 'new@b.com');
@@ -270,13 +274,13 @@ describe('UsersService', () => {
     it('B-84 — throws conflict when the new email is already taken by someone else', async () => {
       users.findByIdWithRole.mockResolvedValue(makeUser({ email: 'old@b.com' }) as never);
       users.findByEmail.mockResolvedValue(makeUser({ id: 'usr_2', email: 'new@b.com' }) as never);
-      await expect(service.update('usr_1', { email: 'new@b.com' })).rejects.toThrow(AppException);
+      await expect(service.update('usr_1', { email: 'new@b.com' }, SA)).rejects.toThrow(AppException);
     });
 
     it('B-84 — no-op when the email in the dto matches the current email', async () => {
       users.findByIdWithRole.mockResolvedValue(makeUser({ email: 'same@b.com' }) as never);
       users.update.mockResolvedValue({} as never);
-      const result = await service.update('usr_1', { email: 'same@b.com' });
+      const result = await service.update('usr_1', { email: 'same@b.com' }, SA);
       expect(auth.issueUserEmailVerifyToken).not.toHaveBeenCalled();
       expect(result.emailVerification).toBeUndefined();
     });
@@ -285,14 +289,88 @@ describe('UsersService', () => {
   describe('remove', () => {
     it('throws when user missing', async () => {
       users.findByIdWithRole.mockResolvedValue(null);
-      await expect(service.remove('missing')).rejects.toThrow(AppException);
+      await expect(service.remove('missing', SA)).rejects.toThrow(AppException);
     });
 
     it('deletes when found', async () => {
       users.findByIdWithRole.mockResolvedValue(makeUser() as never);
       users.delete.mockResolvedValue({} as never);
-      await service.remove('usr_1');
+      await service.remove('usr_1', SA);
       expect(users.delete).toHaveBeenCalledWith({ id: 'usr_1' });
+    });
+  });
+
+  describe('super admin rules', () => {
+    const admin = () => makeUser({ status: 'ACTIVE', role: { id: 'role_admin', key: 'ADMIN' } }) as never;
+    const superAdmin = () => makeUser({ status: 'ACTIVE', role: { id: 'role_sa', key: 'SUPER_ADMIN' } }) as never;
+    const FORBIDDEN = { code: 'FORBIDDEN', message: 'Only a Super Admin can manage administrators.' };
+
+    it('refuses to invite an ADMIN or SUPER_ADMIN unless the actor is SUPER_ADMIN', async () => {
+      for (const key of ['ADMIN', 'SUPER_ADMIN']) {
+        roles.findById.mockResolvedValue({ id: 'r', key, name: key } as never);
+        await expect(service.invite({ email: 'n@b.com', roleId: 'r' } as never, ADM)).rejects.toMatchObject(FORBIDDEN);
+      }
+      expect(users.create).not.toHaveBeenCalled();
+    });
+
+    it('lets a SUPER_ADMIN invite an ADMIN', async () => {
+      roles.findById.mockResolvedValue({ id: 'r', key: 'ADMIN', name: 'Admin' } as never);
+      users.findByEmail.mockResolvedValue(null);
+      users.create.mockResolvedValue(makeUser() as never);
+      await service.invite({ email: 'n@b.com', roleId: 'r' } as never, SA);
+      expect(users.create).toHaveBeenCalled();
+    });
+
+    it('lets an ADMIN invite a non-privileged role', async () => {
+      roles.findById.mockResolvedValue({ id: 'r', key: 'DISPATCHER', name: 'Dispatcher' } as never);
+      users.findByEmail.mockResolvedValue(null);
+      users.create.mockResolvedValue(makeUser() as never);
+      await service.invite({ email: 'n@b.com', roleId: 'r' } as never, ADM);
+      expect(users.create).toHaveBeenCalled();
+    });
+
+    it('forbids a non-SUPER_ADMIN from updating, disabling, deleting or resending an invite to an admin', async () => {
+      users.findByIdWithRole.mockResolvedValue(admin());
+      await expect(service.update('u', { firstName: 'X' }, ADM)).rejects.toMatchObject(FORBIDDEN);
+      await expect(service.update('u', { status: 'DISABLED' } as never, ADM)).rejects.toMatchObject(FORBIDDEN);
+      await expect(service.remove('u', ADM)).rejects.toMatchObject(FORBIDDEN);
+      await expect(service.resendInvite('u', ADM)).rejects.toMatchObject(FORBIDDEN);
+      expect(users.update).not.toHaveBeenCalled();
+      expect(users.delete).not.toHaveBeenCalled();
+    });
+
+    it('forbids a non-SUPER_ADMIN from promoting someone to ADMIN', async () => {
+      users.findByIdWithRole.mockResolvedValue(makeUser() as never);
+      roles.findById.mockResolvedValue({ id: 'r', key: 'ADMIN' } as never);
+      await expect(service.update('u', { roleId: 'r' }, ADM)).rejects.toMatchObject(FORBIDDEN);
+    });
+
+    it('lets a SUPER_ADMIN manage an ADMIN', async () => {
+      users.findByIdWithRole.mockResolvedValue(admin());
+      users.update.mockResolvedValue({} as never);
+      users.delete.mockResolvedValue({} as never);
+      await service.update('u', { firstName: 'X' }, SA);
+      await service.remove('u', SA);
+      expect(users.delete).toHaveBeenCalledWith({ id: 'u' });
+    });
+
+    it('refuses to delete, disable or demote the last active SUPER_ADMIN (409)', async () => {
+      users.findByIdWithRole.mockResolvedValue(superAdmin());
+      users.countActiveSuperAdmins.mockResolvedValue(1);
+      roles.findById.mockResolvedValue({ id: 'r', key: 'ADMIN' } as never);
+      await expect(service.remove('u', SA)).rejects.toMatchObject({ code: 'CONFLICT' });
+      await expect(service.update('u', { status: 'DISABLED' } as never, SA)).rejects.toMatchObject({ code: 'CONFLICT' });
+      await expect(service.update('u', { roleId: 'r' }, SA)).rejects.toMatchObject({ code: 'CONFLICT' });
+      expect(users.delete).not.toHaveBeenCalled();
+    });
+
+    it('allows demoting a SUPER_ADMIN when another active one exists', async () => {
+      users.findByIdWithRole.mockResolvedValue(superAdmin());
+      users.countActiveSuperAdmins.mockResolvedValue(2);
+      roles.findById.mockResolvedValue({ id: 'r', key: 'ADMIN' } as never);
+      users.update.mockResolvedValue({} as never);
+      await service.update('u', { roleId: 'r' }, SA);
+      expect(users.update).toHaveBeenCalled();
     });
   });
 

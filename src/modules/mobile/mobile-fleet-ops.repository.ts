@@ -172,7 +172,7 @@ export class MobileFleetOpsRepository {
 
   listStaffContacts(): Promise<StaffContact[]> {
     return this.prisma.user.findMany({
-      where: { role: { key: { in: ['ADMIN', 'FLEET_MANAGER', 'DISPATCHER'] } }, status: 'ACTIVE' },
+      where: { role: { key: { in: ['SUPER_ADMIN', 'ADMIN', 'FLEET_MANAGER', 'DISPATCHER'] } }, status: 'ACTIVE' },
       select: { id: true, firstName: true, lastName: true, phone: true, role: { select: { key: true } } },
       orderBy: [{ role: { key: 'asc' } }, { lastName: 'asc' }],
     });

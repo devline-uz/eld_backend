@@ -1,0 +1,4 @@
+-- SUPER_ADMIN system role (only role allowed to manage ADMIN / SUPER_ADMIN users). Idempotent.
+INSERT INTO "Role" ("id", "key", "name", "description", "permissions", "isSystem", "createdAt")
+VALUES (gen_random_uuid()::text, 'SUPER_ADMIN', 'Super Admin', 'Owner-level administrator; manages administrators.', jsonb_build_object('dashboard', 'FULL', 'liveFleet', 'FULL', 'vehicles', 'FULL', 'drivers', 'FULL', 'hos', 'FULL', 'hosEdit', 'FULL', 'hosCertifyOnBehalf', 'FULL', 'dvir', 'FULL', 'maintenance', 'FULL', 'safety', 'FULL', 'trips', 'FULL', 'reports', 'FULL', 'reportsTransfer', 'FULL', 'messaging', 'FULL', 'devices', 'FULL', 'alertRules', 'FULL', 'users', 'FULL', 'roles', 'FULL', 'integrations', 'FULL', 'auditLog', 'FULL', 'support', 'FULL', 'carrierSettings', 'FULL', 'dataTransfer', 'FULL'), true, NOW())
+ON CONFLICT ("key") DO NOTHING;

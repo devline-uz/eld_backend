@@ -6,6 +6,8 @@ function permOf(method: keyof UsersController): PermRequirement | undefined {
   return Reflect.getMetadata(PERM_METADATA_KEY, UsersController.prototype[method]) as PermRequirement | undefined;
 }
 
+const ACTOR = { id: 'admin_1', role: 'SUPER_ADMIN' };
+
 describe('UsersController permissions', () => {
   it.each([
     ['list', 'READ'],
@@ -42,24 +44,24 @@ describe('UsersController — delegates to UsersService', () => {
 
   it('create passes invitedById from CurrentUser', async () => {
     const dto = { email: 'a@b.com', roleId: 'role_1' } as never;
-    await controller.create(dto, 'admin_1');
-    expect(service.invite).toHaveBeenCalledWith(dto, 'admin_1');
+    await controller.create(dto, ACTOR);
+    expect(service.invite).toHaveBeenCalledWith(dto, ACTOR);
   });
 
   it('resendInvite', async () => {
-    await controller.resendInvite('usr_1');
-    expect(service.resendInvite).toHaveBeenCalledWith('usr_1');
+    await controller.resendInvite('usr_1', ACTOR);
+    expect(service.resendInvite).toHaveBeenCalledWith('usr_1', ACTOR);
   });
 
   it('update', async () => {
     const dto = { firstName: 'Jane' } as never;
-    await controller.update('usr_1', dto);
-    expect(service.update).toHaveBeenCalledWith('usr_1', dto);
+    await controller.update('usr_1', dto, ACTOR);
+    expect(service.update).toHaveBeenCalledWith('usr_1', dto, ACTOR);
   });
 
   it('remove returns { success: true }', async () => {
-    const result = await controller.remove('usr_1');
-    expect(service.remove).toHaveBeenCalledWith('usr_1');
+    const result = await controller.remove('usr_1', ACTOR);
+    expect(service.remove).toHaveBeenCalledWith('usr_1', ACTOR);
     expect(result).toEqual({ success: true });
   });
 });

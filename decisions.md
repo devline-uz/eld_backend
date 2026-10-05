@@ -2326,3 +2326,8 @@ are left to swagger's own path/named-param output. Response DTOs stay example-ba
 **Problem.** The user no longer wants the 200-driver / 6-month mock dataset (D-055) or its live simulator in the project.
 **Choice.** Dev DB `onebook_eld_dev` was reset via `scripts/db-reset-dev.sh` (drop → migrate → `prisma/seed.ts`; 1049 MB → 15 MB, seed only). `prisma/mock/` (generators + live simulator), the `db:mock` / `db:mock:live` npm scripts and the `prisma/mock/**/*.spec.ts` entry in `jest.config.js` `testMatch` were deleted. D-055 and related entries remain as history only.
 **Why.** The user explicitly asked for it. Reset rather than row-level DELETE because `EldEvent`/`AuditLog` are append-only for `eld_dev`; the append-only REVOKEs are recreated by the migrations.
+
+## D-109 — SUPER_ADMIN role; only it manages administrators (2026-10-05)
+**Problem.** Any holder of `users`/`roles` FULL (ADMIN) could invite, promote, disable or delete other admins and edit the ADMIN role.
+**Choice.** New system role `SUPER_ADMIN` (all 23 keys FULL, immutable, undeletable; migration `20261005090000_super_admin_role`). "Privileged" = ADMIN + SUPER_ADMIN. Only an actor with role key SUPER_ADMIN may invite a privileged user, move a user to/from a privileged role, update/disable/delete/resend-invite a privileged user, or edit the ADMIN role; otherwise 403 FORBIDDEN "Only a Super Admin can manage administrators." Deleting/disabling/demoting the last active SUPER_ADMIN, or the last active ADMIN+SUPER_ADMIN, is 409. `/me` self-edit is unaffected.
+**Why.** Separates owner-level control from day-to-day admins. Sessions are `/me`-only and API keys are carrier-level, so no other endpoint acts on another user.

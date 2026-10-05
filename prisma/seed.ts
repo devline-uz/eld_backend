@@ -84,6 +84,10 @@ const PERMISSION_KEYS = [
 ] as const;
 
 const ROLE_MATRIX: Record<string, Record<(typeof PERMISSION_KEYS)[number], PermissionLevel>> = {
+  SUPER_ADMIN: Object.fromEntries(PERMISSION_KEYS.map((k) => [k, 'FULL'])) as Record<
+    (typeof PERMISSION_KEYS)[number],
+    PermissionLevel
+  >,
   ADMIN: Object.fromEntries(PERMISSION_KEYS.map((k) => [k, 'FULL'])) as Record<
     (typeof PERMISSION_KEYS)[number],
     PermissionLevel
@@ -177,7 +181,7 @@ async function main(): Promise<void> {
           .split('_')
           .map((w) => w[0] + w.slice(1).toLowerCase())
           .join(' '),
-        isSystem: key === 'ADMIN',
+        isSystem: key === 'ADMIN' || key === 'SUPER_ADMIN',
         permissions: matrix,
       },
       update: { permissions: matrix },

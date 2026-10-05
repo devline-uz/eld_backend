@@ -1,6 +1,7 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post } from '@nestjs/common';
 import { ApiBearerAuth, ApiCreatedResponse, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Audit } from '../../common/decorators/audit.decorator';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Perm } from '../../common/decorators/perm.decorator';
 import { zodBody } from '../../common/pipes/zod-validation.pipe';
 import { CreateRoleDto, UpdateRoleDto } from './dto/roles.dto';
@@ -50,8 +51,8 @@ export class RolesController {
   @ApiOperation({ summary: 'Updates a custom role. ADMIN (isSystem) cannot be edited.' })
   @ApiOkResponse({ schema: { example: { id: 'rol_9', key: 'SAFETY_REVIEWER', name: 'Safety reviewer', isSystem: false, permissions: { logs: 'READ', safety: 'READ' } } } })
   @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.NOT_FOUND, 'Role not found.'), apiError.conflict(ERROR_CODES.ROLE_IMMUTABLE, 'System roles cannot be edited or deleted (Figma: "Admin cannot be edited").')] })
-  update(@Param('id') id: string, @Body(zodBody(UpdateRoleDto)) dto: UpdateRoleDto) {
-    return this.roles.update(id, dto);
+  update(@Param('id') id: string, @Body(zodBody(UpdateRoleDto)) dto: UpdateRoleDto, @CurrentUser() actor: { role?: string }) {
+    return this.roles.update(id, dto, actor);
   }
 
   @Delete(':id')

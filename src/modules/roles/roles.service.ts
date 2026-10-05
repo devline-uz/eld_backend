@@ -41,9 +41,13 @@ export class RolesService {
     });
   }
 
-  async update(id: string, dto: UpdateRoleDto): Promise<Role> {
+  async update(id: string, dto: UpdateRoleDto, actor?: { role?: string }): Promise<Role> {
     const role = await this.get(id);
-    this.assertNotSystem(role);
+    if (role.key === 'SUPER_ADMIN') this.assertNotSystem(role);
+    if (role.key === 'ADMIN' && actor?.role !== 'SUPER_ADMIN') {
+      throw AppException.forbidden('Only a Super Admin can manage administrators.');
+    }
+    if (role.key !== 'ADMIN') this.assertNotSystem(role);
     return this.roles.update(
       { id },
       {

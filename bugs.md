@@ -2125,3 +2125,8 @@ service-code change needed.
 - **Found:** 2026-10-04, deploying `d28ea54` (feat(users): email back-office invites over SMTP) — `eld-worker` restarted every ~2 s with `UnknownDependenciesException: Nest can't resolve dependencies of the UsersService (... Symbol(TRANSACTIONAL_MAIL) ...)`. `UsersService` now injects `TRANSACTIONAL_MAIL`; the worker reaches `UsersModule` through `WorkersModule`, but `MailModule` (global) was only added to `app.module.ts`, not to `WorkerAppModule` in `src/worker.ts`.
 - **Severity:** High — no background jobs (HOS recalc, reports, alerts, transfers) ran while the worker was down.
 - **Resolution:** `MailModule` imported in `WorkerAppModule` next to the other global infra modules (`StorageModule`, `FirebaseModule`). Verified live: worker stays up, `GET :3003/health/ready` → 200.
+
+## B-113 — Back-office invites never emailed on the running API: no SMTP configured · FIXED
+- **Found:** 2026-10-05, owner report — inviting an admin from W-18 showed "User invited — email not sent". `eld-api` had no `SMTP_*` env, so `SmtpMailTransport` returned `NO_MAIL_TRANSPORT`; `WEB_APP_URL` was also unset, so the invite link would have pointed at `http://localhost:5173`.
+- **Severity:** High — invited users never received the invitation.
+- **Resolution:** configuration only — Resend SMTP (`smtp.resend.com:587`, user `resend`), `MAIL_FROM` `no-reply@eld.stackyard.uz` (domain verified in Resend), `WEB_APP_URL=https://eldadmin.stackyard.uz`, applied to `eld-api`/`eld-worker` and `pm2 save`d. Invite template (`users/lib/invite-email.ts`) redesigned into a branded table-layout HTML email (details table, CTA, steps, fallback link). Verified live: `POST /users/:id/resend-invite` → `emailDelivered: true`, mail received in Gmail.
