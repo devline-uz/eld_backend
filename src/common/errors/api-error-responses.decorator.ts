@@ -77,6 +77,19 @@ export const apiError = {
   notFound: (code: ErrorCode, message: string): ApiErrorSpec => ({ status: 404, code, message }),
   conflict: (code: ErrorCode, message: string): ApiErrorSpec => ({ status: 409, code, message }),
   unprocessable: (code: ErrorCode, message: string): ApiErrorSpec => ({ status: 422, code, message }),
+  /**
+   * Several field-level 409s on one route (Swagger keeps one response per status): the example is
+   * the first conflict, the description lists every `code` -> `details.<field>` pair.
+   */
+  fieldConflicts: (conflicts: Array<{ code: ErrorCode; field: string; message: string }>): ApiErrorSpec => ({
+    status: 409,
+    code: conflicts[0].code,
+    message: conflicts[0].message,
+    details: { [conflicts[0].field]: conflicts[0].message },
+    description: `Field-level conflict — one of: ${conflicts
+      .map((c) => `${c.code} (details.${c.field}: "${c.message}")`)
+      .join('; ')}.`,
+  }),
   rateLimited: (message = 'Too many requests — try again later.'): ApiErrorSpec => ({
     status: 429,
     code: ERROR_CODES.RATE_LIMITED,

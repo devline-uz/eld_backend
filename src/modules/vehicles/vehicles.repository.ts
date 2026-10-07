@@ -10,6 +10,20 @@ export interface VehicleListFilter {
   groupId?: string;
 }
 
+/** Thrown inside `saveWithDevice`'s transaction when the device was claimed by another live unit
+ * between the service's pre-check and the write; the service maps it to `ELD_SERIAL_TAKEN`. */
+export class EldSerialTakenError extends Error {
+  constructor() {
+    super('ELD device is already paired to another unit.');
+    this.name = 'EldSerialTakenError';
+  }
+}
+
+/** The vehicle row write `saveWithDevice` wraps — a create, or an update of one unit. */
+export type VehicleWrite =
+  | { create: Prisma.VehicleCreateInput }
+  | { id: string; update: Prisma.VehicleUpdateInput };
+
 export interface VehicleListPage {
   items: Vehicle[];
   total: number;
@@ -39,14 +53,25 @@ export class VehiclesRepository extends BaseRepository<
 
   /** Live (not soft-deleted) unit only — `unitNumber` is unique among live rows via a partial
    * unique index (migration 20260927090000_soft_delete_partial_uniques), so a deleted unit's
-   * number is free for reuse. */
+   * number is free for reuse. Compared like the web does (B-97): trimmed, without the display
+   * `#`, case-insensitively — `#101`, `101` and ` 101 ` are the same unit number. */
   findByUnitNumber(unitNumber: string): Promise<Vehicle | null> {
-    return this.prisma.vehicle.findFirst({ where: { unitNumber, deletedAt: null } });
+    const key = unitNumber.trim().replace(/^#/, '');
+    return this.prisma.vehicle.findFirst({
+      where: {
+        deletedAt: null,
+        OR: [
+          { unitNumber: { equals: key, mode: 'insensitive' } },
+          { unitNumber: { equals: `#${key}`, mode: 'insensitive' } },
+        ],
+      },
+    });
   }
 
-  /** Live (not soft-deleted) unit only — see `findByUnitNumber`. */
+  /** Live (not soft-deleted) unit only — see `findByUnitNumber`. VINs are stored upper-cased (the
+   * DTO normalises them); the lookup is case-insensitive anyway. */
   findByVin(vin: string): Promise<Vehicle | null> {
-    return this.prisma.vehicle.findFirst({ where: { vin, deletedAt: null } });
+    return this.prisma.vehicle.findFirst({ where: { vin: { equals: vin.trim(), mode: 'insensitive' }, deletedAt: null } });
   }
 
   async list(
@@ -127,6 +152,81 @@ export class VehiclesRepository extends BaseRepository<
    */
   findDeviceBySerial(serial: string) {
     return this.prisma.device.findUnique({ where: { serial } });
+  }
+
+  /**
+   * ELD serial lookup for `POST/PATCH /vehicles` `deviceId` — exact match first (`serial` is
+   * `@unique`), then case-insensitive, with the holder's soft-delete marker so a device left on a
+   * deleted unit counts as free.
+   */
+  async findDeviceForPairing(serial: string) {
+    const include = { vehicle: { select: { id: true, deletedAt: true } } } as const;
+    return (
+      (await this.prisma.device.findUnique({ where: { serial }, include })) ??
+      (await this.prisma.device.findFirst({ where: { serial: { equals: serial, mode: 'insensitive' } }, include }))
+    );
+  }
+
+  /** The device currently paired to this unit (`Device.vehicleId` is `@@unique`), if any. */
+  findDeviceByVehicleId(vehicleId: string) {
+    return this.prisma.device.findUnique({ where: { vehicleId } });
+  }
+
+  /**
+   * Another LIVE unit with the same plate in the same issuing state — compared trim- and
+   * case-insensitively like the partial unique index `Vehicle_plate_state_live_key` (migration
+   * 20261007090000_vehicle_plate_state_live_unique). Values are stored normalised (trim + upper,
+   * `''` -> NULL), so an insensitive equals is enough; a NULL state only matches a NULL state.
+   */
+  findLiveByPlate(licensePlate: string, plateState: string | null, exceptVehicleId?: string): Promise<Vehicle | null> {
+    return this.prisma.vehicle.findFirst({
+      where: {
+        deletedAt: null,
+        licensePlate: { equals: licensePlate, mode: 'insensitive' },
+        plateState: plateState === null ? null : { equals: plateState, mode: 'insensitive' },
+        ...(exceptVehicleId && { id: { not: exceptVehicleId } }),
+      },
+    });
+  }
+
+  /**
+   * Writes the vehicle row and moves its ELD pairing in ONE transaction. `deviceId` is the
+   * device to pair (`null` = leave the unit with no device). Whatever other device the unit held
+   * is released first (one device per unit, `Device_vehicleId_key`); the new device is claimed with
+   * a conditional update that only matches when it is free, already ours, or left on a
+   * soft-deleted unit — a concurrent claim by another live unit matches zero rows and rolls the
+   * whole write back with `EldSerialTakenError`.
+   */
+  saveWithDevice(write: VehicleWrite, deviceId: string | null): Promise<Vehicle> {
+    return this.prisma.$transaction(async (tx) => {
+      const vehicle =
+        'create' in write
+          ? await tx.vehicle.create({ data: write.create })
+          : await tx.vehicle.update({ where: { id: write.id }, data: write.update });
+      await tx.device.updateMany({
+        where: { vehicleId: vehicle.id, ...(deviceId && { id: { not: deviceId } }) },
+        data: { vehicleId: null, status: 'UNASSIGNED', pairedAt: null },
+      });
+      if (deviceId) {
+        const claimed = await tx.device.updateMany({
+          where: {
+            id: deviceId,
+            OR: [{ vehicleId: null }, { vehicleId: vehicle.id }, { vehicle: { deletedAt: { not: null } } }],
+          },
+          data: { vehicleId: vehicle.id, status: 'ASSIGNED', pairedAt: new Date() },
+        });
+        if (claimed.count === 0) throw new EldSerialTakenError();
+      }
+      return vehicle;
+    });
+  }
+
+  /** Soft delete frees the unit's ELD device for another unit. */
+  releaseDevice(vehicleId: string) {
+    return this.prisma.device.updateMany({
+      where: { vehicleId },
+      data: { vehicleId: null, status: 'UNASSIGNED', pairedAt: null },
+    });
   }
 
   pairDevice(deviceId: string, vehicleId: string) {

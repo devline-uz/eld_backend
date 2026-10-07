@@ -29,9 +29,9 @@ describe('DriversRepository', () => {
     expect(driver.findFirst).toHaveBeenCalledWith({ where: { username: 'johnsmith', deletedAt: null } });
   });
 
-  it('findByEmail queries live (non-deleted) drivers by email', async () => {
+  it('findByEmail queries live (non-deleted) drivers by email, case-insensitively (B-100)', async () => {
     await repo.findByEmail('a@b.co');
-    expect(driver.findFirst).toHaveBeenCalledWith({ where: { email: 'a@b.co', deletedAt: null } });
+    expect(driver.findFirst).toHaveBeenCalledWith({ where: { email: { equals: 'a@b.co', mode: 'insensitive' }, deletedAt: null } });
   });
 
   it('list builds status/q filters and paginates', async () => {

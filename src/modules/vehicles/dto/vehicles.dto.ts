@@ -24,8 +24,9 @@ export const CreateVehicleDto = z.object({
   make: z.string().max(60).optional(),
   model: z.string().max(60).optional(),
   year: z.number().int().min(1900).max(2100).optional(),
-  licensePlate: z.string().max(20).optional(),
-  plateState: z.string().max(10).optional(),
+  /** Unique together with `plateState` among live units (trim/case-insensitive); `null`/`''` = no plate. */
+  licensePlate: z.string().max(20).nullable().optional(),
+  plateState: z.string().max(10).nullable().optional(),
   fuelType: FuelTypeEnum.default('DIESEL'),
   sleeperBerth: z.boolean().default(false),
   // TZ §4.3 step 1 — the dash odometer the user reads off the panel when adding the unit.
@@ -34,6 +35,11 @@ export const CreateVehicleDto = z.object({
   notes: z.string().max(500).optional(),
   /** Vehicle group (`/vehicle-groups`); `null` on update removes the unit from its group. */
   groupId: z.string().uuid().nullable().optional(),
+  /** ELD device to pair, by its serial (what the web's "ELD serial" input sends as `deviceId`). A
+   * device can be paired to at most one live unit; on update `null`/`''` unpairs the current one. */
+  deviceId: z.string().max(60).nullable().optional(),
+  /** Alias of `deviceId`; `deviceId` wins when both are sent. */
+  eldSerial: z.string().max(60).nullable().optional(),
 });
 export type CreateVehicleDto = z.infer<typeof CreateVehicleDto>;
 
@@ -104,8 +110,9 @@ export const ImportVehiclesOptionsDto = z.object({
 export type ImportVehiclesOptionsDto = z.infer<typeof ImportVehiclesOptionsDto>;
 
 /** A row can additionally carry a `deviceSerial` to pair — only consumed when
- * `options.pairDevices` is true (§20 B-69); `CreateVehicleDto`/`POST /vehicles` stay untouched. */
-export const ImportVehicleRowDto = CreateVehicleDto.extend({
+ * `options.pairDevices` is true (§20 B-69). Import rows pair through `deviceSerial` only, so the
+ * `POST /vehicles` `deviceId` / `eldSerial` fields are not part of a row. */
+export const ImportVehicleRowDto = CreateVehicleDto.omit({ deviceId: true, eldSerial: true }).extend({
   deviceSerial: z.string().max(60).optional(),
 });
 export type ImportVehicleRowDto = z.infer<typeof ImportVehicleRowDto>;

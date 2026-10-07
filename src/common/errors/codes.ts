@@ -36,12 +36,34 @@ export const ERROR_CODES = {
 
   // --- fleet (TZ §5.3, §5.4) ----------------------------------------------
   DRIVER_NOT_FOUND: 'DRIVER_NOT_FOUND',
+  /** B-100 — `POST/PATCH /drivers`, import rows: another live driver holds the value.
+   * `details: { <field>: message }` with field `username` / `email` / `phone` / `cdlNumber`. */
+  USERNAME_TAKEN: 'USERNAME_TAKEN',
+  EMAIL_TAKEN: 'EMAIL_TAKEN',
+  PHONE_TAKEN: 'PHONE_TAKEN',
+  CDL_NUMBER_TAKEN: 'CDL_NUMBER_TAKEN',
+  /** B-100 — `POST /drivers` `assignedVehicleId` names a unit another live driver already has; the
+   * other driver keeps it (reassigning is `POST /vehicles/:id/assign-driver`).
+   * `details: { assignedVehicleId }`. */
+  VEHICLE_ALREADY_ASSIGNED: 'VEHICLE_ALREADY_ASSIGNED',
   VEHICLE_NOT_FOUND: 'VEHICLE_NOT_FOUND',
   /** `/vehicle-groups/:id`, or a `groupId` on a vehicle write / report filter, that names no group. */
   VEHICLE_GROUP_NOT_FOUND: 'VEHICLE_GROUP_NOT_FOUND',
   DEVICE_NOT_FOUND: 'DEVICE_NOT_FOUND',
   DEVICE_ALREADY_PAIRED: 'DEVICE_ALREADY_PAIRED',
   VEHICLE_OUT_OF_SERVICE: 'VEHICLE_OUT_OF_SERVICE',
+  /** `POST /vehicles` / `PATCH /vehicles/:id` / import row — another live unit has this unit
+   * number. `details: { unitNumber }` (backend_tasks.md B-97). */
+  UNIT_NUMBER_TAKEN: 'UNIT_NUMBER_TAKEN',
+  /** `POST /vehicles` / `PATCH /vehicles/:id` / import row — another live unit has this VIN.
+   * `details: { vin }` (backend_tasks.md B-97). */
+  VIN_TAKEN: 'VIN_TAKEN',
+  /** `POST /vehicles` / `PATCH /vehicles/:id` — the ELD device (`deviceId` serial) is already paired
+   * to another live unit. `details: { eldSerial }`. */
+  ELD_SERIAL_TAKEN: 'ELD_SERIAL_TAKEN',
+  /** `POST /vehicles` / `PATCH /vehicles/:id` — another live unit holds the same plate in the same
+   * issuing state (trim/case-insensitive). `details: { licensePlate }`. */
+  LICENSE_PLATE_TAKEN: 'LICENSE_PLATE_TAKEN',
   /** §5.10 hard rule — cannot set `Vehicle.status` to a non-OOS value while an OPEN CRITICAL
    * defect exists on the unit. Payload lists the blocking defect ids. */
   VEHICLE_HAS_OPEN_CRITICAL_DEFECTS: 'VEHICLE_HAS_OPEN_CRITICAL_DEFECTS',

@@ -38,10 +38,16 @@ export const CreateDriverDto = z.object({
 
   /** §20 B-82 — defaults true (current behavior: always invite). */
   sendInvitation: z.boolean().default(true),
+
+  /** B-100 — unit to assign on create. A unit another live driver already has is a 409
+   * `VEHICLE_ALREADY_ASSIGNED` (never silently taken); an out-of-service unit is a 409
+   * `VEHICLE_OUT_OF_SERVICE`. Not accepted on update — reassigning is
+   * `POST /vehicles/:id/assign-driver` (11.5). */
+  assignedVehicleId: z.string().uuid().nullable().optional(),
 });
 export type CreateDriverDto = z.infer<typeof CreateDriverDto>;
 
-export const UpdateDriverDto = CreateDriverDto.omit({ username: true, password: true })
+export const UpdateDriverDto = CreateDriverDto.omit({ username: true, password: true, assignedVehicleId: true })
   .partial()
   .extend({ status: DriverStatusEnum.optional() });
 export type UpdateDriverDto = z.infer<typeof UpdateDriverDto>;

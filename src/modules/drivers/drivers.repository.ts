@@ -51,9 +51,65 @@ export class DriversRepository extends BaseRepository<
   }
 
   /** §20 B-29/B-30 — `Driver.email` is unique among live rows (partial unique index); checked
-   * pre-write so a collision surfaces as a clean `CONFLICT` instead of an unhandled `P2002`. */
+   * pre-write so a collision surfaces as a clean 409 instead of an unhandled `P2002`. Emails are
+   * stored lower-cased (B-100); the lookup is case-insensitive for legacy rows. */
   findByEmail(email: string): Promise<Driver | null> {
-    return this.prisma.driver.findFirst({ where: { email, deletedAt: null } });
+    return this.prisma.driver.findFirst({ where: { email: { equals: email, mode: 'insensitive' }, deletedAt: null } });
+  }
+
+  /**
+   * B-100 — another LIVE driver whose phone has the same comparison key (`phoneKey` in
+   * `lib/driver-uniques.ts`), computed in SQL exactly like the partial unique index
+   * `Driver_phone_live_key`.
+   */
+  async findLiveIdByPhoneKey(key: string, exceptDriverId?: string): Promise<string | null> {
+    const rows = await this.prisma.$queryRaw<Array<{ id: string }>>`
+      SELECT "id" FROM "Driver"
+      WHERE "deletedAt" IS NULL AND "phone" IS NOT NULL
+        AND (CASE
+               WHEN length(regexp_replace("phone", '\\D', '', 'g')) = 11 AND left(regexp_replace("phone", '\\D', '', 'g'), 1) = '1'
+                 THEN substr(regexp_replace("phone", '\\D', '', 'g'), 2)
+               ELSE regexp_replace("phone", '\\D', '', 'g')
+             END) = ${key}
+        AND "id" <> ${exceptDriverId ?? ''}
+      LIMIT 1`;
+    return rows[0]?.id ?? null;
+  }
+
+  /** B-100 — another LIVE driver with the same licence-number key (`cdlKey`), like the partial
+   * unique index `Driver_cdlNumber_live_key`. */
+  async findLiveIdByCdlKey(key: string, exceptDriverId?: string): Promise<string | null> {
+    const rows = await this.prisma.$queryRaw<Array<{ id: string }>>`
+      SELECT "id" FROM "Driver"
+      WHERE "deletedAt" IS NULL
+        AND upper(regexp_replace("cdlNumber", '[\\s-]', '', 'g')) = ${key}
+        AND "id" <> ${exceptDriverId ?? ''}
+      LIMIT 1`;
+    return rows[0]?.id ?? null;
+  }
+
+  /** B-100 — the unit a create wants to assign, with its current live driver (if any). Queried
+   * against `Vehicle` directly: `VehiclesModule` depends on `DriversModule`, never the reverse. */
+  findVehicleForAssignment(vehicleId: string) {
+    return this.prisma.vehicle.findUnique({
+      where: { id: vehicleId },
+      select: { id: true, status: true, deletedAt: true, driver: { select: { id: true, deletedAt: true } } },
+    });
+  }
+
+  /**
+   * B-100 — creates the driver and assigns the unit in ONE transaction. The assignment is a
+   * scalar `assignedVehicleId` write, not a relation `connect`: Prisma's `connect` on this 1:1
+   * would silently take the unit from its current driver ("steal" semantics, see
+   * test/integration/fleet-crud.spec.ts), while the scalar write hits `Driver_assignedVehicleId_key`
+   * (`P2002`) and rolls the whole create back.
+   */
+  createWithVehicle(data: Prisma.DriverCreateInput, vehicleId: string): Promise<Driver> {
+    return this.prisma.$transaction(async (tx) => {
+      const created = await tx.driver.create({ data });
+      await tx.driver.updateMany({ where: { id: created.id }, data: { assignedVehicleId: vehicleId } });
+      return { ...created, assignedVehicleId: vehicleId };
+    });
   }
 
   async list(

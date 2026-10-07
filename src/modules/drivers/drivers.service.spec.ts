@@ -33,6 +33,15 @@ function makeDriver(overrides: Partial<Record<string, unknown>> = {}) {
   };
 }
 
+const taken = (code: string, field: string, message: string) => ({ code, status: 409, message, details: { [field]: message } });
+const TAKEN = {
+  username: taken('USERNAME_TAKEN', 'username', 'A driver with this username already exists.'),
+  email: taken('EMAIL_TAKEN', 'email', 'A driver with this email address already exists.'),
+  phone: taken('PHONE_TAKEN', 'phone', 'A driver with this phone number already exists.'),
+  cdlNumber: taken('CDL_NUMBER_TAKEN', 'cdlNumber', 'A driver with this licence number already exists.'),
+  assignedVehicleId: taken('VEHICLE_ALREADY_ASSIGNED', 'assignedVehicleId', 'This unit already has a driver assigned.'),
+};
+
 const baseDto = {
   username: 'jsmith',
   firstName: 'John',
@@ -68,6 +77,10 @@ describe('DriversService', () => {
       | 'createDocument'
       | 'deleteDocument'
       | 'revokeAllSessions'
+      | 'findLiveIdByPhoneKey'
+      | 'findLiveIdByCdlKey'
+      | 'findVehicleForAssignment'
+      | 'createWithVehicle'
     >
   >;
   let tokens: jest.Mocked<Pick<TokenService, 'signDriverEmailVerifyToken' | 'verifyDriverEmailVerifyToken'>>;
@@ -92,6 +105,10 @@ describe('DriversService', () => {
       createDocument: jest.fn(),
       deleteDocument: jest.fn(),
       revokeAllSessions: jest.fn().mockResolvedValue(0),
+      findLiveIdByPhoneKey: jest.fn().mockResolvedValue(null),
+      findLiveIdByCdlKey: jest.fn().mockResolvedValue(null),
+      findVehicleForAssignment: jest.fn().mockResolvedValue(null),
+      createWithVehicle: jest.fn(),
     };
     repo.findByEmail.mockResolvedValue(null);
     tokens = { signDriverEmailVerifyToken: jest.fn(), verifyDriverEmailVerifyToken: jest.fn() };
@@ -229,25 +246,21 @@ describe('DriversService', () => {
 
     it('a duplicate username among live drivers is still a 409', async () => {
       repo.findByUsername.mockResolvedValue(makeDriver() as never);
-      await expect(service.create(baseDto)).rejects.toMatchObject({ code: 'CONFLICT', status: 409 });
+      await expect(service.create(baseDto)).rejects.toMatchObject(TAKEN.username);
       expect(repo.create).not.toHaveBeenCalled();
     });
 
     it('a duplicate email among live drivers is still a 409', async () => {
       repo.findByUsername.mockResolvedValue(null);
       repo.findByEmail.mockResolvedValue(makeDriver({ id: 'drv_2', email: 'x@example.com' }) as never);
-      await expect(service.create({ ...baseDto, email: 'x@example.com' })).rejects.toMatchObject({ code: 'CONFLICT', status: 409 });
+      await expect(service.create({ ...baseDto, email: 'x@example.com' })).rejects.toMatchObject(TAKEN.email);
       expect(repo.create).not.toHaveBeenCalled();
     });
 
     it('maps a racing P2002 on create to a 409 CONFLICT naming the column', async () => {
       repo.findByUsername.mockResolvedValue(null);
       repo.create.mockRejectedValue(p2002(['username']));
-      await expect(service.create(baseDto)).rejects.toMatchObject({
-        code: 'CONFLICT',
-        status: 409,
-        message: 'A driver with username "jsmith" already exists.',
-      });
+      await expect(service.create(baseDto)).rejects.toMatchObject(TAKEN.username);
     });
 
     it('rethrows non-P2002 errors from create untouched', async () => {
@@ -260,15 +273,122 @@ describe('DriversService', () => {
     it('update maps a racing P2002 on email to a 409', async () => {
       repo.findById.mockResolvedValue(makeDriver() as never);
       repo.update.mockRejectedValue(p2002(['email']));
-      await expect(service.update('drv_1', { email: 'y@example.com' })).rejects.toMatchObject({
-        code: 'CONFLICT',
-        message: 'A driver with email "y@example.com" already exists.',
-      });
+      await expect(service.update('drv_1', { email: 'y@example.com' })).rejects.toMatchObject(TAKEN.email);
     });
 
     it('get treats a soft-deleted driver as not found', async () => {
       repo.findById.mockResolvedValue(makeDriver({ deletedAt: new Date() }) as never);
       await expect(service.get('drv_1')).rejects.toMatchObject({ code: 'DRIVER_NOT_FOUND' });
+    });
+  });
+
+  describe('B-100 — field-level 409s, phone / licence uniqueness, unit assignment on create', () => {
+    const p2002 = (target: string[] | string) => Object.assign(new Error('Unique constraint failed'), { code: 'P2002', meta: { target } });
+    const vehicle = (overrides: Record<string, unknown> = {}) => ({ id: 'veh_1', status: 'ACTIVE', deletedAt: null, driver: null, ...overrides });
+
+    beforeEach(() => {
+      repo.findByUsername.mockResolvedValue(null);
+      repo.create.mockResolvedValue(makeDriver() as never);
+      repo.createWithVehicle.mockResolvedValue(makeDriver({ assignedVehicleId: 'veh_1' }) as never);
+      repo.findById.mockResolvedValue(makeDriver() as never);
+      repo.update.mockResolvedValue(makeDriver() as never);
+    });
+
+    it('rejects a phone another live driver has, compared on digits (+1 dropped)', async () => {
+      repo.findLiveIdByPhoneKey.mockImplementation((key) => Promise.resolve(key === '6145551000' ? 'drv_2' : null));
+      await expect(service.create({ ...baseDto, phone: '+1 (614) 555-1000' })).rejects.toMatchObject(TAKEN.phone);
+      await expect(service.create({ ...baseDto, phone: '614.555.1000' })).rejects.toMatchObject(TAKEN.phone);
+      expect(repo.create).not.toHaveBeenCalled();
+    });
+
+    it('allows a new phone and never checks an empty one', async () => {
+      await service.create({ ...baseDto, phone: '+1 614 555 2000' });
+      expect(repo.findLiveIdByPhoneKey).toHaveBeenCalledWith('6145552000', undefined);
+      repo.findLiveIdByPhoneKey.mockClear();
+      await service.create({ ...baseDto, phone: '  ' });
+      expect(repo.findLiveIdByPhoneKey).not.toHaveBeenCalled();
+    });
+
+    it('rejects a licence number another live driver has, ignoring case / spaces / dashes', async () => {
+      repo.findLiveIdByCdlKey.mockImplementation((key) => Promise.resolve(key === 'W8569238' ? 'drv_2' : null));
+      await expect(service.create({ ...baseDto, cdlNumber: 'w 856-9238' })).rejects.toMatchObject(TAKEN.cdlNumber);
+    });
+
+    it('normalises email (trim + lower-case) before the check and the write', async () => {
+      await service.create({ ...baseDto, email: ' JSmith@Example.com ' });
+      expect(repo.findByEmail).toHaveBeenCalledWith('jsmith@example.com');
+      expect(repo.create).toHaveBeenCalledWith(expect.objectContaining({ email: 'jsmith@example.com' }));
+    });
+
+    it('update excludes the driver itself and rejects another driver\'s phone / licence', async () => {
+      repo.findLiveIdByPhoneKey.mockResolvedValue('drv_2');
+      await expect(service.update('drv_1', { phone: '6145551000' })).rejects.toMatchObject(TAKEN.phone);
+      expect(repo.findLiveIdByPhoneKey).toHaveBeenCalledWith('6145551000', 'drv_1');
+      repo.findLiveIdByPhoneKey.mockResolvedValue(null);
+      repo.findLiveIdByCdlKey.mockResolvedValue('drv_2');
+      await expect(service.update('drv_1', { cdlNumber: 'D-123' })).rejects.toMatchObject(TAKEN.cdlNumber);
+      expect(repo.findLiveIdByCdlKey).toHaveBeenCalledWith('D123', 'drv_1');
+      expect(repo.update).not.toHaveBeenCalled();
+    });
+
+    it('update saving its own values succeeds (lookups exclude the driver itself)', async () => {
+      await service.update('drv_1', { email: 'jsmith@example.com', phone: '6145551000', cdlNumber: 'D1234567' });
+      expect(repo.update).toHaveBeenCalled();
+    });
+
+    it('assigns a free unit on create in one transactional write', async () => {
+      repo.findVehicleForAssignment.mockResolvedValue(vehicle() as never);
+      await service.create({ ...baseDto, assignedVehicleId: 'veh_1' });
+      expect(repo.createWithVehicle).toHaveBeenCalledWith(expect.objectContaining({ username: 'jsmith' }), 'veh_1');
+      expect(repo.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects a unit another live driver has with VEHICLE_ALREADY_ASSIGNED and never takes it', async () => {
+      repo.findVehicleForAssignment.mockResolvedValue(vehicle({ driver: { id: 'drv_2', deletedAt: null } }) as never);
+      await expect(service.create({ ...baseDto, assignedVehicleId: 'veh_1' })).rejects.toMatchObject(TAKEN.assignedVehicleId);
+      expect(repo.create).not.toHaveBeenCalled();
+      expect(repo.createWithVehicle).not.toHaveBeenCalled();
+    });
+
+    it('rejects an out-of-service or unknown unit', async () => {
+      repo.findVehicleForAssignment.mockResolvedValue(vehicle({ status: 'OUT_OF_SERVICE' }) as never);
+      await expect(service.create({ ...baseDto, assignedVehicleId: 'veh_1' })).rejects.toMatchObject({ code: 'VEHICLE_OUT_OF_SERVICE', status: 409 });
+      repo.findVehicleForAssignment.mockResolvedValue(null);
+      await expect(service.create({ ...baseDto, assignedVehicleId: 'veh_x' })).rejects.toMatchObject({
+        code: 'VEHICLE_NOT_FOUND',
+        status: 404,
+        details: { assignedVehicleId: 'Select a unit.' },
+      });
+    });
+
+    it.each([
+      ['Driver_username_live_key', 'username'],
+      [['email'], 'email'],
+      ['Driver_email_live_key', 'email'],
+      [['CASE', 'WHEN length(regexp_replace(phone'], 'phone'],
+      [['upper(regexp_replace(cdlNumber'], 'cdlNumber'],
+      [['assignedVehicleId'], 'assignedVehicleId'],
+      ['Driver_assignedVehicleId_key', 'assignedVehicleId'],
+    ] as const)('maps a racing P2002 on %j to the %s field', async (target, field) => {
+      repo.create.mockRejectedValue(p2002(target as string[] | string));
+      await expect(service.create(baseDto)).rejects.toMatchObject(TAKEN[field]);
+    });
+
+    it('importMany reports the field-level message per row and checks phone / licence on update rows', async () => {
+      repo.findLiveIdByCdlKey.mockResolvedValueOnce('drv_9');
+      repo.findByUsername.mockResolvedValueOnce(null).mockResolvedValueOnce(makeDriver({ id: 'drv_5' }) as never);
+      repo.findLiveIdByPhoneKey.mockResolvedValueOnce('drv_9');
+      const summary = await service.importMany({
+        drivers: [
+          { ...baseDto, username: 'new1' },
+          { ...baseDto, username: 'jsmith', phone: '6145551000' },
+        ],
+      });
+      expect(summary.failed).toEqual([
+        { index: 0, error: 'A driver with this licence number already exists.' },
+        { index: 1, error: 'A driver with this phone number already exists.' },
+      ]);
+      expect(repo.findLiveIdByPhoneKey).toHaveBeenCalledWith('6145551000', 'drv_5');
     });
   });
 

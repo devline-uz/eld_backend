@@ -214,7 +214,8 @@ model Driver {
   documents         DriverDocument[]
 
   @@index([status])
-  // Partial unique indexes (WHERE "deletedAt" IS NULL) live in the migration SQL.
+  // Partial unique indexes (WHERE "deletedAt" IS NULL) live in the migration SQL only; whitelisted
+  // in src/core/prisma/custom-indexes.ts so `npm run migrate:dev` never drops them.
   @@index([username])
   @@index([email])
 }
@@ -280,6 +281,9 @@ model Vehicle {
   make         String?
   model        String?
   year         Int?
+  /// Plate + state unique among LIVE rows, trim/case-insensitive, via the expression partial unique
+  /// index `Vehicle_plate_state_live_key` (migration 20261007090000_vehicle_plate_state_live_unique);
+  /// stored normalised (trim + upper-case, '' -> NULL).
   licensePlate String?
   plateState   String?
   fuelType     FuelType @default(DIESEL)
@@ -317,7 +321,8 @@ model Vehicle {
 
   @@index([status])
   @@index([groupId])
-  // Partial unique indexes (WHERE "deletedAt" IS NULL) live in the migration SQL.
+  // Partial / expression unique indexes live in the migration SQL only; whitelisted in
+  // src/core/prisma/custom-indexes.ts so `npm run migrate:dev` never drops them.
   @@index([unitNumber])
   @@index([vin])
 }
@@ -1159,7 +1164,7 @@ model SupportTicket {
   createdByDriverId String?
   assignedToId      String?
   createdAt         DateTime       @default(now())
-  updatedAt         DateTime       @updatedAt
+  updatedAt         DateTime       @default(now()) @updatedAt
   resolvedAt        DateTime?
 
   attachments Attachment[]

@@ -24,16 +24,24 @@ describe('VehiclesRepository', () => {
     repo = new VehiclesRepository(prisma);
   });
 
-  it('findByUnitNumber queries live (non-deleted) units by unitNumber', async () => {
+  it('findByUnitNumber queries live units by unitNumber, ignoring the display # and case (B-97)', async () => {
     vehicle.findFirst.mockResolvedValue({ id: 'v1' });
-    const result = await repo.findByUnitNumber('101');
-    expect(vehicle.findFirst).toHaveBeenCalledWith({ where: { unitNumber: '101', deletedAt: null } });
+    const result = await repo.findByUnitNumber(' #101a ');
+    expect(vehicle.findFirst).toHaveBeenCalledWith({
+      where: {
+        deletedAt: null,
+        OR: [
+          { unitNumber: { equals: '101a', mode: 'insensitive' } },
+          { unitNumber: { equals: '#101a', mode: 'insensitive' } },
+        ],
+      },
+    });
     expect(result).toEqual({ id: 'v1' });
   });
 
-  it('findByVin queries live (non-deleted) units by vin', async () => {
+  it('findByVin queries live (non-deleted) units by vin, case-insensitively', async () => {
     await repo.findByVin('VIN123');
-    expect(vehicle.findFirst).toHaveBeenCalledWith({ where: { vin: 'VIN123', deletedAt: null } });
+    expect(vehicle.findFirst).toHaveBeenCalledWith({ where: { vin: { equals: 'VIN123', mode: 'insensitive' }, deletedAt: null } });
   });
 
   it('list builds a status + free-text filter and paginates', async () => {

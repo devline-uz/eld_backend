@@ -6,8 +6,21 @@ import type { MobileRepository } from '../mobile/mobile.repository';
 import type { NotificationsRepository } from '../notifications/notifications.repository';
 import type { MailPort } from '../transfers/mail.port';
 import type { UsersRepository } from '../users/users.repository';
-import { VehiclesRepository } from './vehicles.repository';
+import { EldSerialTakenError, VehiclesRepository } from './vehicles.repository';
 import { VehiclesService } from './vehicles.service';
+
+const UNIT_TAKEN = {
+  code: 'UNIT_NUMBER_TAKEN',
+  status: 409,
+  message: 'A unit with this number already exists.',
+  details: { unitNumber: 'A unit with this number already exists.' },
+};
+const VIN_TAKEN = {
+  code: 'VIN_TAKEN',
+  status: 409,
+  message: 'A unit with this VIN already exists.',
+  details: { vin: 'A unit with this VIN already exists.' },
+};
 
 function makeVehicle(overrides: Partial<Record<string, unknown>> = {}) {
   return {
@@ -43,6 +56,11 @@ describe('VehiclesService', () => {
       | 'findTelemetryRange'
       | 'findTelemetryRecent'
       | 'groupExists'
+      | 'findDeviceForPairing'
+      | 'findDeviceByVehicleId'
+      | 'findLiveByPlate'
+      | 'saveWithDevice'
+      | 'releaseDevice'
     >
   >;
   let driversRepo: jest.Mocked<Pick<DriversRepository, 'findById' | 'update' | 'findOne'>>;
@@ -72,6 +90,11 @@ describe('VehiclesService', () => {
       groupExists: jest.fn().mockResolvedValue(true),
       findTelemetryRange: jest.fn().mockResolvedValue([]),
       findTelemetryRecent: jest.fn().mockResolvedValue([]),
+      findDeviceForPairing: jest.fn().mockResolvedValue(null),
+      findDeviceByVehicleId: jest.fn().mockResolvedValue(null),
+      findLiveByPlate: jest.fn().mockResolvedValue(null),
+      saveWithDevice: jest.fn(),
+      releaseDevice: jest.fn().mockResolvedValue({ count: 0 }),
     };
     driversRepo = {
       findById: jest.fn(),
@@ -226,12 +249,13 @@ describe('VehiclesService', () => {
       vehiclesRepo.findByUnitNumber.mockResolvedValue(makeVehicle() as never);
       vehiclesRepo.findByVin.mockResolvedValue(null);
       await expect(service.create({ unitNumber: '#101', vin: 'VIN' } as never)).rejects.toThrow(AppException);
+      await expect(service.create({ unitNumber: '#101', vin: 'VIN' } as never)).rejects.toMatchObject(UNIT_TAKEN);
     });
 
     it('throws conflict when VIN already exists', async () => {
       vehiclesRepo.findByUnitNumber.mockResolvedValue(null);
       vehiclesRepo.findByVin.mockResolvedValue(makeVehicle() as never);
-      await expect(service.create({ unitNumber: '#101', vin: 'VIN' } as never)).rejects.toThrow(AppException);
+      await expect(service.create({ unitNumber: '#101', vin: 'VIN' } as never)).rejects.toMatchObject(VIN_TAKEN);
     });
 
     it('creates when unique', async () => {
@@ -292,7 +316,7 @@ describe('VehiclesService', () => {
   });
 
   describe('soft delete frees unitNumber / VIN (partial unique indexes on live rows)', () => {
-    const p2002 = (target: string[]) => Object.assign(new Error('Unique constraint failed'), { code: 'P2002', meta: { target } });
+    const p2002 = (target: string[] | string) => Object.assign(new Error('Unique constraint failed'), { code: 'P2002', meta: { target } });
 
     it('re-creating a unit with a soft-deleted unit\'s unitNumber and VIN succeeds', async () => {
       // The live-only lookups don't see the deleted row, so nothing collides.
@@ -309,19 +333,42 @@ describe('VehiclesService', () => {
     it('a duplicate among live units is still a 409', async () => {
       vehiclesRepo.findByUnitNumber.mockResolvedValue(makeVehicle() as never);
       vehiclesRepo.findByVin.mockResolvedValue(null);
-      await expect(service.create({ unitNumber: '#101', vin: 'OTHER' } as never)).rejects.toMatchObject({ code: 'CONFLICT', status: 409 });
+      await expect(service.create({ unitNumber: '#101', vin: 'OTHER' } as never)).rejects.toMatchObject(UNIT_TAKEN);
       expect(vehiclesRepo.create).not.toHaveBeenCalled();
     });
 
-    it('maps a racing P2002 on create to a 409 CONFLICT naming the column', async () => {
+    it('maps a racing P2002 on create to a field-level 409 naming the column', async () => {
       vehiclesRepo.findByUnitNumber.mockResolvedValue(null);
       vehiclesRepo.findByVin.mockResolvedValue(null);
       vehiclesRepo.create.mockRejectedValue(p2002(['vin']));
-      await expect(service.create({ unitNumber: '#101', vin: 'VIN9' } as never)).rejects.toMatchObject({
-        code: 'CONFLICT',
-        status: 409,
-        message: 'VIN "VIN9" already exists.',
-      });
+      await expect(service.create({ unitNumber: '#101', vin: 'VIN9' } as never)).rejects.toMatchObject(VIN_TAKEN);
+    });
+
+    it.each([
+      ['Vehicle_vin_live_key', VIN_TAKEN],
+      ['Vehicle_vin_key', VIN_TAKEN],
+      ['Vehicle_unitNumber_live_key', UNIT_TAKEN],
+      [['unitNumber'], UNIT_TAKEN],
+    ])('maps P2002 target %j to the matching field', async (target, expected) => {
+      vehiclesRepo.findByUnitNumber.mockResolvedValue(null);
+      vehiclesRepo.findByVin.mockResolvedValue(null);
+      vehiclesRepo.create.mockRejectedValue(p2002(target));
+      await expect(service.create({ unitNumber: '#101', vin: 'VIN9' } as never)).rejects.toMatchObject(expected);
+    });
+
+    it('an unattributable P2002 stays a generic 409 CONFLICT', async () => {
+      vehiclesRepo.findByUnitNumber.mockResolvedValue(null);
+      vehiclesRepo.findByVin.mockResolvedValue(null);
+      vehiclesRepo.create.mockRejectedValue(p2002(['somethingElse']));
+      await expect(service.create({ unitNumber: '#101', vin: 'VIN9' } as never)).rejects.toMatchObject({ code: 'CONFLICT', status: 409 });
+    });
+
+    it('importMany reports the field-level message for a row whose VIN races into the index', async () => {
+      vehiclesRepo.findByUnitNumber.mockResolvedValue(null);
+      vehiclesRepo.findByVin.mockResolvedValue(null);
+      vehiclesRepo.create.mockRejectedValue(p2002('Vehicle_vin_live_key'));
+      const summary = await service.importMany({ vehicles: [{ unitNumber: '#101', vin: '1FUJA6CV88LW12345' }] } as never);
+      expect(summary.failed).toEqual([{ index: 0, error: 'A unit with this VIN already exists.' }]);
     });
 
     it('rethrows non-P2002 errors from create untouched', async () => {
@@ -336,7 +383,7 @@ describe('VehiclesService', () => {
       vehiclesRepo.findById.mockResolvedValue(makeVehicle() as never);
       vehiclesRepo.findByUnitNumber.mockResolvedValue(makeVehicle({ id: 'veh_2', unitNumber: '#202' }) as never);
       vehiclesRepo.findByVin.mockResolvedValue(null);
-      await expect(service.update('veh_1', { unitNumber: '#202' })).rejects.toMatchObject({ code: 'CONFLICT', status: 409 });
+      await expect(service.update('veh_1', { unitNumber: '#202' })).rejects.toMatchObject(UNIT_TAKEN);
       expect(vehiclesRepo.update).not.toHaveBeenCalled();
     });
 
@@ -344,7 +391,7 @@ describe('VehiclesService', () => {
       vehiclesRepo.findById.mockResolvedValue(makeVehicle() as never);
       vehiclesRepo.findByUnitNumber.mockResolvedValue(null);
       vehiclesRepo.findByVin.mockResolvedValue(makeVehicle({ id: 'veh_2' }) as never);
-      await expect(service.update('veh_1', { vin: 'TAKEN' })).rejects.toMatchObject({ code: 'CONFLICT' });
+      await expect(service.update('veh_1', { vin: 'TAKEN' })).rejects.toMatchObject(VIN_TAKEN);
     });
 
     it('update lets a unit re-send its own unitNumber / VIN', async () => {
@@ -360,10 +407,7 @@ describe('VehiclesService', () => {
       vehiclesRepo.findById.mockResolvedValue(makeVehicle() as never);
       vehiclesRepo.findByUnitNumber.mockResolvedValue(null);
       vehiclesRepo.update.mockRejectedValue(p2002(['unitNumber']));
-      await expect(service.update('veh_1', { unitNumber: '#303' })).rejects.toMatchObject({
-        code: 'CONFLICT',
-        message: 'Unit "#303" already exists.',
-      });
+      await expect(service.update('veh_1', { unitNumber: '#303' })).rejects.toMatchObject(UNIT_TAKEN);
     });
 
     it('get treats a soft-deleted unit as not found', async () => {
@@ -377,6 +421,191 @@ describe('VehiclesService', () => {
       vehiclesRepo.create.mockResolvedValue(makeVehicle({ id: 'veh_new' }) as never);
       const summary = await service.importMany({ vehicles: [{ unitNumber: '#101', vin: '1FUJA6CV88LW12345' }] } as never);
       expect(summary).toMatchObject({ imported: 1, updated: 0, failed: [] });
+    });
+  });
+
+  describe('ELD serial and plate + state uniqueness (live units)', () => {
+    const p2002 = (target: string[] | string) => Object.assign(new Error('Unique constraint failed'), { code: 'P2002', meta: { target } });
+    const device = (overrides: Partial<Record<string, unknown>> = {}) => ({
+      id: 'dev_1',
+      serial: 'PT30_1C4F',
+      vehicleId: null,
+      vehicle: null,
+      ...overrides,
+    });
+    const SERIAL_TAKEN = {
+      code: 'ELD_SERIAL_TAKEN',
+      status: 409,
+      message: 'This ELD serial is already assigned to another unit.',
+      details: { eldSerial: 'This ELD serial is already assigned to another unit.' },
+    };
+    const PLATE_TAKEN = {
+      code: 'LICENSE_PLATE_TAKEN',
+      status: 409,
+      message: 'This license plate is already registered for this state.',
+      details: { licensePlate: 'This license plate is already registered for this state.' },
+    };
+    const base = { unitNumber: '#900', vin: '1FUJA6CV88LW90000' };
+
+    beforeEach(() => {
+      vehiclesRepo.findByUnitNumber.mockResolvedValue(null);
+      vehiclesRepo.findByVin.mockResolvedValue(null);
+      vehiclesRepo.create.mockResolvedValue(makeVehicle({ id: 'veh_new' }) as never);
+      vehiclesRepo.saveWithDevice.mockResolvedValue(makeVehicle({ id: 'veh_new' }) as never);
+      vehiclesRepo.update.mockResolvedValue(makeVehicle() as never);
+    });
+
+    it('(a) pairs a free device on create inside the transactional write', async () => {
+      vehiclesRepo.findDeviceForPairing.mockResolvedValue(device() as never);
+      await service.create({ ...base, deviceId: 'PT30_1C4F' } as never);
+      expect(vehiclesRepo.findDeviceForPairing).toHaveBeenCalledWith('PT30_1C4F');
+      expect(vehiclesRepo.saveWithDevice).toHaveBeenCalledWith(
+        { create: expect.objectContaining({ unitNumber: '#900' }) as unknown },
+        'dev_1',
+      );
+      expect(vehiclesRepo.create).not.toHaveBeenCalled();
+    });
+
+    it('accepts `eldSerial` as an alias of `deviceId`', async () => {
+      vehiclesRepo.findDeviceForPairing.mockResolvedValue(device() as never);
+      await service.create({ ...base, eldSerial: 'pt30_1c4f' } as never);
+      expect(vehiclesRepo.findDeviceForPairing).toHaveBeenCalledWith('PT30_1C4F');
+    });
+
+    it('an empty serial / plate never conflicts and pairs nothing', async () => {
+      await service.create({ ...base, deviceId: '   ', licensePlate: '', plateState: 'OH' } as never);
+      expect(vehiclesRepo.findDeviceForPairing).not.toHaveBeenCalled();
+      expect(vehiclesRepo.findLiveByPlate).not.toHaveBeenCalled();
+      expect(vehiclesRepo.create).toHaveBeenCalledWith(expect.objectContaining({ licensePlate: null, plateState: 'OH' }));
+    });
+
+    it('(b) rejects a serial already paired to another live unit with ELD_SERIAL_TAKEN', async () => {
+      vehiclesRepo.findDeviceForPairing.mockResolvedValue(
+        device({ vehicleId: 'veh_2', vehicle: { id: 'veh_2', deletedAt: null } }) as never,
+      );
+      await expect(service.create({ ...base, deviceId: 'PT30_1C4F' } as never)).rejects.toMatchObject(SERIAL_TAKEN);
+      expect(vehiclesRepo.create).not.toHaveBeenCalled();
+      expect(vehiclesRepo.saveWithDevice).not.toHaveBeenCalled();
+    });
+
+    it('a device left on a soft-deleted unit is free to pair', async () => {
+      vehiclesRepo.findDeviceForPairing.mockResolvedValue(
+        device({ vehicleId: 'veh_old', vehicle: { id: 'veh_old', deletedAt: new Date() } }) as never,
+      );
+      await service.create({ ...base, deviceId: 'PT30_1C4F' } as never);
+      expect(vehiclesRepo.saveWithDevice).toHaveBeenCalledWith(expect.anything(), 'dev_1');
+    });
+
+    it('an unknown serial is a 404 DEVICE_NOT_FOUND naming the field', async () => {
+      await expect(service.create({ ...base, deviceId: 'NOPE' } as never)).rejects.toMatchObject({
+        code: 'DEVICE_NOT_FOUND',
+        status: 404,
+        details: { eldSerial: 'No ELD device with this serial is registered.' },
+      });
+    });
+
+    it('(c) allows the same plate in a different state', async () => {
+      await service.create({ ...base, licensePlate: 'ABC123', plateState: 'TX' } as never);
+      expect(vehiclesRepo.findLiveByPlate).toHaveBeenCalledWith('ABC123', 'TX', undefined);
+      expect(vehiclesRepo.create).toHaveBeenCalled();
+    });
+
+    it('(d) rejects the same plate in the same state with LICENSE_PLATE_TAKEN', async () => {
+      vehiclesRepo.findLiveByPlate.mockResolvedValue(makeVehicle({ id: 'veh_2' }) as never);
+      await expect(service.create({ ...base, licensePlate: 'ABC123', plateState: 'OH' } as never)).rejects.toMatchObject(PLATE_TAKEN);
+      expect(vehiclesRepo.create).not.toHaveBeenCalled();
+    });
+
+    it('(h) normalises casing / whitespace before the checks and the write', async () => {
+      vehiclesRepo.findDeviceForPairing.mockResolvedValue(device() as never);
+      await service.create({ ...base, deviceId: '  pt30_1c4f ', licensePlate: ' abc123 ', plateState: ' oh' } as never);
+      expect(vehiclesRepo.findDeviceForPairing).toHaveBeenCalledWith('PT30_1C4F');
+      expect(vehiclesRepo.findLiveByPlate).toHaveBeenCalledWith('ABC123', 'OH', undefined);
+      expect(vehiclesRepo.saveWithDevice).toHaveBeenCalledWith(
+        { create: expect.objectContaining({ licensePlate: 'ABC123', plateState: 'OH' }) as unknown },
+        'dev_1',
+      );
+    });
+
+    it('(h) a casing variant of a taken plate is still taken', async () => {
+      vehiclesRepo.findLiveByPlate.mockImplementation((plate, state) =>
+        Promise.resolve((plate === 'ABC123' && state === 'OH' ? makeVehicle({ id: 'veh_2' }) : null) as never),
+      );
+      await expect(service.create({ ...base, licensePlate: 'abc123 ', plateState: 'Oh' } as never)).rejects.toMatchObject(PLATE_TAKEN);
+    });
+
+    it('(e) edit re-sending its own serial and plate is allowed and does not re-pair', async () => {
+      vehiclesRepo.findById.mockResolvedValue(makeVehicle({ licensePlate: 'ABC123', plateState: 'OH' }) as never);
+      vehiclesRepo.findDeviceForPairing.mockResolvedValue(
+        device({ vehicleId: 'veh_1', vehicle: { id: 'veh_1', deletedAt: null } }) as never,
+      );
+      await service.update('veh_1', { deviceId: 'pt30_1c4f', licensePlate: 'abc123', plateState: 'oh', make: 'Volvo' });
+      expect(vehiclesRepo.findLiveByPlate).not.toHaveBeenCalled();
+      expect(vehiclesRepo.saveWithDevice).not.toHaveBeenCalled();
+      expect(vehiclesRepo.update).toHaveBeenCalledWith(
+        { id: 'veh_1' },
+        { make: 'Volvo', licensePlate: 'ABC123', plateState: 'OH' },
+      );
+    });
+
+    it('(f) edit using another live unit\'s serial is rejected', async () => {
+      vehiclesRepo.findById.mockResolvedValue(makeVehicle() as never);
+      vehiclesRepo.findDeviceForPairing.mockResolvedValue(
+        device({ vehicleId: 'veh_2', vehicle: { id: 'veh_2', deletedAt: null } }) as never,
+      );
+      await expect(service.update('veh_1', { deviceId: 'PT30_1C4F' })).rejects.toMatchObject(SERIAL_TAKEN);
+      expect(vehiclesRepo.update).not.toHaveBeenCalled();
+      expect(vehiclesRepo.saveWithDevice).not.toHaveBeenCalled();
+    });
+
+    it('edit switching to a free device pairs it in the transactional write', async () => {
+      vehiclesRepo.findById.mockResolvedValue(makeVehicle() as never);
+      vehiclesRepo.findDeviceForPairing.mockResolvedValue(device({ id: 'dev_9' }) as never);
+      vehiclesRepo.saveWithDevice.mockResolvedValue(makeVehicle() as never);
+      await service.update('veh_1', { deviceId: 'PT30_9999' });
+      expect(vehiclesRepo.saveWithDevice).toHaveBeenCalledWith({ id: 'veh_1', update: {} }, 'dev_9');
+    });
+
+    it('edit clearing the serial unpairs the current device', async () => {
+      vehiclesRepo.findById.mockResolvedValue(makeVehicle() as never);
+      vehiclesRepo.findDeviceByVehicleId.mockResolvedValue({ id: 'dev_1' } as never);
+      vehiclesRepo.saveWithDevice.mockResolvedValue(makeVehicle() as never);
+      await service.update('veh_1', { deviceId: null });
+      expect(vehiclesRepo.saveWithDevice).toHaveBeenCalledWith({ id: 'veh_1', update: {} }, null);
+    });
+
+    it('(g) edit using another live unit\'s plate + state is rejected', async () => {
+      vehiclesRepo.findById.mockResolvedValue(makeVehicle({ licensePlate: 'XYZ1', plateState: 'OH' }) as never);
+      vehiclesRepo.findLiveByPlate.mockResolvedValue(makeVehicle({ id: 'veh_2' }) as never);
+      await expect(service.update('veh_1', { licensePlate: ' abc123' })).rejects.toMatchObject(PLATE_TAKEN);
+      // A partial PATCH is judged on the pair the unit ends up with (stored state kept).
+      expect(vehiclesRepo.findLiveByPlate).toHaveBeenCalledWith('ABC123', 'OH', 'veh_1');
+      expect(vehiclesRepo.update).not.toHaveBeenCalled();
+    });
+
+    it('maps a racing P2002 on the plate index to LICENSE_PLATE_TAKEN', async () => {
+      vehiclesRepo.create.mockRejectedValue(p2002('Vehicle_plate_state_live_key'));
+      await expect(service.create({ ...base, licensePlate: 'ABC123', plateState: 'OH' } as never)).rejects.toMatchObject(PLATE_TAKEN);
+    });
+
+    it('maps a racing P2002 on the device pairing to ELD_SERIAL_TAKEN', async () => {
+      vehiclesRepo.findDeviceForPairing.mockResolvedValue(device() as never);
+      vehiclesRepo.saveWithDevice.mockRejectedValue(p2002(['vehicleId']));
+      await expect(service.create({ ...base, deviceId: 'PT30_1C4F' } as never)).rejects.toMatchObject(SERIAL_TAKEN);
+    });
+
+    it('maps a lost conditional device claim (EldSerialTakenError) to ELD_SERIAL_TAKEN', async () => {
+      vehiclesRepo.findById.mockResolvedValue(makeVehicle() as never);
+      vehiclesRepo.findDeviceForPairing.mockResolvedValue(device() as never);
+      vehiclesRepo.saveWithDevice.mockRejectedValue(new EldSerialTakenError());
+      await expect(service.update('veh_1', { deviceId: 'PT30_1C4F' })).rejects.toMatchObject(SERIAL_TAKEN);
+    });
+
+    it('soft delete releases the unit\'s ELD device', async () => {
+      vehiclesRepo.findById.mockResolvedValue(makeVehicle() as never);
+      vehiclesRepo.update.mockResolvedValue(makeVehicle({ status: 'INACTIVE' }) as never);
+      await service.remove('veh_1');
+      expect(vehiclesRepo.releaseDevice).toHaveBeenCalledWith('veh_1');
     });
   });
 
