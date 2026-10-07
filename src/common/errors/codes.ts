@@ -155,6 +155,10 @@ export const ERROR_CODES = {
   /** §20 B-73 — `POST /trips/:id/publish` (or `PATCH` to a non-DRAFT status) on a trip that is
    * not currently DRAFT. */
   TRIP_NOT_DRAFT: 'TRIP_NOT_DRAFT',
+  /** 409 on the web-panel `POST /trips`, `PATCH /trips/:id` and `POST /trips/:id/assign`: the
+   * unit (`vehicleId`) already has another live trip whose time range overlaps this one.
+   * `details.vehicleId` is the message, `details.conflict` names the other trip. */
+  TRIP_SCHEDULE_CONFLICT: 'TRIP_SCHEDULE_CONFLICT',
 
   // --- geofences (TZ §20 B-93) ----------------------------------------------
   /** `GEOCODER_URL` is unset — `type: 'ADDRESS'` cannot be resolved to coordinates. */

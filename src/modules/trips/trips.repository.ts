@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { Prisma, Trip } from '@prisma/client';
 import { BaseRepository, ModelDelegate } from '../../core/prisma/base.repository';
 import { PrismaService } from '../../core/prisma/prisma.service';
+import { UNIT_BLOCKING_STATUSES } from './trip-schedule';
 
 export interface TripListFilter {
   status?: Trip['status'];
@@ -80,10 +81,83 @@ export class TripsRepository extends BaseRepository<
     return this.prisma.trip.findUnique({ where: { id }, include: { stops: { orderBy: { sequence: 'asc' } }, ...NAME_JOIN } });
   }
 
-  createWithStops(data: Prisma.TripCreateInput, stops: Prisma.TripStopCreateWithoutTripInput[]) {
-    return this.prisma.trip.create({
+  createWithStops(
+    data: Prisma.TripCreateInput,
+    stops: Prisma.TripStopCreateWithoutTripInput[],
+    db: Prisma.TransactionClient = this.prisma,
+  ) {
+    return db.trip.create({
       data: { ...data, stops: stops.length ? { create: stops } : undefined },
       include: { stops: true, ...NAME_JOIN },
+    });
+  }
+
+  /** Base `update`, optionally inside the unit-schedule transaction (`withUnitScheduleLock`). */
+  override update(where: Prisma.TripWhereUniqueInput, data: Prisma.TripUpdateInput, db?: Prisma.TransactionClient): Promise<Trip> {
+    return db ? db.trip.update({ where, data }) : super.update(where, data);
+  }
+
+  /**
+   * Runs `work` in a transaction holding a per-unit advisory lock, so two concurrent web-panel
+   * writes cannot both pass the overlap check for the same unit and both commit (same
+   * `pg_advisory_xact_lock` pattern as ingest sequence allocation). Released on commit/rollback.
+   */
+  withUnitScheduleLock<T>(vehicleId: string, work: (db: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`, `trip-unit:${vehicleId}`);
+      return work(tx);
+    });
+  }
+
+  /**
+   * Live trips on `vehicleId` that could overlap `[start, end)` (`end: null` = open-ended). A coarse
+   * SQL pre-filter only — `findScheduleConflict` (trip-schedule.ts) applies the exact rule.
+   */
+  findUnitScheduleCandidates(
+    vehicleId: string,
+    window: { start: Date; end: Date | null },
+    excludeTripId: string | undefined,
+    db: Prisma.TransactionClient = this.prisma,
+  ) {
+    return db.trip.findMany({
+      where: {
+        vehicleId,
+        status: { in: [...UNIT_BLOCKING_STATUSES] },
+        ...(excludeTripId && { id: { not: excludeTripId } }),
+        AND: [
+          {
+            OR: [
+              { status: 'IN_PROGRESS' },
+              { plannedEndAt: null },
+              { plannedEndAt: { gt: window.start } },
+              { completedAt: { gt: window.start } },
+            ],
+          },
+          ...(window.end
+            ? [
+                {
+                  OR: [
+                    { status: 'IN_PROGRESS' as const },
+                    { plannedStartAt: { lt: window.end } },
+                    { startedAt: { lt: window.end } },
+                  ],
+                },
+              ]
+            : []),
+        ],
+      },
+      orderBy: { plannedStartAt: 'asc' },
+      take: 50,
+      select: {
+        id: true,
+        number: true,
+        status: true,
+        plannedStartAt: true,
+        plannedEndAt: true,
+        startedAt: true,
+        completedAt: true,
+        vehicle: { select: { unitNumber: true } },
+      },
     });
   }
 

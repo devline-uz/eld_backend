@@ -53,7 +53,16 @@ export class TripsController {
   @Audit({ object: 'Trip', action: 'CREATE' })
   @ApiOperation({ summary: 'Creates a trip/load, optionally with stops and an initial driver/vehicle.' })
   @ApiCreatedResponse({ schema: { example: { id: 'trp_3', number: 'TRP-1003', status: 'PLANNED' } } })
-  @ApiStandardErrors({ errors: [apiError.conflict(ERROR_CODES.CONFLICT, 'A trip with this number already exists.'), apiError.unprocessable(ERROR_CODES.TRAILER_NOT_FOUND, 'trailerId is unknown or names a deleted trailer.')] })
+  @ApiStandardErrors({
+    errors: [
+      // Swagger keeps one response per status — `fieldConflicts` lists both 409s.
+      apiError.fieldConflicts([
+        { code: ERROR_CODES.CONFLICT, field: 'number', message: 'A trip with this number already exists.' },
+        { code: ERROR_CODES.TRIP_SCHEDULE_CONFLICT, field: 'vehicleId', message: 'Unit 1 is already assigned to another trip (TRP-1001) from 2026-10-10 12:00 UTC to 2026-10-20 12:00 UTC.' },
+      ]),
+      apiError.unprocessable(ERROR_CODES.TRAILER_NOT_FOUND, 'trailerId is unknown or names a deleted trailer.'),
+    ],
+  })
   create(@Body(zodBody(CreateTripDto)) dto: CreateTripDto, @CurrentUser() actor: ContextUser) {
     return this.trips.create(dto, actor.id);
   }
@@ -66,7 +75,10 @@ export class TripsController {
   @ApiStandardErrors({
     errors: [
       apiError.notFound(ERROR_CODES.NOT_FOUND, 'Trip not found.'),
-      apiError.conflict(ERROR_CODES.CONFLICT, 'Illegal status transition.'),
+      apiError.fieldConflicts([
+        { code: ERROR_CODES.CONFLICT, field: 'status', message: 'Illegal status transition.' },
+        { code: ERROR_CODES.TRIP_SCHEDULE_CONFLICT, field: 'vehicleId', message: "The trip's unit already has another trip in the new time range." },
+      ]),
     ],
   })
   update(@Param('id') id: string, @Body(zodBody(UpdateTripDto)) dto: UpdateTripDto) {
@@ -81,7 +93,10 @@ export class TripsController {
   @ApiStandardErrors({
     errors: [
       apiError.notFound(ERROR_CODES.NOT_FOUND, 'Trip not found.'),
-      apiError.conflict(ERROR_CODES.CONFLICT, 'Only a planned or assigned trip can be (re)assigned.'),
+      apiError.fieldConflicts([
+        { code: ERROR_CODES.CONFLICT, field: 'status', message: 'Only a planned or assigned trip can be (re)assigned.' },
+        { code: ERROR_CODES.TRIP_SCHEDULE_CONFLICT, field: 'vehicleId', message: "The new unit already has another trip in this trip's time range." },
+      ]),
       apiError.unprocessable(ERROR_CODES.TRAILER_NOT_FOUND, 'trailerId is unknown or names a deleted trailer.'),
     ],
   })
