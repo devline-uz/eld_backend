@@ -1,11 +1,23 @@
+import { isValidPhoneNumber } from 'libphonenumber-js';
 import { z } from 'zod';
+
+const E164_PATTERN = /^\+[1-9]\d{7,14}$/;
+export const MY_PROFILE_PHONE_MESSAGE = 'Phone must be a valid international number in E.164 format (e.g. +998901234567).';
+
+/** Web user phone — shared by `POST /users`, `PATCH /users/:id` and `PATCH /me/profile`.
+ * "" is still accepted (it was under the old `max(30)` rule and means "no phone / clear");
+ * anything else must be E.164 and a real number per libphonenumber-js. Validation only —
+ * the value is persisted as sent. Drivers and carrier keep their own looser rule for now. */
+const e164PhoneSchema = z
+  .string()
+  .refine((v) => v === '' || (E164_PATTERN.test(v) && isValidPhoneNumber(v)), { message: MY_PROFILE_PHONE_MESSAGE });
 
 export const CreateUserDto = z.object({
   email: z.string().email(),
   firstName: z.string().min(1).max(80),
   lastName: z.string().min(1).max(80),
   jobTitle: z.string().max(120).optional(),
-  phone: z.string().max(30).optional(),
+  phone: e164PhoneSchema.optional(),
   roleId: z.string().uuid(),
   /** B-85 — terminal scope for the invited user. tz.md §20.4 question 2 (UI filter vs
    * security boundary) is still open (D-090): stored only, not yet enforced anywhere. */
@@ -20,7 +32,7 @@ export const UpdateUserDto = z.object({
   firstName: z.string().min(1).max(80).optional(),
   lastName: z.string().min(1).max(80).optional(),
   jobTitle: z.string().max(120).optional(),
-  phone: z.string().max(30).optional(),
+  phone: e164PhoneSchema.optional(),
   roleId: z.string().uuid().optional(),
   status: z.enum(['INVITED', 'ACTIVE', 'DISABLED']).optional(),
   /** B-84 — changing this does NOT touch `User.email` directly; see `UsersService.update`. */
@@ -33,7 +45,7 @@ export const UpdateMyProfileDto = z.object({
   firstName: z.string().min(1).max(80).optional(),
   lastName: z.string().min(1).max(80).optional(),
   jobTitle: z.string().max(120).optional(),
-  phone: z.string().max(30).optional(),
+  phone: e164PhoneSchema.optional(),
 });
 export type UpdateMyProfileDto = z.infer<typeof UpdateMyProfileDto>;
 
