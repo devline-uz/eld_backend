@@ -64,6 +64,12 @@ export const CUSTOM_INDEXES: readonly CustomIndex[] = [
     migration: '20261007100000_driver_phone_cdl_live_unique',
     why: 'cdlNumber unique among live drivers, case/space/dash-insensitive (B-100, expression index)',
   },
+  {
+    name: 'Trailer_number_live_key',
+    table: 'Trailer',
+    migration: '20261007110000_trailer_soft_delete',
+    why: 'trailer number unique among live (deletedAt IS NULL) trailers',
+  },
 ];
 
 export const CUSTOM_INDEX_NAMES: ReadonlySet<string> = new Set(CUSTOM_INDEXES.map((i) => i.name));

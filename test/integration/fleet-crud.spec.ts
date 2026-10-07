@@ -104,4 +104,47 @@ describe('Fleet CRUD — vehicles, drivers, devices (Phase 2)', () => {
       expect(deactivated.status).toBe('INACTIVE');
     });
   });
+
+  it('soft-deletes a DVIR-referenced trailer and frees its number (migration 20261007110000_trailer_soft_delete)', async () => {
+    await inRolledBackTransaction(async (tx) => {
+      const stamp = Date.now();
+      const number = `TRL-TEST-${stamp}`;
+      const vehicle = await tx.vehicle.create({ data: { unitNumber: `TEST-T-${stamp}`, vin: `1TRLVIN${stamp}`.slice(0, 17), fuelType: 'DIESEL' } });
+      const driver = await tx.driver.create({
+        data: { username: `test_trl_${stamp}`, passwordHash: 'x', firstName: 'Test', lastName: 'Trailer', cdlNumber: `T${stamp}`, cdlState: 'OH', homeTerminalName: 'Columbus, OH' },
+      });
+      const trailer = await tx.trailer.create({ data: { number } });
+      const dvir = await tx.dvir.create({
+        data: {
+          driverId: driver.id,
+          vehicleId: vehicle.id,
+          trailerId: trailer.id,
+          type: 'PRE_TRIP',
+          submittedAt: new Date(),
+          odometerMi: 1000,
+          vehicleCondition: 'SATISFACTORY',
+          driverSignatureUrl: 'signatures/test.png',
+        },
+      });
+
+      // What `TrailersService.remove` writes — an UPDATE, so the Dvir FK (ON DELETE RESTRICT) never fires.
+      await tx.trailer.update({ where: { id: trailer.id }, data: { status: 'INACTIVE', deletedAt: new Date() } });
+
+      // History still resolves the deleted trailer, with deletedAt visible.
+      const history = await tx.dvir.findUniqueOrThrow({ where: { id: dvir.id }, include: { trailer: true } });
+      expect(history.trailer?.number).toBe(number);
+      expect(history.trailer?.deletedAt).toBeInstanceOf(Date);
+
+      // Live-only reads (TrailersRepository.findByNumber / list) no longer see it.
+      expect(await tx.trailer.findFirst({ where: { number, deletedAt: null } })).toBeNull();
+
+      // The partial unique index lets a NEW live trailer take the number...
+      const reused = await tx.trailer.create({ data: { number } });
+      expect(reused.id).not.toBe(trailer.id);
+      expect(await tx.trailer.count({ where: { number } })).toBe(2);
+
+      // ...but still rejects a second LIVE one (last statement: P2002 aborts the transaction).
+      await expect(tx.trailer.create({ data: { number } })).rejects.toMatchObject({ code: 'P2002' });
+    });
+  });
 });

@@ -147,8 +147,10 @@ export const ERROR_CODES = {
 
   // --- trips / dispatch (mobile/tz.md §21.1 MB-5) -------------------------
   TRIP_NOT_FOUND: 'TRIP_NOT_FOUND',
-  /** `PATCH /mobile/trip { trailerNumber }` — no `Trailer` row with that number exists.
-   * Deliberately rejected rather than stored as free text (no schema change, TZ §5.3). */
+  /** `PATCH /mobile/trip { trailerNumber }` — no live `Trailer` row with that number exists.
+   * Deliberately rejected rather than stored as free text (no schema change, TZ §5.3).
+   * Also 422 on `POST /trips`, `POST /trips/:id/assign` and `POST /mobile/dvir` when `trailerId`
+   * is unknown or names a soft-deleted trailer. */
   TRAILER_NOT_FOUND: 'TRAILER_NOT_FOUND',
   /** §20 B-73 — `POST /trips/:id/publish` (or `PATCH` to a non-DRAFT status) on a trip that is
    * not currently DRAFT. */

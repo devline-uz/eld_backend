@@ -143,6 +143,11 @@ export class MobileRepository extends BaseRepository<
     return this.prisma.vehicle.findUnique({ where: { id: vehicleId } });
   }
 
+  /** Any trailer row, live or soft-deleted — `MobileDvirService.submit` decides. */
+  findTrailer(trailerId: string): Promise<{ id: string; deletedAt: Date | null } | null> {
+    return this.prisma.trailer.findUnique({ where: { id: trailerId }, select: { id: true, deletedAt: true } });
+  }
+
   findDeviceByVehicle(vehicleId: string): Promise<Device | null> {
     return this.prisma.device.findUnique({ where: { vehicleId } });
   }

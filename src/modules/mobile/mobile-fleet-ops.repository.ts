@@ -136,8 +136,9 @@ export class MobileFleetOpsRepository {
     });
   }
 
+  /** Live (not soft-deleted) trailer only — a deleted trailer cannot be put on a trip. */
   findTrailerByNumber(number: string): Promise<Trailer | null> {
-    return this.prisma.trailer.findUnique({ where: { number } });
+    return this.prisma.trailer.findFirst({ where: { number, deletedAt: null } });
   }
 
   updateTrip(

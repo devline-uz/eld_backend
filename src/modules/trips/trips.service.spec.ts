@@ -9,6 +9,7 @@ function buildService(trip: Record<string, unknown> | null = { id: 'trp_1', stat
     unassignedLoads: jest.fn(async () => []),
     availableDriverIds: jest.fn(async () => []),
     list: jest.fn(async () => ({ items: [], total: 0 })),
+    findTrailer: jest.fn(async (id: string): Promise<{ id: string; deletedAt: Date | null } | null> => ({ id, deletedAt: null })),
   };
   const events = { publish: jest.fn(async () => undefined) };
   const alertQueue = { add: jest.fn(async () => undefined) };
@@ -93,5 +94,48 @@ describe('TripsService — DRAFT lifecycle (§20 B-73 publish)', () => {
   it('rejects DRAFT -> ASSIGNED (must publish to PLANNED first)', async () => {
     const { service } = buildService({ id: 'trp_1', status: 'DRAFT', etaAt: null });
     await expect(service.update('trp_1', { status: 'ASSIGNED' })).rejects.toMatchObject({ code: 'CONFLICT' });
+  });
+});
+
+describe('TripsService — trailer must be live (soft-deleted trailers)', () => {
+  const TRL = '33333333-3333-4333-8333-333333333333';
+
+  it('create stores a live trailerId', async () => {
+    const { service, repo } = buildService();
+    await service.create({ number: 'TRP-11', trailerId: TRL, draft: false }, 'usr_1');
+    expect(repo.findTrailer).toHaveBeenCalledWith(TRL);
+    expect((repo.createWithStops.mock.calls[0][0] as Record<string, unknown>).trailerId).toBe(TRL);
+  });
+
+  it('create rejects a soft-deleted trailerId with 422 TRAILER_NOT_FOUND and writes nothing', async () => {
+    const { service, repo } = buildService();
+    repo.findTrailer.mockResolvedValueOnce({ id: TRL, deletedAt: new Date('2026-10-01T00:00:00Z') });
+    await expect(service.create({ number: 'TRP-12', trailerId: TRL, draft: false }, 'usr_1')).rejects.toMatchObject({
+      code: 'TRAILER_NOT_FOUND',
+      status: 422,
+      details: { trailerId: 'This trailer has been deleted and cannot be assigned.' },
+    });
+    expect(repo.createWithStops).not.toHaveBeenCalled();
+  });
+
+  it('create rejects an unknown trailerId with 422 (Trip.trailerId has no FK)', async () => {
+    const { service, repo } = buildService();
+    repo.findTrailer.mockResolvedValueOnce(null);
+    await expect(service.create({ number: 'TRP-13', trailerId: TRL, draft: false }, 'usr_1')).rejects.toMatchObject({ code: 'TRAILER_NOT_FOUND', status: 422 });
+    expect(repo.createWithStops).not.toHaveBeenCalled();
+  });
+
+  it('assign rejects a soft-deleted trailerId', async () => {
+    const { service, repo } = buildService({ id: 'trp_1', status: 'PLANNED', etaAt: null, trailerId: null });
+    repo.findTrailer.mockResolvedValueOnce({ id: TRL, deletedAt: new Date() });
+    await expect(service.assign('trp_1', { driverId: 'drv_1', trailerId: TRL, notify: false })).rejects.toMatchObject({ code: 'TRAILER_NOT_FOUND', status: 422 });
+    expect(repo.update).not.toHaveBeenCalled();
+  });
+
+  it("assign re-sending the trip's current (since-deleted) trailer is not re-validated", async () => {
+    const { service, repo } = buildService({ id: 'trp_1', status: 'ASSIGNED', etaAt: null, trailerId: TRL });
+    await service.assign('trp_1', { driverId: 'drv_2', trailerId: TRL, notify: false });
+    expect(repo.findTrailer).not.toHaveBeenCalled();
+    expect(repo.update).toHaveBeenCalled();
   });
 });

@@ -9,6 +9,7 @@ const PHOTO_B = '22222222-2222-4222-8222-222222222222';
 function build() {
   const repo = {
     findVehicle: jest.fn().mockResolvedValue({ id: 'veh_1' }),
+    findTrailer: jest.fn().mockResolvedValue({ id: 'trl_1', deletedAt: null }),
     createDvir: jest.fn().mockResolvedValue({ id: 'dvir_1', defects: [] }),
     markVehicleOutOfService: jest.fn().mockResolvedValue({}),
   };
@@ -87,5 +88,38 @@ describe('MobileDvirService — MB-6 DVIR photo persistence (regression)', () =>
     expect(photos.findLinkable).not.toHaveBeenCalled();
     const [input] = repo.createDvir.mock.calls[0] as [DvirCreateInput];
     expect(input.defects[0].photoAttachmentIds).toEqual([]);
+  });
+});
+
+describe('MobileDvirService — trailerId must name a live trailer (soft-deleted trailers)', () => {
+  const TRL = '44444444-4444-4444-8444-444444444444';
+  const base = () => ({ ...dto([]), vehicleCondition: 'SATISFACTORY' as const, trailerId: TRL });
+
+  it('accepts a live trailer and stores its id', async () => {
+    const { service, repo } = build();
+    await service.submit('drv_1', base(), DRIVER);
+    expect(repo.findTrailer).toHaveBeenCalledWith(TRL);
+    expect((repo.createDvir.mock.calls[0] as [DvirCreateInput])[0].trailerId).toBe(TRL);
+  });
+
+  it('rejects a trailer deleted before the inspection with 422 TRAILER_NOT_FOUND, before storing the signature', async () => {
+    const { service, repo, signatures } = build();
+    repo.findTrailer.mockResolvedValueOnce({ id: TRL, deletedAt: new Date('2026-09-01T00:00:00Z') });
+    await expect(service.submit('drv_1', base(), DRIVER)).rejects.toMatchObject({ code: 'TRAILER_NOT_FOUND', status: 422 });
+    expect(signatures.store).not.toHaveBeenCalled();
+    expect(repo.createDvir).not.toHaveBeenCalled();
+  });
+
+  it('accepts an offline DVIR performed before the trailer was deleted (historical record)', async () => {
+    const { service, repo } = build();
+    repo.findTrailer.mockResolvedValueOnce({ id: TRL, deletedAt: new Date('2026-09-20T00:00:00Z') });
+    await service.submit('drv_1', base(), DRIVER);
+    expect(repo.createDvir).toHaveBeenCalled();
+  });
+
+  it('rejects an unknown trailerId with 422 instead of an FK error', async () => {
+    const { service, repo } = build();
+    repo.findTrailer.mockResolvedValueOnce(null);
+    await expect(service.submit('drv_1', base(), DRIVER)).rejects.toMatchObject({ code: 'TRAILER_NOT_FOUND', status: 422 });
   });
 });

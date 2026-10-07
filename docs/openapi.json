@@ -17458,7 +17458,64 @@
     "/api/trailers": {
       "get": {
         "operationId": "TrailersController_list",
-        "parameters": [],
+        "parameters": [
+          {
+            "name": "status",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "ACTIVE",
+                "INACTIVE",
+                "OUT_OF_SERVICE"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "required": false,
+            "in": "query",
+            "description": "Case-insensitive substring match on trailer number or VIN.",
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            }
+          },
+          {
+            "name": "sort",
+            "required": false,
+            "in": "query",
+            "description": "`number|vin|status` + `:asc|:desc` (default `number:asc`).",
+            "schema": {
+              "type": "string",
+              "maxLength": 60
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "in": "query",
+            "description": "Page size, 1–200 (default 25).",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 25
+            }
+          },
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "description": "1-based page number (default 1).",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "",
@@ -17471,10 +17528,14 @@
                         "id": "trl_1",
                         "number": "T-4471",
                         "vin": "1JJV532W7YL123456",
-                        "licensePlate": "TRL-9921",
-                        "licenseState": "OH"
+                        "status": "ACTIVE",
+                        "deletedAt": null
                       }
-                    ]
+                    ],
+                    "page": 1,
+                    "limit": 25,
+                    "total": 1,
+                    "totalPages": 1
                   }
                 }
               }
@@ -17636,7 +17697,7 @@
             "bearer": []
           }
         ],
-        "summary": "Lists trailers.",
+        "summary": "Lists live (not deleted) trailers, paginated like `GET /vehicles`.",
         "tags": [
           "trailers"
         ],
@@ -17772,7 +17833,7 @@
             }
           },
           "409": {
-            "description": "CONFLICT — A trailer with this number already exists.",
+            "description": "CONFLICT — A live trailer with this number already exists (a deleted trailer's number is reusable).",
             "content": {
               "application/json": {
                 "schema": {
@@ -17810,7 +17871,7 @@
                   "example": {
                     "statusCode": 409,
                     "code": "CONFLICT",
-                    "message": "A trailer with this number already exists.",
+                    "message": "A live trailer with this number already exists (a deleted trailer's number is reusable).",
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
                   }
@@ -18073,7 +18134,7 @@
             "bearer": []
           }
         ],
-        "summary": "Exports all trailers as the same shape `POST /trailers/import` accepts.",
+        "summary": "Exports all live (not deleted) trailers as the same shape `POST /trailers/import` accepts.",
         "tags": [
           "trailers"
         ],
@@ -18319,7 +18380,7 @@
             "bearer": []
           }
         ],
-        "summary": "Gets one trailer.",
+        "summary": "Gets one live trailer (a soft-deleted trailer is a 404).",
         "tags": [
           "trailers"
         ],
@@ -18362,7 +18423,9 @@
                   "example": {
                     "id": "trl_1",
                     "number": "T-4471",
-                    "licensePlate": "TRL-9922"
+                    "vin": "1JJV532W7YL123456",
+                    "status": "ACTIVE",
+                    "deletedAt": null
                   }
                 }
               }
@@ -18509,6 +18572,53 @@
               }
             }
           },
+          "409": {
+            "description": "CONFLICT — A live trailer with this number already exists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 409,
+                    "code": "CONFLICT",
+                    "message": "A live trailer with this number already exists.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
           "422": {
             "description": "VALIDATION_FAILED — Request validation failed.",
             "content": {
@@ -18571,7 +18681,7 @@
             "bearer": []
           }
         ],
-        "summary": "Edits a trailer.",
+        "summary": "Edits a live trailer (a soft-deleted trailer is a 404).",
         "tags": [
           "trailers"
         ],
@@ -18811,7 +18921,7 @@
             "bearer": []
           }
         ],
-        "summary": "Deletes a trailer.",
+        "summary": "Soft-deletes a trailer: hidden from list/lookup/export and no longer assignable, its number is freed for reuse, historical DVIRs/trips keep resolving it. Deleting an already-deleted trailer is a 404.",
         "tags": [
           "trailers"
         ],
@@ -19000,7 +19110,7 @@
             "bearer": []
           }
         ],
-        "summary": "Bulk-imports trailers; upserts by `number`.",
+        "summary": "Bulk-imports trailers; upserts by `number` among live trailers (a number held only by a deleted trailer creates a new one).",
         "tags": [
           "trailers"
         ],
@@ -25291,7 +25401,7 @@
             }
           },
           "422": {
-            "description": "VALIDATION_FAILED — photoAttachmentIds must reference this driver's own, not yet attached DVIR_PHOTO uploads (MB-6).",
+            "description": "TRAILER_NOT_FOUND — trailerId is unknown, or names a trailer deleted before this inspection.",
             "content": {
               "application/json": {
                 "schema": {
@@ -25328,8 +25438,8 @@
                   },
                   "example": {
                     "statusCode": 422,
-                    "code": "VALIDATION_FAILED",
-                    "message": "photoAttachmentIds must reference this driver's own, not yet attached DVIR_PHOTO uploads (MB-6).",
+                    "code": "TRAILER_NOT_FOUND",
+                    "message": "trailerId is unknown, or names a trailer deleted before this inspection.",
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
                   }
@@ -50083,7 +50193,7 @@
             }
           },
           "422": {
-            "description": "VALIDATION_FAILED — Request validation failed.",
+            "description": "TRAILER_NOT_FOUND — trailerId is unknown or names a deleted trailer.",
             "content": {
               "application/json": {
                 "schema": {
@@ -50120,17 +50230,8 @@
                   },
                   "example": {
                     "statusCode": 422,
-                    "code": "VALIDATION_FAILED",
-                    "message": "Request validation failed.",
-                    "details": {
-                      "issues": [
-                        {
-                          "path": "field",
-                          "code": "invalid_type",
-                          "message": "Required"
-                        }
-                      ]
-                    },
+                    "code": "TRAILER_NOT_FOUND",
+                    "message": "trailerId is unknown or names a deleted trailer.",
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
                   }
@@ -51119,7 +51220,7 @@
             }
           },
           "422": {
-            "description": "VALIDATION_FAILED — Request validation failed.",
+            "description": "TRAILER_NOT_FOUND — trailerId is unknown or names a deleted trailer.",
             "content": {
               "application/json": {
                 "schema": {
@@ -51156,17 +51257,8 @@
                   },
                   "example": {
                     "statusCode": 422,
-                    "code": "VALIDATION_FAILED",
-                    "message": "Request validation failed.",
-                    "details": {
-                      "issues": [
-                        {
-                          "path": "field",
-                          "code": "invalid_type",
-                          "message": "Required"
-                        }
-                      ]
-                    },
+                    "code": "TRAILER_NOT_FOUND",
+                    "message": "trailerId is unknown or names a deleted trailer.",
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
                   }

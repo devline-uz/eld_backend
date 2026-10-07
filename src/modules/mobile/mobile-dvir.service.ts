@@ -52,6 +52,20 @@ export class MobileDvirService {
     const vehicle = await this.repo.findVehicle(dto.vehicleId);
     if (!vehicle) throw new AppException(ERROR_CODES.VEHICLE_NOT_FOUND, 'Vehicle not found.', 404, { vehicleId: dto.vehicleId });
 
+    // A soft-deleted trailer cannot be inspected anymore — unless the inspection itself happened
+    // before the delete (an offline DVIR synced late), which is a true historical record.
+    if (dto.trailerId) {
+      const trailer = await this.repo.findTrailer(dto.trailerId);
+      if (!trailer) {
+        throw new AppException(ERROR_CODES.TRAILER_NOT_FOUND, 'Trailer not found.', 422, { trailerId: 'Trailer not found.' });
+      }
+      if (trailer.deletedAt && trailer.deletedAt <= new Date(dto.submittedAt)) {
+        throw new AppException(ERROR_CODES.TRAILER_NOT_FOUND, 'This trailer has been deleted and cannot be inspected.', 422, {
+          trailerId: 'This trailer has been deleted and cannot be inspected.',
+        });
+      }
+    }
+
     // MB-6 — every referenced photo must be the driver's own, not yet attached DVIR_PHOTO upload;
     // checked BEFORE the signature is stored so a bad id leaves no orphan object behind.
     const photoIds = [...new Set(dto.defects.flatMap((defect) => defect.photoAttachmentIds))];

@@ -341,11 +341,20 @@ model VehicleGroup {
 
 model Trailer {
   id     String        @id @default(uuid())
-  number String        @unique
+  /// Unique among LIVE rows only (`deletedAt IS NULL`) — enforced by the partial unique index
+  /// `Trailer_number_live_key` in migration 20261007110000_trailer_soft_delete (Prisma can't
+  /// express partial indexes), so a soft-deleted trailer's number can be reused.
+  number String
   vin    String?
   status VehicleStatus @default(ACTIVE)
+  /// Soft-delete marker (`DELETE /trailers/:id`). Non-null rows are hidden from list / lookup /
+  /// export and cannot be put on new trips or DVIRs, but stay in the table so historical DVIRs and
+  /// trips that reference them still resolve.
+  deletedAt DateTime?
 
   dvirs Dvir[]
+
+  @@index([number])
 }
 
 // ---------------------------------------------------------------------------
