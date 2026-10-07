@@ -42,6 +42,11 @@ export class TripsRepository extends BaseRepository<
     return this.prisma.trip.findUnique({ where: { number } });
   }
 
+  /** Any trailer row, live or soft-deleted — the service decides (a deleted one is not assignable). */
+  findTrailer(id: string): Promise<{ id: string; deletedAt: Date | null } | null> {
+    return this.prisma.trailer.findUnique({ where: { id }, select: { id: true, deletedAt: true } });
+  }
+
   async list(filter: TripListFilter, page: number, limit: number, orderBy: Record<string, 'asc' | 'desc'>) {
     const where: Prisma.TripWhereInput = {
       ...(filter.status && { status: filter.status }),

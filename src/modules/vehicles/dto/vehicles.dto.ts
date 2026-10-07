@@ -140,6 +140,20 @@ export const ImportTrailersDto = z.object({
 });
 export type ImportTrailersDto = z.infer<typeof ImportTrailersDto>;
 
+/** `GET /trailers` — same `?page&limit&sort&q&status` contract and defaults as `GET /vehicles`.
+ * `q` matches `number` / `vin` (case-insensitive substring); `sort` is `field:asc|desc` over
+ * {@link TrailerListSortFields}, falling back to `number:asc`. Soft-deleted trailers never appear. */
+export const TrailerListSortFields = ['number', 'vin', 'status'] as const;
+
+export const TrailerListQueryDto = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(200).default(25),
+  sort: z.string().max(60).optional(),
+  q: z.string().max(200).optional(),
+  status: VehicleStatusEnum.optional(),
+});
+export type TrailerListQueryDto = z.infer<typeof TrailerListQueryDto>;
+
 /** Vehicle groups — web W-12 IFTA `Vehicle group` filter, W-13 Activity `Group by`. */
 export const CreateVehicleGroupDto = z.object({
   name: z.string().trim().min(1).max(80),

@@ -55,6 +55,7 @@ export class TripsService {
     if (existing) throw new AppException(ERROR_CODES.CONFLICT, 'A trip with this number already exists.', 409);
 
     const { stops, driverId, vehicleId, trailerId, draft, ...rest } = dto;
+    if (trailerId) await this.assertTrailerAssignable(trailerId);
     const trip = await this.repo.createWithStops(
       {
         ...rest,
@@ -103,6 +104,8 @@ export class TripsService {
     if (trip.status !== 'PLANNED' && trip.status !== 'ASSIGNED') {
       throw new AppException(ERROR_CODES.CONFLICT, 'Only a planned or assigned trip can be (re)assigned.', 409);
     }
+    // Re-sending the trip's current trailer is fine even if it was deleted since; a NEW trailer must be live.
+    if (dto.trailerId && dto.trailerId !== trip.trailerId) await this.assertTrailerAssignable(dto.trailerId);
     const updated = await this.repo.update(
       { id },
       {
@@ -133,6 +136,20 @@ export class TripsService {
       assigned.push({ tripId: load.id, driverId });
     }
     return { assigned, skipped: loads.length - assigned.length };
+  }
+
+  /** `Trip.trailerId` has no FK, so an unknown id would otherwise be stored silently; a
+   * soft-deleted trailer stays readable on old trips but cannot be put on a trip anymore. */
+  private async assertTrailerAssignable(trailerId: string): Promise<void> {
+    const trailer = await this.repo.findTrailer(trailerId);
+    if (!trailer) {
+      throw new AppException(ERROR_CODES.TRAILER_NOT_FOUND, 'Trailer not found.', 422, { trailerId: 'Trailer not found.' });
+    }
+    if (trailer.deletedAt) {
+      throw new AppException(ERROR_CODES.TRAILER_NOT_FOUND, 'This trailer has been deleted and cannot be assigned.', 422, {
+        trailerId: 'This trailer has been deleted and cannot be assigned.',
+      });
+    }
   }
 
   private async publishStatusChanged(tripId: string, status: string, etaAt: Date | null): Promise<void> {

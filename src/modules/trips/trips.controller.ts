@@ -53,7 +53,7 @@ export class TripsController {
   @Audit({ object: 'Trip', action: 'CREATE' })
   @ApiOperation({ summary: 'Creates a trip/load, optionally with stops and an initial driver/vehicle.' })
   @ApiCreatedResponse({ schema: { example: { id: 'trp_3', number: 'TRP-1003', status: 'PLANNED' } } })
-  @ApiStandardErrors({ errors: [apiError.conflict(ERROR_CODES.CONFLICT, 'A trip with this number already exists.')] })
+  @ApiStandardErrors({ errors: [apiError.conflict(ERROR_CODES.CONFLICT, 'A trip with this number already exists.'), apiError.unprocessable(ERROR_CODES.TRAILER_NOT_FOUND, 'trailerId is unknown or names a deleted trailer.')] })
   create(@Body(zodBody(CreateTripDto)) dto: CreateTripDto, @CurrentUser() actor: ContextUser) {
     return this.trips.create(dto, actor.id);
   }
@@ -82,6 +82,7 @@ export class TripsController {
     errors: [
       apiError.notFound(ERROR_CODES.NOT_FOUND, 'Trip not found.'),
       apiError.conflict(ERROR_CODES.CONFLICT, 'Only a planned or assigned trip can be (re)assigned.'),
+      apiError.unprocessable(ERROR_CODES.TRAILER_NOT_FOUND, 'trailerId is unknown or names a deleted trailer.'),
     ],
   })
   assign(@Param('id') id: string, @Body(zodBody(AssignTripDto)) dto: AssignTripDto) {
