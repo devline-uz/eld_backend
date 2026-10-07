@@ -21,6 +21,14 @@ import {
   VerifyDriverEmailDto,
 } from './dto/drivers.dto';
 import { DriversRepository } from './drivers.repository';
+import {
+  cdlKey,
+  DRIVER_CONFLICT_MESSAGES,
+  DriverConflictField,
+  normalizeEmail,
+  phoneKey,
+  trimOrNull,
+} from './lib/driver-uniques';
 
 export type DriverView = Omit<Driver, 'passwordHash'>;
 
@@ -40,8 +48,9 @@ function toView(driver: Driver): DriverView {
   return view;
 }
 
-/** Prisma unique-constraint violation (`P2002`) — here only the live-row partial unique indexes on
- * `username` / `email` can raise it (a concurrent create/update racing the pre-check). */
+/** Prisma unique-constraint violation (`P2002`) — raised by the live-row partial unique indexes on
+ * `username` / `email` / phone / licence number, or `Driver_assignedVehicleId_key` (a concurrent
+ * create/update racing the pre-check). */
 function isUniqueViolation(err: unknown): boolean {
   return typeof err === 'object' && err !== null && (err as { code?: string }).code === 'P2002';
 }
@@ -51,6 +60,28 @@ function uniqueViolationTarget(err: unknown): string {
   const target = (err as { meta?: { target?: unknown } }).meta?.target;
   if (Array.isArray(target)) return target.join(',');
   return typeof target === 'string' ? target : '';
+}
+
+const TAKEN_CODES: Record<DriverConflictField, (typeof ERROR_CODES)[keyof typeof ERROR_CODES]> = {
+  username: ERROR_CODES.USERNAME_TAKEN,
+  email: ERROR_CODES.EMAIL_TAKEN,
+  phone: ERROR_CODES.PHONE_TAKEN,
+  cdlNumber: ERROR_CODES.CDL_NUMBER_TAKEN,
+  assignedVehicleId: ERROR_CODES.VEHICLE_ALREADY_ASSIGNED,
+};
+
+/** B-100 — field-level 409: `{ code: <FIELD>_TAKEN | VEHICLE_ALREADY_ASSIGNED, message, details: { <field>: message } }`. */
+function driverConflict(field: DriverConflictField): AppException {
+  const message = DRIVER_CONFLICT_MESSAGES[field];
+  return new AppException(TAKEN_CODES[field], message, 409, { [field]: message });
+}
+
+/** The unique values a driver write is checked on (already normalised). */
+interface DriverUniques {
+  username?: string;
+  email?: string | null;
+  phone?: string | null;
+  cdlNumber?: string;
 }
 
 export interface ImportSummary {
@@ -102,35 +133,69 @@ export class DriversService {
     return driver;
   }
 
-  /** A write that loses a race to the pre-check hits the partial unique index (`P2002`); surface
-   * it as the same 409 the pre-check would have thrown, never a raw 500. */
-  private async conflictOnDuplicate<T>(write: Promise<T>, dto: { username?: string; email?: string }): Promise<T> {
+  /** A write that loses a race to the pre-check hits a unique index (`P2002`); surface it as the
+   * same field-level 409 the pre-check would have thrown, never a raw 500. `meta.target` is the
+   * column list, the index name, or (expression indexes) the index expression. */
+  private async conflictOnDuplicate<T>(write: Promise<T>): Promise<T> {
     try {
       return await write;
     } catch (err) {
       if (!isUniqueViolation(err)) throw err;
       const target = uniqueViolationTarget(err);
-      if (target.includes('email')) throw AppException.conflict(`A driver with email "${dto.email}" already exists.`);
-      if (target.includes('username')) throw AppException.conflict(`A driver with username "${dto.username}" already exists.`);
-      throw AppException.conflict('A driver with this username or email already exists.');
+      if (/assignedVehicleId/i.test(target)) throw driverConflict('assignedVehicleId');
+      if (/email/i.test(target)) throw driverConflict('email');
+      if (/username/i.test(target)) throw driverConflict('username');
+      if (/phone/i.test(target)) throw driverConflict('phone');
+      if (/cdl/i.test(target)) throw driverConflict('cdlNumber');
+      throw AppException.conflict('A driver with one of these values already exists.');
     }
   }
 
-  private async assertEmailAvailable(email: string | undefined, exceptDriverId?: string): Promise<void> {
-    if (!email) return;
-    const existing = await this.drivers.findByEmail(email);
-    if (existing && existing.id !== exceptDriverId) {
-      throw AppException.conflict(`A driver with email "${email}" already exists.`);
+  /**
+   * B-100 — every unique value a create/update/import row carries, checked against LIVE drivers
+   * (the driver being edited excluded), in the web's field order. Undefined / empty values are
+   * skipped (a driver with no email / phone never conflicts).
+   */
+  private async assertUniquesAvailable(values: DriverUniques, exceptDriverId?: string): Promise<void> {
+    if (values.username !== undefined) {
+      const existing = await this.drivers.findByUsername(values.username);
+      if (existing && existing.id !== exceptDriverId) throw driverConflict('username');
     }
+    if (values.email) {
+      const existing = await this.drivers.findByEmail(values.email);
+      if (existing && existing.id !== exceptDriverId) throw driverConflict('email');
+    }
+    const phone = phoneKey(values.phone);
+    if (phone && (await this.drivers.findLiveIdByPhoneKey(phone, exceptDriverId))) throw driverConflict('phone');
+    const cdl = cdlKey(values.cdlNumber);
+    if (cdl && (await this.drivers.findLiveIdByCdlKey(cdl, exceptDriverId))) throw driverConflict('cdlNumber');
+  }
+
+  /** B-100 — a create may only take a FREE unit: one another live driver has is a 409
+   * `VEHICLE_ALREADY_ASSIGNED` and stays with that driver; an OOS unit keeps the 11.5 hard rule. */
+  private async assertVehicleAssignable(vehicleId: string | null | undefined): Promise<void> {
+    if (!vehicleId) return;
+    const vehicle = await this.drivers.findVehicleForAssignment(vehicleId);
+    if (!vehicle || vehicle.deletedAt) {
+      throw new AppException(ERROR_CODES.VEHICLE_NOT_FOUND, 'Vehicle not found.', 404, { assignedVehicleId: 'Select a unit.' });
+    }
+    if (vehicle.status === 'OUT_OF_SERVICE') {
+      const message = 'Vehicle is out of service and cannot be assigned a driver.';
+      throw new AppException(ERROR_CODES.VEHICLE_OUT_OF_SERVICE, message, 409, { assignedVehicleId: message });
+    }
+    if (vehicle.driver && !vehicle.driver.deletedAt) throw driverConflict('assignedVehicleId');
   }
 
   async create(dto: CreateDriverDto): Promise<DriverView & { inviteCode?: string }> {
-    const existing = await this.drivers.findByUsername(dto.username);
-    if (existing) throw AppException.conflict(`A driver with username "${dto.username}" already exists.`);
-    await this.assertEmailAvailable(dto.email);
+    const data = this.normalizeCreate(dto);
+    await this.assertUniquesAvailable(data);
+    await this.assertVehicleAssignable(dto.assignedVehicleId);
 
     const passwordHash = await hashPassword(dto.password ?? randomBytes(16).toString('hex'));
-    const created = await this.conflictOnDuplicate(this.drivers.create(this.toCreateInput(dto, passwordHash)), dto);
+    const input = this.toCreateInput(data, passwordHash);
+    const created = await this.conflictOnDuplicate(
+      dto.assignedVehicleId ? this.drivers.createWithVehicle(input, dto.assignedVehicleId) : this.drivers.create(input),
+    );
 
     // §20 B-82 — `sendInvitation` (default true, matching the previous always-on behavior).
     let inviteCode: string | undefined;
@@ -142,8 +207,9 @@ export class DriversService {
 
   async update(id: string, dto: UpdateDriverDto): Promise<DriverView> {
     await this.getRaw(id);
-    await this.assertEmailAvailable(dto.email, id);
-    const updated = await this.conflictOnDuplicate(this.drivers.update({ id }, this.toUpdateInput(dto)), dto);
+    const data = this.normalizeUpdate(dto);
+    await this.assertUniquesAvailable(data, id);
+    const updated = await this.conflictOnDuplicate(this.drivers.update({ id }, this.toUpdateInput(data)));
     return toView(updated);
   }
 
@@ -182,7 +248,7 @@ export class DriversService {
     for (let index = 0; index < dto.drivers.length; index += 1) {
       const row = this.applyImportDefaults(dto.drivers[index], options);
       try {
-        const existing = await this.drivers.findByUsername(row.username);
+        const existing = await this.drivers.findByUsername(row.username.trim());
         if (existing) {
           if (options.duplicateStrategy === 'SKIP') {
             summary.skipped = (summary.skipped ?? 0) + 1;
@@ -195,13 +261,21 @@ export class DriversService {
             summary.failed.push({ index, error: `Username "${row.username}" already exists.` });
             continue;
           }
-          await this.assertEmailAvailable(row.email, existing.id);
-          await this.conflictOnDuplicate(this.drivers.update({ id: existing.id }, this.toUpdateInput(row)), row);
+          const { username: _username, password: _password, assignedVehicleId: _unit, ...updateRow } = row;
+          const data = this.normalizeUpdate(updateRow);
+          await this.assertUniquesAvailable(data, existing.id);
+          await this.conflictOnDuplicate(this.drivers.update({ id: existing.id }, this.toUpdateInput(data)));
           summary.updated += 1;
         } else {
-          await this.assertEmailAvailable(row.email);
+          const data = this.normalizeCreate(row);
+          // The username was just looked up (no live driver has it) — check the rest.
+          await this.assertUniquesAvailable({ ...data, username: undefined });
+          await this.assertVehicleAssignable(row.assignedVehicleId);
           const passwordHash = await hashPassword(row.password ?? randomBytes(16).toString('hex'));
-          const created = await this.conflictOnDuplicate(this.drivers.create(this.toCreateInput(row, passwordHash)), row);
+          const input = this.toCreateInput(data, passwordHash);
+          const created = await this.conflictOnDuplicate(
+            row.assignedVehicleId ? this.drivers.createWithVehicle(input, row.assignedVehicleId) : this.drivers.create(input),
+          );
           summary.imported += 1;
           if (options.sendInvitations && created.email) {
             await this.dispatchOneTimeCode(created, 'Your OneBook ELD driver app invitation code');
@@ -351,6 +425,29 @@ export class DriversService {
     await this.drivers.update({ id: driver.id }, { passwordHash: await hashPassword(code) });
     await this.mail.send({ to: driver.email, subject, text: `One-time code: ${code}`, attachments: [] });
     return this.config.echoOneTimeSecrets ? code : undefined;
+  }
+
+  /** B-100 — the shared normalisation for create / import rows: username / phone / licence number
+   * trimmed, email trimmed + lower-cased (`''` -> no value). */
+  private normalizeCreate(dto: CreateDriverDto): CreateDriverDto {
+    return {
+      ...dto,
+      username: dto.username.trim(),
+      email: normalizeEmail(dto.email) ?? undefined,
+      phone: trimOrNull(dto.phone) ?? undefined,
+      cdlNumber: dto.cdlNumber.trim(),
+    };
+  }
+
+  /** Same as `normalizeCreate` for a partial update; `undefined` (not sent) stays `undefined`. */
+  private normalizeUpdate(dto: UpdateDriverDto): UpdateDriverDto {
+    return {
+      ...dto,
+      ...(dto.email !== undefined && { email: normalizeEmail(dto.email) ?? undefined }),
+      // `''` stays `''` so a PATCH can still clear the phone (an empty phone never conflicts).
+      ...(dto.phone !== undefined && { phone: dto.phone.trim() }),
+      ...(dto.cdlNumber !== undefined && { cdlNumber: dto.cdlNumber.trim() }),
+    };
   }
 
   private toCreateInput(dto: CreateDriverDto, passwordHash: string): Prisma.DriverCreateInput {

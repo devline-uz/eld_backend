@@ -14,6 +14,16 @@ import { MAIL_PORT, MailPort } from '../transfers/mail.port';
 import { UsersRepository } from '../users/users.repository';
 import { buildVehicleHistories, HistoryPoint, VehicleHistoriesResponse } from './lib/vehicle-histories';
 import {
+  ELD_SERIAL_TAKEN_MESSAGE,
+  ELD_SERIAL_UNKNOWN_MESSAGE,
+  LICENSE_PLATE_TAKEN_MESSAGE,
+  NormalizedVehicleUniques,
+  UNIT_NUMBER_TAKEN_MESSAGE,
+  VIN_TAKEN_MESSAGE,
+  normalizeUniqueValue,
+  normalizeVehicleUniques,
+} from './lib/vehicle-uniques';
+import {
   AssignDriverDto,
   BulkUpdateVehicleStatusDto,
   CalibrateOdometerDto,
@@ -25,7 +35,7 @@ import {
   VehicleListQueryDto,
   VehicleTelemetryQueryDto,
 } from './dto/vehicles.dto';
-import { VehiclesRepository } from './vehicles.repository';
+import { EldSerialTakenError, VehiclesRepository } from './vehicles.repository';
 
 const SORTABLE_FIELDS = ['unitNumber', 'vin', 'make', 'model', 'status', 'createdAt'] as const;
 
@@ -35,8 +45,9 @@ const DEFAULT_IMPORT_OPTIONS: ImportVehiclesOptionsDto = {
   emailSummary: false,
 };
 
-/** Prisma unique-constraint violation (`P2002`) — here only the live-row partial unique indexes on
- * `unitNumber` / `vin` can raise it (a concurrent create/update racing the pre-check). */
+/** Prisma unique-constraint violation (`P2002`) — raised by the live-row partial unique indexes on
+ * `unitNumber` / `vin` / plate+state, or `Device_vehicleId_key` / `Device_serial_key` while pairing
+ * (a concurrent create/update racing the pre-check). */
 function isUniqueViolation(err: unknown): boolean {
   return typeof err === 'object' && err !== null && (err as { code?: string }).code === 'P2002';
 }
@@ -47,6 +58,36 @@ function uniqueViolationTarget(err: unknown): string {
   if (Array.isArray(target)) return target.join(',');
   return typeof target === 'string' ? target : '';
 }
+
+/** 409 `UNIT_NUMBER_TAKEN` (B-97) — field-level, shown under the web's "Unit number" input. */
+function unitNumberTaken(): AppException {
+  return new AppException(ERROR_CODES.UNIT_NUMBER_TAKEN, UNIT_NUMBER_TAKEN_MESSAGE, 409, {
+    unitNumber: UNIT_NUMBER_TAKEN_MESSAGE,
+  });
+}
+
+/** 409 `VIN_TAKEN` (B-97) — field-level, shown under the web's "VIN" input. */
+function vinTaken(): AppException {
+  return new AppException(ERROR_CODES.VIN_TAKEN, VIN_TAKEN_MESSAGE, 409, { vin: VIN_TAKEN_MESSAGE });
+}
+
+/** 409 `ELD_SERIAL_TAKEN` — the field-level shape the web maps onto its "ELD serial" input. */
+function eldSerialTaken(): AppException {
+  return new AppException(ERROR_CODES.ELD_SERIAL_TAKEN, ELD_SERIAL_TAKEN_MESSAGE, 409, {
+    eldSerial: ELD_SERIAL_TAKEN_MESSAGE,
+  });
+}
+
+/** 409 `LICENSE_PLATE_TAKEN` — the field-level shape the web maps onto its "License plate" input. */
+function licensePlateTaken(): AppException {
+  return new AppException(ERROR_CODES.LICENSE_PLATE_TAKEN, LICENSE_PLATE_TAKEN_MESSAGE, 409, {
+    licensePlate: LICENSE_PLATE_TAKEN_MESSAGE,
+  });
+}
+
+/** What a vehicle write does to the unit's ELD pairing: `undefined` leaves it alone, `null`
+ * releases the unit's device, an id pairs that device. */
+type DeviceChange = { deviceId: string | null } | undefined;
 
 export interface ImportSummary {
   imported: number;
@@ -102,22 +143,83 @@ export class VehiclesService {
   }
 
   async create(dto: CreateVehicleDto): Promise<Vehicle> {
+    const uniques = normalizeVehicleUniques(dto);
     const [byUnit, byVin] = await Promise.all([
       this.vehicles.findByUnitNumber(dto.unitNumber),
       this.vehicles.findByVin(dto.vin),
     ]);
-    if (byUnit) throw AppException.conflict(`Unit "${dto.unitNumber}" already exists.`);
-    if (byVin) throw AppException.conflict(`VIN "${dto.vin}" already exists.`);
+    if (byUnit) throw unitNumberTaken();
+    if (byVin) throw vinTaken();
+    const deviceChange = await this.resolveDeviceChange(uniques.eldSerial);
+    await this.assertPlateAvailable(uniques.licensePlate, uniques.plateState);
     await this.assertGroupExists(dto.groupId);
-    return this.conflictOnDuplicate(this.vehicles.create(this.toCreateInput(dto)), dto);
+    const data = this.toCreateInput(dto);
+    const write = deviceChange?.deviceId
+      ? this.vehicles.saveWithDevice({ create: data }, deviceChange.deviceId)
+      : this.vehicles.create(data);
+    return this.conflictOnDuplicate(write);
   }
 
   async update(id: string, dto: UpdateVehicleDto): Promise<Vehicle> {
-    await this.get(id);
+    const current = await this.get(id);
+    const uniques = normalizeVehicleUniques(dto);
     await this.assertUnitAndVinAvailable(dto, id);
+    const deviceChange = await this.resolveDeviceChange(uniques.eldSerial, id);
+    await this.assertPlateChangeAvailable(current, uniques);
     await this.assertStatusChangeAllowed(id, dto.status);
     await this.assertGroupExists(dto.groupId);
-    return this.conflictOnDuplicate(this.vehicles.update({ id }, this.toUpdateInput(dto)), dto);
+    const data = this.toUpdateInput(dto);
+    const write = deviceChange
+      ? this.vehicles.saveWithDevice({ id, update: data }, deviceChange.deviceId)
+      : this.vehicles.update({ id }, data);
+    return this.conflictOnDuplicate(write);
+  }
+
+  /**
+   * ELD serial (`deviceId`) -> the pairing change a create/update makes. A device may be paired to
+   * at most one LIVE unit: one held by another live unit is a 409 `ELD_SERIAL_TAKEN`; one left on a
+   * soft-deleted unit is free. The unit's own current device is no change at all, so an edit that
+   * re-sends its serial never conflicts with itself. An unknown serial is a 404 — a unit can't be
+   * paired to a device the fleet doesn't own. `null` (cleared input) releases the unit's device.
+   */
+  private async resolveDeviceChange(serial: string | null | undefined, vehicleId?: string): Promise<DeviceChange> {
+    if (serial === undefined) return undefined;
+    if (serial === null) {
+      if (!vehicleId) return undefined;
+      return (await this.vehicles.findDeviceByVehicleId(vehicleId)) ? { deviceId: null } : undefined;
+    }
+    const device = await this.vehicles.findDeviceForPairing(serial);
+    if (!device) {
+      throw new AppException(ERROR_CODES.DEVICE_NOT_FOUND, ELD_SERIAL_UNKNOWN_MESSAGE, 404, {
+        eldSerial: ELD_SERIAL_UNKNOWN_MESSAGE,
+      });
+    }
+    if (vehicleId && device.vehicleId === vehicleId) return undefined;
+    if (device.vehicle && !device.vehicle.deletedAt) throw eldSerialTaken();
+    return { deviceId: device.id };
+  }
+
+  /** Plate + issuing state is unique among LIVE units; no plate never conflicts, the same plate in
+   * another state is fine. */
+  private async assertPlateAvailable(
+    licensePlate: string | null | undefined,
+    plateState: string | null | undefined,
+    exceptVehicleId?: string,
+  ): Promise<void> {
+    if (!licensePlate) return;
+    if (await this.vehicles.findLiveByPlate(licensePlate, plateState ?? null, exceptVehicleId)) throw licensePlateTaken();
+  }
+
+  /** PATCH judges the pair the unit will END UP with (a partial PATCH keeps the stored half), and
+   * only when it actually changes — saving a unit with its own plate never conflicts. */
+  private async assertPlateChangeAvailable(current: Vehicle, uniques: NormalizedVehicleUniques): Promise<void> {
+    if (uniques.licensePlate === undefined && uniques.plateState === undefined) return;
+    const currentPlate = normalizeUniqueValue(current.licensePlate) ?? null;
+    const currentState = normalizeUniqueValue(current.plateState) ?? null;
+    const nextPlate = uniques.licensePlate !== undefined ? uniques.licensePlate : currentPlate;
+    const nextState = uniques.plateState !== undefined ? uniques.plateState : currentState;
+    if (nextPlate === currentPlate && nextState === currentState) return;
+    await this.assertPlateAvailable(nextPlate, nextState, current.id);
   }
 
   /** Unit number / VIN are unique among LIVE units only — a soft-deleted unit's values are free.
@@ -130,20 +232,28 @@ export class VehiclesService {
       dto.unitNumber !== undefined ? this.vehicles.findByUnitNumber(dto.unitNumber) : null,
       dto.vin !== undefined ? this.vehicles.findByVin(dto.vin) : null,
     ]);
-    if (byUnit && byUnit.id !== exceptVehicleId) throw AppException.conflict(`Unit "${dto.unitNumber}" already exists.`);
-    if (byVin && byVin.id !== exceptVehicleId) throw AppException.conflict(`VIN "${dto.vin}" already exists.`);
+    if (byUnit && byUnit.id !== exceptVehicleId) throw unitNumberTaken();
+    if (byVin && byVin.id !== exceptVehicleId) throw vinTaken();
   }
 
-  /** A write that loses a race to the pre-check hits the partial unique index (`P2002`); surface
-   * it as the same 409 the pre-check would have thrown, never a raw 500. */
-  private async conflictOnDuplicate<T>(write: Promise<T>, dto: { unitNumber?: string; vin?: string }): Promise<T> {
+  /** A write that loses a race to the pre-check hits a unique index (`P2002`) or the pairing's
+   * conditional claim (`EldSerialTakenError`); surface it as the same 409 the pre-check would have
+   * thrown, never a raw 500. */
+  private async conflictOnDuplicate<T>(write: Promise<T>): Promise<T> {
     try {
       return await write;
     } catch (err) {
+      if (err instanceof EldSerialTakenError) throw eldSerialTaken();
       if (!isUniqueViolation(err)) throw err;
       const target = uniqueViolationTarget(err);
-      if (target.includes('vin')) throw AppException.conflict(`VIN "${dto.vin}" already exists.`);
-      if (target.includes('unitNumber')) throw AppException.conflict(`Unit "${dto.unitNumber}" already exists.`);
+      // Plate / device targets first: their index names (`Vehicle_plate_state_live_key`,
+      // `Device_serial_key`, `Device_vehicleId_key`) must not fall through to the VIN/unit checks.
+      if (/plate/i.test(target)) throw licensePlateTaken();
+      if (/serial|vehicleId|Device/.test(target)) throw eldSerialTaken();
+      // `vin` / `unitNumber` as a field list, or the partial index names `Vehicle_vin_live_key` /
+      // `Vehicle_unitNumber_live_key` (and the legacy `Vehicle_vin_key` / `Vehicle_unitNumber_key`).
+      if (/(^|[_,])vin([_,]|$)/i.test(target)) throw vinTaken();
+      if (/unitNumber/i.test(target)) throw unitNumberTaken();
       throw AppException.conflict('A vehicle with this unit number or VIN already exists.');
     }
   }
@@ -180,7 +290,10 @@ export class VehiclesService {
     await this.assertStatusChangeAllowed(id, 'INACTIVE');
     const driver = await this.drivers.findOne({ assignedVehicleId: id });
     if (driver) await this.drivers.update({ id: driver.id }, { assignedVehicle: { disconnect: true } });
-    return this.vehicles.update({ id }, { status: 'INACTIVE', deletedAt: new Date() });
+    const removed = await this.vehicles.update({ id }, { status: 'INACTIVE', deletedAt: new Date() });
+    // A deleted unit gives its ELD device back, like its unit number / VIN / plate.
+    await this.vehicles.releaseDevice(id);
+    return removed;
   }
 
   /**
@@ -400,10 +513,10 @@ export class VehiclesService {
           }
           await this.assertUnitAndVinAvailable(row, existing.id);
           await this.assertStatusChangeAllowed(existing.id, (row as UpdateVehicleDto).status);
-          vehicle = await this.conflictOnDuplicate(this.vehicles.update({ id: existing.id }, this.toUpdateInput(row)), row);
+          vehicle = await this.conflictOnDuplicate(this.vehicles.update({ id: existing.id }, this.toUpdateInput(row)));
           summary.updated += 1;
         } else {
-          vehicle = await this.conflictOnDuplicate(this.vehicles.create(this.toCreateInput(row)), row);
+          vehicle = await this.conflictOnDuplicate(this.vehicles.create(this.toCreateInput(row)));
           summary.imported += 1;
         }
         if (options.pairDevices && row.deviceSerial) {
@@ -446,14 +559,15 @@ export class VehiclesService {
   }
 
   private toCreateInput(dto: CreateVehicleDto): Prisma.VehicleCreateInput {
+    const uniques = normalizeVehicleUniques(dto);
     return {
       unitNumber: dto.unitNumber,
       vin: dto.vin,
       make: dto.make,
       model: dto.model,
       year: dto.year,
-      licensePlate: dto.licensePlate,
-      plateState: dto.plateState,
+      licensePlate: uniques.licensePlate,
+      plateState: uniques.plateState,
       fuelType: dto.fuelType,
       sleeperBerth: dto.sleeperBerth,
       odometerMi: dto.odometerMi,
@@ -472,14 +586,15 @@ export class VehiclesService {
   }
 
   private toUpdateInput(dto: UpdateVehicleDto): Prisma.VehicleUpdateInput {
+    const uniques = normalizeVehicleUniques(dto);
     return {
       ...(dto.unitNumber !== undefined && { unitNumber: dto.unitNumber }),
       ...(dto.vin !== undefined && { vin: dto.vin }),
       ...(dto.make !== undefined && { make: dto.make }),
       ...(dto.model !== undefined && { model: dto.model }),
       ...(dto.year !== undefined && { year: dto.year }),
-      ...(dto.licensePlate !== undefined && { licensePlate: dto.licensePlate }),
-      ...(dto.plateState !== undefined && { plateState: dto.plateState }),
+      ...(uniques.licensePlate !== undefined && { licensePlate: uniques.licensePlate }),
+      ...(uniques.plateState !== undefined && { plateState: uniques.plateState }),
       ...(dto.fuelType !== undefined && { fuelType: dto.fuelType }),
       ...(dto.sleeperBerth !== undefined && { sleeperBerth: dto.sleeperBerth }),
       ...(dto.busType !== undefined && { busType: dto.busType }),

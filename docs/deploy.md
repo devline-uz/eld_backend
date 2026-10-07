@@ -23,7 +23,7 @@ Compose file: `backend/docker-compose.yml`. Services: `postgres`, `redis`,
 ## Migration flow (tz.md §22.3.3) — fixed order, no shortcuts
 
 ```
-1) On dev:          npx prisma migrate dev --name <change>
+1) On dev:          npm run migrate:dev -- --name <change>   (guarded `prisma migrate dev`, README "Hand-written partial / expression indexes")
 2) Verify:          npm run test:integration     (runs against dev DB)
 3) On prod:         npx prisma migrate deploy     (prod DSN only)
 ```

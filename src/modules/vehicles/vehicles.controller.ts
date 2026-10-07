@@ -18,6 +18,27 @@ import {
 import { VehiclesService } from './vehicles.service';
 import { apiError, ApiStandardErrors, ERROR_CODES } from '../../common/errors';
 import { FigmaScreen } from '../../common/decorators/figma-screen.decorator';
+import {
+  ELD_SERIAL_TAKEN_MESSAGE,
+  ELD_SERIAL_UNKNOWN_MESSAGE,
+  LICENSE_PLATE_TAKEN_MESSAGE,
+  UNIT_NUMBER_TAKEN_MESSAGE,
+  VIN_TAKEN_MESSAGE,
+} from './lib/vehicle-uniques';
+
+/** B-97 — `POST /vehicles` / `PATCH /vehicles/:id` field-level 409s. */
+const VEHICLE_UNIQUE_CONFLICTS = apiError.fieldConflicts([
+  { code: ERROR_CODES.UNIT_NUMBER_TAKEN, field: 'unitNumber', message: UNIT_NUMBER_TAKEN_MESSAGE },
+  { code: ERROR_CODES.VIN_TAKEN, field: 'vin', message: VIN_TAKEN_MESSAGE },
+  { code: ERROR_CODES.ELD_SERIAL_TAKEN, field: 'eldSerial', message: ELD_SERIAL_TAKEN_MESSAGE },
+  { code: ERROR_CODES.LICENSE_PLATE_TAKEN, field: 'licensePlate', message: LICENSE_PLATE_TAKEN_MESSAGE },
+]);
+const VEHICLE_DEVICE_NOT_FOUND = {
+  status: 404,
+  code: ERROR_CODES.DEVICE_NOT_FOUND,
+  message: ELD_SERIAL_UNKNOWN_MESSAGE,
+  details: { eldSerial: ELD_SERIAL_UNKNOWN_MESSAGE },
+};
 
 /** TZ §5.3 / §4.3 — "Vehicles" and "Unit detail" Figma screens, gated by `vehicles`. */
 @FigmaScreen('web/vehicles', 'web/vehicle-add')
@@ -96,7 +117,7 @@ export class VehiclesController {
   @Audit({ object: 'Vehicle', action: 'CREATE' })
   @ApiOperation({ summary: 'Adds a unit (VIN, dash odometer at add-time per TZ §4.3 step 1).' })
   @ApiCreatedResponse({ schema: { example: { id: 'veh_9', unitNumber: '126', vin: '1FUJHHDR5NLNN4410', status: 'ACTIVE', odometerMiles: 221449 } } })
-  @ApiStandardErrors({ errors: [apiError.conflict(ERROR_CODES.CONFLICT, 'A unit with this unit number or VIN already exists.')] })
+  @ApiStandardErrors({ errors: [VEHICLE_UNIQUE_CONFLICTS, VEHICLE_DEVICE_NOT_FOUND] })
   create(@Body(zodBody(CreateVehicleDto)) dto: CreateVehicleDto) {
     return this.vehicles.create(dto);
   }
@@ -126,7 +147,15 @@ export class VehiclesController {
   @Audit({ object: 'Vehicle', action: 'UPDATE' })
   @ApiOperation({ summary: 'Edits a unit.' })
   @ApiOkResponse({ schema: { example: { id: 'veh_1', unitNumber: '101', status: 'ACTIVE', licensePlate: 'PQR-4821', licenseState: 'OH' } } })
-  @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.VEHICLE_NOT_FOUND, 'Vehicle not found.'), apiError.conflict(ERROR_CODES.VEHICLE_HAS_OPEN_CRITICAL_DEFECTS, 'Unit has open critical defects and cannot leave OUT_OF_SERVICE.')] })
+  @ApiStandardErrors({
+    errors: [
+      { ...apiError.notFound(ERROR_CODES.VEHICLE_NOT_FOUND, 'Vehicle not found.'), description: 'VEHICLE_NOT_FOUND — Vehicle not found; or DEVICE_NOT_FOUND (details.eldSerial) — the `deviceId` serial names no registered device.' },
+      {
+        ...VEHICLE_UNIQUE_CONFLICTS,
+        description: `${VEHICLE_UNIQUE_CONFLICTS.description} Also VEHICLE_HAS_OPEN_CRITICAL_DEFECTS — the unit cannot leave OUT_OF_SERVICE.`,
+      },
+    ],
+  })
   update(@Param('id') id: string, @Body(zodBody(UpdateVehicleDto)) dto: UpdateVehicleDto) {
     return this.vehicles.update(id, dto);
   }

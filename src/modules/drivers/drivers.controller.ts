@@ -16,6 +16,15 @@ import { DriverRosterService } from './driver-roster.service';
 import { DriversService } from './drivers.service';
 import { apiError, ApiStandardErrors, ERROR_CODES } from '../../common/errors';
 import { FigmaScreen } from '../../common/decorators/figma-screen.decorator';
+import { DRIVER_CONFLICT_MESSAGES } from './lib/driver-uniques';
+
+/** B-100 — field-level 409s on `POST /drivers` / `PATCH /drivers/:id`. */
+const DRIVER_FIELD_CONFLICTS = [
+  { code: ERROR_CODES.USERNAME_TAKEN, field: 'username', message: DRIVER_CONFLICT_MESSAGES.username },
+  { code: ERROR_CODES.EMAIL_TAKEN, field: 'email', message: DRIVER_CONFLICT_MESSAGES.email },
+  { code: ERROR_CODES.PHONE_TAKEN, field: 'phone', message: DRIVER_CONFLICT_MESSAGES.phone },
+  { code: ERROR_CODES.CDL_NUMBER_TAKEN, field: 'cdlNumber', message: DRIVER_CONFLICT_MESSAGES.cdlNumber },
+];
 
 /** TZ §5.3 — "Drivers" and "Driver profile" Figma screens, gated by the `drivers` permission key. */
 @FigmaScreen('web/drivers', 'web/driver-add')
@@ -92,7 +101,19 @@ export class DriversController {
   @Audit({ object: 'Driver', action: 'CREATE' })
   @ApiOperation({ summary: 'Creates a driver (CDL, home terminal timezone, HOS ruleset, exception flags).' })
   @ApiCreatedResponse({ schema: { example: { id: 'drv_9', username: 'awebb', status: 'ACTIVE', homeTerminalTimezone: 'America/New_York' } } })
-  @ApiStandardErrors({ errors: [apiError.conflict(ERROR_CODES.CONFLICT, 'A driver with this username already exists.')] })
+  @ApiStandardErrors({
+    errors: [
+      {
+        ...apiError.notFound(ERROR_CODES.VEHICLE_NOT_FOUND, 'Vehicle not found.'),
+        details: { assignedVehicleId: 'Select a unit.' },
+      },
+      apiError.fieldConflicts([
+        ...DRIVER_FIELD_CONFLICTS,
+        { code: ERROR_CODES.VEHICLE_ALREADY_ASSIGNED, field: 'assignedVehicleId', message: DRIVER_CONFLICT_MESSAGES.assignedVehicleId },
+        { code: ERROR_CODES.VEHICLE_OUT_OF_SERVICE, field: 'assignedVehicleId', message: 'Vehicle is out of service and cannot be assigned a driver.' },
+      ]),
+    ],
+  })
   create(@Body(zodBody(CreateDriverDto)) dto: CreateDriverDto) {
     return this.drivers.create(dto);
   }
@@ -112,7 +133,9 @@ export class DriversController {
   @Audit({ object: 'Driver', action: 'UPDATE' })
   @ApiOperation({ summary: 'Updates a driver profile, CDL, or exception flags.' })
   @ApiOkResponse({ schema: { example: { id: 'drv_1', username: 'jsmith', status: 'ACTIVE', allowPersonalConveyance: false } } })
-  @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.')] })
+  @ApiStandardErrors({
+    errors: [apiError.notFound(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.'), apiError.fieldConflicts(DRIVER_FIELD_CONFLICTS.slice(1))],
+  })
   update(@Param('id') id: string, @Body(zodBody(UpdateDriverDto)) dto: UpdateDriverDto) {
     return this.drivers.update(id, dto);
   }

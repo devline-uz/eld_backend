@@ -20,8 +20,21 @@ npm run worker:dev            # BullMQ worker (separate process/container)
 | `build` / `start:prod` / `worker:prod` | compiled entrypoints (`dist/main.js`, `dist/worker.js`) |
 | `test` · `test:unit` · `test:integration` · `test:e2e` · `test:cov` | Jest projects (TZ §21) |
 | `lint` | eslint, `--max-warnings 0`; also enforces the layering rules below |
-| `migrate:dev` / `migrate:deploy` | dev creates migrations, prod only applies them |
+| `migrate:dev` / `migrate:deploy` | dev creates migrations (guarded, see below), prod only applies them |
 | `db:reset:dev` / `db:check-drift` | `scripts/*.sh`, owned by `eld-devops` |
+
+### Hand-written partial / expression indexes
+
+Some unique indexes can't be written in `schema.prisma` (partial `WHERE "deletedAt" IS NULL`
+uniques, the trim/case-insensitive plate + state index) and live only in migration SQL. They are
+listed in [`src/core/prisma/custom-indexes.ts`](./src/core/prisma/custom-indexes.ts), the single
+whitelist. `npm run migrate:dev -- --name <change>` (`scripts/migrate-dev-guarded.ts`) generates the
+next migration from the migration history + schema (shadow DB `<db>_shadow`, or
+`SHADOW_DATABASE_URL`), strips any DROP/CREATE of a whitelisted index, writes nothing when no change
+is left, and applies the rest with `migrate deploy`. Flags: `--create-only`, `--dry-run`. It only runs
+against a local DB. `custom-indexes.spec.ts` fails if a committed migration drops a whitelisted index
+without `-- custom-index: drop <name>`. Plain `prisma migrate dev` is `migrate:dev:unguarded`.
+New hand-written index → its own migration + an entry in the whitelist.
 
 Endpoints that exist today: `/health/live`, `/health/ready`, `/health/deep`, `/metrics`, `/docs`.
 

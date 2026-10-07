@@ -12,10 +12,11 @@ const MESSAGE = { to: 'anna@example.com', subject: 'Hi', text: 'Hello' };
 
 describe('SmtpMailTransport', () => {
   const sendMail = jest.fn();
+  const verify = jest.fn();
 
   beforeEach(() => {
     jest.clearAllMocks();
-    (createTransport as jest.Mock).mockReturnValue({ sendMail });
+    (createTransport as jest.Mock).mockReturnValue({ sendMail, verify });
   });
 
   it('without SMTP_HOST reports NO_MAIL_TRANSPORT and never opens a transport', async () => {
@@ -41,5 +42,18 @@ describe('SmtpMailTransport', () => {
     sendMail.mockRejectedValue(new Error('535 auth failed'));
     const transport = new SmtpMailTransport(configWith({ SMTP_HOST: 'smtp.x.com', SMTP_PORT: 587, MAIL_FROM: 'a@x.com' }));
     await expect(transport.send(MESSAGE)).resolves.toEqual({ delivered: false, reference: 'SMTP_SEND_FAILED' });
+  });
+
+  it('verifies the SMTP login at boot and never throws when it fails', async () => {
+    verify.mockRejectedValue(new Error('535 auth failed'));
+    const transport = new SmtpMailTransport(configWith({ SMTP_HOST: 'smtp.x.com', SMTP_PORT: 465, MAIL_FROM: 'a@x.com' }));
+    await expect(transport.onApplicationBootstrap()).resolves.toBeUndefined();
+    expect(verify).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips boot verification without SMTP_HOST', async () => {
+    const transport = new SmtpMailTransport(configWith({ MAIL_FROM: 'a@x.com' }));
+    await expect(transport.onApplicationBootstrap()).resolves.toBeUndefined();
+    expect(verify).not.toHaveBeenCalled();
   });
 });
