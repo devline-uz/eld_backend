@@ -9,6 +9,29 @@ import { EventBusService } from '../../core/events/event-bus.service';
 import { QUEUES } from '../../core/queue/queue.constants';
 import { AssignTripDto, CreateTripDto, TripListQueryDto, UpdateTripDto } from './dto/trips.dto';
 import { TripsRepository } from './trips.repository';
+import {
+  findScheduleConflict,
+  formatScheduleInstant,
+  UNIT_SCHEDULED_STATUSES,
+  type TimeWindow,
+} from './trip-schedule';
+
+const PLANNED_END_MESSAGE = 'Planned end must be after planned start.';
+const TRIP_NUMBER_TAKEN_MESSAGE = 'A trip with this number already exists.';
+
+/** 409 `CONFLICT` keyed `details.number` so the web lands it under the "Trip / load ID" input
+ * instead of a generic form-level banner. `Trip.number` is `@unique` (one carrier per database). */
+function tripNumberTaken(): AppException {
+  return AppException.conflict(TRIP_NUMBER_TAKEN_MESSAGE, { number: TRIP_NUMBER_TAKEN_MESSAGE });
+}
+
+/** Prisma `P2002` on `Trip.number` — a concurrent create that lost the race to the pre-check. */
+function isTripNumberUniqueViolation(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null || (err as { code?: string }).code !== 'P2002') return false;
+  const target = (err as { meta?: { target?: unknown } }).meta?.target;
+  const names = Array.isArray(target) ? target.join(',') : typeof target === 'string' ? target : '';
+  return /number/i.test(names);
+}
 
 /** Valid forward transitions of `Trip.status` (TZ §11.5 dispatch lifecycle).
  * §20 B-73 — `DRAFT` is the pre-publish state: `PATCH { status: 'PLANNED' }` publishes it. */
@@ -52,23 +75,42 @@ export class TripsService {
 
   async create(dto: CreateTripDto, createdById: string) {
     const existing = await this.repo.findByNumber(dto.number);
-    if (existing) throw new AppException(ERROR_CODES.CONFLICT, 'A trip with this number already exists.', 409);
+    if (existing) throw tripNumberTaken();
 
     const { stops, driverId, vehicleId, trailerId, draft, ...rest } = dto;
+    this.assertPlannedWindow(dto.plannedStartAt, dto.plannedEndAt);
     if (trailerId) await this.assertTrailerAssignable(trailerId);
-    const trip = await this.repo.createWithStops(
-      {
-        ...rest,
-        // §20 B-73 — a draft always starts DRAFT, even with a driver on it (not yet published).
-        status: draft ? 'DRAFT' : driverId ? 'ASSIGNED' : 'PLANNED',
-        createdById,
-        ...(driverId && { driver: { connect: { id: driverId } } }),
-        ...(vehicleId && { vehicle: { connect: { id: vehicleId } } }),
-        ...(trailerId && { trailerId }),
-      },
-      (stops ?? []).map((s) => ({ ...s })),
-    );
-    return trip;
+    const data: Prisma.TripCreateInput = {
+      ...rest,
+      // §20 B-73 — a draft always starts DRAFT, even with a driver on it (not yet published).
+      status: draft ? 'DRAFT' : driverId ? 'ASSIGNED' : 'PLANNED',
+      createdById,
+      ...(driverId && { driver: { connect: { id: driverId } } }),
+      ...(vehicleId && { vehicle: { connect: { id: vehicleId } } }),
+      ...(trailerId && { trailerId }),
+    };
+    const stopRows = (stops ?? []).map((s) => ({ ...s }));
+    // Drafts included — a draft with a unit and a start reserves that unit (trip-schedule.ts).
+    const window = this.windowOf(dto.plannedStartAt, dto.plannedEndAt);
+    if (vehicleId && window) {
+      return this.numberConflictOnDuplicate(
+        this.repo.withUnitScheduleLock(vehicleId, async (db) => {
+          await this.assertUnitFree(vehicleId, window, undefined, db);
+          return this.repo.createWithStops(data, stopRows, db);
+        }),
+      );
+    }
+    return this.numberConflictOnDuplicate(this.repo.createWithStops(data, stopRows));
+  }
+
+  /** Surface a `Trip.number` unique-index race as the same 409 the pre-check throws, not a 500. */
+  private async numberConflictOnDuplicate<T>(write: Promise<T>): Promise<T> {
+    try {
+      return await write;
+    } catch (err) {
+      if (isTripNumberUniqueViolation(err)) throw tripNumberTaken();
+      throw err;
+    }
   }
 
   async update(id: string, dto: UpdateTripDto) {
@@ -87,11 +129,28 @@ export class TripsService {
       }
     }
 
+    const timesChanged = dto.plannedStartAt !== undefined || dto.plannedEndAt !== undefined;
+    const plannedStartAt = dto.plannedStartAt ?? trip.plannedStartAt;
+    const plannedEndAt = dto.plannedEndAt ?? trip.plannedEndAt;
+    if (timesChanged) this.assertPlannedWindow(plannedStartAt, plannedEndAt);
+
     const data: Prisma.TripUpdateInput = { ...dto };
     if (dto.status === 'IN_PROGRESS' && !trip.startedAt) data.startedAt = new Date();
     if (dto.status === 'DELIVERED' && !trip.completedAt) data.completedAt = new Date();
 
-    const updated = await this.repo.update({ id }, data);
+    // Re-check the unit when the trip's range moves, or when a draft is published (a draft saved
+    // before this rule existed may overlap). Plain status moves keep the range, so no re-check.
+    const nextStatus = dto.status ?? trip.status;
+    const publishing = trip.status === 'DRAFT' && nextStatus !== 'DRAFT';
+    const window = this.windowOf(plannedStartAt, plannedEndAt);
+    const vehicleId = trip.vehicleId;
+    const updated =
+      vehicleId && window && (timesChanged || publishing) && UNIT_SCHEDULED_STATUSES.includes(nextStatus)
+        ? await this.repo.withUnitScheduleLock(vehicleId, async (db) => {
+            await this.assertUnitFree(vehicleId, window, id, db);
+            return this.repo.update({ id }, data, db);
+          })
+        : await this.repo.update({ id }, data);
     if (dto.status && dto.status !== trip.status) {
       await this.publishStatusChanged(updated.id, updated.status, updated.etaAt);
     }
@@ -106,15 +165,22 @@ export class TripsService {
     }
     // Re-sending the trip's current trailer is fine even if it was deleted since; a NEW trailer must be live.
     if (dto.trailerId && dto.trailerId !== trip.trailerId) await this.assertTrailerAssignable(dto.trailerId);
-    const updated = await this.repo.update(
-      { id },
-      {
-        status: 'ASSIGNED',
-        driver: { connect: { id: dto.driverId } },
-        ...(dto.vehicleId && { vehicle: { connect: { id: dto.vehicleId } } }),
-        ...(dto.trailerId && { trailerId: dto.trailerId }),
-      },
-    );
+    const data: Prisma.TripUpdateInput = {
+      status: 'ASSIGNED',
+      driver: { connect: { id: dto.driverId } },
+      ...(dto.vehicleId && { vehicle: { connect: { id: dto.vehicleId } } }),
+      ...(dto.trailerId && { trailerId: dto.trailerId }),
+    };
+    // Moving the trip onto a different unit must not double-book that unit.
+    const newVehicleId = dto.vehicleId && dto.vehicleId !== trip.vehicleId ? dto.vehicleId : null;
+    const window = this.windowOf(trip.plannedStartAt, trip.plannedEndAt);
+    const updated =
+      newVehicleId && window
+        ? await this.repo.withUnitScheduleLock(newVehicleId, async (db) => {
+            await this.assertUnitFree(newVehicleId, window, id, db);
+            return this.repo.update({ id }, data, db);
+          })
+        : await this.repo.update({ id }, data);
     await this.publishStatusChanged(updated.id, updated.status, updated.etaAt);
     // §20 B-74 — `notify: false` skips the driver-app assignment notification entirely.
     if (dto.notify) {
@@ -136,6 +202,51 @@ export class TripsService {
       assigned.push({ tripId: load.id, driverId });
     }
     return { assigned, skipped: loads.length - assigned.length };
+  }
+
+  /** 422 unless the planned end (when both are set) is strictly after the planned start. */
+  private assertPlannedWindow(start: Date | null | undefined, end: Date | null | undefined): void {
+    if (start && end && end.getTime() <= start.getTime()) {
+      throw new AppException(ERROR_CODES.VALIDATION_FAILED, PLANNED_END_MESSAGE, 422, { plannedEndAt: PLANNED_END_MESSAGE });
+    }
+  }
+
+  /** The range a trip asks its unit for; `null` (nothing to check) when it has no planned start. */
+  private windowOf(start: Date | null | undefined, end: Date | null | undefined): TimeWindow | null {
+    return start ? { start, end: end ?? null } : null;
+  }
+
+  /**
+   * 409 `TRIP_SCHEDULE_CONFLICT` when another live trip already holds `vehicleId` for any part of
+   * `window` (touching endpoints are fine). Web-panel `/trips` only — the mobile/tablet trip
+   * endpoints use their own repository and never reach this.
+   */
+  private async assertUnitFree(
+    vehicleId: string,
+    window: TimeWindow,
+    excludeTripId: string | undefined,
+    db: Prisma.TransactionClient,
+  ): Promise<void> {
+    const candidates = await this.repo.findUnitScheduleCandidates(vehicleId, window, excludeTripId, db);
+    const conflict = findScheduleConflict(window, candidates, excludeTripId);
+    if (!conflict) return;
+    const { trip, window: taken } = conflict;
+    const unit = trip.vehicle?.unitNumber ? `Unit ${trip.vehicle.unitNumber}` : 'This unit';
+    const range = taken.end
+      ? `from ${formatScheduleInstant(taken.start)} to ${formatScheduleInstant(taken.end)}`
+      : `from ${formatScheduleInstant(taken.start)} onward (no planned end)`;
+    const message = `${unit} is already assigned to another trip (${trip.number}) ${range}.`;
+    throw new AppException(ERROR_CODES.TRIP_SCHEDULE_CONFLICT, message, 409, {
+      vehicleId: message,
+      conflict: {
+        tripId: trip.id,
+        number: trip.number,
+        status: trip.status,
+        unitNumber: trip.vehicle?.unitNumber ?? null,
+        start: taken.start.toISOString(),
+        end: taken.end ? taken.end.toISOString() : null,
+      },
+    });
   }
 
   /** `Trip.trailerId` has no FK, so an unknown id would otherwise be stored silently; a

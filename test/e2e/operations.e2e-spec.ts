@@ -84,6 +84,31 @@ describe('Operations — trips / geofences / alert-rules / notifications (e2e)',
     expect(illegal.body.code).toBe('CONFLICT');
   });
 
+  it('rejects a second trip on the same unit in an overlapping range (409 TRIP_SCHEDULE_CONFLICT), allows touching ranges', async () => {
+    const vehicle = await prisma.vehicle.findFirstOrThrow({ where: { deletedAt: null }, orderBy: { unitNumber: 'asc' } });
+    // A random far-future day so reruns and seed trips never collide.
+    const base = Date.UTC(2031, 0, 1) + Math.floor(Math.random() * 3000) * 86_400_000;
+    const hour = (h: number) => new Date(base + h * 3_600_000).toISOString();
+    const post = (number: string, from: number, to: number) =>
+      request(server())
+        .post('/api/trips')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ number, vehicleId: vehicle.id, plannedStartAt: hour(from), plannedEndAt: hour(to) });
+
+    const first = await post(`E2E-UNIT-A-${Date.now()}`, 10, 14);
+    expect(first.status).toBe(201);
+    createdTripIds.push(first.body.data.id as string);
+
+    const overlapping = await post(`E2E-UNIT-B-${Date.now()}`, 12, 16);
+    expect(overlapping.status).toBe(409);
+    expect(overlapping.body.code).toBe('TRIP_SCHEDULE_CONFLICT');
+    expect(overlapping.body.details.conflict.tripId).toBe(first.body.data.id);
+
+    const touching = await post(`E2E-UNIT-C-${Date.now()}`, 14, 18);
+    expect(touching.status).toBe(201);
+    createdTripIds.push(touching.body.data.id as string);
+  });
+
   it('draws a geofence and lists it back', async () => {
     const created = await request(server())
       .post('/api/geofences')
