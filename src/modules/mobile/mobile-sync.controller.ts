@@ -1,11 +1,13 @@
 import { Body, Controller, HttpCode, Post, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { DriverGuard } from '../../common/guards/driver.guard';
 import { zodBody } from '../../common/pipes/zod-validation.pipe';
+import { ApiEnvelopeResponse } from '../../common/swagger/api-envelope';
 import type { ContextUser } from '../../core/context/request-context';
 import { apiError, ApiStandardErrors, ERROR_CODES } from '../../common/errors';
 import { SyncRequestDto } from './dto/mobile.dto';
+import { SyncResponse } from './dto/mobile.responses';
 import { MobileSyncService } from './mobile-sync.service';
 
 /**
@@ -34,16 +36,14 @@ export class MobileSyncController {
       'that change alone is rejected with `SYNC_DELEGATION_NOT_ALLOWED`. Delegated changes are audited ' +
       '(`SYNC_DELEGATED_CHANGE`); certification and DVIR are never delegated.',
   })
-  @ApiOkResponse({
-    schema: {
-      example: {
-        accepted: ['uuid1'],
-        rejected: [{ clientId: 'uuid3', code: 'DRIVING_TIME_IMMUTABLE' }, { clientId: 'uuid4', code: 'SYNC_DELEGATION_NOT_ALLOWED' }],
-        serverChanges: [],
-        serverTime: '2026-09-11T15:41:00.000Z',
-        hosEngineVersion: '1.0.1',
-        nextSyncAfterSec: 60,
-      },
+  @ApiEnvelopeResponse(SyncResponse, {
+    example: {
+      accepted: ['uuid1'],
+      rejected: [{ clientId: 'uuid3', code: 'DRIVING_TIME_IMMUTABLE', message: 'Driving time can never be hand-entered.' }, { clientId: 'uuid4', code: 'SYNC_DELEGATION_NOT_ALLOWED' }],
+      serverChanges: [{ id: '9102', eventType: 1, eventCode: 3, eventDateTime: '2026-09-11T15:00:00.000Z', recordStatus: 1, recordOrigin: 1, annotation: null, supersedesId: null }],
+      serverTime: '2026-09-11T15:41:00.000Z',
+      hosEngineVersion: '1.0.3',
+      nextSyncAfterSec: 60,
     },
   })
   @ApiStandardErrors({ errors: [apiError.unprocessable(ERROR_CODES.SYNC_BATCH_TOO_LARGE, 'Batch exceeds 500 changes or 1 MB.')] })

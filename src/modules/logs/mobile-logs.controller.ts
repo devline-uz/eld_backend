@@ -1,8 +1,9 @@
 import { Body, Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiCreatedResponse, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { DriverGuard } from '../../common/guards/driver.guard';
 import { zodBody } from '../../common/pipes/zod-validation.pipe';
+import { ApiEnvelopeResponse } from '../../common/swagger/api-envelope';
 import type { ContextUser } from '../../core/context/request-context';
 import {
   CertificationStatusQueryDto,
@@ -11,6 +12,13 @@ import {
   EditRequestListQueryDto,
   LogDateQueryDto,
 } from './dto/logs.dto';
+import {
+  CertificationStatusDayResponse,
+  CertifyResponse,
+  EditRequestListResponse,
+  LogDayResponse,
+  LogEntryResultResponse,
+} from './dto/logs.responses';
 import { LogsService } from './logs.service';
 import { apiError, ApiStandardErrors, ERROR_CODES } from '../../common/errors';
 
@@ -32,19 +40,21 @@ export class MobileLogsController {
     summary:
       "Driver's own log correction (§9.3): recordOrigin = 2, recordStatus = 1, active immediately. Annotation 4-60 chars is mandatory and certification is invalidated.",
   })
-  @ApiCreatedResponse({
+  @ApiEnvelopeResponse(LogEntryResultResponse, {
+    status: 201,
     description: 'recordOrigin = 2 (driver), recordStatus = 1 (active immediately); certification is invalidated.',
-    schema: {
-      example: {
-        id: 'evt_9100',
-        eventSequenceId: 1043,
-        recordOrigin: 2,
-        recordStatus: 1,
-        dutyStatus: 'ON',
-        occurredAt: '2026-09-10T18:26:58.000Z',
-        annotation: 'Loading at shipper #4821',
-        recertificationRequired: true,
-      },
+    example: {
+      id: '9100',
+      driverId: 'drv_1',
+      status: 'ON',
+      specialCondition: 'NONE',
+      locationName: 'Columbus, OH',
+      startAt: '2026-09-10T18:26:58.000Z',
+      endAt: null,
+      recordOrigin: 2,
+      recordStatus: 1,
+      applied: true,
+      recertificationRequired: true,
     },
   })
   @ApiStandardErrors({
@@ -79,12 +89,11 @@ export class MobileLogsController {
       'returns `422 RECERTIFICATION_REQUIRED` — that code is a state, read from `recertificationRequired`. ' +
       '422 `VALIDATION_FAILED` is returned for a future date.',
   })
-  @ApiCreatedResponse({
-    schema: {
-      example: {
-        driverId: 'drv_1',
-        days: [{ date: '2026-09-10', certified: true, certificationCount: 1, eventCode: 1, certifiedAt: '2026-09-11T15:41:00.000Z', certifierType: 'DRIVER' }],
-      },
+  @ApiEnvelopeResponse(CertifyResponse, {
+    status: 201,
+    example: {
+      driverId: 'drv_1',
+      days: [{ date: '2026-09-10', certified: true, certificationCount: 1, eventCode: 1, certifiedAt: '2026-09-11T15:41:00.000Z', certifierType: 'DRIVER' }],
     },
   })
   @ApiStandardErrors()
@@ -94,7 +103,18 @@ export class MobileLogsController {
 
   @Get('log-edit-requests')
   @ApiOperation({ summary: 'Carrier edit proposals waiting for this driver (§395.30 — nothing applies until they answer).' })
-  @ApiOkResponse({ schema: { example: { items: [{ id: 'edt_1', date: '2026-09-10', status: 'PENDING', reason: 'Driver forgot to switch to On duty while loading at shipper #4821.', proposed: { status: 'ON', startAt: '2026-09-10T18:26:58.000Z', endAt: '2026-09-10T19:30:00.000Z' } }] } } })
+  @ApiEnvelopeResponse(EditRequestListResponse, {
+    example: {
+      driverId: 'drv_1',
+      items: [
+        {
+          id: '9120', driverId: 'drv_1', status: 'PENDING', kind: 'EDIT', originalEventId: '9100', proposedStatus: 'ON', proposedSpecial: 'NONE',
+          proposedStart: '2026-09-10T18:26:58.000Z', proposedEnd: '2026-09-10T19:30:00.000Z', locationName: 'Columbus, OH',
+          annotation: 'Forgot to switch to On duty while loading', requestedById: 'usr_1', requestedAt: '2026-09-11T14:00:00.000Z', resolvedAt: null,
+        },
+      ],
+    },
+  })
   @ApiStandardErrors()
   listEditRequests(
     @Query(zodBody(EditRequestListQueryDto)) query: EditRequestListQueryDto,
@@ -111,13 +131,12 @@ export class MobileLogsController {
       '`recertificationRequired` is true only for a day that WAS certified and changed afterwards ' +
       '(`certified=false && certificationCount>0`). A day with no records yet is `certified:false`.',
   })
-  @ApiOkResponse({
-    schema: {
-      example: [
-        { date: '2026-10-07', certified: true, certifiedAt: '2026-10-08T01:02:00.000Z', certificationCount: 1, recertificationRequired: false },
-        { date: '2026-10-08', certified: false, certifiedAt: null, certificationCount: 1, recertificationRequired: true },
-      ],
-    },
+  @ApiEnvelopeResponse(CertificationStatusDayResponse, {
+    isArray: true,
+    example: [
+      { date: '2026-10-07', certified: true, certifiedAt: '2026-10-08T01:02:00.000Z', certificationCount: 1, recertificationRequired: false },
+      { date: '2026-10-08', certified: false, certifiedAt: null, certificationCount: 1, recertificationRequired: true },
+    ],
   })
   @ApiStandardErrors()
   certificationStatus(
@@ -140,18 +159,28 @@ export class MobileLogsController {
       'opened it, and every event `eventId`, `locationDescription`, `odometerMi`, `engineHours`, `specialCondition` (MR-13). ' +
       '`locationDescription` is the stored location text (device-provided or driver-entered); when there is none, the server computes the §395 Appendix A 7.29 geo-location offline from the stored position (`3mi W OH Columbus`, PC: 10-mile steps — `docs/location-description.md`).',
   })
-  @ApiOkResponse({
-    schema: {
-      example: {
-        driverId: 'drv_1',
-        date: '2026-09-10',
-        timezone: 'America/New_York',
-        summary: { drivingSec: 32400, onDutySec: 7200, offDutySec: 39600, sleeperSec: 7200, certified: false },
-        graph: [{ status: 'OFF', effective: 'OFF', special: 'NONE', startAt: '2026-09-10T04:00:00.000Z', durationSec: 3600, eventId: '9100', locationDescription: '3mi W OH Columbus', odometerMi: 120345, engineHours: 5321.4, annotation: null, carriedOver: true }],
-        trip: { shippingDocuments: ['BOL-4821'], trailerNumbers: ['TR-778'], notes: null, bobtail: false, tripIds: ['5b0c…'], tripNumbers: ['T-1042'], dayDetails: false },
-        malfunctionIndicator: false,
-        diagnosticIndicator: false,
+  @ApiEnvelopeResponse(LogDayResponse, {
+    example: {
+      driverId: 'drv_1',
+      date: '2026-09-10',
+      timezone: 'America/New_York',
+      summary: {
+        date: '2026-09-10', timezone: 'America/New_York', offDutySec: 39600, sleeperSec: 7200, drivingSec: 32400, onDutySec: 7200, totalDistanceMi: 512,
+        dayLengthSec: 86400, certified: false, certifiedAt: null, certificationCount: 0, hasViolation: false, violationCount: 0, hasUnassigned: false, hasEdits: false,
       },
+      graph: [{ status: 'OFF', effective: 'OFF', special: 'NONE', startAt: '2026-09-10T04:00:00.000Z', endAt: '2026-09-10T05:00:00.000Z', durationSec: 3600, eventId: '9100', locationDescription: '3mi W OH Columbus', odometerMi: 120345, engineHours: 5321.4, annotation: null, carriedOver: true }],
+      events: [
+        {
+          id: '9101', eventType: 1, eventCode: 3, eventSequenceId: 1043, eventDateTime: '2026-09-10T05:00:00.000Z', recordStatus: 1, recordOrigin: 1, status: 'D',
+          locationName: null, totalVehicleMiles: 120345, totalEngineHours: 5321.4, annotation: null, comment: null, supersedesId: null, editedById: null, editorType: null, editReason: null,
+          vehicleId: 'veh_1', eventId: '9101', locationDescription: '3mi W OH Columbus', odometerMi: 120345, engineHours: 5321.4, specialCondition: null, malfunctionCode: null, diagnosticCode: null,
+        },
+      ],
+      trip: { shippingDocuments: ['BOL-4821'], trailerNumbers: ['TR-778'], notes: null, bobtail: false, tripIds: ['5b0c…'], tripNumbers: ['T-1042'], dayDetails: false },
+      malfunctionIndicator: false,
+      diagnosticIndicator: false,
+      violations: [],
+      certification: { certified: false, certifiedAt: null, certifiedById: null, certifierType: null, certificationCount: 0, signatureUrl: null, recertificationRequired: false },
     },
   })
   @ApiStandardErrors()

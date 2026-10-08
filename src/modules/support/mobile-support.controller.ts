@@ -1,12 +1,19 @@
 import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiBody, ApiCreatedResponse, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiBody, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Audit } from '../../common/decorators/audit.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { DriverGuard } from '../../common/guards/driver.guard';
 import { zodBody } from '../../common/pipes/zod-validation.pipe';
+import { ApiEnvelopeResponse } from '../../common/swagger/api-envelope';
 import { apiError, ApiStandardErrors, ERROR_CODES } from '../../common/errors';
 import type { ContextUser } from '../../core/context/request-context';
 import { CreateFeedbackDto, MobileCreateSupportTicketDto } from './dto/support.dto';
+import {
+  FeedbackResponse,
+  MobileSupportTicketCreatedResponse,
+  MobileSupportTicketListResponse,
+  MobileSupportTicketView,
+} from './dto/mobile-support.responses';
 import type { SupportTicket } from '@prisma/client';
 import { SupportService } from './support.service';
 import { SupportRepository } from './support.repository';
@@ -69,7 +76,10 @@ export class MobileSupportController {
       },
     },
   })
-  @ApiCreatedResponse({ schema: { example: { id: 'fbk_1', comment: 'Great app!', createdAt: '2026-09-21T00:00:00.000Z' } } })
+  @ApiEnvelopeResponse(FeedbackResponse, {
+    status: 201,
+    example: { id: 'fbk_1', driverId: 'drv_1', userId: null, answers: { tenure: '1-3 years', ease: 'Easy', hosSatisfaction: 'Satisfied', recommend: 9, overallExperience: 5 }, comment: 'Great app!', appVersion: '1.0.3', platform: 'android', createdAt: '2026-09-21T00:00:00.000Z' },
+  })
   @ApiStandardErrors()
   createFeedback(@Body(zodBody(CreateFeedbackDto)) dto: CreateFeedbackDto, @CurrentUser() actor: ContextUser) {
     return this.support.createFeedbackForDriver(dto, actor.id);
@@ -78,7 +88,10 @@ export class MobileSupportController {
   @Post('support/tickets')
   @Audit({ object: 'SupportTicket', action: 'CREATE' })
   @ApiOperation({ summary: 'M-30/M-22 — opens a support ticket from the driver app (also used by "Send diagnostics to support", category: diagnostics). MR-20: optional `contactMethod` (EMAIL|PHONE) and idempotent `clientId`.', description: '`contactMethod` (EMAIL | PHONE, optional, null = not said) is stored on the ticket and returned by `GET /mobile/support/tickets` and `GET /mobile/support/tickets/{id}`. A replay with the same `clientId` returns the first ticket unchanged.' })
-  @ApiCreatedResponse({ schema: { example: { id: 'tck_9', number: 'TCK-000009', subject: 'App crashes on certify', body: 'It closes after tapping Certify.', category: 'diagnostics', status: 'OPEN', priority: 'NORMAL', contactMethod: 'PHONE', createdAt: '2026-10-08T00:00:00.000Z', updatedAt: '2026-10-08T00:00:00.000Z' } } })
+  @ApiEnvelopeResponse(MobileSupportTicketCreatedResponse, {
+    status: 201,
+    example: { id: 'tck_9', number: 'TCK-000009', subject: 'App crashes on certify', body: 'It closes after tapping Certify.', category: 'diagnostics', priority: 'NORMAL', status: 'OPEN', createdByUserId: null, createdByDriverId: 'drv_1', assignedToId: null, contactMethod: 'PHONE', createdAt: '2026-10-08T00:00:00.000Z', updatedAt: '2026-10-08T00:00:00.000Z', resolvedAt: null },
+  })
   @ApiStandardErrors()
   createTicket(@Body(zodBody(MobileCreateSupportTicketDto)) dto: MobileCreateSupportTicketDto, @CurrentUser() actor: ContextUser) {
     return this.support.createForDriver(dto, actor.id);
@@ -86,7 +99,7 @@ export class MobileSupportController {
 
   @Get('support/tickets/:id')
   @ApiOperation({ summary: 'MR-20 — one of the calling driver\'s own support tickets (404 for any other id).' })
-  @ApiOkResponse({ schema: { example: { id: 'tck_9', number: 'TCK-000009', subject: 'App crashes on certify', body: 'It closes after tapping Certify.', category: 'diagnostics', priority: 'NORMAL', status: 'OPEN', contactMethod: null, createdAt: '2026-10-08T00:00:00.000Z', updatedAt: '2026-10-08T00:00:00.000Z' } } })
+  @ApiEnvelopeResponse(MobileSupportTicketView, { example: { id: 'tck_9', number: 'TCK-000009', subject: 'App crashes on certify', body: 'It closes after tapping Certify.', category: 'diagnostics', priority: 'NORMAL', status: 'OPEN', contactMethod: null, createdAt: '2026-10-08T00:00:00.000Z', updatedAt: '2026-10-08T00:00:00.000Z' } })
   @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.NOT_FOUND, 'Support ticket not found.')] })
   async getOwnTicket(@Param('id') id: string, @CurrentUser('id') driverId: string) {
     return toMobileTicket(await this.support.getForDriver(id, driverId));
@@ -94,24 +107,11 @@ export class MobileSupportController {
 
   @Get('support/tickets')
   @ApiOperation({ summary: 'M-30/M-22 — lists the calling driver\'s own support tickets.' })
-  @ApiOkResponse({
-    schema: {
-      example: {
-        items: [
-          {
-            id: 'tck_1',
-            number: 'TCK-000001',
-            body: 'It closes after tapping Certify.',
-            contactMethod: null,
-            subject: 'App crashes on certify',
-            category: 'diagnostics',
-            priority: 'NORMAL',
-            status: 'OPEN',
-            createdAt: '2026-09-21T00:00:00.000Z',
-            updatedAt: '2026-09-21T00:00:00.000Z',
-          },
-        ],
-      },
+  @ApiEnvelopeResponse(MobileSupportTicketListResponse, {
+    example: {
+      items: [
+        { id: 'tck_1', number: 'TCK-000001', subject: 'App crashes on certify', body: 'It closes after tapping Certify.', category: 'diagnostics', priority: 'NORMAL', status: 'OPEN', contactMethod: null, createdAt: '2026-09-21T00:00:00.000Z', updatedAt: '2026-09-21T00:00:00.000Z' },
+      ],
     },
   })
   @ApiStandardErrors()

@@ -89,3 +89,60 @@ export function auditOpenApiDocument(doc: OpenAPIObject): OpenApiAuditResult {
 
   return { operationCount, figmaLinked, problems, missingFigma };
 }
+
+type SchemaLike = {
+  $ref?: string;
+  type?: string;
+  properties?: Record<string, SchemaLike>;
+  items?: SchemaLike;
+  allOf?: SchemaLike[];
+  oneOf?: SchemaLike[];
+  anyOf?: SchemaLike[];
+};
+
+/** True for a schema a client can generate a model from: a `$ref`, an object with properties, a combinator or a typed array. */
+function isTypedSchema(schema: SchemaLike | undefined): boolean {
+  if (!schema) return false;
+  if (schema.$ref) return true;
+  for (const combinator of [schema.allOf, schema.oneOf, schema.anyOf]) {
+    if (Array.isArray(combinator) && combinator.length > 0 && combinator.every((s) => isTypedSchema(s))) return true;
+  }
+  if (schema.type === 'array') return isTypedSchema(schema.items) || (!!schema.items?.type && schema.items.type !== 'object');
+  if (schema.properties && Object.keys(schema.properties).length > 0) {
+    // The `{ data, traceId, timestamp }` envelope (D-131): the payload under `data` must be typed too.
+    return 'data' in schema.properties ? isTypedSchema(schema.properties.data) : true;
+  }
+  return false;
+}
+
+/**
+ * Mobile request #13 (D-131) — every 2xx response of the selected operations must carry a typed
+ * schema (`$ref` / properties / combinator), not just an example, so the Flutter app can generate
+ * strict `fromJson` models. Non-JSON bodies (CSV, PDF, octet-stream) need a `type`d schema.
+ * Returns one human-readable problem per offending `METHOD /path status`.
+ */
+export function auditTypedResponses(doc: OpenAPIObject, select: (path: string) => boolean): { checked: number; problems: string[] } {
+  const problems: string[] = [];
+  let checked = 0;
+  for (const [path, pathItem] of Object.entries(doc.paths ?? {})) {
+    if (!select(path)) continue;
+    for (const method of HTTP_METHODS) {
+      const op = (pathItem as Record<string, unknown>)[method] as { responses?: Record<string, ResponseLike> } | undefined;
+      if (!op) continue;
+      checked += 1;
+      const route = `${method.toUpperCase()} ${path}`;
+      const success = Object.entries(op.responses ?? {}).filter(([status]) => status.startsWith('2'));
+      if (success.length === 0) problems.push(`${route}: no documented 2xx response.`);
+      for (const [status, response] of success) {
+        const media = Object.entries(response.content ?? {});
+        if (media.length === 0) problems.push(`${route} ${status}: no response content/schema.`);
+        for (const [mime, body] of media) {
+          const schema = (body as { schema?: SchemaLike }).schema;
+          const typed = mime.includes('json') ? isTypedSchema(schema) : Boolean(schema?.type);
+          if (!typed) problems.push(`${route} ${status} ${mime}: schema is untyped (example only) — use @ApiEnvelopeResponse(Dto).`);
+        }
+      }
+    }
+  }
+  return { checked, problems };
+}

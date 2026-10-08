@@ -1,5 +1,5 @@
 import type { OpenAPIObject } from '@nestjs/swagger';
-import { auditOpenApiDocument } from './openapi-audit';
+import { auditOpenApiDocument, auditTypedResponses } from './openapi-audit';
 import { FIGMA_SCREENS } from '../decorators/figma-screens';
 
 /** Minimal document factory — only the fields the auditor reads. */
@@ -76,5 +76,39 @@ describe('auditOpenApiDocument (tasks.md Swagger + Figma global gates)', () => {
       expect(screen.source).toMatch(/^eld\.docs\//);
       expect(id).toMatch(/^web\//);
     }
+  });
+});
+
+describe('auditTypedResponses (mobile request #13, D-131)', () => {
+  const json = (schema: unknown) => ({ 200: { description: 'ok', content: { 'application/json': { schema } } } });
+  const audit = (responses: unknown) =>
+    auditTypedResponses(docWith({ responses }, '/api/mobile/things'), (path) => path.startsWith('/api/mobile/'));
+  const envelope = (data: unknown) => ({ type: 'object', properties: { data, traceId: { type: 'string' } }, example: { data: {} } });
+
+  it('accepts the envelope with a $ref, an array of $ref, a nullable allOf and a oneOf payload', () => {
+    for (const data of [
+      { $ref: '#/components/schemas/Thing' },
+      { type: 'array', items: { $ref: '#/components/schemas/Thing' } },
+      { allOf: [{ $ref: '#/components/schemas/Thing' }], nullable: true },
+      { oneOf: [{ $ref: '#/components/schemas/A' }, { $ref: '#/components/schemas/B' }] },
+    ]) {
+      expect(audit(json(envelope(data)))).toEqual({ checked: 1, problems: [] });
+    }
+  });
+
+  it('flags an example-only schema and an envelope whose data is untyped', () => {
+    expect(audit(json({ example: { id: 'x' } })).problems).toEqual([
+      'GET /api/mobile/things 200 application/json: schema is untyped (example only) — use @ApiEnvelopeResponse(Dto).',
+    ]);
+    expect(audit(json(envelope({ example: {} }))).problems).toHaveLength(1);
+  });
+
+  it('accepts a typed non-JSON body and flags a 2xx without content', () => {
+    expect(audit({ 200: { content: { 'text/csv': { schema: { type: 'string' } } } } }).problems).toEqual([]);
+    expect(audit({ 200: { description: 'ok' } }).problems).toEqual(['GET /api/mobile/things 200: no response content/schema.']);
+  });
+
+  it('ignores paths outside the selection', () => {
+    expect(auditTypedResponses(docWith({ responses: json({ example: 1 }) }), (p) => p.startsWith('/api/mobile/'))).toEqual({ checked: 0, problems: [] });
   });
 });

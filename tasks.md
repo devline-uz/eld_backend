@@ -361,6 +361,7 @@ Source: `../backend_tasks.md` (section numbers in brackets). Depends on: Phases 
 - [x] §395 login/logout records written by the server (`RodsLoginRecorder`): code 1 on `/auth/login/driver` with a unit, `select-vehicle`, `co-driver/switch`; code 2 on `/auth/logout`, `release-vehicle`, `co-driver/leave` (+ replaced stale holder); idempotent, origin 1; ingest eventType 5 still accepted; D-117 + eRODS segment covered by e2e — B-147, D-130
 - [x] `bootstrap.driver.username` + driver `GET /auth/me` `username`/`fullName`/`email`/`homeTerminalTimezone` (M-31 / D-120)
 - [x] `docs/erods-changes-2026-10-08.md` — Unidentified title `Unidentified Vehicle Profile Records:` → `Unidentified Driver Profile Records:` (`segments.ts:31`), header trailer/shipping and Login/Logout rows
+- [x] Mobile #13 OpenAPI quality — every `/mobile/*` + `/auth/login/driver|refresh|me` + `/notifications*` 2xx has a typed enveloped schema (`@ApiEnvelopeResponse`, `*/dto/*.responses.ts`, named enums, nullable/optional per service), `POST /mobile/conversations` body = `StartConversationDto`, examples match current shapes (bootstrap `OBK001`, trip `source`, dvirs `trailerNumber/odometerMi`), e2e guard for typed schemas + real 2xx status, `docs/openapi.json` regenerated — D-131, B-152
 
 ## Global gates
 From TZ §25 — apply across every phase, not just at the end:

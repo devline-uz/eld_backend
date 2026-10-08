@@ -1,9 +1,11 @@
 import { Body, Controller, Delete, Get, Put, Query, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiBody, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiBody, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { apiError, ApiStandardErrors, ERROR_CODES } from '../../common/errors';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { DriverGuard } from '../../common/guards/driver.guard';
 import { zodBody } from '../../common/pipes/zod-validation.pipe';
+import { ApiEnvelopeResponse } from '../../common/swagger/api-envelope';
+import { DefectCatalogItemResponse, DeletedResponse, SavedSignatureResponse } from './dto/mobile.responses';
 import { DefectCatalogQueryDto, SavedSignatureDto } from './dto/mobile.dto';
 import { MobileCatalogRepository } from './mobile-catalog.repository';
 import { MobileSavedSignatureService } from './mobile-saved-signature.service';
@@ -33,7 +35,10 @@ export class MobileCatalogController {
       '"Accident Photo" row — a photo capture, not an inspection item.',
   })
   @ApiQuery({ name: 'part', required: false, enum: ['TRUCK', 'TRAILER'], description: 'Omit to get both parts.' })
-  @ApiOkResponse({ schema: { example: [{ code: 'ACCIDENT_PHOTO', name: 'Accident Photo', part: 'TRUCK', category: 'Accident', critical: false, isPhoto: true }, { code: 'BRAKES_SERVICE', name: 'Brakes, Service', part: 'TRUCK', category: 'Brakes', critical: true, isPhoto: false }] } })
+  @ApiEnvelopeResponse(DefectCatalogItemResponse, {
+    isArray: true,
+    example: [{ code: 'ACCIDENT_PHOTO', name: 'Accident Photo', part: 'TRUCK', category: 'Accident', critical: false, isPhoto: true }, { code: 'BRAKES_SERVICE', name: 'Brakes, Service', part: 'TRUCK', category: 'Brakes', critical: true, isPhoto: false }],
+  })
   @ApiStandardErrors()
   async defectCatalog(@Query(zodBody(DefectCatalogQueryDto)) query: DefectCatalogQueryDto) {
     const rows = await this.catalog.listCatalog(query.part);
@@ -42,11 +47,10 @@ export class MobileCatalogController {
 
   @Get('saved-signature')
   @ApiOperation({ summary: 'MR-27 — the driver\'s saved signature (presigned 15 min URL), or `null` when none is saved.' })
-  @ApiOkResponse({
-    schema: {
-      nullable: true,
-      example: { signatureImageId: '3f2c...', key: 'signatures/drv_1/3f2c.png', url: 'https://...', mimeType: 'image/png', sizeBytes: 4821, sha256: 'a1b2...', updatedAt: '2026-10-08T12:00:00.000Z' },
-    },
+  @ApiEnvelopeResponse(SavedSignatureResponse, {
+    nullable: true,
+    description: '`data` is null when no signature is saved.',
+    example: { signatureImageId: '3f2c...', key: 'signatures/drv_1/3f2c.png', url: 'https://...', mimeType: 'image/png', sizeBytes: 4821, sha256: 'a1b2...', updatedAt: '2026-10-08T12:00:00.000Z' },
   })
   @ApiStandardErrors()
   get(@CurrentUser('id') driverId: string) {
@@ -59,7 +63,7 @@ export class MobileCatalogController {
     description: 'Exactly one of `signatureBase64` / `signatureImageId`. PNG/JPEG, max 2 MB. Idempotent on `clientId` (409 when that id was spent on another operation).',
   })
   @ApiBody({ schema: { example: { signatureBase64: 'iVBORw0KGgo...', mimeType: 'image/png', clientId: '7d1c2a40-0000-4000-8000-000000000001' } } })
-  @ApiOkResponse({ schema: { example: { signatureImageId: '3f2c...', key: 'signatures/drv_1/3f2c.png', url: 'https://...', mimeType: 'image/png', sizeBytes: 4821, sha256: 'a1b2...', updatedAt: '2026-10-08T12:00:00.000Z' } } })
+  @ApiEnvelopeResponse(SavedSignatureResponse, { example: { signatureImageId: '3f2c...', key: 'signatures/drv_1/3f2c.png', url: 'https://...', mimeType: 'image/png', sizeBytes: 4821, sha256: 'a1b2...', updatedAt: '2026-10-08T12:00:00.000Z' } })
   @ApiStandardErrors({
     errors: [
       apiError.unprocessable(ERROR_CODES.VALIDATION_FAILED, 'Neither/both of signatureBase64 and signatureImageId, an empty payload, or an unknown signatureImageId.'),
@@ -72,7 +76,7 @@ export class MobileCatalogController {
 
   @Delete('saved-signature')
   @ApiOperation({ summary: 'MR-27 — forgets the saved signature (idempotent; the stored object is kept, earlier DVIRs may reference it).' })
-  @ApiOkResponse({ schema: { example: { deleted: true } } })
+  @ApiEnvelopeResponse(DeletedResponse, { description: '`deleted: false` when nothing was saved.', example: { deleted: true } })
   @ApiStandardErrors()
   remove(@CurrentUser('id') driverId: string) {
     return this.saved.remove(driverId);

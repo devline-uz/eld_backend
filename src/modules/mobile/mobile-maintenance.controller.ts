@@ -1,10 +1,12 @@
 import { Body, Controller, Get, HttpCode, Param, Post, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiBody, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiBody, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { apiError, ApiStandardErrors, ERROR_CODES } from '../../common/errors';
 import { DriverGuard } from '../../common/guards/driver.guard';
 import { zodBody } from '../../common/pipes/zod-validation.pipe';
+import { ApiEnvelopeResponse } from '../../common/swagger/api-envelope';
 import { MaintenanceSubmitDto } from './dto/mobile-maintenance.dto';
+import { MaintenanceDetailResponse, MaintenanceItemResponse } from './dto/mobile.responses';
 import { MobileMaintenanceService } from './mobile-maintenance.service';
 
 /**
@@ -26,8 +28,9 @@ export class MobileMaintenanceController {
       '`remainingMi` is relative to the unit odometer; a negative value means overdue by that many miles, `null` = date-only interval. ' +
       '`at` = completion time (COMPLETED), else last submission, else due date. `[]` when no unit is selected.',
   })
-  @ApiOkResponse({
-    schema: { example: [{ id: '3f2c0a7e-0000-4000-8000-000000000001', scheduleType: 'OIL_CHANGE', scheduleName: 'Engine oil & filter', frequencyMi: 25000, remainingMi: 1200, status: 'OPEN', at: '2026-11-01T00:00:00.000Z' }] },
+  @ApiEnvelopeResponse(MaintenanceItemResponse, {
+    isArray: true,
+    example: [{ id: '3f2c0a7e-0000-4000-8000-000000000001', scheduleType: 'OIL_CHANGE', scheduleName: 'Engine oil & filter', frequencyMi: 25000, remainingMi: 1200, status: 'OPEN', at: '2026-11-01T00:00:00.000Z' }],
   })
   @ApiStandardErrors()
   list(@CurrentUser('id') driverId: string) {
@@ -36,13 +39,11 @@ export class MobileMaintenanceController {
 
   @Get(':id')
   @ApiOperation({ summary: 'M-39/M-41 — one maintenance task with the submitted invoice (if any) and the reviewer\'s note.' })
-  @ApiOkResponse({
-    schema: {
-      example: {
-        id: '3f2c0a7e-0000-4000-8000-000000000001', scheduleType: 'OIL_CHANGE', scheduleName: 'Engine oil & filter', frequencyMi: 25000, remainingMi: 1200, status: 'REJECTED', at: '2026-10-08T12:00:00.000Z',
-        invoiceNumber: 'INV-2291', vendorName: 'Pilot Truck Care', cost: 412.5, notes: 'Changed filters too', invoiceAttachment: { id: '9a1d...', fileName: 'invoice-INV-2291.pdf', mimeType: 'application/pdf' },
-        submittedAt: '2026-10-08T12:00:00.000Z', reviewNote: 'Amount does not match the PDF.',
-      },
+  @ApiEnvelopeResponse(MaintenanceDetailResponse, {
+    example: {
+      id: '3f2c0a7e-0000-4000-8000-000000000001', scheduleType: 'OIL_CHANGE', scheduleName: 'Engine oil & filter', frequencyMi: 25000, remainingMi: 1200, status: 'REJECTED', at: '2026-10-08T12:00:00.000Z',
+      invoiceNumber: 'INV-2291', vendorName: 'Pilot Truck Care', cost: 412.5, notes: 'Changed filters too', invoiceAttachment: { id: '9a1d...', fileName: 'invoice-INV-2291.pdf', mimeType: 'application/pdf' },
+      submittedAt: '2026-10-08T12:00:00.000Z', reviewNote: 'Amount does not match the PDF.',
     },
   })
   @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.MAINTENANCE_SCHEDULE_NOT_FOUND, 'Task not found, or it belongs to a unit other than the selected one.')] })
@@ -59,13 +60,11 @@ export class MobileMaintenanceController {
       'Idempotent on `clientId`: a replay returns the first answer; a `clientId` spent on another operation -> 409. The task stays OPEN with `submittedAt` set until back office approves (COMPLETED) or rejects (REJECTED + `reviewNote`).',
   })
   @ApiBody({ schema: { example: { invoiceNumber: 'INV-2291', vendorName: 'Pilot Truck Care', cost: 412.5, notes: 'Changed filters too', invoiceAttachmentId: '9a1d2b3c-0000-4000-8000-000000000009', clientId: '7d1c2a40-0000-4000-8000-000000000001' } } })
-  @ApiOkResponse({
-    schema: {
-      example: {
-        id: '3f2c0a7e-0000-4000-8000-000000000001', scheduleType: 'OIL_CHANGE', scheduleName: 'Engine oil & filter', frequencyMi: 25000, remainingMi: 1200, status: 'OPEN', at: '2026-10-08T12:00:00.000Z',
-        invoiceNumber: 'INV-2291', vendorName: 'Pilot Truck Care', cost: 412.5, notes: 'Changed filters too', invoiceAttachment: { id: '9a1d2b3c-0000-4000-8000-000000000009', fileName: 'invoice-INV-2291.pdf', mimeType: 'application/pdf' },
-        submittedAt: '2026-10-08T12:00:00.000Z', reviewNote: null,
-      },
+  @ApiEnvelopeResponse(MaintenanceDetailResponse, {
+    example: {
+      id: '3f2c0a7e-0000-4000-8000-000000000001', scheduleType: 'OIL_CHANGE', scheduleName: 'Engine oil & filter', frequencyMi: 25000, remainingMi: 1200, status: 'OPEN', at: '2026-10-08T12:00:00.000Z',
+      invoiceNumber: 'INV-2291', vendorName: 'Pilot Truck Care', cost: 412.5, notes: 'Changed filters too', invoiceAttachment: { id: '9a1d2b3c-0000-4000-8000-000000000009', fileName: 'invoice-INV-2291.pdf', mimeType: 'application/pdf' },
+      submittedAt: '2026-10-08T12:00:00.000Z', reviewNote: null,
     },
   })
   @ApiStandardErrors({

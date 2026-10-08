@@ -1,10 +1,12 @@
 import { Body, Controller, Get, Patch, Query, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { apiError, ApiStandardErrors, ERROR_CODES } from '../../common/errors';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { DriverGuard } from '../../common/guards/driver.guard';
 import { zodBody } from '../../common/pipes/zod-validation.pipe';
+import { ApiEnvelopeResponse } from '../../common/swagger/api-envelope';
 import { TrailerSearchQueryDto, TripPatchDto, TripQueryDto } from './dto/mobile-fleet-ops.dto';
+import { MobileActiveTripResponse, MobileDayDetailsResponse, TrailerOptionResponse } from './dto/mobile.responses';
 import { MobileTripService } from './mobile-trip.service';
 
 /** mobile/tz.md §21.1 MB-5, screens M-05/S-05/P-03 — the driver's active trip. */
@@ -25,26 +27,25 @@ export class MobileTripController {
       'Never null any more — empty lists when nothing is stored.',
   })
   @ApiQuery({ name: 'date', required: false, description: 'YYYY-MM-DD home-terminal day; only used when there is no active trip.' })
-  @ApiOkResponse({
-    schema: {
-      example: {
-        source: 'DAY_DETAILS',
-        id: null,
-        trip: null,
-        logDate: '2026-10-08',
-        shippingDocument: 'BOL-2201',
-        shippingDocuments: ['BOL-2201'],
-        trailerId: null,
-        trailerNumber: 'X53-1188',
-        trailerNumbers: ['X53-1188'],
-        bobtail: false,
-        notes: null,
-        updatedAt: '2026-10-08T14:02:11.000Z',
-        stops: [],
-        documents: [],
-      },
+  @ApiEnvelopeResponse([MobileActiveTripResponse, MobileDayDetailsResponse], {
+    discriminator: { propertyName: 'source', mapping: { TRIP: MobileActiveTripResponse, DAY_DETAILS: MobileDayDetailsResponse } },
+    description: '`data` is one of two shapes, told apart by `source`: `TRIP` (the trip) or `DAY_DETAILS` (no active trip). Example shows `DAY_DETAILS`; see PATCH for `TRIP`.',
+    example: {
+      source: 'DAY_DETAILS',
+      id: null,
+      trip: null,
+      logDate: '2026-10-08',
+      shippingDocument: 'BOL-2201',
+      shippingDocuments: ['BOL-2201'],
+      trailerId: null,
+      trailerNumber: 'X53-1188',
+      trailerNumbers: ['X53-1188'],
+      bobtail: false,
+      notes: null,
+      updatedAt: '2026-10-08T14:02:11.000Z',
+      stops: [],
+      documents: [],
     },
-    description: 'Example shows the no-trip (`DAY_DETAILS`) body; with a trip it is the trip shape with `source:"TRIP"` (see PATCH example).',
   })
   @ApiStandardErrors()
   get(@CurrentUser('id') driverId: string, @Query(zodBody(TripQueryDto)) query: TripQueryDto) {
@@ -65,19 +66,33 @@ export class MobileTripController {
       '(YYYY-MM-DD home-terminal day, default today, at most 30 days back) and the response is the day-details shape (`source:"DAY_DETAILS"`, `id:null`); ' +
       'a change on a certified day drops its certification (re-certification required).',
   })
-  @ApiOkResponse({
-    schema: {
-      example: {
-        source: 'TRIP',
-        id: 'trip_1',
-        shippingDocument: 'BOL-2201',
-        shippingDocuments: ['BOL-2201', 'BOL-2202'],
-        trailerId: 'trl_1',
-        trailerNumber: 'TR-1',
-        trailerNumbers: ['TR-1', 'X53-1188'],
-        bobtail: false,
-        notes: 'Left the yard early',
-      },
+  @ApiEnvelopeResponse([MobileActiveTripResponse, MobileDayDetailsResponse], {
+    discriminator: { propertyName: 'source', mapping: { TRIP: MobileActiveTripResponse, DAY_DETAILS: MobileDayDetailsResponse } },
+    description: 'Same two shapes as GET (told apart by `source`). Example shows `TRIP`.',
+    example: {
+      source: 'TRIP',
+      id: 'trip_1',
+      number: 'T-1042',
+      status: 'IN_PROGRESS',
+      vehicleId: 'veh_1',
+      trailerId: 'trl_1',
+      shippingDocument: 'BOL-2201',
+      shippingDocuments: ['BOL-2201', 'BOL-2202'],
+      trailerNumber: 'TR-1',
+      trailerNumbers: ['TR-1', 'X53-1188'],
+      bobtail: false,
+      commodity: 'Produce',
+      weightLbs: 38000,
+      pieces: 22,
+      plannedStartAt: '2026-10-08T12:00:00.000Z',
+      plannedEndAt: '2026-10-09T02:00:00.000Z',
+      startedAt: '2026-10-08T12:10:00.000Z',
+      completedAt: null,
+      etaAt: '2026-10-09T01:30:00.000Z',
+      onTime: true,
+      notes: 'Left the yard early',
+      stops: [{ id: 'stp_1', sequence: 1, type: 'PICKUP', name: 'Shipper #4821', address: '100 Dock Rd, Columbus, OH', latitude: 39.96, longitude: -82.99, scheduledAt: '2026-10-08T12:00:00.000Z', arrivedAt: '2026-10-08T12:05:00.000Z', departedAt: null, status: 'ARRIVED', note: null }],
+      documents: [{ tripId: 'trip_1', number: 'T-1042', shippingDocument: 'BOL-2201', commodity: 'Produce', pieces: 22, weightLbs: 38000 }],
     },
   })
   @ApiStandardErrors({
@@ -100,7 +115,7 @@ export class MobileTrailersController {
   @ApiOperation({ summary: 'P-03 — the carrier\'s active (not deleted) trailers; `q` matches number or VIN, case-insensitive.' })
   @ApiQuery({ name: 'q', required: false, description: 'Substring of the trailer number / VIN.' })
   @ApiQuery({ name: 'limit', required: false, description: '1-200, default 50.' })
-  @ApiOkResponse({ schema: { example: [{ id: 'trl_1', number: 'TR-1', plate: null }] } })
+  @ApiEnvelopeResponse(TrailerOptionResponse, { isArray: true, example: [{ id: 'trl_1', number: 'TR-1', plate: null }] })
   @ApiStandardErrors()
   list(@Query(zodBody(TrailerSearchQueryDto)) query: TrailerSearchQueryDto) {
     return this.service.listTrailers(query.q, query.limit);

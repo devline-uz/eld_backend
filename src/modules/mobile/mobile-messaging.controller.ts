@@ -1,11 +1,19 @@
 import { Body, Controller, Get, HttpCode, Param, Post, Query, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiBody, ApiCreatedResponse, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiBody, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { DriverGuard } from '../../common/guards/driver.guard';
 import { zodBody } from '../../common/pipes/zod-validation.pipe';
+import { ApiEnvelopeResponse } from '../../common/swagger/api-envelope';
 import type { ContextUser } from '../../core/context/request-context';
 import { apiError, ApiStandardErrors, ERROR_CODES } from '../../common/errors';
 import { ListMessagesQueryDto, MobileSendMessageDto, StartConversationDto } from './dto/mobile-messaging.dto';
+import {
+  MessagesMarkedResponse,
+  MobileConversationListResponse,
+  MobileMessagePageResponse,
+  MobileMessageView,
+  StartConversationResponse,
+} from './dto/mobile.responses';
 import { MobileMessagingService } from './mobile-messaging.service';
 
 /**
@@ -21,7 +29,18 @@ export class MobileMessagingController {
 
   @Get()
   @ApiOperation({ summary: 'Lists the driver\'s conversations with the last message and unread count (S-14).' })
-  @ApiOkResponse({ schema: { example: { items: [{ id: 'cnv_1', type: 'DIRECT', title: 'Jane Dispatcher', participants: [{ id: 'drv_1', type: 'DRIVER', name: 'John Smith' }, { id: 'usr_1', type: 'STAFF', name: 'Jane Dispatcher' }], lastMessage: { id: 'msg_1', body: 'On schedule.', senderId: 'usr_1', senderType: 'STAFF', senderName: 'Jane Dispatcher', readAt: null, clientId: null }, unreadCount: 2 }] } } })
+  @ApiEnvelopeResponse(MobileConversationListResponse, {
+    example: {
+      items: [
+        {
+          id: 'cnv_1', type: 'DIRECT', title: 'Jane Dispatcher', lastMessageAt: '2026-09-11T15:00:00.000Z',
+          lastMessage: { id: 'msg_1', conversationId: 'cnv_1', senderUserId: 'usr_1', senderDriverId: null, body: 'On schedule.', attachmentId: null, clientId: null, sentAt: '2026-09-11T15:00:00.000Z', deliveredAt: null, readAt: null, senderId: 'usr_1', senderType: 'STAFF', senderName: 'Jane Dispatcher' },
+          unreadCount: 2,
+          participants: [{ id: 'drv_1', type: 'DRIVER', name: 'John Smith' }, { id: 'usr_1', type: 'STAFF', name: 'Jane Dispatcher' }],
+        },
+      ],
+    },
+  })
   @ApiStandardErrors()
   listConversations(@CurrentUser('id') driverId: string) {
     return this.service.listConversations(driverId);
@@ -36,8 +55,9 @@ export class MobileMessagingController {
       'a `conversation.new` realtime event goes to the staff contact\'s `user:{id}` room and `message.new` to `conversation:{id}`.',
   })
   @ApiBody({ schema: { example: { contactId: 'f3b1c2d4-0000-4000-8000-000000000001', body: 'Running 20 min late.', clientId: '0b9d6f5e-0000-4000-8000-000000000002' } } })
-  @ApiCreatedResponse({
-    schema: { example: { conversationId: 'cnv_1', message: { id: 'msg_1', body: 'Running 20 min late.', sentAt: '2026-10-08T15:00:00.000Z', senderId: 'drv_1', senderType: 'DRIVER', clientId: '0b9d6f5e-0000-4000-8000-000000000002' } } },
+  @ApiEnvelopeResponse(StartConversationResponse, {
+    status: 201,
+    example: { conversationId: 'cnv_1', message: { id: 'msg_1', body: 'Running 20 min late.', sentAt: '2026-10-08T15:00:00.000Z', senderId: 'drv_1', senderType: 'DRIVER', clientId: '0b9d6f5e-0000-4000-8000-000000000002' } },
   })
   @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.NOT_FOUND, 'Contact not found.')] })
   startConversation(@Body(zodBody(StartConversationDto)) dto: StartConversationDto, @CurrentUser() actor: ContextUser) {
@@ -48,7 +68,7 @@ export class MobileMessagingController {
   @ApiQuery({ name: 'limit', required: false })
   @ApiQuery({ name: 'before', required: false })
   @ApiOperation({ summary: 'Cursor-paginated message history for a conversation the driver participates in.' })
-  @ApiOkResponse({ schema: { example: { items: [{ id: 'msg_1', body: 'On schedule.', sentAt: '2026-09-11T15:00:00.000Z', senderId: 'usr_1', senderType: 'STAFF', senderName: 'Jane Dispatcher', readAt: null, clientId: null }], limit: 50 } } })
+  @ApiEnvelopeResponse(MobileMessagePageResponse, { example: { items: [{ id: 'msg_1', conversationId: 'cnv_1', senderUserId: 'usr_1', senderDriverId: null, body: 'On schedule.', attachmentId: null, clientId: null, sentAt: '2026-09-11T15:00:00.000Z', deliveredAt: null, readAt: null, senderId: 'usr_1', senderType: 'STAFF', senderName: 'Jane Dispatcher' }], limit: 50 } })
   @ApiStandardErrors({
     errors: [
       apiError.notFound(ERROR_CODES.NOT_FOUND, 'Conversation not found.'),
@@ -65,7 +85,10 @@ export class MobileMessagingController {
 
   @Post(':id/messages')
   @ApiOperation({ summary: 'Sends a message into a conversation the driver participates in (fires realtime message.new). Idempotent on clientId: a replay returns the stored message.' })
-  @ApiCreatedResponse({ schema: { example: { id: 'msg_2', body: 'Confirmed.', sentAt: '2026-09-11T15:05:00.000Z' } } })
+  @ApiEnvelopeResponse(MobileMessageView, {
+    status: 201,
+    example: { id: 'msg_2', conversationId: 'cnv_1', senderUserId: null, senderDriverId: 'drv_1', body: 'Confirmed.', attachmentId: null, clientId: '5d2c...', sentAt: '2026-09-11T15:05:00.000Z', deliveredAt: null, readAt: null, senderId: 'drv_1', senderType: 'DRIVER', senderName: 'John Smith' },
+  })
   @ApiStandardErrors({
     errors: [
       apiError.notFound(ERROR_CODES.NOT_FOUND, 'Conversation not found.'),
@@ -79,7 +102,7 @@ export class MobileMessagingController {
   @Post(':id/read')
   @HttpCode(200)
   @ApiOperation({ summary: 'Marks the conversation read: sets the driver\'s lastReadAt and readAt on the other side\'s messages.' })
-  @ApiOkResponse({ schema: { example: { messagesMarked: 3 } } })
+  @ApiEnvelopeResponse(MessagesMarkedResponse, { example: { messagesMarked: 3 } })
   @ApiStandardErrors({
     errors: [
       apiError.notFound(ERROR_CODES.NOT_FOUND, 'Conversation not found.'),

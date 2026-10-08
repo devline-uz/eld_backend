@@ -5,8 +5,10 @@ import type { Request } from 'express';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Public } from '../../common/decorators/public.decorator';
 import { zodBody } from '../../common/pipes/zod-validation.pipe';
+import { ApiEnvelopeResponse } from '../../common/swagger/api-envelope';
 import type { ContextUser } from '../../core/context/request-context';
 import { AuthService } from './auth.service';
+import { DriverLoginResponse, MeResponse, TokenPairResponse } from './dto/auth.responses';
 import { apiError, ApiStandardErrors, ERROR_CODES } from '../../common/errors';
 import { FigmaScreen } from '../../common/decorators/figma-screen.decorator';
 import {
@@ -48,9 +50,10 @@ export class AuthController {
     summary: 'Driver password login (TZ §6.1).',
     description: 'D-130 — when the driver already has an assigned unit, the server writes the §395 Appendix A 4.5.1.5 login record (eventType 5, code 1) on it (idempotent).',
   })
-  @ApiOkResponse({
+  @ApiEnvelopeResponse(DriverLoginResponse, {
+    status: 201,
     description: 'MB-9 — `driverId` is additive so the mobile app can name its per-driver offline DB file.',
-    schema: { example: { accessToken: 'eyJ...', refreshToken: 'a1b2...', tokenType: 'Bearer', driverId: 'drv_1' } },
+    example: { accessToken: 'eyJ...', refreshToken: 'a1b2...', tokenType: 'Bearer', driverId: 'drv_1' },
   })
   @ApiStandardErrors({ public: true, errors: [{ status: 401, code: ERROR_CODES.INVALID_CREDENTIALS, message: 'Username or password is incorrect.' }, apiError.rateLimited()] })
   loginDriver(@Body(zodBody(DriverLoginDto)) dto: DriverLoginDto, @Req() req: Request) {
@@ -79,9 +82,7 @@ export class AuthController {
   @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Post('refresh')
   @ApiOperation({ summary: 'Rotates a refresh token (TZ §6.5 — rotated on every use).' })
-  @ApiOkResponse({
-    schema: { example: { accessToken: 'eyJ...', refreshToken: 'a1b2...', tokenType: 'Bearer' } },
-  })
+  @ApiEnvelopeResponse(TokenPairResponse, { status: 201, example: { accessToken: 'eyJ...', refreshToken: 'a1b2...', tokenType: 'Bearer' } })
   @ApiStandardErrors({ public: true, errors: [{ status: 401, code: ERROR_CODES.REFRESH_TOKEN_REUSED, message: 'This refresh token was already rotated — the whole session family is revoked (TZ §6.5).' }, apiError.rateLimited('Refresh is limited to 30 requests per minute per IP.')] })
   refresh(@Body(zodBody(RefreshTokenDto)) dto: RefreshTokenDto, @Req() req: Request) {
     return this.auth.refresh(dto.refreshToken, dto.subjectType, AuthService.meta(req));
@@ -163,8 +164,9 @@ export class AuthController {
     summary: 'The authenticated principal (TZ §6.3 token claims), plus B-34 topbar fields for a `user` subject.',
     description: 'A `driver` subject additionally gets `username` (the ELD username, Appendix A 7.38), `fullName`, `email`, `homeTerminalTimezone`.',
   })
-  @ApiOkResponse({
-    schema: { example: { id: 'usr_1', type: 'user', role: 'ADMIN', permissions: {}, fullName: 'Sarah Chen', email: 'sarah.chen@universal-logistics.com', avatarUrl: null, carrierName: 'Universal Logistics Inc.', homeTerminalTimezone: 'America/New_York' } },
+  @ApiEnvelopeResponse(MeResponse, {
+    description: 'Example: a driver subject. A user subject instead carries `role`, `permissions`, `sessionId`, `fullName`, `email`, `avatarUrl`, `carrierName`, `homeTerminalTimezone`.',
+    example: { id: 'drv_1', type: 'driver', username: 'johnsmith', fullName: 'John Smith', email: 'john@example.com', homeTerminalTimezone: 'America/New_York' },
   })
   @FigmaScreen('web/my-profile')
   @ApiStandardErrors()

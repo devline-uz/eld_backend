@@ -1,11 +1,13 @@
 import { Body, Controller, Post, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiCreatedResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { DriverGuard } from '../../common/guards/driver.guard';
 import { zodBody } from '../../common/pipes/zod-validation.pipe';
+import { ApiEnvelopeResponse } from '../../common/swagger/api-envelope';
 import type { ContextUser } from '../../core/context/request-context';
 import { apiError, ApiStandardErrors, ERROR_CODES } from '../../common/errors';
 import { DEFAULT_DUTY_STATUS_ANNOTATION, DutyStatusDto } from './dto/mobile.dto';
+import { LogEntryResultResponse } from '../logs/dto/logs.responses';
 import { LogsService } from '../logs/logs.service';
 
 /**
@@ -34,18 +36,20 @@ export class MobileDutyStatusController {
       'A plain status while PC/YM is in force ends it (eventType 3 code 0). A PC position is stored at 10-mile precision.\n\n' +
       'MR-13 — when `odometerMi` / `engineHours` are omitted, the unit’s last recorded reading at or before `startAt` is stored.',
   })
-  @ApiCreatedResponse({
-    schema: {
-      example: {
-        id: 'evt_9101',
-        status: 'OFF',
-        specialCondition: 'PC',
-        locationName: 'Columbus, OH',
-        startAt: '2026-09-11T15:41:00.000Z',
-        recordOrigin: 2,
-        recordStatus: 1,
-        applied: true,
-      },
+  @ApiEnvelopeResponse(LogEntryResultResponse, {
+    status: 201,
+    example: {
+      id: '9101',
+      driverId: 'drv_1',
+      status: 'OFF',
+      specialCondition: 'PC',
+      locationName: 'Columbus, OH',
+      startAt: '2026-09-11T15:41:00.000Z',
+      endAt: null,
+      recordOrigin: 2,
+      recordStatus: 1,
+      applied: true,
+      recertificationRequired: true,
     },
   })
   @ApiStandardErrors({

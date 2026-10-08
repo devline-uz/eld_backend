@@ -6,6 +6,8 @@ import { randomBytes } from 'node:crypto';
 import { Public } from '../../common/decorators/public.decorator';
 import { DriverGuard } from '../../common/guards/driver.guard';
 import { apiError, ApiStandardErrors } from '../../common/errors';
+import { ApiEnvelopeResponse } from '../../common/swagger/api-envelope';
+import { MobileAppConfigResponse, MobileLegalResponse } from './dto/mobile.responses';
 import { MobileAppConfigService } from './mobile-app-config.service';
 
 /** Upper bound for `GET /mobile/ping?bytes=` (MR-29). */
@@ -27,14 +29,12 @@ export class MobileAppConfigController {
   @ApiOperation({ summary: 'MR-7 — public (no auth) app config: min/latest version, store + legal URLs, PT30 firmware. Unset values are null; `updateRequired` is computed when `appVersion` is sent.' })
   @ApiQuery({ name: 'platform', required: false, enum: ['android', 'ios'] })
   @ApiQuery({ name: 'appVersion', required: false, example: '1.0.3' })
-  @ApiOkResponse({
-    schema: {
-      example: {
-        minSupportedVersion: '1.0.0', latestVersion: '1.0.3',
-        storeUrl: 'https://play.google.com/store/apps/details?id=com.onebook.eld_mobile',
-        userManualUrl: null, privacyPolicyUrl: 'https://onebook.example/privacy', termsUrl: null,
-        minPt30Firmware: null, recommendedPt30Firmware: null, updateRequired: false, updateAvailable: true,
-      },
+  @ApiEnvelopeResponse(MobileAppConfigResponse, {
+    example: {
+      minSupportedVersion: '1.0.0', latestVersion: '1.0.3',
+      storeUrl: 'https://play.google.com/store/apps/details?id=com.onebook.eld_mobile',
+      userManualUrl: null, privacyPolicyUrl: 'https://onebook.example/privacy', termsUrl: null,
+      minPt30Firmware: null, recommendedPt30Firmware: null, updateRequired: false, updateAvailable: true,
     },
   })
   @ApiStandardErrors({ public: true, errors: [apiError.rateLimited('60 requests per minute per IP.')] })
@@ -47,7 +47,7 @@ export class MobileAppConfigController {
   @Get('legal/:kind')
   @ApiOperation({ summary: 'MR-30 — privacy policy / terms pointer. `html` is always null (open `url`).' })
   @ApiParam({ name: 'kind', enum: ['privacy', 'terms'] })
-  @ApiOkResponse({ schema: { example: { version: '2026-10', url: 'https://onebook.example/privacy', html: null } } })
+  @ApiEnvelopeResponse(MobileLegalResponse, { example: { version: '2026-10', url: 'https://onebook.example/privacy', html: null } })
   @ApiStandardErrors({ public: true, errors: [{ status: 400, code: 'VALIDATION_FAILED', message: 'kind must be privacy or terms.' }, apiError.rateLimited()] })
   legal(@Param('kind') kind: string) {
     if (kind !== 'privacy' && kind !== 'terms') throw new BadRequestException('kind must be privacy or terms.');
