@@ -98,6 +98,23 @@ export class TripsRepository extends BaseRepository<
   }
 
   /**
+   * Hard delete (no soft delete): the row is gone, so `Trip.number` is free for reuse. `TripStop`
+   * rows are removed in the same transaction (the FK is also `ON DELETE CASCADE`). The status
+   * guard is repeated in the `WHERE` so a trip that went IN_PROGRESS after the service's pre-check
+   * is not deleted. Returns `false` when no row matched (gone, or now IN_PROGRESS).
+   * Nothing else references `Trip` by FK; notifications/audit rows keep a plain `objectId` string.
+   */
+  hardDelete(id: string): Promise<boolean> {
+    return this.prisma.$transaction(async (tx) => {
+      const { count } = await tx.trip.deleteMany({ where: { id, status: { not: 'IN_PROGRESS' } } });
+      if (count === 0) return false;
+      // Defensive — the cascade already removed them; keeps intent explicit if the FK ever changes.
+      await tx.tripStop.deleteMany({ where: { tripId: id } });
+      return true;
+    });
+  }
+
+  /**
    * Runs `work` in a transaction holding a per-unit advisory lock, so two concurrent web-panel
    * writes cannot both pass the overlap check for the same unit and both commit (same
    * `pg_advisory_xact_lock` pattern as ingest sequence allocation). Released on commit/rollback.

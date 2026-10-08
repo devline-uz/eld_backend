@@ -159,6 +159,12 @@ export const ERROR_CODES = {
    * unit (`vehicleId`) already has another live trip whose time range overlaps this one.
    * `details.vehicleId` is the message, `details.conflict` names the other trip. */
   TRIP_SCHEDULE_CONFLICT: 'TRIP_SCHEDULE_CONFLICT',
+  /** 409 on the web-panel `DELETE /trips/:id`: the trip is IN_PROGRESS (the driver is actively
+   * running it on mobile) and cannot be deleted. Cancel/finish it first. */
+  TRIP_IN_PROGRESS: 'TRIP_IN_PROGRESS',
+  /** 409 on the web-panel `PATCH /trips/:id`: non-status fields cannot be edited once the trip is
+   * DELIVERED or CANCELLED. */
+  TRIP_NOT_EDITABLE: 'TRIP_NOT_EDITABLE',
 
   // --- geofences (TZ §20 B-93) ----------------------------------------------
   /** `GEOCODER_URL` is unset — `type: 'ADDRESS'` cannot be resolved to coordinates. */

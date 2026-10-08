@@ -12,6 +12,7 @@ function buildService(trip: Record<string, unknown> | null = { id: 'trp_1', stat
     findTrailer: jest.fn(async (id: string): Promise<{ id: string; deletedAt: Date | null } | null> => ({ id, deletedAt: null })),
     findUnitScheduleCandidates: jest.fn(async (..._args: unknown[]): Promise<Array<Record<string, unknown>>> => []),
     withUnitScheduleLock: jest.fn(async (_vehicleId: string, work: (db: unknown) => Promise<unknown>) => work('tx')),
+    hardDelete: jest.fn(async (_id: string) => true),
   };
   const events = { publish: jest.fn(async () => undefined) };
   const alertQueue = { add: jest.fn(async () => undefined) };
@@ -431,5 +432,77 @@ describe('TripsService — unit overlap, spec examples (existing Unit 1: Oct 10 
     await expect(
       service.create({ number: 'NEW-4', vehicleId: UNIT_1, driverId: '88888888-8888-4888-8888-888888888888', plannedStartAt: oct(15), plannedEndAt: oct(16), draft: false }, 'usr_1'),
     ).rejects.toMatchObject({ code: 'TRIP_SCHEDULE_CONFLICT' });
+  });
+});
+
+describe('TripsService — hard delete', () => {
+  it('404 NOT_FOUND when the trip does not exist', async () => {
+    const { service, repo } = buildService(null);
+    await expect(service.remove('trp_x')).rejects.toMatchObject({ code: 'NOT_FOUND', status: 404 });
+    expect(repo.hardDelete).not.toHaveBeenCalled();
+  });
+
+  it('409 TRIP_IN_PROGRESS for a trip the driver is running', async () => {
+    const { service, repo, events } = buildService({ id: 'trp_1', status: 'IN_PROGRESS', etaAt: null });
+    await expect(service.remove('trp_1')).rejects.toMatchObject({ code: 'TRIP_IN_PROGRESS', status: 409 });
+    expect(repo.hardDelete).not.toHaveBeenCalled();
+    expect(events.publish).not.toHaveBeenCalled();
+  });
+
+  it.each(['DRAFT', 'PLANNED', 'ASSIGNED', 'DELIVERED', 'CANCELLED'])('hard-deletes a %s trip and publishes trip.deleted', async (status) => {
+    const { service, repo, events } = buildService({ id: 'trp_1', status, etaAt: null });
+    await expect(service.remove('trp_1')).resolves.toBeUndefined();
+    expect(repo.hardDelete).toHaveBeenCalledWith('trp_1');
+    expect(events.publish).toHaveBeenCalledWith('realtime.push', {
+      room: 'fleet',
+      event: 'trip.deleted',
+      payload: { id: 'trp_1', tripId: 'trp_1' },
+    });
+  });
+
+  it('409 TRIP_IN_PROGRESS when the trip was started between the check and the delete', async () => {
+    const { service, repo, events } = buildService({ id: 'trp_1', status: 'ASSIGNED', etaAt: null });
+    repo.hardDelete.mockResolvedValueOnce(false);
+    repo.findById.mockResolvedValueOnce({ id: 'trp_1', status: 'ASSIGNED', etaAt: null });
+    repo.findById.mockResolvedValueOnce({ id: 'trp_1', status: 'IN_PROGRESS', etaAt: null });
+    await expect(service.remove('trp_1')).rejects.toMatchObject({ code: 'TRIP_IN_PROGRESS', status: 409 });
+    expect(events.publish).not.toHaveBeenCalled();
+  });
+
+  it('404 when the trip was deleted concurrently', async () => {
+    const { service, repo } = buildService({ id: 'trp_1', status: 'PLANNED', etaAt: null });
+    repo.hardDelete.mockResolvedValueOnce(false);
+    repo.findById.mockResolvedValueOnce({ id: 'trp_1', status: 'PLANNED', etaAt: null });
+    repo.findById.mockResolvedValueOnce(null);
+    await expect(service.remove('trp_1')).rejects.toMatchObject({ code: 'NOT_FOUND', status: 404 });
+  });
+});
+
+describe('TripsService — finished trips are not editable', () => {
+  it.each(['DELIVERED', 'CANCELLED'])('409 TRIP_NOT_EDITABLE when PATCHing fields of a %s trip', async (status) => {
+    const { service, repo } = buildService({ id: 'trp_1', status, etaAt: null });
+    await expect(service.update('trp_1', { notes: 'late edit' })).rejects.toMatchObject({
+      code: 'TRIP_NOT_EDITABLE',
+      status: 409,
+      details: { status, fields: ['notes'] },
+    });
+    expect(repo.update).not.toHaveBeenCalled();
+  });
+
+  it('ignores undefined keys and lets a same-status PATCH through on a DELIVERED trip', async () => {
+    const { service, repo } = buildService({ id: 'trp_1', status: 'DELIVERED', etaAt: null });
+    await service.update('trp_1', { status: 'DELIVERED', notes: undefined });
+    expect(repo.update).toHaveBeenCalled();
+  });
+
+  it('a status move out of a terminal trip is still the transition 409 CONFLICT', async () => {
+    const { service } = buildService({ id: 'trp_1', status: 'CANCELLED', etaAt: null });
+    await expect(service.update('trp_1', { status: 'PLANNED' })).rejects.toMatchObject({ code: 'CONFLICT' });
+  });
+
+  it('still allows editing fields of an IN_PROGRESS trip', async () => {
+    const { service, repo } = buildService({ id: 'trp_1', status: 'IN_PROGRESS', etaAt: null });
+    await service.update('trp_1', { notes: 'ok' });
+    expect(repo.update).toHaveBeenCalled();
   });
 });
