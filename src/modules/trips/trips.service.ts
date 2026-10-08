@@ -33,6 +33,18 @@ function isTripNumberUniqueViolation(err: unknown): boolean {
   return /number/i.test(names);
 }
 
+function tripInProgress(): AppException {
+  return new AppException(
+    ERROR_CODES.TRIP_IN_PROGRESS,
+    'This trip is in progress and cannot be deleted. Finish or cancel it first.',
+    409,
+    { status: 'IN_PROGRESS' },
+  );
+}
+
+/** Statuses in which only `status` may be PATCHed (409 `TRIP_NOT_EDITABLE` otherwise). */
+const NON_EDITABLE_STATUSES: string[] = ['DELIVERED', 'CANCELLED'];
+
 /** Valid forward transitions of `Trip.status` (TZ §11.5 dispatch lifecycle).
  * §20 B-73 — `DRAFT` is the pre-publish state: `PATCH { status: 'PLANNED' }` publishes it. */
 const ALLOWED_TRANSITIONS: Record<string, string[]> = {
@@ -117,6 +129,22 @@ export class TripsService {
     const trip = await this.repo.findById({ id });
     if (!trip) throw new AppException(ERROR_CODES.NOT_FOUND, 'Trip not found.', 404);
 
+    // A finished (DELIVERED/CANCELLED) trip is frozen: only `status` may be sent (and the
+    // transition table below rejects every move out of a terminal state anyway).
+    if (NON_EDITABLE_STATUSES.includes(trip.status)) {
+      const editedFields = Object.entries(dto)
+        .filter(([key, value]) => key !== 'status' && value !== undefined)
+        .map(([key]) => key);
+      if (editedFields.length > 0) {
+        throw new AppException(
+          ERROR_CODES.TRIP_NOT_EDITABLE,
+          `A ${trip.status.toLowerCase()} trip cannot be edited.`,
+          409,
+          { status: trip.status, fields: editedFields },
+        );
+      }
+    }
+
     if (dto.status && dto.status !== trip.status) {
       const allowed = ALLOWED_TRANSITIONS[trip.status] ?? [];
       if (!allowed.includes(dto.status)) {
@@ -155,6 +183,29 @@ export class TripsService {
       await this.publishStatusChanged(updated.id, updated.status, updated.etaAt);
     }
     return updated;
+  }
+
+  /**
+   * Web-panel hard delete — the row (and its stops) is removed so `Trip.number` can be reused.
+   * 404 when unknown, 409 `TRIP_IN_PROGRESS` while the driver is running it on mobile.
+   */
+  async remove(id: string): Promise<void> {
+    const trip = await this.repo.findById({ id });
+    if (!trip) throw new AppException(ERROR_CODES.NOT_FOUND, 'Trip not found.', 404);
+    if (trip.status === 'IN_PROGRESS') throw tripInProgress();
+
+    const deleted = await this.repo.hardDelete(id);
+    if (!deleted) {
+      // Lost a race: either someone else deleted it, or the driver started it meanwhile.
+      const current = await this.repo.findById({ id });
+      if (!current) throw new AppException(ERROR_CODES.NOT_FOUND, 'Trip not found.', 404);
+      throw tripInProgress();
+    }
+    await this.events.publish('realtime.push', {
+      room: 'fleet',
+      event: 'trip.deleted',
+      payload: { id, tripId: id },
+    });
   }
 
   async assign(id: string, dto: AssignTripDto) {
