@@ -85,8 +85,17 @@ describe('Operations — trips / geofences / alert-rules / notifications (e2e)',
   });
 
   it('rejects a second trip on the same unit in an overlapping range (409 TRIP_SCHEDULE_CONFLICT), allows touching ranges', async () => {
-    const vehicle = await prisma.vehicle.findFirstOrThrow({ where: { deletedAt: null }, orderBy: { unitNumber: 'asc' } });
-    // A random far-future day so reruns and seed trips never collide.
+    // Pick a unit that holds NO open-ended seed trip: an IN_PROGRESS/ASSIGNED trip with
+    // `plannedEndAt = null` (e.g. TR-4821 on unit 101) counts as "onward" to
+    // `findScheduleConflict`, so it would conflict with ANY far-future window (B-130 c).
+    const vehicle = await prisma.vehicle.findFirstOrThrow({
+      where: {
+        deletedAt: null,
+        trips: { none: { status: { in: ['DRAFT', 'PLANNED', 'ASSIGNED', 'IN_PROGRESS'] }, plannedEndAt: null } },
+      },
+      orderBy: { unitNumber: 'asc' },
+    });
+    // A random far-future day so reruns never collide with each other.
     const base = Date.UTC(2031, 0, 1) + Math.floor(Math.random() * 3000) * 86_400_000;
     const hour = (h: number) => new Date(base + h * 3_600_000).toISOString();
     const post = (number: string, from: number, to: number) =>

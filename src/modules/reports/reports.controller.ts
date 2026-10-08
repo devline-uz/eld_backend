@@ -104,7 +104,8 @@ export class ReportsController {
       apiError.notFound(ERROR_CODES.REPORT_SCHEDULE_NOT_FOUND, 'Report schedule not found.'),
     ],
   })
-  @ApiResponse({ status: 204, description: 'Deleted.' })
+  // 204 has no body; the explicit `example: null` marks "empty on purpose" for the OpenAPI example gate (B-141).
+  @ApiResponse({ status: 204, description: 'Deleted.', content: { 'application/json': { example: null } } })
   async deleteSchedule(@Param('id') id: string): Promise<void> {
     await this.reports.deleteSchedule(id);
   }
