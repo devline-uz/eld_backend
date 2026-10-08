@@ -1,5 +1,5 @@
-import { Body, Controller, Get, Param, Patch, Post, Query } from '@nestjs/common';
-import { ApiBearerAuth, ApiCreatedResponse, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { Body, Controller, Delete, Get, HttpCode, Param, Patch, Post, Query } from '@nestjs/common';
+import { ApiBearerAuth, ApiCreatedResponse, ApiOkResponse, ApiOperation, ApiQuery, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { Audit } from '../../common/decorators/audit.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { FigmaScreen } from '../../common/decorators/figma-screen.decorator';
@@ -78,11 +78,28 @@ export class TripsController {
       apiError.fieldConflicts([
         { code: ERROR_CODES.CONFLICT, field: 'status', message: 'Illegal status transition.' },
         { code: ERROR_CODES.TRIP_SCHEDULE_CONFLICT, field: 'vehicleId', message: "The trip's unit already has another trip in the new time range." },
+        { code: ERROR_CODES.TRIP_NOT_EDITABLE, field: 'status', message: 'A delivered trip cannot be edited.' },
       ]),
     ],
   })
   update(@Param('id') id: string, @Body(zodBody(UpdateTripDto)) dto: UpdateTripDto) {
     return this.trips.update(id, dto);
+  }
+
+  @Delete(':id')
+  @Perm('trips', 'FULL')
+  @Audit({ object: 'Trip', action: 'DELETE' })
+  @HttpCode(204)
+  @ApiOperation({ summary: 'Hard-deletes a trip and its stops (the trip number becomes reusable). IN_PROGRESS trips cannot be deleted.' })
+  @ApiResponse({ status: 204, description: 'Deleted.' })
+  @ApiStandardErrors({
+    errors: [
+      apiError.notFound(ERROR_CODES.NOT_FOUND, 'Trip not found.'),
+      apiError.conflict(ERROR_CODES.TRIP_IN_PROGRESS, 'This trip is in progress and cannot be deleted. Finish or cancel it first.'),
+    ],
+  })
+  async remove(@Param('id') id: string): Promise<void> {
+    await this.trips.remove(id);
   }
 
   @Post(':id/assign')
