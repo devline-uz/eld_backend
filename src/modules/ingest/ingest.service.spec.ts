@@ -250,6 +250,19 @@ describe('IngestService — TZ §7', () => {
     expect(captured.rows[0].locationPrecisionMi).toBe(1);
   });
 
+  it('§395 App. A 4.4.2 — a fix without locationName stores the offline geo-location of the coarsened fix', async () => {
+    const { service, captured } = makeService();
+    await service.ingestEvents(batch([withChecksum()]), DRIVER_ID);
+    // baseEvent sits in downtown Columbus, OH
+    expect(captured.rows[0].locationName).toMatch(/^(\d{1,2}mi [NSEW]{1,3} )?OH \S/);
+  });
+
+  it('an app-supplied locationName wins over the computed geo-location', async () => {
+    const { service, captured } = makeService();
+    await service.ingestEvents(batch([withChecksum({ locationName: 'Columbus yard gate 2' })]), DRIVER_ID);
+    expect(captured.rows[0].locationName).toBe('Columbus yard gate 2');
+  });
+
   it('§7.3 rule 9 — active Personal Conveyance coarsens to 10 miles', async () => {
     const { service, captured } = makeService({ findPcStateBefore: jest.fn(async () => true) });
     await service.ingestEvents(batch([withChecksum()]), DRIVER_ID);
@@ -388,6 +401,15 @@ describe('IngestService — BLE state and device status (§7.6, §7.7)', () => {
     );
     expect(result.disconnectedAlert).toBe(true);
     expect(alerts).toContain('alert.eld_disconnected');
+  });
+
+  it('MG-BLE-7 — no alert.eld_disconnected before the first ever connection', async () => {
+    const { service, alerts } = makeService({
+      findDeviceBySerial: jest.fn(async () => ({ ...device, lastSeenAt: null })),
+    });
+    const result = await service.recordBleState({ deviceSerial: 'PT30_A86E', state: 'DISCONNECTED' }, DRIVER_ID);
+    expect(result.disconnectedAlert).toBe(false);
+    expect(alerts).not.toContain('alert.eld_disconnected');
   });
 
   it('raises alert.device_backlog above 100 stored events and records the count', async () => {

@@ -8,6 +8,7 @@ import { ApiKeyVerifier, NotImplementedApiKeyVerifier } from './guards/api-key-v
 import { AuditInterceptor } from './interceptors/audit.interceptor';
 import { TransformInterceptor } from './interceptors/transform.interceptor';
 import { AuditSnapshotRegistry } from './audit/audit-snapshot.registry';
+import { LocationDescriptionService } from './geo-location/location-description.service';
 
 /**
  * Cross-cutting providers. Registration of the global guard/interceptor/filter chain
@@ -28,6 +29,7 @@ import { AuditSnapshotRegistry } from './audit/audit-snapshot.registry';
     TransformInterceptor,
     AuditInterceptor,
     AuditSnapshotRegistry,
+    LocationDescriptionService,
     AllExceptionsFilter,
   ],
   exports: [
@@ -39,6 +41,7 @@ import { AuditSnapshotRegistry } from './audit/audit-snapshot.registry';
     TransformInterceptor,
     AuditInterceptor,
     AuditSnapshotRegistry,
+    LocationDescriptionService,
   ],
 })
 export class CommonModule {}

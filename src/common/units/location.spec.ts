@@ -1,4 +1,4 @@
-import { coarsenLocation, distanceMi } from './location';
+import { coarsenLocation, distanceMi, greatCircleMi } from './location';
 
 describe('units/location', () => {
   it('coarsens on-duty positions to ~1 mile', () => {
@@ -25,6 +25,14 @@ describe('units/location', () => {
     const d = distanceMi({ lat: 39.9612, lon: -82.9988 }, { lat: 41.4993, lon: -81.6944 });
     expect(d).toBeGreaterThan(115);
     expect(d).toBeLessThan(135);
+  });
+
+  it('greatCircleMi keeps the fraction (geo-location lookups)', () => {
+    // 0.1 deg of longitude at 40N ~ 5.3 mi
+    const d = greatCircleMi({ lat: 40, lon: -83 }, { lat: 40, lon: -82.9 });
+    expect(d).toBeGreaterThan(5.2);
+    expect(d).toBeLessThan(5.4);
+    expect(Number.isInteger(d)).toBe(false);
   });
 
   it('clamps the haversine root for antipodal points', () => {

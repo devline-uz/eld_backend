@@ -146,14 +146,18 @@ export function runWindowChecks(w: AutoCheckWindow): DetectedCode[] {
   return found;
 }
 
-/** §7.6 — over 30 minutes without a CONNECTED BLE link raises `alert.eld_disconnected`. */
+/**
+ * §7.6 — over 30 minutes without a CONNECTED BLE link raises `alert.eld_disconnected`.
+ * MG-BLE-7 (B-145) — a device that was NEVER connected (`lastSeenAt` null) has no link to lose:
+ * it is not "disconnected", so no alert before the first ever connection.
+ */
 export function isBleDisconnectedTooLong(
   state: 'CONNECTED' | 'OUT_OF_RANGE' | 'DISCONNECTED',
   lastSeenAt: Date | null,
   now: Date,
 ): boolean {
   if (state === 'CONNECTED') return false;
-  if (!lastSeenAt) return true;
+  if (!lastSeenAt) return false;
   return (now.getTime() - lastSeenAt.getTime()) / 1000 > BLE_DISCONNECTED_ALERT_SEC;
 }
 

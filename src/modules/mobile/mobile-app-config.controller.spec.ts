@@ -17,6 +17,13 @@ describe('MobileAppConfigService (MR-7 / MR-30)', () => {
     );
   });
 
+  it('PT30 firmware gate is env-driven only: unset/blank -> null, set -> passed through', () => {
+    const unset = new MobileAppConfigService(mkConfig({ MOBILE_MIN_PT30_FIRMWARE: '  ' }));
+    expect(unset.getAppConfig('android', '1.0.0')).toEqual(expect.objectContaining({ minPt30Firmware: null, recommendedPt30Firmware: null }));
+    const set = new MobileAppConfigService(mkConfig({ MOBILE_MIN_PT30_FIRMWARE: 'V-MIN', MOBILE_RECOMMENDED_PT30_FIRMWARE: 'V-REC' }));
+    expect(set.getAppConfig('android', '1.0.0')).toEqual(expect.objectContaining({ minPt30Firmware: 'V-MIN', recommendedPt30Firmware: 'V-REC' }));
+  });
+
   it('updateRequired / updateAvailable from semver compare', () => {
     const svc = new MobileAppConfigService(mkConfig({ MOBILE_MIN_SUPPORTED_VERSION: '1.0.3', MOBILE_LATEST_VERSION: '1.2.0' }));
     expect(svc.getAppConfig('android', '1.0.2').updateRequired).toBe(true);
