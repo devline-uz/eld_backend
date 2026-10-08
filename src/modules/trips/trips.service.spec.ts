@@ -11,7 +11,12 @@ function buildService(trip: Record<string, unknown> | null = { id: 'trp_1', stat
     list: jest.fn(async () => ({ items: [], total: 0 })),
     findTrailer: jest.fn(async (id: string): Promise<{ id: string; deletedAt: Date | null } | null> => ({ id, deletedAt: null })),
     findUnitScheduleCandidates: jest.fn(async (..._args: unknown[]): Promise<Array<Record<string, unknown>>> => []),
-    withUnitScheduleLock: jest.fn(async (_vehicleId: string, work: (db: unknown) => Promise<unknown>) => work('tx')),
+    withUnitScheduleLock: jest.fn(async (_vehicleId: string, work: (db: unknown) => Promise<unknown>, outer?: unknown) => work(outer ?? 'tx')),
+    findDriverScheduleCandidates: jest.fn(async (..._args: unknown[]): Promise<Array<Record<string, unknown>>> => []),
+    withDriverScheduleLock: jest.fn(async (_driverId: string, work: (db: unknown) => Promise<unknown>, outer?: unknown) => work(outer ?? 'tx')),
+    findTrailerScheduleCandidates: jest.fn(async (..._args: unknown[]): Promise<Array<Record<string, unknown>>> => []),
+    withTrailerScheduleLock: jest.fn(async (_trailerId: string, work: (db: unknown) => Promise<unknown>, outer?: unknown) => work(outer ?? 'tx')),
+    findTrailerNumber: jest.fn(async (_id: string, _db?: unknown): Promise<string | null> => 'T-77'),
     hardDelete: jest.fn(async (_id: string) => true),
   };
   const events = { publish: jest.fn(async () => undefined) };
@@ -432,6 +437,219 @@ describe('TripsService — unit overlap, spec examples (existing Unit 1: Oct 10 
     await expect(
       service.create({ number: 'NEW-4', vehicleId: UNIT_1, driverId: '88888888-8888-4888-8888-888888888888', plannedStartAt: oct(15), plannedEndAt: oct(16), draft: false }, 'usr_1'),
     ).rejects.toMatchObject({ code: 'TRIP_SCHEDULE_CONFLICT' });
+  });
+});
+
+describe('TripsService — driver and trailer overlap (TRIP_SCHEDULE_CONFLICT)', () => {
+  const VEH = '44444444-4444-4444-8444-444444444444';
+  const DRV = '99999999-9999-4999-8999-999999999999';
+  const TRL = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const at = (h: number) => new Date(Date.UTC(2026, 9, 10, h));
+  const other = (o: Record<string, unknown> = {}) => ({
+    id: 'trp_other',
+    number: 'TRP-500',
+    status: 'ASSIGNED',
+    plannedStartAt: at(10),
+    plannedEndAt: at(14),
+    startedAt: null,
+    completedAt: null,
+    vehicle: { unitNumber: '101' },
+    driver: { firstName: 'John', lastName: 'Smith' },
+    ...o,
+  });
+  const DRIVER_MSG = 'Driver John Smith is already assigned to another trip (TRP-500) from 2026-10-10 10:00 UTC to 2026-10-10 14:00 UTC.';
+  const MSG_UNIT = 'Unit 101 is already assigned to another trip (TRP-500) from 2026-10-10 10:00 UTC to 2026-10-10 14:00 UTC.';
+  const TRAILER_MSG = 'Trailer T-77 is already assigned to another trip (TRP-500) from 2026-10-10 10:00 UTC to 2026-10-10 14:00 UTC.';
+
+  type Resource = 'driver' | 'trailer';
+  const cases: Array<[Resource, string, string, 'findDriverScheduleCandidates' | 'findTrailerScheduleCandidates', 'withDriverScheduleLock' | 'withTrailerScheduleLock', 'driverId' | 'trailerId']> = [
+    ['driver', DRV, DRIVER_MSG, 'findDriverScheduleCandidates', 'withDriverScheduleLock', 'driverId'],
+    ['trailer', TRL, TRAILER_MSG, 'findTrailerScheduleCandidates', 'withTrailerScheduleLock', 'trailerId'],
+  ];
+
+  describe.each(cases)('%s', (resource, ID, MSG, finder, lock, field) => {
+    it(`create rejects an overlapping trip on the same ${resource} with 409 naming the resource and the other trip`, async () => {
+      const { service, repo } = buildService();
+      repo[finder].mockResolvedValueOnce([other()]);
+      await expect(
+        service.create({ number: 'TRP-1', [field]: ID, plannedStartAt: at(12), plannedEndAt: at(16), draft: false }, 'usr_1'),
+      ).rejects.toMatchObject({
+        code: 'TRIP_SCHEDULE_CONFLICT',
+        status: 409,
+        message: MSG,
+        details: {
+          [field]: MSG,
+          conflict: {
+            resource,
+            tripId: 'trp_other',
+            number: 'TRP-500',
+            status: 'ASSIGNED',
+            unitNumber: '101',
+            ...(resource === 'driver' ? { driverName: 'John Smith' } : { trailerNumber: 'T-77' }),
+            start: at(10).toISOString(),
+            end: at(14).toISOString(),
+          },
+        },
+      });
+      expect(repo[lock]).toHaveBeenCalledWith(ID, expect.any(Function));
+      expect(repo[finder]).toHaveBeenCalledWith(ID, { start: at(12), end: at(16) }, undefined, 'tx');
+      expect(repo.createWithStops).not.toHaveBeenCalled();
+    });
+
+    it('create allows a trip that starts exactly when the other one ends (touching endpoints)', async () => {
+      const { service, repo } = buildService();
+      repo[finder].mockResolvedValueOnce([other()]);
+      await service.create({ number: 'TRP-2', [field]: ID, plannedStartAt: at(14), plannedEndAt: at(18), draft: false }, 'usr_1');
+      expect(repo.createWithStops).toHaveBeenCalledWith(expect.anything(), [], 'tx');
+    });
+
+    it('create allows a trip that ends exactly when the other one starts (touching endpoints)', async () => {
+      const { service, repo } = buildService();
+      repo[finder].mockResolvedValueOnce([other()]);
+      await service.create({ number: 'TRP-2b', [field]: ID, plannedStartAt: at(6), plannedEndAt: at(10), draft: false }, 'usr_1');
+      expect(repo.createWithStops).toHaveBeenCalled();
+    });
+
+    it('an open-ended (no planned end) trip blocks everything after its start', async () => {
+      const { service, repo } = buildService();
+      repo[finder].mockResolvedValueOnce([other({ plannedEndAt: null })]);
+      await expect(
+        service.create({ number: 'TRP-3', [field]: ID, plannedStartAt: at(30), plannedEndAt: at(34), draft: false }, 'usr_1'),
+      ).rejects.toMatchObject({ code: 'TRIP_SCHEDULE_CONFLICT', message: MSG.replace('to 2026-10-10 14:00 UTC.', 'onward (no planned end).') });
+    });
+
+    it('create ignores a CANCELLED trip in the same range', async () => {
+      const { service, repo } = buildService();
+      repo[finder].mockResolvedValueOnce([other({ status: 'CANCELLED' })]);
+      await service.create({ number: 'TRP-4', [field]: ID, plannedStartAt: at(12), plannedEndAt: at(16), draft: false }, 'usr_1');
+      expect(repo.createWithStops).toHaveBeenCalled();
+    });
+
+    it(`a draft with a ${resource} is checked too, and an existing DRAFT blocks`, async () => {
+      const { service, repo } = buildService();
+      repo[finder].mockResolvedValueOnce([other()]);
+      await expect(
+        service.create({ number: 'TRP-5', [field]: ID, plannedStartAt: at(12), plannedEndAt: at(16), draft: true }, 'usr_1'),
+      ).rejects.toMatchObject({ code: 'TRIP_SCHEDULE_CONFLICT' });
+      repo[finder].mockResolvedValueOnce([other({ status: 'DRAFT' })]);
+      await expect(
+        service.create({ number: 'TRP-5b', [field]: ID, plannedStartAt: at(12), plannedEndAt: at(16), draft: false }, 'usr_1'),
+      ).rejects.toMatchObject({ code: 'TRIP_SCHEDULE_CONFLICT' });
+      expect(repo.createWithStops).not.toHaveBeenCalled();
+    });
+
+    it('a draft without a start is never checked', async () => {
+      const { service, repo } = buildService();
+      await service.create({ number: 'TRP-6', [field]: ID, draft: true }, 'usr_1');
+      expect(repo[finder]).not.toHaveBeenCalled();
+      expect(repo[lock]).not.toHaveBeenCalled();
+    });
+
+    it('update re-checks a moved range, excluding the trip itself', async () => {
+      const self = { id: 'trp_1', status: 'ASSIGNED', vehicleId: null, driverId: null, trailerId: null, [field]: ID, plannedStartAt: at(10), plannedEndAt: at(14), etaAt: null };
+      const { service, repo } = buildService(self);
+      repo[finder].mockResolvedValueOnce([other({ id: 'trp_1', number: 'TRP-1' })]);
+      await service.update('trp_1', { plannedEndAt: at(16) });
+      expect(repo[finder]).toHaveBeenCalledWith(ID, { start: at(10), end: at(16) }, 'trp_1', 'tx');
+      expect(repo.update).toHaveBeenCalledWith({ id: 'trp_1' }, expect.anything(), 'tx');
+    });
+
+    it('update rejects a moved range that overlaps another trip', async () => {
+      const self = { id: 'trp_1', status: 'PLANNED', vehicleId: null, driverId: null, trailerId: null, [field]: ID, plannedStartAt: at(0), plannedEndAt: at(4), etaAt: null };
+      const { service, repo } = buildService(self);
+      repo[finder].mockResolvedValueOnce([other()]);
+      await expect(service.update('trp_1', { plannedStartAt: at(9), plannedEndAt: at(11) })).rejects.toMatchObject({
+        code: 'TRIP_SCHEDULE_CONFLICT',
+        status: 409,
+        message: MSG,
+      });
+      expect(repo.update).not.toHaveBeenCalled();
+    });
+
+    it('publishing a DRAFT checks it; a plain field edit does not', async () => {
+      const self = { id: 'trp_1', status: 'DRAFT', vehicleId: null, driverId: null, trailerId: null, [field]: ID, plannedStartAt: at(12), plannedEndAt: at(16), etaAt: null };
+      const { service, repo } = buildService(self);
+      repo[finder].mockResolvedValueOnce([other()]);
+      await expect(service.update('trp_1', { status: 'PLANNED' })).rejects.toMatchObject({ code: 'TRIP_SCHEDULE_CONFLICT' });
+      repo[finder].mockClear();
+      await service.update('trp_1', { notes: 'x' });
+      expect(repo[finder]).not.toHaveBeenCalled();
+    });
+  });
+
+  it('assign onto a new driver rejects an overlap there, excluding itself', async () => {
+    const self = { id: 'trp_1', status: 'PLANNED', vehicleId: null, driverId: null, plannedStartAt: at(12), plannedEndAt: at(16), etaAt: null, trailerId: null };
+    const { service, repo } = buildService(self);
+    repo.findDriverScheduleCandidates.mockResolvedValueOnce([other()]);
+    await expect(service.assign('trp_1', { driverId: DRV, notify: false })).rejects.toMatchObject({ code: 'TRIP_SCHEDULE_CONFLICT', message: DRIVER_MSG });
+    expect(repo.findDriverScheduleCandidates).toHaveBeenCalledWith(DRV, { start: at(12), end: at(16) }, 'trp_1', 'tx');
+    expect(repo.update).not.toHaveBeenCalled();
+  });
+
+  it('assign onto a new trailer rejects an overlap there, excluding itself', async () => {
+    const self = { id: 'trp_1', status: 'ASSIGNED', vehicleId: null, driverId: DRV, plannedStartAt: at(12), plannedEndAt: at(16), etaAt: null, trailerId: null };
+    const { service, repo } = buildService(self);
+    repo.findTrailerScheduleCandidates.mockResolvedValueOnce([other()]);
+    await expect(service.assign('trp_1', { driverId: DRV, trailerId: TRL, notify: false })).rejects.toMatchObject({ code: 'TRIP_SCHEDULE_CONFLICT', message: TRAILER_MSG });
+    expect(repo.findTrailerScheduleCandidates).toHaveBeenCalledWith(TRL, { start: at(12), end: at(16) }, 'trp_1', 'tx');
+    expect(repo.findDriverScheduleCandidates).not.toHaveBeenCalled();
+    expect(repo.update).not.toHaveBeenCalled();
+  });
+
+  it('assign allows touching endpoints on the new driver/trailer', async () => {
+    const self = { id: 'trp_1', status: 'PLANNED', vehicleId: null, driverId: null, plannedStartAt: at(14), plannedEndAt: at(18), etaAt: null, trailerId: null };
+    const { service, repo } = buildService(self);
+    repo.findDriverScheduleCandidates.mockResolvedValueOnce([other()]);
+    repo.findTrailerScheduleCandidates.mockResolvedValueOnce([other()]);
+    await service.assign('trp_1', { driverId: DRV, trailerId: TRL, notify: false });
+    expect(repo.update).toHaveBeenCalledWith({ id: 'trp_1' }, expect.anything(), 'tx');
+  });
+
+  it('assign keeping the same driver and trailer does not re-check them', async () => {
+    const self = { id: 'trp_1', status: 'ASSIGNED', vehicleId: VEH, driverId: DRV, plannedStartAt: at(12), plannedEndAt: at(16), etaAt: null, trailerId: TRL };
+    const { service, repo } = buildService(self);
+    await service.assign('trp_1', { driverId: DRV, vehicleId: VEH, trailerId: TRL, notify: false });
+    expect(repo.findDriverScheduleCandidates).not.toHaveBeenCalled();
+    expect(repo.findTrailerScheduleCandidates).not.toHaveBeenCalled();
+    expect(repo.update).toHaveBeenCalledWith({ id: 'trp_1' }, expect.anything());
+  });
+
+  it('nests the locks vehicle -> driver -> trailer in one transaction, skipping null ids', async () => {
+    const { service, repo } = buildService();
+    const order: string[] = [];
+    repo.withUnitScheduleLock.mockImplementationOnce(async (_id, work, outer) => (order.push('vehicle'), work(outer ?? 'tx')));
+    repo.withDriverScheduleLock.mockImplementationOnce(async (_id, work, outer) => (order.push(`driver:${String(outer)}`), work(outer ?? 'tx')));
+    repo.withTrailerScheduleLock.mockImplementationOnce(async (_id, work, outer) => (order.push(`trailer:${String(outer)}`), work(outer ?? 'tx')));
+    await service.create({ number: 'TRP-L1', vehicleId: VEH, driverId: DRV, trailerId: TRL, plannedStartAt: at(12), plannedEndAt: at(16), draft: false }, 'usr_1');
+    expect(order).toEqual(['vehicle', 'driver:tx', 'trailer:tx']);
+    expect(repo.withUnitScheduleLock).toHaveBeenCalledWith(VEH, expect.any(Function));
+    expect(repo.withDriverScheduleLock).toHaveBeenCalledWith(DRV, expect.any(Function), 'tx');
+    expect(repo.withTrailerScheduleLock).toHaveBeenCalledWith(TRL, expect.any(Function), 'tx');
+
+    order.length = 0;
+    repo.withDriverScheduleLock.mockClear();
+    repo.withTrailerScheduleLock.mockImplementationOnce(async (_id, work, outer) => (order.push(`trailer:${String(outer)}`), work(outer ?? 'tx')));
+    await service.create({ number: 'TRP-L2', trailerId: TRL, plannedStartAt: at(12), plannedEndAt: at(16), draft: false }, 'usr_1');
+    expect(order).toEqual(['trailer:undefined']);
+    expect(repo.withDriverScheduleLock).not.toHaveBeenCalled();
+  });
+
+  it('a vehicle conflict carries resource: vehicle and is checked before the driver', async () => {
+    const { service, repo } = buildService();
+    repo.findUnitScheduleCandidates.mockResolvedValueOnce([other()]);
+    repo.findDriverScheduleCandidates.mockResolvedValueOnce([other()]);
+    await expect(
+      service.create({ number: 'TRP-V', vehicleId: VEH, driverId: DRV, plannedStartAt: at(12), plannedEndAt: at(16), draft: false }, 'usr_1'),
+    ).rejects.toMatchObject({ details: { vehicleId: MSG_UNIT, conflict: { resource: 'vehicle', unitNumber: '101' } } });
+    expect(repo.findDriverScheduleCandidates).not.toHaveBeenCalled();
+  });
+
+  it('auto-assign skips a load whose driver is already booked and keeps going', async () => {
+    const { service, repo } = buildService({ id: 'trp_1', status: 'PLANNED', driverId: null, vehicleId: null, trailerId: null, plannedStartAt: at(12), plannedEndAt: at(16), etaAt: null });
+    repo.unassignedLoads.mockResolvedValueOnce([{ id: 'trp_a' }, { id: 'trp_b' }] as never);
+    repo.availableDriverIds.mockResolvedValueOnce([DRV] as never);
+    repo.findDriverScheduleCandidates.mockResolvedValueOnce([other()]);
+    await expect(service.autoAssign()).resolves.toEqual({ assigned: [{ tripId: 'trp_b', driverId: DRV }], skipped: 1 });
   });
 });
 

@@ -13,6 +13,7 @@ import {
   findScheduleConflict,
   formatScheduleInstant,
   UNIT_SCHEDULED_STATUSES,
+  type ScheduledTripLike,
   type TimeWindow,
 } from './trip-schedule';
 
@@ -31,6 +32,58 @@ function isTripNumberUniqueViolation(err: unknown): boolean {
   const target = (err as { meta?: { target?: unknown } }).meta?.target;
   const names = Array.isArray(target) ? target.join(',') : typeof target === 'string' ? target : '';
   return /number/i.test(names);
+}
+
+type ScheduleResource = 'vehicle' | 'driver' | 'trailer';
+
+/** The unit/driver/trailer a trip asks for; `null` = not on the trip / nothing to check. */
+interface ScheduleHolders {
+  vehicleId: string | null;
+  driverId: string | null;
+  trailerId: string | null;
+}
+
+interface ScheduleCandidate extends ScheduledTripLike {
+  vehicle: { unitNumber: string } | null;
+  driver: { firstName: string; lastName: string } | null;
+}
+
+const RESOURCE_FIELD: Record<ScheduleResource, string> = { vehicle: 'vehicleId', driver: 'driverId', trailer: 'trailerId' };
+
+function driverNameOf(driver: { firstName: string; lastName: string } | null): string | null {
+  const name = driver ? `${driver.firstName} ${driver.lastName}`.trim() : '';
+  return name || null;
+}
+
+/**
+ * 409 `TRIP_SCHEDULE_CONFLICT` — "`{subject}` is already assigned to another trip (`{number}`)
+ * from … to …." keyed under the resource's form field (`vehicleId` / `driverId` / `trailerId`),
+ * with `details.conflict` naming the resource and the trip that holds it.
+ */
+function scheduleConflict(
+  resource: ScheduleResource,
+  subject: string,
+  { trip, window: taken }: { trip: ScheduleCandidate; window: TimeWindow },
+  extra: { driverName?: string | null; trailerNumber?: string | null } = {},
+): AppException {
+  const range = taken.end
+    ? `from ${formatScheduleInstant(taken.start)} to ${formatScheduleInstant(taken.end)}`
+    : `from ${formatScheduleInstant(taken.start)} onward (no planned end)`;
+  const message = `${subject} is already assigned to another trip (${trip.number}) ${range}.`;
+  return new AppException(ERROR_CODES.TRIP_SCHEDULE_CONFLICT, message, 409, {
+    [RESOURCE_FIELD[resource]]: message,
+    conflict: {
+      resource,
+      tripId: trip.id,
+      number: trip.number,
+      status: trip.status,
+      unitNumber: trip.vehicle?.unitNumber ?? null,
+      ...(resource === 'driver' && { driverName: extra.driverName ?? null }),
+      ...(resource === 'trailer' && { trailerNumber: extra.trailerNumber ?? null }),
+      start: taken.start.toISOString(),
+      end: taken.end ? taken.end.toISOString() : null,
+    },
+  });
 }
 
 function tripInProgress(): AppException {
@@ -102,12 +155,13 @@ export class TripsService {
       ...(trailerId && { trailerId }),
     };
     const stopRows = (stops ?? []).map((s) => ({ ...s }));
-    // Drafts included — a draft with a unit and a start reserves that unit (trip-schedule.ts).
+    // Drafts included — a draft with a unit/driver/trailer and a start reserves them (trip-schedule.ts).
     const window = this.windowOf(dto.plannedStartAt, dto.plannedEndAt);
-    if (vehicleId && window) {
+    const holders = { vehicleId: vehicleId ?? null, driverId: driverId ?? null, trailerId: trailerId ?? null };
+    if (window && this.hasHolder(holders)) {
       return this.numberConflictOnDuplicate(
-        this.repo.withUnitScheduleLock(vehicleId, async (db) => {
-          await this.assertUnitFree(vehicleId, window, undefined, db);
+        this.withScheduleLocks(holders, async (db) => {
+          await this.assertHoldersFree(holders, window, undefined, db);
           return this.repo.createWithStops(data, stopRows, db);
         }),
       );
@@ -166,16 +220,17 @@ export class TripsService {
     if (dto.status === 'IN_PROGRESS' && !trip.startedAt) data.startedAt = new Date();
     if (dto.status === 'DELIVERED' && !trip.completedAt) data.completedAt = new Date();
 
-    // Re-check the unit when the trip's range moves, or when a draft is published (a draft saved
-    // before this rule existed may overlap). Plain status moves keep the range, so no re-check.
+    // Re-check the unit, driver and trailer when the trip's range moves, or when a draft is
+    // published (a draft saved before this rule existed may overlap). Plain status moves keep the
+    // range, so no re-check. PATCH cannot change who/what is on the trip — `assign` does that.
     const nextStatus = dto.status ?? trip.status;
     const publishing = trip.status === 'DRAFT' && nextStatus !== 'DRAFT';
     const window = this.windowOf(plannedStartAt, plannedEndAt);
-    const vehicleId = trip.vehicleId;
+    const holders = { vehicleId: trip.vehicleId, driverId: trip.driverId, trailerId: trip.trailerId };
     const updated =
-      vehicleId && window && (timesChanged || publishing) && UNIT_SCHEDULED_STATUSES.includes(nextStatus)
-        ? await this.repo.withUnitScheduleLock(vehicleId, async (db) => {
-            await this.assertUnitFree(vehicleId, window, id, db);
+      window && this.hasHolder(holders) && (timesChanged || publishing) && UNIT_SCHEDULED_STATUSES.includes(nextStatus)
+        ? await this.withScheduleLocks(holders, async (db) => {
+            await this.assertHoldersFree(holders, window, id, db);
             return this.repo.update({ id }, data, db);
           })
         : await this.repo.update({ id }, data);
@@ -222,13 +277,17 @@ export class TripsService {
       ...(dto.vehicleId && { vehicle: { connect: { id: dto.vehicleId } } }),
       ...(dto.trailerId && { trailerId: dto.trailerId }),
     };
-    // Moving the trip onto a different unit must not double-book that unit.
-    const newVehicleId = dto.vehicleId && dto.vehicleId !== trip.vehicleId ? dto.vehicleId : null;
+    // Moving the trip onto a different unit, driver or trailer must not double-book that one.
+    const holders = {
+      vehicleId: dto.vehicleId && dto.vehicleId !== trip.vehicleId ? dto.vehicleId : null,
+      driverId: dto.driverId !== trip.driverId ? dto.driverId : null,
+      trailerId: dto.trailerId && dto.trailerId !== trip.trailerId ? dto.trailerId : null,
+    };
     const window = this.windowOf(trip.plannedStartAt, trip.plannedEndAt);
     const updated =
-      newVehicleId && window
-        ? await this.repo.withUnitScheduleLock(newVehicleId, async (db) => {
-            await this.assertUnitFree(newVehicleId, window, id, db);
+      window && this.hasHolder(holders)
+        ? await this.withScheduleLocks(holders, async (db) => {
+            await this.assertHoldersFree(holders, window, id, db);
             return this.repo.update({ id }, data, db);
           })
         : await this.repo.update({ id }, data);
@@ -249,7 +308,16 @@ export class TripsService {
     for (const load of loads) {
       const driverId = pool.shift();
       if (!driverId) break;
-      await this.assign(load.id, { driverId, notify: true });
+      try {
+        await this.assign(load.id, { driverId, notify: true });
+      } catch (err) {
+        // The driver already holds an overlapping (e.g. draft) trip: skip this load, keep the driver.
+        if (err instanceof AppException && err.code === ERROR_CODES.TRIP_SCHEDULE_CONFLICT) {
+          pool.unshift(driverId);
+          continue;
+        }
+        throw err;
+      }
       assigned.push({ tripId: load.id, driverId });
     }
     return { assigned, skipped: loads.length - assigned.length };
@@ -267,6 +335,40 @@ export class TripsService {
     return start ? { start, end: end ?? null } : null;
   }
 
+  private hasHolder(holders: ScheduleHolders): boolean {
+    return Boolean(holders.vehicleId || holders.driverId || holders.trailerId);
+  }
+
+  /**
+   * Runs `work` under the per-resource schedule locks, always nested vehicle → driver → trailer
+   * (one fixed order, so two writers can never wait on each other's locks). A `null` id takes no
+   * lock. All locks share the outermost lock's transaction, which `work` receives as `db`.
+   */
+  private withScheduleLocks<T>(holders: ScheduleHolders, work: (db: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+    // `outer` is passed only to the inner locks; the outermost one opens the transaction.
+    type Lock = (inner: (db: Prisma.TransactionClient) => Promise<T>, ...outer: [Prisma.TransactionClient] | []) => Promise<T>;
+    const { vehicleId, driverId, trailerId } = holders;
+    const locks: Lock[] = [];
+    if (vehicleId) locks.push((inner, ...outer) => this.repo.withUnitScheduleLock(vehicleId, inner, ...outer));
+    if (driverId) locks.push((inner, ...outer) => this.repo.withDriverScheduleLock(driverId, inner, ...outer));
+    if (trailerId) locks.push((inner, ...outer) => this.repo.withTrailerScheduleLock(trailerId, inner, ...outer));
+    const run = (i: number, ...outer: [Prisma.TransactionClient] | []): Promise<T> =>
+      locks[i]((db) => (i + 1 < locks.length ? run(i + 1, db) : work(db)), ...outer);
+    return run(0);
+  }
+
+  /** Runs every applicable overlap check (vehicle, then driver, then trailer); first conflict wins. */
+  private async assertHoldersFree(
+    holders: ScheduleHolders,
+    window: TimeWindow,
+    excludeTripId: string | undefined,
+    db: Prisma.TransactionClient,
+  ): Promise<void> {
+    if (holders.vehicleId) await this.assertUnitFree(holders.vehicleId, window, excludeTripId, db);
+    if (holders.driverId) await this.assertDriverFree(holders.driverId, window, excludeTripId, db);
+    if (holders.trailerId) await this.assertTrailerFree(holders.trailerId, window, excludeTripId, db);
+  }
+
   /**
    * 409 `TRIP_SCHEDULE_CONFLICT` when another live trip already holds `vehicleId` for any part of
    * `window` (touching endpoints are fine). Web-panel `/trips` only — the mobile/tablet trip
@@ -281,23 +383,37 @@ export class TripsService {
     const candidates = await this.repo.findUnitScheduleCandidates(vehicleId, window, excludeTripId, db);
     const conflict = findScheduleConflict(window, candidates, excludeTripId);
     if (!conflict) return;
-    const { trip, window: taken } = conflict;
-    const unit = trip.vehicle?.unitNumber ? `Unit ${trip.vehicle.unitNumber}` : 'This unit';
-    const range = taken.end
-      ? `from ${formatScheduleInstant(taken.start)} to ${formatScheduleInstant(taken.end)}`
-      : `from ${formatScheduleInstant(taken.start)} onward (no planned end)`;
-    const message = `${unit} is already assigned to another trip (${trip.number}) ${range}.`;
-    throw new AppException(ERROR_CODES.TRIP_SCHEDULE_CONFLICT, message, 409, {
-      vehicleId: message,
-      conflict: {
-        tripId: trip.id,
-        number: trip.number,
-        status: trip.status,
-        unitNumber: trip.vehicle?.unitNumber ?? null,
-        start: taken.start.toISOString(),
-        end: taken.end ? taken.end.toISOString() : null,
-      },
-    });
+    const unit = conflict.trip.vehicle?.unitNumber ? `Unit ${conflict.trip.vehicle.unitNumber}` : 'This unit';
+    throw scheduleConflict('vehicle', unit, conflict);
+  }
+
+  /** Driver twin of `assertUnitFree`: one driver cannot be on two overlapping trips. */
+  private async assertDriverFree(
+    driverId: string,
+    window: TimeWindow,
+    excludeTripId: string | undefined,
+    db: Prisma.TransactionClient,
+  ): Promise<void> {
+    const candidates = await this.repo.findDriverScheduleCandidates(driverId, window, excludeTripId, db);
+    const conflict = findScheduleConflict(window, candidates, excludeTripId);
+    if (!conflict) return;
+    const driverName = driverNameOf(conflict.trip.driver);
+    throw scheduleConflict('driver', driverName ? `Driver ${driverName}` : 'This driver', conflict, { driverName });
+  }
+
+  /** Trailer twin of `assertUnitFree`: one trailer cannot be on two overlapping trips. */
+  private async assertTrailerFree(
+    trailerId: string,
+    window: TimeWindow,
+    excludeTripId: string | undefined,
+    db: Prisma.TransactionClient,
+  ): Promise<void> {
+    const candidates = await this.repo.findTrailerScheduleCandidates(trailerId, window, excludeTripId, db);
+    const conflict = findScheduleConflict(window, candidates, excludeTripId);
+    if (!conflict) return;
+    // `Trip.trailerId` has no relation, so the number comes from the trailer row itself.
+    const trailerNumber = await this.repo.findTrailerNumber(trailerId, db);
+    throw scheduleConflict('trailer', trailerNumber ? `Trailer ${trailerNumber}` : 'This trailer', conflict, { trailerNumber });
   }
 
   /** `Trip.trailerId` has no FK, so an unknown id would otherwise be stored silently; a
