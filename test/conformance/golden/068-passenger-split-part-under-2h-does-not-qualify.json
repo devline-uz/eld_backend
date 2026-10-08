@@ -1,0 +1,52 @@
+{
+  "name": "passenger-split-part-under-2h-does-not-qualify",
+  "spec": "\u00a7395.1(g)(3) \u2014 passenger: 6:01 SB + 1:59 SB add up to 8 h but a part under 2 h never qualifies",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-01-15T10:00:00Z",
+    "ruleset": "US_70_8_PASSENGER",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true
+    },
+    "previousDays": [],
+    "lastRestartEndedAt": null,
+    "events": [
+      {
+        "at": "2025-01-14T05:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-14T15:00:00Z",
+        "status": "D"
+      },
+      {
+        "at": "2025-01-14T19:00:00Z",
+        "status": "SB"
+      },
+      {
+        "at": "2025-01-15T01:01:00Z",
+        "status": "D"
+      },
+      {
+        "at": "2025-01-15T04:01:00Z",
+        "status": "SB"
+      },
+      {
+        "at": "2025-01-15T06:00:00Z",
+        "status": "D"
+      }
+    ]
+  },
+  "expected": {
+    "driveUsedSec": 39600,
+    "violations": [
+      {
+        "type": "DRIVING_11",
+        "logDate": "2025-01-15",
+        "occurredAt": "2025-01-15T09:00:00Z",
+        "exceededBySec": 3600
+      }
+    ]
+  }
+}

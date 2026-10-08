@@ -1,38 +1,42 @@
 {
-  "name": "cycle-60-7-exceeded",
-  "spec": "\u00a78.2 rule 4 \u2014 60/7 ruleset, 61 h used (driving past the limit, \u00a7395.3(b); engine 1.0.3)",
+  "name": "cycle-on-duty-past-limit-is-legal",
+  "spec": "\u00a7395.3(b) / 1.0.3 \u2014 71 h ON DUTY (not driving) in the 8-day window is legal: the cycle prohibits driving",
   "input": {
     "timezone": "America/New_York",
     "now": "2025-01-14T18:00:00Z",
-    "ruleset": "US_60_7_PROPERTY",
+    "ruleset": "US_70_8_PROPERTY",
     "driver": {
       "driverId": "driver-1",
       "splitSleeperEnabled": true
     },
     "previousDays": [
       {
+        "date": "2025-01-08",
+        "onDutySec": 39600
+      },
+      {
         "date": "2025-01-09",
-        "onDutySec": 36000
+        "onDutySec": 39600
       },
       {
         "date": "2025-01-10",
-        "onDutySec": 36000
+        "onDutySec": 39600
       },
       {
         "date": "2025-01-11",
-        "onDutySec": 36000
+        "onDutySec": 39600
       },
       {
         "date": "2025-01-12",
-        "onDutySec": 36000
+        "onDutySec": 39600
       },
       {
         "date": "2025-01-13",
-        "onDutySec": 36000
+        "onDutySec": 39600
       },
       {
-        "date": "2025-01-08",
-        "onDutySec": 28800
+        "date": "2025-01-07",
+        "onDutySec": 7200
       }
     ],
     "lastRestartEndedAt": null,
@@ -43,18 +47,13 @@
       },
       {
         "at": "2025-01-14T15:00:00Z",
-        "status": "D"
+        "status": "ON"
       }
     ]
   },
   "expected": {
     "cycleRemainingSec": 0,
-    "violations": [
-      {
-        "type": "CYCLE_60",
-        "logDate": "2025-01-14",
-        "exceededBySec": 3600
-      }
-    ]
+    "driveRemainingSec": 0,
+    "violations": []
   }
 }

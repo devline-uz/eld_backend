@@ -1,6 +1,6 @@
 {
-  "name": "cycle-60-7-exceeded",
-  "spec": "\u00a78.2 rule 4 \u2014 60/7 ruleset, 61 h used (driving past the limit, \u00a7395.3(b); engine 1.0.3)",
+  "name": "cycle-60-on-duty-past-limit-is-legal",
+  "spec": "\u00a7395.3(b) / 1.0.3 \u2014 60/7: 61 h on duty with no driving past the limit is legal",
   "input": {
     "timezone": "America/New_York",
     "now": "2025-01-14T18:00:00Z",
@@ -43,18 +43,12 @@
       },
       {
         "at": "2025-01-14T15:00:00Z",
-        "status": "D"
+        "status": "ON"
       }
     ]
   },
   "expected": {
     "cycleRemainingSec": 0,
-    "violations": [
-      {
-        "type": "CYCLE_60",
-        "logDate": "2025-01-14",
-        "exceededBySec": 3600
-      }
-    ]
+    "violations": []
   }
 }

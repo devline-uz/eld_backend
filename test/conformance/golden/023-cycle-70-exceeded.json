@@ -1,6 +1,6 @@
 {
   "name": "cycle-70-exceeded",
-  "spec": "\u00a78.2 rule 4 \u2014 71 h in the 8-day window",
+  "spec": "\u00a78.2 rule 4 \u2014 71 h in the 8-day window (driving past the limit, \u00a7395.3(b); engine 1.0.3)",
   "input": {
     "timezone": "America/New_York",
     "now": "2025-01-14T18:00:00Z",
@@ -47,7 +47,7 @@
       },
       {
         "at": "2025-01-14T15:00:00Z",
-        "status": "ON"
+        "status": "D"
       }
     ]
   },

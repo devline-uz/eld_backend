@@ -1,0 +1,52 @@
+{
+  "name": "passenger-split-off-duty-part-does-not-qualify",
+  "spec": "\u00a7395.1(g)(3) \u2014 passenger: the second period is OFF, not sleeper berth: no pair, 15 h driving",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-01-15T14:00:00Z",
+    "ruleset": "US_70_8_PASSENGER",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true
+    },
+    "previousDays": [],
+    "lastRestartEndedAt": null,
+    "events": [
+      {
+        "at": "2025-01-14T05:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-14T15:00:00Z",
+        "status": "D"
+      },
+      {
+        "at": "2025-01-14T21:00:00Z",
+        "status": "SB"
+      },
+      {
+        "at": "2025-01-15T02:00:00Z",
+        "status": "D"
+      },
+      {
+        "at": "2025-01-15T05:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-15T08:00:00Z",
+        "status": "D"
+      }
+    ]
+  },
+  "expected": {
+    "driveUsedSec": 54000,
+    "violations": [
+      {
+        "type": "DRIVING_11",
+        "logDate": "2025-01-15",
+        "occurredAt": "2025-01-15T09:00:00Z",
+        "exceededBySec": 18000
+      }
+    ]
+  }
+}

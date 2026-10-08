@@ -1,6 +1,6 @@
 /**
  * TZ §8.1 — the language-neutral HOS contract. These types are mirrored 1:1 by the Dart
- * engine (`lib/hos/engine/`, Phase 4b) and by the JSON conformance fixtures in
+ * engine (`lib/core/hos/engine/` in the mobile repo) and by the JSON conformance fixtures in
  * `test/conformance/golden/`. Nothing here may import Prisma, Nest or any I/O module:
  * the string unions below intentionally repeat the Prisma enums instead of importing them
  * so that `hos/` stays a pure, dependency-free package (TZ §3.5 exception, §8.6).

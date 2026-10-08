@@ -35,6 +35,21 @@ export const HOS_SNAPSHOT_STALE_SEC = 3600;
  */
 export const HOS_SWEEP_STALE_SEC = 36 * 3600;
 
+/**
+ * Numeric semver comparison of two `HOS_ENGINE_VERSION` strings: < 0 when `a` is older than `b`.
+ * A part that is not a number compares as 0, so a malformed app version counts as older.
+ */
+export function compareEngineVersions(a: string, b: string): number {
+  const parts = (v: string): number[] => v.split('.').map((p) => (/^\d+$/.test(p) ? Number(p) : 0));
+  const left = parts(a);
+  const right = parts(b);
+  for (let i = 0; i < Math.max(left.length, right.length); i += 1) {
+    const diff = (left[i] ?? 0) - (right[i] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
 /** Why a stored snapshot was not compared. Optional and additive on the response. */
 export type HosCompareSkipReason = 'STALE' | 'VERSION_MISMATCH' | 'DRIVER_NOT_FOUND';
 
@@ -44,6 +59,11 @@ export interface HosStateSubmitResult {
   accepted: true;
   /** True when the app's engine version is not the server's: stored, but NOT compared (§8.6). */
   versionMismatch: boolean;
+  /**
+   * True when the app's engine is OLDER than the server's — the app shows "update the app". False on a
+   * match and when the app is NEWER (the server is the one behind; nothing for the driver to do).
+   */
+  updateRequired: boolean;
   compared: boolean;
   /** MR-1 — set only when `compared` is false: `STALE` or `VERSION_MISMATCH`. */
   reason?: HosCompareSkipReason;
@@ -111,9 +131,12 @@ export class HosStateService {
     };
 
     if (result.skippedVersion) {
+      // An outdated app is a known engine difference, never drift: no comparison, no alert (§8.6).
+      const updateRequired = compareEngineVersions(dto.hosEngineVersion, HOS_ENGINE_VERSION) < 0;
       return {
         ...base,
         versionMismatch: true,
+        updateRequired,
         compared: false,
         reason: 'VERSION_MISMATCH',
         drift: false,
@@ -121,7 +144,9 @@ export class HosStateService {
         fields: [],
         statusMismatch: false,
         serverState: null,
-        message: `Stored, but not compared: this app computes HOS with engine ${dto.hosEngineVersion} and the server runs ${HOS_ENGINE_VERSION}. Update the app.`,
+        message: updateRequired
+          ? `Stored, but not compared: this app computes HOS with engine ${dto.hosEngineVersion} and the server runs ${HOS_ENGINE_VERSION}. Update the app.`
+          : `Stored, but not compared: this app computes HOS with engine ${dto.hosEngineVersion}, newer than the server's ${HOS_ENGINE_VERSION}. No action needed in the app.`,
       };
     }
 
@@ -129,6 +154,7 @@ export class HosStateService {
       return {
         ...base,
         versionMismatch: false,
+        updateRequired: false,
         compared: false,
         reason: 'STALE',
         staleSec: result.staleSec,
@@ -150,6 +176,7 @@ export class HosStateService {
     return {
       ...base,
       versionMismatch: false,
+      updateRequired: false,
       compared: true,
       drift: comparison.drift,
       maxDriftSec: comparison.maxDriftSec,

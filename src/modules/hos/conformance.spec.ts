@@ -1,6 +1,6 @@
 /**
  * TZ §8.6 — the shared conformance suite. These JSON files in `test/conformance/golden/` are
- * language-neutral: the Dart engine (`lib/hos/engine/`, Phase 4b) reads the EXACT same files
+ * language-neutral: the Dart engine (`lib/core/hos/engine/` in the mobile repo) reads the EXACT same files
  * and must produce the same answers. A single failure here blocks the build in both repos.
  *
  * Matching is partial: a fixture asserts only the fields it names, except `violations`, which

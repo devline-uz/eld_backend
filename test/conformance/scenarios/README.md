@@ -9,6 +9,11 @@ The 74 files are copied **unchanged** from the mobile repo (`eld_mobile` main,
 files, unique `id`s equal to the file names, and every scenario passing against the TS engine.
 Never edit a scenario here to make it pass — disagreements go back to the mobile team.
 
+Exception, engine 1.0.3 (requested by the mobile team, D-126): `R04-cycle70-over` and
+`R04-cycle60-over` now **drive** past the cycle (their second event is `D`, was `ON`; expectations
+unchanged) because §395.3(b) makes only driving past 60/70 h a violation. Copy both files back to
+`eld_mobile/test/conformance/scenarios/`. Details: `backend/docs/hos-engine-1.0.3-changes.md`.
+
 ## File format (one scenario per file)
 
 ```json

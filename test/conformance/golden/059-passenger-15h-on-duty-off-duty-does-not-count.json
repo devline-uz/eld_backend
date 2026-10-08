@@ -1,10 +1,10 @@
 {
-  "name": "shift-14h-exact",
-  "spec": "\u00a78.2 rule 2 \u2014 driving that ends exactly at the 14 h mark is legal",
+  "name": "passenger-15h-on-duty-off-duty-does-not-count",
+  "spec": "\u00a7395.5(a)(2) \u2014 passenger: 4 ON, 4 OFF, 5 ON, 5 D = 18 h elapsed but 14 h on duty: legal, 1 h left",
   "input": {
     "timezone": "America/New_York",
-    "now": "2025-01-15T05:00:00Z",
-    "ruleset": "US_70_8_PROPERTY",
+    "now": "2025-01-15T09:00:00Z",
+    "ruleset": "US_70_8_PASSENGER",
     "driver": {
       "driverId": "driver-1",
       "splitSleeperEnabled": true
@@ -22,24 +22,24 @@
       },
       {
         "at": "2025-01-14T19:00:00Z",
-        "status": "D"
-      },
-      {
-        "at": "2025-01-15T02:00:00Z",
         "status": "OFF"
       },
       {
-        "at": "2025-01-15T02:30:00Z",
+        "at": "2025-01-14T23:00:00Z",
+        "status": "ON"
+      },
+      {
+        "at": "2025-01-15T04:00:00Z",
         "status": "D"
       }
     ]
   },
   "expected": {
     "shiftStartedAt": "2025-01-14T15:00:00Z",
-    "shiftEndsAt": "2025-01-15T05:00:00Z",
-    "shiftRemainingSec": 0,
-    "driveUsedSec": 34200,
-    "driveRemainingSec": 0,
+    "shiftRemainingSec": 3600,
+    "shiftEndsAt": "2025-01-15T10:00:00Z",
+    "driveUsedSec": 18000,
+    "driveRemainingSec": 3600,
     "violations": []
   }
 }

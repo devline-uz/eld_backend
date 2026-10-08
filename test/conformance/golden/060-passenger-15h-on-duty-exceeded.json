@@ -1,10 +1,10 @@
 {
-  "name": "shift-14h-exact",
-  "spec": "\u00a78.2 rule 2 \u2014 driving that ends exactly at the 14 h mark is legal",
+  "name": "passenger-15h-on-duty-exceeded",
+  "spec": "\u00a7395.5(a)(2) \u2014 passenger: 9 h on duty then 6:30 driving; 15 h on duty reached at 10:00Z, overrun 30 min (type SHIFT_14)",
   "input": {
     "timezone": "America/New_York",
-    "now": "2025-01-15T05:00:00Z",
-    "ruleset": "US_70_8_PROPERTY",
+    "now": "2025-01-15T10:30:00Z",
+    "ruleset": "US_70_8_PASSENGER",
     "driver": {
       "driverId": "driver-1",
       "splitSleeperEnabled": true
@@ -22,24 +22,28 @@
       },
       {
         "at": "2025-01-14T19:00:00Z",
-        "status": "D"
-      },
-      {
-        "at": "2025-01-15T02:00:00Z",
         "status": "OFF"
       },
       {
-        "at": "2025-01-15T02:30:00Z",
+        "at": "2025-01-14T23:00:00Z",
+        "status": "ON"
+      },
+      {
+        "at": "2025-01-15T04:00:00Z",
         "status": "D"
       }
     ]
   },
   "expected": {
-    "shiftStartedAt": "2025-01-14T15:00:00Z",
-    "shiftEndsAt": "2025-01-15T05:00:00Z",
     "shiftRemainingSec": 0,
-    "driveUsedSec": 34200,
     "driveRemainingSec": 0,
-    "violations": []
+    "violations": [
+      {
+        "type": "SHIFT_14",
+        "logDate": "2025-01-15",
+        "occurredAt": "2025-01-15T10:00:00Z",
+        "exceededBySec": 1800
+      }
+    ]
   }
 }

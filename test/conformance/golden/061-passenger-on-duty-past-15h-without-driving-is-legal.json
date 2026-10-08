@@ -1,0 +1,30 @@
+{
+  "name": "passenger-on-duty-past-15h-without-driving-is-legal",
+  "spec": "\u00a7395.5(a)(2) \u2014 passenger: 16 h on duty, no driving: legal (the rule prohibits driving)",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-01-15T07:00:00Z",
+    "ruleset": "US_70_8_PASSENGER",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true
+    },
+    "previousDays": [],
+    "lastRestartEndedAt": null,
+    "events": [
+      {
+        "at": "2025-01-14T05:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-14T15:00:00Z",
+        "status": "ON"
+      }
+    ]
+  },
+  "expected": {
+    "shiftRemainingSec": 0,
+    "driveRemainingSec": 0,
+    "violations": []
+  }
+}

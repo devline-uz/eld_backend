@@ -5,7 +5,7 @@ import { HOS_ENGINE_VERSION } from '../hos/hos.constants';
 import type { HosState } from '../hos/hos.types';
 import type { HosStateDto } from './dto/hos-state.dto';
 import type { HosStateRepository } from './hos-state.repository';
-import { HosStateService, HOS_ENGINE_DRIFT_ALERT } from './hos-state.service';
+import { compareEngineVersions, HosStateService, HOS_ENGINE_DRIFT_ALERT } from './hos-state.service';
 import type { HosRecalcService } from '../hos-recalc/hos-recalc.service';
 import type { EventBusService } from '../../core/events/event-bus.service';
 import type { SentryCapture, SentryService } from '../../core/observability/sentry.service';
@@ -285,6 +285,31 @@ describe('HosStateService.submit', () => {
       expect(sentry.capture).not.toHaveBeenCalled();
     });
 
+    it('1.0.3: an app still on engine 1.0.2 gets updateRequired, no comparison and no drift alert', async () => {
+      const { service, recalc, alertQueue, sentry, events } = build();
+      const result = await service.submit('driver-1', dto({ hosEngineVersion: '1.0.2' }), NOW);
+      expect(result).toMatchObject({ compared: false, reason: 'VERSION_MISMATCH', versionMismatch: true, updateRequired: true, drift: false });
+      expect(result.message).toContain('Update the app');
+      expect(recalc.computeCurrentState).not.toHaveBeenCalled();
+      expect(alertQueue.add).not.toHaveBeenCalled();
+      expect(sentry.capture).not.toHaveBeenCalled();
+      expect(events.publish).not.toHaveBeenCalled();
+    });
+
+    it('an app NEWER than the server is not compared but not told to update', async () => {
+      const { service, alertQueue } = build();
+      const result = await service.submit('driver-1', dto({ hosEngineVersion: '1.0.10' }), NOW);
+      expect(result).toMatchObject({ compared: false, reason: 'VERSION_MISMATCH', versionMismatch: true, updateRequired: false });
+      expect(result.message).not.toContain('Update the app');
+      expect(alertQueue.add).not.toHaveBeenCalled();
+    });
+
+    it('a matching engine version never asks for an update', async () => {
+      const { service } = build();
+      const result = await service.submit('driver-1', dto(), NOW);
+      expect(result).toMatchObject({ compared: true, versionMismatch: false, updateRequired: false });
+    });
+
     it('tags a version mismatch with reason VERSION_MISMATCH', async () => {
       const { service } = build();
       const result = await service.submit('driver-1', dto({ hosEngineVersion: '0.9.0' }), NOW);
@@ -422,5 +447,18 @@ describe('HosStateService.compareSnapshot', () => {
       HOS_ENGINE_DRIFT_ALERT,
       expect.objectContaining({ appPlatform: 'IOS', appStatus: 'OFF', serverStatus: 'D' }),
     );
+  });
+});
+
+describe('compareEngineVersions', () => {
+  it.each([
+    ['1.0.2', '1.0.3', -1],
+    ['1.0.3', '1.0.3', 0],
+    ['1.0.10', '1.0.3', 1],
+    ['1.1', '1.0.3', 1],
+    ['1.0', '1.0.0', 0],
+    ['garbage', '1.0.3', -1],
+  ])('%s vs %s', (a, b, sign) => {
+    expect(Math.sign(compareEngineVersions(a, b))).toBe(sign);
   });
 });

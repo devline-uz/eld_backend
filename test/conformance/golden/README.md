@@ -6,7 +6,7 @@ these exact files and both must pass 100 %:
 | Implementation | Language | Test entry point |
 |---|---|---|
 | `backend/src/modules/hos/engine/` | TypeScript | `backend/src/modules/hos/conformance.spec.ts` |
-| `lib/hos/engine/` | Dart | Phase 4b mobile test suite |
+| `lib/core/hos/engine/` (mobile repo `eld_mobile`) | Dart | mobile conformance test suite |
 
 A single failing fixture blocks the build in both repositories.
 
@@ -50,6 +50,27 @@ A single failing fixture blocks the build in both repositories.
 
 Number it (`NNN-name.json`), write the expected values **by hand from 49 CFR §395**, never
 by pasting engine output, and keep it deterministic: no `now()`, no locale, no randomness.
+
+Numbering is not contiguous by meaning: existing files are never renumbered. `054` was a gap
+until engine 1.0.3 and was then filled with `054-cycle-on-duty-past-limit-is-legal`; `057`–`069`
+are the 1.0.3 additions.
+
+## Engine 1.0.3 (`HOS_ENGINE_VERSION = "1.0.3"`)
+
+Full change list for the Dart port: `backend/docs/hos-engine-1.0.3-changes.md`.
+
+* **Cycle (§395.3(b), §395.5(b))** — `CYCLE_70`/`CYCLE_60` are recorded only for **driving** past the
+  limit, like `SHIFT_14`. `occurredAt` = first instant of driving past the limit that day;
+  `exceededBySec` = the window total at the end of the last offending driving stretch minus the
+  limit. On-duty-not-driving past the cycle is legal (`054`, `057`, `058`). `023`/`024` now drive
+  (were ON); `056` was rewritten (previousDays-only hours count at the start of their day).
+* **Passenger rulesets (§395.5, §395.1(g)(3), §395.3(c))** — 10 h driving and **15 h on duty**
+  (ON + D, off-duty time does not count; violation type `SHIFT_14`, only for driving) after
+  **8 consecutive hours** OFF/SB; no 34 h restart (`lastRestartEndedAt` ignored,
+  `restartAvailableAt` always null); sleeper pairs = two SB periods each ≥ 2 h totalling ≥ 8 h
+  (OFF never qualifies); no 30-minute break (`059`–`069`).
+* `011` — `driveUsedSec` is now the integer `34200` (was written as `34200.0`).
+
 
 ## Split sleeper: the fixtures follow §395.1(g)(1), not `tz.md` §8.2.1
 

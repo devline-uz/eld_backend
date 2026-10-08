@@ -1,7 +1,7 @@
 {
   "id": "R04-cycle60-over",
   "rule": "CYCLE",
-  "title": "60:30 in 7 days \u2014 CYCLE_60 by 30 minutes",
+  "title": "60:30 in 7 days, driving past the limit \u2014 CYCLE_60 by 30 minutes (\u00a7395.3(b), engine 1.0.3)",
   "input": {
     "events": [
       {
@@ -10,7 +10,7 @@
       },
       {
         "at": "2026-01-15T11:00:00.000Z",
-        "status": "ON"
+        "status": "D"
       }
     ],
     "driver": {
