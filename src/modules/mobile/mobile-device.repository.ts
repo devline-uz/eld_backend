@@ -19,4 +19,17 @@ export class MobileDeviceRepository {
     });
     return result.count;
   }
+
+  /**
+   * B-151 — has THIS driver already raised a MAC mismatch on this device since `since`? One
+   * `(objectType, objectId)`-indexed lookup; used to stop a looping app (or a hostile token) from
+   * turning every retry into an audit row + back-office alert.
+   */
+  async hasRecentMismatch(deviceId: string, driverId: string, since: Date): Promise<boolean> {
+    const row = await this.prisma.auditLog.findFirst({
+      where: { objectType: 'Device', objectId: deviceId, action: 'DEVICE_MAC_MISMATCH', actorId: driverId, createdAt: { gte: since } },
+      select: { id: true },
+    });
+    return row !== null;
+  }
 }

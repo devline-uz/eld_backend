@@ -153,6 +153,14 @@ describe('MobileMaintenanceService (M-38..M-42)', () => {
       expect(mobileRepo.recordSyncedResult).not.toHaveBeenCalled();
     });
 
+    it('409s a clientId replayed against a DIFFERENT task instead of returning that task (B-150)', async () => {
+      const { service, repo, mobileRepo } = build();
+      mobileRepo.findSyncedByClientId.mockResolvedValueOnce({ type: 'maintenance_submit', status: 'ACCEPTED', result: { id: 'other-task', status: 'OPEN' } });
+      await expect(service.submit(DRIVER, SCHEDULE_ID, SUBMIT)).rejects.toMatchObject({ status: 409 });
+      expect(repo.saveSubmission).not.toHaveBeenCalled();
+      expect(mobileRepo.findSyncedByClientId).toHaveBeenCalledWith(DRIVER, CLIENT_ID);
+    });
+
     it('409s a clientId already spent on another operation type', async () => {
       const { service, repo, mobileRepo } = build();
       mobileRepo.findSyncedByClientId.mockResolvedValueOnce({ type: 'release_vehicle', status: 'ACCEPTED', result: { released: true } });

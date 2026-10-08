@@ -15,6 +15,9 @@ import { MobileRepository } from './mobile.repository';
 
 export type DeviceMacOutcome = 'STORED' | 'UNCHANGED';
 
+/** B-151 — a repeated mismatch from the same driver on the same device within this window is not re-alerted. */
+export const MISMATCH_ALERT_WINDOW_MS = 15 * 60 * 1000;
+
 export interface DeviceMacResult {
   deviceId: string;
   macAddress: string;
@@ -104,12 +107,18 @@ export class MobileDeviceService {
       reportedMac: reported,
       reason,
     };
-    await this.writeAudit(actor, 'DEVICE_MAC_MISMATCH', device.id, {
-      before: { bleMacAddress: stored },
-      after: payload,
-      detail: 'Driver app saw a BLE MAC that does not match the device record — not written; back office alerted.',
-    });
-    await this.raiseAlert('alert.device_mac_mismatch', payload);
+    // B-151 — one audit row + alert per driver/device per window; repeats are still refused (409).
+    const since = new Date(Date.now() - MISMATCH_ALERT_WINDOW_MS);
+    if (await this.devices.hasRecentMismatch(device.id, actor.id, since)) {
+      this.logger.warn({ deviceId: device.id, driverId: actor.id, reason }, 'Repeated device MAC mismatch — alert suppressed (already raised in this window)');
+    } else {
+      await this.writeAudit(actor, 'DEVICE_MAC_MISMATCH', device.id, {
+        before: { bleMacAddress: stored },
+        after: payload,
+        detail: 'Driver app saw a BLE MAC that does not match the device record — not written; back office alerted.',
+      });
+      await this.raiseAlert('alert.device_mac_mismatch', payload);
+    }
     throw new AppException(
       ERROR_CODES.DEVICE_MAC_MISMATCH,
       'The ELD you are connected to does not match the device on record for this vehicle. Back office has been notified.',

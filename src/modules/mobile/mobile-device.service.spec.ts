@@ -21,6 +21,7 @@ function setup(opts: { device?: Partial<Device> | null; assignedVehicleId?: stri
   const devices = {
     findDevice: jest.fn(async () => device),
     fillEmptyMac: jest.fn(opts.fill ?? (async () => 1)),
+    hasRecentMismatch: jest.fn(async () => false),
   };
   const audit = { insert: jest.fn(async () => ({})) };
   const events = { publish: jest.fn(async () => undefined) };
@@ -98,6 +99,16 @@ describe('MobileDeviceService.reportMac', () => {
       expect.objectContaining({ deviceSerial: 'PT30_A86E', storedMac: 'A4:C1:38:00:00:01', reportedMac: 'A4:C1:38:5E:A8:6E', reason: 'STORED_MAC_DIFFERS' }),
     );
     expect(events.publish).toHaveBeenCalledWith('alert.device_mac_mismatch', expect.anything());
+  });
+
+  it('B-151: a repeated mismatch by the same driver within the window is still 409 but not re-audited/re-alerted', async () => {
+    const { service, devices, audit, alertQueue, events } = setup({ device: { bleMacAddress: 'A4:C1:38:00:00:01' } });
+    devices.hasRecentMismatch.mockResolvedValueOnce(true);
+    await expect(codeOf(service.reportMac(actor, dto))).resolves.toEqual({ code: 'DEVICE_MAC_MISMATCH', status: 409 });
+    expect(devices.hasRecentMismatch).toHaveBeenCalledWith(DEVICE_ID, actor.id, expect.any(Date));
+    expect(audit.insert).not.toHaveBeenCalled();
+    expect(alertQueue.add).not.toHaveBeenCalled();
+    expect(events.publish).not.toHaveBeenCalled();
   });
 
   it('MAC already on another device (unique violation) -> 409 DEVICE_MAC_MISMATCH', async () => {

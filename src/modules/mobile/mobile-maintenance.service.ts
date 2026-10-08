@@ -79,7 +79,13 @@ export class MobileMaintenanceService {
     if (prior && prior.type !== LEDGER_TYPE) {
       throw AppException.conflict('clientId already used by another operation.', { clientId: dto.clientId });
     }
-    if (prior?.status === 'ACCEPTED' && prior.result) return prior.result as unknown as MobileMaintenanceDetail;
+    if (prior?.status === 'ACCEPTED' && prior.result) {
+      const replay = prior.result as unknown as MobileMaintenanceDetail;
+      // B-150 — a clientId replays only the task it was spent on; reused for another task it is a 409,
+      // not that other task's cached answer.
+      if (replay.id !== id) throw AppException.conflict('clientId already used for another maintenance task.', { clientId: dto.clientId });
+      return replay;
+    }
 
     const unit = await this.repo.findDriverUnit(driverId);
     const row = unit ? await this.repo.findOneForVehicle(id, unit.vehicleId) : null;

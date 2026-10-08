@@ -127,6 +127,18 @@ describe('Mobile API (e2e, tz.md §6 / §13)', () => {
       expect(res.body.data.sha256).toMatch(/^[0-9a-f]{64}$/);
     });
 
+    it('B-148: parses a >1 MB invoice PDF only for a verified driver token', async () => {
+      const pdf = Buffer.concat([Buffer.from('%PDF-1.7\n'), Buffer.alloc(2 * 1024 * 1024, 0x20)]).toString('base64');
+      const body = { purpose: 'INVOICE', base64: pdf, mimeType: 'application/pdf' };
+      const anonymous = await request(server()).post('/api/mobile/signature').send(body);
+      expect(anonymous.status).toBe(413);
+      const forged = await request(server()).post('/api/mobile/signature').set('Authorization', 'Bearer not.a.jwt').send(body);
+      expect(forged.status).toBe(413);
+      const driver = await request(server()).post('/api/mobile/signature').set('Authorization', `Bearer ${token}`).send(body);
+      expect(driver.status).toBe(201);
+      expect(driver.body.data.attachmentId).toEqual(expect.any(String));
+    });
+
     it('submits a DVIR with defects and signature, and only puts the vehicle out of service for a CRITICAL defect', async () => {
       const res = await request(server())
         .post('/api/mobile/dvir')
