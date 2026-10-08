@@ -118,12 +118,44 @@ export class TripsRepository extends BaseRepository<
    * Runs `work` in a transaction holding a per-unit advisory lock, so two concurrent web-panel
    * writes cannot both pass the overlap check for the same unit and both commit (same
    * `pg_advisory_xact_lock` pattern as ingest sequence allocation). Released on commit/rollback.
+   * With `outer`, the lock is taken inside that transaction instead (nested locks share one tx).
    */
-  withUnitScheduleLock<T>(vehicleId: string, work: (db: Prisma.TransactionClient) => Promise<T>): Promise<T> {
-    return this.prisma.$transaction(async (tx) => {
-      await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`, `trip-unit:${vehicleId}`);
+  withUnitScheduleLock<T>(
+    vehicleId: string,
+    work: (db: Prisma.TransactionClient) => Promise<T>,
+    outer?: Prisma.TransactionClient,
+  ): Promise<T> {
+    return this.withScheduleLock(`trip-unit:${vehicleId}`, work, outer);
+  }
+
+  /** Per-driver twin of `withUnitScheduleLock` — guards the driver overlap check. */
+  withDriverScheduleLock<T>(
+    driverId: string,
+    work: (db: Prisma.TransactionClient) => Promise<T>,
+    outer?: Prisma.TransactionClient,
+  ): Promise<T> {
+    return this.withScheduleLock(`trip-driver:${driverId}`, work, outer);
+  }
+
+  /** Per-trailer twin of `withUnitScheduleLock` — guards the trailer overlap check. */
+  withTrailerScheduleLock<T>(
+    trailerId: string,
+    work: (db: Prisma.TransactionClient) => Promise<T>,
+    outer?: Prisma.TransactionClient,
+  ): Promise<T> {
+    return this.withScheduleLock(`trip-trailer:${trailerId}`, work, outer);
+  }
+
+  private withScheduleLock<T>(
+    key: string,
+    work: (db: Prisma.TransactionClient) => Promise<T>,
+    outer?: Prisma.TransactionClient,
+  ): Promise<T> {
+    const lockAndWork = async (tx: Prisma.TransactionClient) => {
+      await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`, key);
       return work(tx);
-    });
+    };
+    return outer ? lockAndWork(outer) : this.prisma.$transaction(lockAndWork);
   }
 
   /**
@@ -136,9 +168,44 @@ export class TripsRepository extends BaseRepository<
     excludeTripId: string | undefined,
     db: Prisma.TransactionClient = this.prisma,
   ) {
+    return this.findScheduleCandidates({ vehicleId }, window, excludeTripId, db);
+  }
+
+  /** Same as `findUnitScheduleCandidates`, for trips held by `driverId`. */
+  findDriverScheduleCandidates(
+    driverId: string,
+    window: { start: Date; end: Date | null },
+    excludeTripId: string | undefined,
+    db: Prisma.TransactionClient = this.prisma,
+  ) {
+    return this.findScheduleCandidates({ driverId }, window, excludeTripId, db);
+  }
+
+  /** Same as `findUnitScheduleCandidates`, for trips pulling `trailerId`. */
+  findTrailerScheduleCandidates(
+    trailerId: string,
+    window: { start: Date; end: Date | null },
+    excludeTripId: string | undefined,
+    db: Prisma.TransactionClient = this.prisma,
+  ) {
+    return this.findScheduleCandidates({ trailerId }, window, excludeTripId, db);
+  }
+
+  /** The trailer's display number (live or soft-deleted), for the trailer-conflict message. */
+  async findTrailerNumber(trailerId: string, db: Prisma.TransactionClient = this.prisma): Promise<string | null> {
+    const row = await db.trailer.findUnique({ where: { id: trailerId }, select: { number: true } });
+    return row?.number ?? null;
+  }
+
+  private findScheduleCandidates(
+    holder: { vehicleId: string } | { driverId: string } | { trailerId: string },
+    window: { start: Date; end: Date | null },
+    excludeTripId: string | undefined,
+    db: Prisma.TransactionClient,
+  ) {
     return db.trip.findMany({
       where: {
-        vehicleId,
+        ...holder,
         status: { in: [...UNIT_BLOCKING_STATUSES] },
         ...(excludeTripId && { id: { not: excludeTripId } }),
         AND: [
@@ -174,6 +241,7 @@ export class TripsRepository extends BaseRepository<
         startedAt: true,
         completedAt: true,
         vehicle: { select: { unitNumber: true } },
+        driver: { select: { firstName: true, lastName: true } },
       },
     });
   }
