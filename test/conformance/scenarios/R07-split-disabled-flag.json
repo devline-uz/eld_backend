@@ -1,0 +1,45 @@
+{
+  "id": "R07-split-disabled-flag",
+  "rule": "SPLIT_SLEEPER",
+  "title": "splitSleeperEnabled = false \u2014 the same events give no exclusion at all",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-14T19:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-15T05:00:00.000Z",
+        "status": "ON"
+      },
+      {
+        "at": "2026-01-15T07:00:00.000Z",
+        "status": "SB"
+      },
+      {
+        "at": "2026-01-15T15:00:00.000Z",
+        "status": "D"
+      },
+      {
+        "at": "2026-01-15T19:00:00.000Z",
+        "status": "SB"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance",
+      "splitSleeperEnabled": false
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-15T21:00:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "driveUsedSec": 14400,
+    "shiftStartedAt": "2026-01-15T05:00:00.000Z",
+    "shiftEndsAt": "2026-01-15T19:00:00.000Z",
+    "shiftRemainingSec": 0,
+    "violations": []
+  }
+}

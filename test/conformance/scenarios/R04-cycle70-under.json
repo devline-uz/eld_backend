@@ -1,0 +1,58 @@
+{
+  "id": "R04-cycle70-under",
+  "rule": "CYCLE",
+  "title": "63 h behind + 6 h today = 69 h \u2014 one hour left on the 70/8",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-15T01:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-15T11:00:00.000Z",
+        "status": "ON"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance"
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-15T17:00:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [
+      {
+        "date": "2026-01-08",
+        "onDutySec": 32400
+      },
+      {
+        "date": "2026-01-09",
+        "onDutySec": 32400
+      },
+      {
+        "date": "2026-01-10",
+        "onDutySec": 32400
+      },
+      {
+        "date": "2026-01-11",
+        "onDutySec": 32400
+      },
+      {
+        "date": "2026-01-12",
+        "onDutySec": 32400
+      },
+      {
+        "date": "2026-01-13",
+        "onDutySec": 32400
+      },
+      {
+        "date": "2026-01-14",
+        "onDutySec": 32400
+      }
+    ],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "cycleRemainingSec": 3600,
+    "violations": []
+  }
+}

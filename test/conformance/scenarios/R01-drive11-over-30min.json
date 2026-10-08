@@ -1,0 +1,44 @@
+{
+  "id": "R01-drive11-over-30min",
+  "rule": "DRIVING_11",
+  "title": "11:30 driving \u2014 DRIVING_11 by 30 minutes",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-15T01:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-15T11:00:00.000Z",
+        "status": "D"
+      },
+      {
+        "at": "2026-01-15T19:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-15T19:30:00.000Z",
+        "status": "D"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance"
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-15T23:00:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "driveUsedSec": 41400,
+    "driveRemainingSec": 0,
+    "violations": [
+      {
+        "type": "DRIVING_11",
+        "logDate": "2026-01-15",
+        "exceededBySec": 1800
+      }
+    ]
+  }
+}

@@ -79,11 +79,24 @@ export function cycleUsedOn(totals: Map<string, number>, key: string, cycleDays:
 }
 
 /**
- * §8.2 rule 6 — recap. The next local midnight at which hours come back, i.e. when the oldest
- * day of the sliding window drops out. Null when nothing would be returned.
+ * §8.2 rule 6 — recap. The next local midnight at which hours come back: the first upcoming day
+ * boundary whose departing day (the oldest day of the sliding window at that moment) carried
+ * on-duty time. Zero-hour days and days before a 34 h restart recap nothing and are skipped, so
+ * the answer can be up to `cycleDays` midnights away (today's own hours). Null only when the whole
+ * window is empty (B-133; same definition as the Dart port).
  */
-export function recapAt(totals: Map<string, number>, timezone: string, now: Date, cycleDays: number): Date | null {
+export function recapAt(
+  totals: Map<string, number>,
+  timezone: string,
+  now: Date,
+  cycleDays: number,
+  restartDay: string | null = null,
+): Date | null {
   const today = dayKey(timezone, now);
-  const dropping = addDays(today, -(cycleDays - 1));
-  return (totals.get(dropping) ?? 0) > 0 ? dayEnd(timezone, today) : null;
+  for (let ahead = 1; ahead <= cycleDays; ahead += 1) {
+    const leaving = addDays(today, ahead - cycleDays);
+    if (restartDay && leaving < restartDay) continue;
+    if ((totals.get(leaving) ?? 0) > 0) return dayEnd(timezone, addDays(today, ahead - 1));
+  }
+  return null;
 }

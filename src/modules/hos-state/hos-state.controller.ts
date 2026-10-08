@@ -76,7 +76,7 @@ export class HosStateController {
             statusSince: { type: 'string', format: 'date-time', description: 'MR-24 — when the current duty status started.' },
             nextBreakDueAt: { type: 'string', format: 'date-time', nullable: true, description: 'MR-24 — when the 30-minute break is due (while driving or overdue), else null.' },
             shiftEndsAt: { type: 'string', format: 'date-time', nullable: true, description: 'MR-24 — when the 14-hour window ends; null with no open shift.' },
-            cycleRecapAt: { type: 'string', format: 'date-time', nullable: true, description: 'MR-24 — end of today (home-terminal zone) when recap hours drop off; else null.' },
+            cycleRecapAt: { type: 'string', format: 'date-time', nullable: true, description: 'MR-24 — the next home-terminal midnight at which recap hours come back (first upcoming day boundary whose departing day had on-duty time, B-133); null when the whole cycle window is empty.' },
             restartAvailableAt: { type: 'string', format: 'date-time', nullable: true, description: 'MR-24 — while OFF/SB: when the current rest reaches 34 h; else null.' },
           },
         },

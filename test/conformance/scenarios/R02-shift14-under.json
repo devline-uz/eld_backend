@@ -1,0 +1,35 @@
+{
+  "id": "R02-shift14-under",
+  "rule": "SHIFT_14",
+  "title": "13:59 into the window \u2014 one minute left",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-15T01:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-15T11:00:00.000Z",
+        "status": "ON"
+      },
+      {
+        "at": "2026-01-15T17:00:00.000Z",
+        "status": "D"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance"
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-16T00:59:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "shiftStartedAt": "2026-01-15T11:00:00.000Z",
+    "shiftRemainingSec": 60,
+    "shiftEndsAt": "2026-01-16T01:00:00.000Z",
+    "violations": []
+  }
+}

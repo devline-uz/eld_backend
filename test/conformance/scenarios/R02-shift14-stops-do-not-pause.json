@@ -1,0 +1,46 @@
+{
+  "id": "R02-shift14-stops-do-not-pause",
+  "rule": "SHIFT_14",
+  "title": "A 3-hour off-duty stop does not pause the 14-hour window",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-15T01:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-15T11:00:00.000Z",
+        "status": "ON"
+      },
+      {
+        "at": "2026-01-15T15:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-15T18:00:00.000Z",
+        "status": "D"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance"
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-16T01:30:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "shiftStartedAt": "2026-01-15T11:00:00.000Z",
+    "shiftEndsAt": "2026-01-16T01:00:00.000Z",
+    "driveUsedSec": 27000,
+    "shiftRemainingSec": 0,
+    "violations": [
+      {
+        "type": "SHIFT_14",
+        "logDate": "2026-01-15",
+        "exceededBySec": 1800
+      }
+    ]
+  }
+}

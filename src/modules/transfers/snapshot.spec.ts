@@ -18,7 +18,7 @@ const DRIVER = {
 const CARRIER = {
   name: 'OneBook Logistics',
   dotNumber: '3355123',
-  eldIdentifier: 'OBK1',
+  eldIdentifier: 'OBK001',
   eldRegistrationId: null,
 } as never;
 
@@ -61,7 +61,7 @@ function snapshot(overrides: Record<string, unknown> = {}) {
     dailyLogs: [],
     outputFileComment: 'Roadside',
     generatedAt: new Date('2026-09-11T17:00:00Z'),
-    eldIdentifier: 'OBK1',
+    eldIdentifier: 'OBK001',
     eldRegistrationId: '',
     eldAuthenticationValue: 'A1B2C3D4',
     ...overrides,
@@ -95,19 +95,26 @@ describe('buildSnapshot — segment routing (tz.md §10.2)', () => {
         { id: 'usr_7', email: 'ad@onebook.io', firstName: 'Bo', lastName: 'Admin' },
       ],
     });
-    expect(snap.users.map((u) => [u.orderNumber, u.accountType])).toEqual([
-      [1, 'D'],
-      [2, 'S'],
-      [3, 'S'],
+    // 4.8.2.1.2: the unidentified driver profile is always listed, account type D (7.13).
+    expect(snap.users.map((u) => [u.orderNumber, u.accountType, u.lastName])).toEqual([
+      [1, 'D', 'Smith'],
+      [2, 'S', 'Fleet'],
+      [3, 'S', 'Admin'],
+      [4, 'D', 'Unidentified'],
     ]);
     expect(snap.events[1].userOrderNumber).toBe(2);
     expect(snap.events[3].userOrderNumber).toBe(3);
   });
 
-  it('numbers CMVs in first-seen order across driver and unidentified records', () => {
+  it('ranks CMVs most recently operated first across driver and unidentified records (4.8.2.1.3)', () => {
     const snap = snapshot({
-      events: [event({ vehicleId: 'veh_1' }), event({ eventSequenceId: 2, vehicleId: 'veh_2' })],
-      unidentifiedEvents: [event({ eventSequenceId: 3, driverId: null, recordOrigin: 4, vehicleId: 'veh_3' })],
+      events: [
+        event({ vehicleId: 'veh_3', eventDateTime: new Date('2026-09-08T09:00:00Z') }),
+        event({ eventSequenceId: 2, vehicleId: 'veh_2', eventDateTime: new Date('2026-09-08T10:00:00Z') }),
+      ],
+      unidentifiedEvents: [
+        event({ eventSequenceId: 3, driverId: null, recordOrigin: 4, vehicleId: 'veh_1', eventDateTime: new Date('2026-09-08T11:00:00Z') }),
+      ],
       vehicles: [
         { id: 'veh_1', unitNumber: '101', vin: 'VIN1' },
         { id: 'veh_2', unitNumber: '102', vin: 'VIN2' },
@@ -119,7 +126,8 @@ describe('buildSnapshot — segment routing (tz.md §10.2)', () => {
       { orderNumber: 2, powerUnitNumber: '102', vin: 'VIN2' },
       { orderNumber: 3, powerUnitNumber: '103', vin: 'VIN3' },
     ]);
-    expect(snap.unidentified[0].cmvOrderNumber).toBe(3);
+    expect(snap.unidentified[0].cmvOrderNumber).toBe(1);
+    expect(snap.events.map((e) => e.cmvOrderNumber)).toEqual([3, 2]);
   });
 
   it('turns annotations, comments and edit reasons into annotation-segment rows', () => {
@@ -132,6 +140,94 @@ describe('buildSnapshot — segment routing (tz.md §10.2)', () => {
       ],
     });
     expect(snap.annotations.map((a) => a.text)).toEqual(['Fuel stop', 'Dispatcher note', 'Wrong status selected']);
+  });
+
+  it('annotates only event-list records (types 1-3) and names the originator by ELD username (4.8.2.1.5)', () => {
+    const snap = snapshot({
+      events: [
+        event({ eventSequenceId: 1, annotation: 'Driver note' }),
+        event({ eventSequenceId: 2, annotation: 'Carrier edit', editedById: 'usr_9', recordOrigin: 3 }),
+        event({ eventSequenceId: 3, eventType: 4, eventCode: 1, annotation: 'Certified RODS day', comment: 'certifiedDate=2026-09-07' }),
+        event({ eventSequenceId: 4, eventType: 7, eventCode: 1, malfunctionCode: 'P', comment: 'Power' }),
+        event({ eventSequenceId: 5, eventType: 5, eventCode: 1, comment: 'login' }),
+      ],
+      users: [{ id: 'usr_9', email: 'fm@onebook.io', firstName: 'Ann', lastName: 'Fleet' }],
+    });
+    expect(snap.annotations.map((a) => [a.sequenceId, a.username])).toEqual([
+      [1, 'jsmith'],
+      [2, 'fm@onebook.io'],
+    ]);
+  });
+
+  it('routes login/logout (5) and engine power (6) records to their own segments (4.8.2.1.8 / 4.8.2.1.9)', () => {
+    const snap = snapshot({
+      events: [
+        event({ eventSequenceId: 1 }),
+        event({ eventSequenceId: 2, eventType: 5, eventCode: 1 }),
+        event({ eventSequenceId: 3, eventType: 6, eventCode: 1 }),
+      ],
+    });
+    expect(snap.events.map((e) => e.sequenceId)).toEqual([1]);
+    expect(snap.loginLogout?.map((e) => e.sequenceId)).toEqual([2]);
+    expect(snap.enginePower?.map((e) => e.sequenceId)).toEqual([3]);
+    expect(validateOutputFile(buildOutputFile(snap).csv).issues).toEqual([]);
+  });
+
+  it('derives accumulated miles / elapsed hours from the last power-up of the same CMV (4.3.1.3 / 4.3.1.4)', () => {
+    const at = (iso: string) => new Date(iso);
+    const snap = snapshot({
+      events: [
+        event({ eventSequenceId: 1, eventDateTime: at('2026-09-08T08:00:00Z'), totalVehicleMiles: 990 }),
+        event({ eventSequenceId: 2, eventType: 6, eventCode: 1, eventDateTime: at('2026-09-08T09:00:00Z'), totalVehicleMiles: 1000, totalEngineHours: 10.2 }),
+        event({ eventSequenceId: 3, eventDateTime: at('2026-09-08T12:00:00Z'), totalVehicleMiles: 1150, totalEngineHours: 13.3 }),
+        event({ eventSequenceId: 4, eventDateTime: at('2026-09-08T12:30:00Z'), vehicleId: 'veh_2', totalVehicleMiles: 50 }),
+      ],
+    });
+    expect(snap.events.map((e) => [e.sequenceId, e.accumulatedVehicleMiles, e.elapsedEngineHours])).toEqual([
+      [1, null, null], // no power-up visible before it: blank, never a guess
+      [3, 150, 3.1],
+      [4, null, null], // different CMV
+    ]);
+  });
+
+  it('sets the indicator statuses while a malfunction / diagnostic is active (7.35 / 7.7)', () => {
+    const at = (iso: string) => new Date(iso);
+    const snap = snapshot({
+      events: [
+        event({ eventSequenceId: 1, eventType: 7, eventCode: 1, malfunctionCode: 'P', eventDateTime: at('2026-09-08T09:00:00Z') }),
+        event({ eventSequenceId: 2, eventType: 7, eventCode: 3, diagnosticCode: '5', eventDateTime: at('2026-09-08T09:30:00Z') }),
+        event({ eventSequenceId: 3, eventDateTime: at('2026-09-08T10:00:00Z') }),
+        event({ eventSequenceId: 4, eventType: 7, eventCode: 2, malfunctionCode: 'P', eventDateTime: at('2026-09-08T11:00:00Z') }),
+        event({ eventSequenceId: 5, eventDateTime: at('2026-09-08T12:00:00Z') }),
+      ],
+    });
+    expect(snap.events.map((e) => [e.sequenceId, e.malfunctionIndicator, e.diagnosticIndicator])).toEqual([
+      [3, true, true],
+      [5, false, true],
+    ]);
+  });
+
+  it('takes the certified date from the certification record, not its timestamp (4.5.1.4(b)(5))', () => {
+    const snap = snapshot({
+      events: [
+        event({ eventSequenceId: 1, eventType: 4, eventCode: 1, comment: 'certifiedDate=2026-09-07', eventDateTime: new Date('2026-09-08T13:00:00Z') }),
+        event({ eventSequenceId: 2, eventType: 4, eventCode: 2, eventDateTime: new Date('2026-09-08T13:00:00Z') }),
+      ],
+    });
+    expect(snap.certifications.map((c) => [c.certifiedDate.toISOString().slice(0, 10), c.cmvOrderNumber])).toEqual([
+      ['2026-09-07', 1],
+      ['2026-09-08', 1],
+    ]);
+  });
+
+  it('fills header line 6 from the latest active record', () => {
+    const snap = snapshot({
+      events: [
+        event({ eventSequenceId: 1, eventDateTime: new Date('2026-09-08T10:00:00Z'), totalVehicleMiles: 1200, totalEngineHours: 12 }),
+        event({ eventSequenceId: 2, eventDateTime: new Date('2026-09-08T11:00:00Z'), latitude: 40.1, longitude: -80.2, totalVehicleMiles: null, totalEngineHours: null }),
+      ],
+    });
+    expect(snap.current).toMatchObject({ latitude: 40.1, longitude: -80.2, totalVehicleMiles: 1200, totalEngineHours: 12 });
   });
 
   it('treats a locationName with no lat/lon as a manual location and gives it an annotation row', () => {
@@ -170,7 +266,7 @@ describe('buildSnapshot — segment routing (tz.md §10.2)', () => {
     ]);
   });
 
-  it('sets the malfunction / diagnostic indicator flags from the record codes', () => {
+  it('also sets the indicator flags from the record codes', () => {
     const snap = snapshot({
       events: [event({ malfunctionCode: 'E' }), event({ eventSequenceId: 2, diagnosticCode: '3' })],
     });

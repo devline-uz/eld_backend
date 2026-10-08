@@ -5,21 +5,29 @@ export const DistanceUnitEnum = z.enum(['MILES', 'KILOMETERS']);
 export const ErodsModeEnum = z.enum(['TEST', 'PRODUCTION']);
 
 /**
- * §395 Appendix A (ELD Identifier / ELD Registration ID) — **exactly 4 characters, and only
- * `A-Z` / `0-9`**. Length alone is not enough: a 4-character value containing a lowercase
- * letter, a space, a comma or `#` still invalidates the output CSV (the header segment is
- * comma-delimited and the file name in 4.8.2.2 is uppercase alphanumeric only).
+ * §395 Appendix A 7.15 — ELD Identifier: **exactly 6 characters, `A-Z` / `0-9` only**
+ * (provider-coded at certification, e.g. `1001ZE`; `OBK001` in TEST). bugs.md B-138.
+ * §395 Appendix A 7.17 — ELD Registration ID: **exactly 4 characters, `A-Z` / `0-9` only**
+ * (FMCSA-issued, e.g. `ZA10`).
  *
- * Input is trimmed and upper-cased before the check, so `'obk1'` is stored as `'OBK1'`;
- * anything else outside the alphabet is rejected with `422 VALIDATION_FAILED`.
- * Mirrored at the DB level by the `eld_identifier_format` / `eld_registration_id_format`
- * CHECK constraints (migration `20260911150000_erods_identifier_charset`).
+ * Length alone is not enough: a value containing a lowercase letter, a space, a comma or `#`
+ * still invalidates the output CSV (the header segment is comma-delimited). Input is trimmed
+ * and upper-cased before the check (`'obk001'` is stored as `'OBK001'`); anything else is
+ * rejected with `422 VALIDATION_FAILED`. Mirrored at the DB level by the
+ * `eld_identifier_format` (`^[A-Z0-9]{6}$`, migration `20261008130000_eld_identifier_six_chars`)
+ * and `eld_registration_id_format` (`^[A-Z0-9]{4}$`) CHECK constraints.
  */
-export const ErodsIdentifierSchema = z
+export const EldIdentifierSchema = z
   .string()
   .trim()
   .toUpperCase()
-  .regex(/^[A-Z0-9]{4}$/, 'Must be exactly 4 characters, A-Z or 0-9 only (§395 Appendix A).');
+  .regex(/^[A-Z0-9]{6}$/, 'ELD Identifier must be exactly 6 characters, A-Z or 0-9 only (§395 Appendix A 7.15).');
+
+export const EldRegistrationIdSchema = z
+  .string()
+  .trim()
+  .toUpperCase()
+  .regex(/^[A-Z0-9]{4}$/, 'ELD Registration ID must be exactly 4 characters, A-Z or 0-9 only (§395 Appendix A 7.17).');
 
 /**
  * TZ §5.1 / §11.7 `PATCH /carrier` — company profile fields. All optional (partial update).
@@ -44,8 +52,8 @@ export const UpdateCarrierDto = z.object({
   phone: z.string().max(30).optional(),
   complianceEmail: z.string().email().max(200).optional(),
   logoUrl: z.string().max(500).optional(),
-  eldIdentifier: ErodsIdentifierSchema.optional(),
-  eldRegistrationId: ErodsIdentifierSchema.optional(),
+  eldIdentifier: EldIdentifierSchema.optional(),
+  eldRegistrationId: EldRegistrationIdSchema.optional(),
   erodsMode: ErodsModeEnum.optional(),
 });
 export type UpdateCarrierDto = z.infer<typeof UpdateCarrierDto>;

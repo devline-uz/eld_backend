@@ -1,0 +1,38 @@
+{
+  "id": "R01-drive11-under",
+  "rule": "DRIVING_11",
+  "title": "10:59 driving with a 30-minute break \u2014 one second under the limit",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-15T01:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-15T11:00:00.000Z",
+        "status": "D"
+      },
+      {
+        "at": "2026-01-15T19:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-15T19:30:00.000Z",
+        "status": "D"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance"
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-15T22:29:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "driveUsedSec": 39540,
+    "driveRemainingSec": 60,
+    "violations": []
+  }
+}

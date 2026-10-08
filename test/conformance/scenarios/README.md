@@ -3,41 +3,45 @@
 Runner: `src/modules/hos/mobile-scenarios.conformance.spec.ts` (unit project).
 Run: `npx jest --selectProjects unit --maxWorkers=2 src/modules/hos/mobile-scenarios`.
 
-Copy the mobile team's 74 files from `mobile/test/conformance/scenarios/*.json` into this
-directory unchanged. Until at least one `*.json` is present the suite reports one `todo`; once
-files are present it requires exactly 74 and every one must pass against the TS engine.
+The 74 files are copied **unchanged** from the mobile repo (`eld_mobile` main,
+`test/conformance/scenarios/*.json`). The Dart engine runs the same files with
+`test/conformance/conformance_test.dart`; this runner mirrors it. The suite requires exactly 74
+files, unique `id`s equal to the file names, and every scenario passing against the TS engine.
+Never edit a scenario here to make it pass — disagreements go back to the mobile team.
 
 ## File format (one scenario per file)
 
-Same format as `eld.docs/hos-conformance/*.json` (TZ §8.6):
-
 ```json
 {
-  "name": "drive-11h-exceeded-26min",          // optional; defaults to the file name
-  "spec": "§8.2 rule 1 — free text",            // optional, ignored
-  "input": {
-    "timezone": "America/New_York",              // driver.homeTerminalTimezone (IANA)
-    "now": "2025-01-15T02:56:00Z",               // ISO-8601 instant the engine computes at
-    "ruleset": "US_70_8_PROPERTY",               // or US_60_7_PROPERTY, ... (HosRuleset)
-    "driver": { "driverId": "driver-1", "splitSleeperEnabled": true },
-    "previousDays": [{ "date": "2025-01-10", "onDutySec": 36000 }],  // per-day recap; may be []
-    "lastRestartEndedAt": null,                  // ISO-8601 or null
+  "id": "R01-drive11-exact",                     // == file name without .json, unique
+  "rule": "DRIVING_11",                          // grouping tag (SPLIT_SLEEPER, RECAP, ...)
+  "title": "Exactly 11:00 driving — at the limit, still legal",
+  "input": {                                     // == TS HosInput (hos.types.ts), instants as ISO-8601 UTC
     "events": [
-      { "at": "2025-01-14T05:00:00Z", "status": "OFF" },
-      { "at": "2025-01-14T15:00:00Z", "status": "D", "special": "NONE",
-        "recordStatus": 1, "eventSequenceId": 7 }  // special/recordStatus/eventSequenceId optional
-    ]
+      { "at": "2026-01-15T01:00:00.000Z", "status": "OFF" },
+      { "at": "2026-01-15T11:00:00.000Z", "status": "D", "special": "PC", "locationPrecisionMi": 10,
+        "recordStatus": 1 }                      // special/recordStatus/locationPrecisionMi optional
+    ],
+    "driver": { "driverId": "drv-conformance", "allowPersonalConveyance": true },
+    "ruleset": "US_70_8_PROPERTY",               // HosRuleset
+    "now": "2026-01-15T22:30:00.000Z",
+    "timezone": "America/New_York",              // driver.homeTerminalTimezone (IANA)
+    "previousDays": [{ "date": "2026-01-08", "onDutySec": 28800 }],   // may be []
+    "lastRestartEndedAt": null
   },
-  "expected": {
-    "driveUsedSec": 41160,                       // any HosState field; partial match
-    "shiftEndsAt": "2025-01-15T05:00:00Z",       // instants compare by value
-    "violations": [                              // if present: asserted in full (count + order)
-      { "type": "DRIVING_11", "logDate": "2025-01-14", "exceededBySec": 1560 }
+  "expect": {                                    // partial HosState: only the keys present are checked
+    "driveUsedSec": 39600,
+    "cycleRecapAt": "2026-01-16T05:00:00.000Z",  // instants compare by value (any offset)
+    "dailyTotals": { "off": 0, "sb": 0, "drive": 0, "on": 0 },   // compared as a whole object
+    "violations": [                              // if present: complete ordered list; [] = none
+      { "type": "DRIVING_11", "logDate": "2026-01-15", "exceededBySec": 60 }
     ]
   }
 }
 ```
 
-- `status`: `OFF | SB | D | ON`; `special`: `NONE | PC | YM` (default `NONE`).
-- `expected` keys are `HosState` fields (`hos.types.ts`): counters in seconds, instants as ISO-8601.
-- Comments above are for the reader only — real files are plain JSON.
+Mapping to the TS engine: `input` is passed through `fixtureToInput` (`test/helpers/hos.ts`) as is;
+`expect` keys are `HosState` field names; `violations` are compared on `type`, `logDate`,
+`exceededBySec` only. Driver flags absent ⇒ `false` (in particular `allowPersonalConveyance` /
+`allowYardMove`: an unauthorised PC/YM tag leaves the recorded status in force — B-131).
+Comments above are for the reader only — real files are plain JSON.

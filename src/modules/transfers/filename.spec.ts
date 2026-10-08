@@ -1,116 +1,104 @@
 import {
   buildOutputFileName,
-  formatDayCount,
-  formatFileSequence,
+  formatFileDate,
+  formatFileSuffix,
   inclusiveDayCount,
-  sanitizeNameToken,
+  lastNameToken,
+  licenseDigitSum,
+  licenseLastTwoDigits,
 } from './filename';
 
+// 2026-09-11 13:04 EDT.
+const CREATED = new Date('2026-09-11T17:04:05Z');
+const EDT = -240;
+const name = (lastName: string, cdlNumber: string, sequence = 1): string =>
+  buildOutputFileName({ lastName, cdlNumber, sequence, createdAt: CREATED, timezoneOffsetMin: EDT });
+
 describe('Appendix A 4.8.2.2 — output file name', () => {
-  it('builds the canonical example from tz.md §10.2 (SMITH38018.csv)', () => {
+  it('builds the 25-character standard name: last5 + lic2 + digitsum2 + MMDDYY + "-" + 9 chars', () => {
+    // W8569238: last two digits 38; digit sum 8+5+6+9+2+3+8 = 41.
+    const file = name('Smith', 'W8569238');
+    expect(file).toBe('SMITH3841091126-000000000.csv');
+    expect(file.replace(/\.csv$/, '')).toHaveLength(25);
+  });
+
+  it('pads a last name shorter than 5 letters with "_" (4.8.2.2(a), "Lee" -> "Lee__")', () => {
+    expect(name('Ng', 'W8569238')).toBe('NG___3841091126-000000000.csv');
+    expect(lastNameToken('Lee')).toBe('LEE__');
+    expect(lastNameToken('')).toBe('_____');
+  });
+
+  it('truncates a long last name to its first 5 letters', () => {
+    expect(lastNameToken('Vandersteen')).toBe('VANDE');
+  });
+
+  it("uses letters only: apostrophes, spaces, hyphens, digits and non-ASCII are dropped (O'Brien -> OBRIE)", () => {
+    expect(lastNameToken("O'Brien")).toBe('OBRIE');
+    expect(lastNameToken('de la Cruz')).toBe('DELAC');
+    expect(lastNameToken('Smith-Jones')).toBe('SMITH');
+    expect(lastNameToken('smith2nd')).toBe('SMITH');
+    expect(lastNameToken("O'Brien-Núñez, Jr.")).toBe('OBRIE');
+  });
+
+  it('takes the last two DIGITS of the licence number and 0-pads a short one (4.8.2.2(b))', () => {
+    expect(licenseLastTwoDigits('W8569238')).toBe('38');
+    expect(licenseLastTwoDigits('ny 55-21 b')).toBe('21');
+    expect(licenseLastTwoDigits('7')).toBe('07');
+    expect(licenseLastTwoDigits('')).toBe('00');
+    expect(licenseLastTwoDigits("--'")).toBe('00');
+  });
+
+  it('sums the licence digits, keeps the last two and 0-pads below 10 (4.8.2.2(c))', () => {
+    expect(licenseDigitSum('W8569238')).toBe('41');
+    expect(licenseDigitSum('7')).toBe('07');
+    expect(licenseDigitSum('')).toBe('00');
+    // 13 nines = 117 -> "17" (rule: 113 -> "13").
+    expect(licenseDigitSum('9'.repeat(13))).toBe('17');
+  });
+
+  it('writes the creation date as MMDDYY in home-terminal time (4.8.2.2(d))', () => {
+    expect(formatFileDate(CREATED, EDT)).toBe('091126');
+    // 2026-09-12T02:30Z is still 09/11 in EDT.
+    expect(formatFileDate(new Date('2026-09-12T02:30:00Z'), EDT)).toBe('091126');
+    expect(formatFileDate(new Date('2013-02-05T12:00:00Z'))).toBe('020513');
+  });
+
+  it('keeps the default 000000000 suffix for the first file and makes the second distinct: 01 -> 02', () => {
+    const first = name('Smith', 'W8569238', 1);
+    const second = name('Smith', 'W8569238', 2);
+    expect(first).toBe('SMITH3841091126-000000000.csv');
+    expect(second).toBe('SMITH3841091126-000000001.csv');
+    expect(first).not.toBe(second);
+    expect(formatFileSuffix(12)).toBe('000000011');
+    expect(() => formatFileSuffix(0)).toThrow(RangeError);
+  });
+
+  it('handles a short licence number in the full name', () => {
+    expect(name('Ng', '7')).toBe('NG___0707091126-000000000.csv');
+    expect(name('Smith', '')).toBe('SMITH0000091126-000000000.csv');
+  });
+
+  it('produces only A-Z, 0-9, "_" and "-" before .csv, always 25 characters', () => {
+    for (const [last, cdl] of [
+      ["  Ödön O'Neill-Smith ", 'ny 55-21 b'],
+      ['X', ''],
+      ['Vandersteen', 'D000368210361'],
+    ]) {
+      const file = name(last, cdl, 3);
+      expect(file).toMatch(/^[A-Z_]{5}[0-9]{4}[0-9]{6}-[0-9A-Z]{9}\.csv$/);
+    }
+    expect(name("  Ödön O'Neill-Smith ", 'ny 55-21 b', 3)).toBe('DNONE2113091126-000000002.csv');
+  });
+
+  it('takes the date part from createdAt in home-terminal time, not from the wall clock', () => {
+    // 22:30 EDT on 2026-09-11 is already 2026-09-12 in UTC.
+    const late = new Date('2026-09-12T02:30:00Z');
     expect(
-      buildOutputFileName({ lastName: 'Smith', cdlNumber: 'W8569238', sequence: 1, dayCount: 8 }),
-    ).toBe('SMITH38018.csv');
-  });
-
-  it('does NOT pad a last name shorter than 5 characters', () => {
-    expect(buildOutputFileName({ lastName: 'Ng', cdlNumber: 'W8569238', sequence: 1, dayCount: 8 })).toBe(
-      'NG38018.csv',
+      buildOutputFileName({ lastName: 'Smith', cdlNumber: 'W8569238', sequence: 1, createdAt: late, timezoneOffsetMin: EDT }),
+    ).toBe('SMITH3841091126-000000000.csv');
+    expect(buildOutputFileName({ lastName: 'Smith', cdlNumber: 'W8569238', sequence: 1, createdAt: late })).toBe(
+      'SMITH3841091226-000000000.csv',
     );
-    expect(buildOutputFileName({ lastName: 'Li', cdlNumber: 'A1', sequence: 2, dayCount: 1 })).toBe('LIA1021.csv');
-  });
-
-  it('truncates a long last name to the first 5 characters', () => {
-    expect(
-      buildOutputFileName({ lastName: 'Vandersteen', cdlNumber: 'K9900412', sequence: 1, dayCount: 8 }),
-    ).toBe('VANDE12018.csv');
-  });
-
-  it("drops apostrophes, spaces and hyphens instead of replacing them (O'Brien -> OBRIE)", () => {
-    expect(
-      buildOutputFileName({ lastName: "O'Brien", cdlNumber: 'D4471193', sequence: 1, dayCount: 8 }),
-    ).toBe('OBRIE93018.csv');
-    expect(
-      buildOutputFileName({ lastName: 'de la Cruz', cdlNumber: 'D4471193', sequence: 1, dayCount: 8 }),
-    ).toBe('DELAC93018.csv');
-    expect(
-      buildOutputFileName({ lastName: 'Smith-Jones', cdlNumber: 'D4471193', sequence: 1, dayCount: 8 }),
-    ).toBe('SMITH93018.csv');
-  });
-
-  it('uppercases everything and keeps digits that appear in a name', () => {
-    expect(buildOutputFileName({ lastName: 'smith2nd', cdlNumber: 'w856-9238', sequence: 1, dayCount: 8 })).toBe(
-      'SMITH38018.csv',
-    );
-  });
-
-  it('increments the 2-digit file sequence 01 -> 02 for the second file of the same day', () => {
-    const first = buildOutputFileName({ lastName: 'Smith', cdlNumber: 'W8569238', sequence: 1, dayCount: 8 });
-    const second = buildOutputFileName({ lastName: 'Smith', cdlNumber: 'W8569238', sequence: 2, dayCount: 8 });
-    expect(first).toBe('SMITH38018.csv');
-    expect(second).toBe('SMITH38028.csv');
-    expect(buildOutputFileName({ lastName: 'Smith', cdlNumber: 'W8569238', sequence: 12, dayCount: 8 })).toBe(
-      'SMITH38128.csv',
-    );
-  });
-
-  it('handles a CDL number shorter than 2 characters without padding', () => {
-    expect(buildOutputFileName({ lastName: 'Smith', cdlNumber: '7', sequence: 1, dayCount: 8 })).toBe(
-      'SMITH7018.csv',
-    );
-    expect(buildOutputFileName({ lastName: 'Smith', cdlNumber: '', sequence: 1, dayCount: 8 })).toBe('SMITH018.csv');
-    expect(buildOutputFileName({ lastName: 'Smith', cdlNumber: "--'", sequence: 1, dayCount: 8 })).toBe(
-      'SMITH018.csv',
-    );
-  });
-
-  it('produces only A-Z, 0-9 and the .csv suffix', () => {
-    const name = buildOutputFileName({
-      lastName: "  Ödön O'Neill-Smith ",
-      cdlNumber: 'ny 55-21 b',
-      sequence: 3,
-      dayCount: 8,
-    });
-    expect(name).toMatch(/^[A-Z0-9]+\.csv$/);
-    expect(name).toBe('DNONE1B038.csv');
-  });
-
-  describe('sanitizeNameToken', () => {
-    it('is empty for a value with no alphanumerics', () => {
-      expect(sanitizeNameToken("-' .")).toBe('');
-    });
-  });
-
-  describe('formatFileSequence', () => {
-    it('pads to 2 digits', () => {
-      expect(formatFileSequence(1)).toBe('01');
-      expect(formatFileSequence(9)).toBe('09');
-      expect(formatFileSequence(10)).toBe('10');
-      expect(formatFileSequence(99)).toBe('99');
-    });
-
-    it('wraps at 100 because Appendix A allows exactly 2 digits', () => {
-      expect(formatFileSequence(100)).toBe('00');
-      expect(formatFileSequence(101)).toBe('01');
-    });
-
-    it('rejects a sequence below 1', () => {
-      expect(() => formatFileSequence(0)).toThrow(RangeError);
-      expect(() => formatFileSequence(-1)).toThrow(RangeError);
-    });
-  });
-
-  describe('formatDayCount', () => {
-    it('accepts 1..9', () => {
-      expect(formatDayCount(1)).toBe('1');
-      expect(formatDayCount(8)).toBe('8');
-      expect(formatDayCount(9)).toBe('9');
-    });
-
-    it('rejects a count that does not fit one digit', () => {
-      expect(() => formatDayCount(10)).toThrow(RangeError);
-      expect(() => formatDayCount(0)).toThrow(RangeError);
-    });
   });
 
   describe('inclusiveDayCount', () => {

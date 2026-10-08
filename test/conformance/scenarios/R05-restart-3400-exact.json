@@ -1,0 +1,55 @@
+{
+  "id": "R05-restart-3400-exact",
+  "rule": "RESTART_34",
+  "title": "Exactly 34:00 off duty \u2014 the cycle restarts",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-14T01:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-15T11:00:00.000Z",
+        "status": "ON"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance"
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-15T13:00:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [
+      {
+        "date": "2026-01-08",
+        "onDutySec": 36000
+      },
+      {
+        "date": "2026-01-09",
+        "onDutySec": 36000
+      },
+      {
+        "date": "2026-01-10",
+        "onDutySec": 36000
+      },
+      {
+        "date": "2026-01-11",
+        "onDutySec": 36000
+      },
+      {
+        "date": "2026-01-12",
+        "onDutySec": 36000
+      },
+      {
+        "date": "2026-01-13",
+        "onDutySec": 36000
+      }
+    ],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "cycleRemainingSec": 244800,
+    "shiftStartedAt": "2026-01-15T11:00:00.000Z",
+    "violations": []
+  }
+}

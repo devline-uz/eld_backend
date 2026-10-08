@@ -193,7 +193,14 @@ export class FmcsaPackGenerator {
         continue;
       }
 
-      const fileName = buildOutputFileName({ lastName: driver.lastName, cdlNumber: driver.cdlNumber, sequence: 1, dayCount });
+      // Appendix A 4.8.2.2(d): creation date in home-terminal time = the header's Current Date.
+      const fileName = buildOutputFileName({
+        lastName: driver.lastName,
+        cdlNumber: driver.cdlNumber,
+        sequence: 1,
+        createdAt: generatedAt,
+        timezoneOffsetMin: snapshot.driver.timezoneOffsetMin,
+      });
       const fileKey = await this.storage.put(
         `reports/${reportId}/${driver.id}-${fileName}`,
         Buffer.from(generated.csv, 'utf8'),

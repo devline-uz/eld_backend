@@ -34,10 +34,30 @@ export interface RestRun {
   isFullReset: boolean;
 }
 
-/** §8.2 rules 10/11 — PC is off-duty, YM is on-duty; neither is ever driving time. */
-export function effectiveStatus(status: DutyStatus, special: SpecialDrivingCategory): DutyStatus {
-  if (special === 'PC') return 'OFF';
-  if (special === 'YM') return 'ON';
+/**
+ * Which special driving categories the driver is authorised to use (`Driver.allowPersonalConveyance`
+ * / `allowYardMove`). `computeHos` passes the driver's flags (absent ⇒ false, B-131); other callers
+ * that only draw the recorded statuses (the RODS graph) keep the default "authorised".
+ */
+export interface SpecialCategoryPermissions {
+  allowPc: boolean;
+  allowYm: boolean;
+}
+
+const ALL_SPECIAL_CATEGORIES: SpecialCategoryPermissions = { allowPc: true, allowYm: true };
+
+/**
+ * §8.2 rules 10/11 — authorised PC is off-duty, authorised YM is on-duty; neither is ever driving
+ * time. An UNAUTHORISED category changes nothing: the recorded status stands, so driving recorded
+ * under a PC/YM tag the driver may not use is still driving time (never reduced by any path).
+ */
+export function effectiveStatus(
+  status: DutyStatus,
+  special: SpecialDrivingCategory,
+  permissions: SpecialCategoryPermissions = ALL_SPECIAL_CATEGORIES,
+): DutyStatus {
+  if (special === 'PC' && permissions.allowPc) return 'OFF';
+  if (special === 'YM' && permissions.allowYm) return 'ON';
   return status;
 }
 
@@ -68,7 +88,11 @@ export function normalizeEvents(events: NormalizedEvent[], now: Date): Normalize
  * (two records at the same instant — a correction supersedes the previous status) are
  * dropped: only the last record at an instant describes the time that follows it.
  */
-export function buildSegments(events: NormalizedEvent[], now: Date): Segment[] {
+export function buildSegments(
+  events: NormalizedEvent[],
+  now: Date,
+  permissions: SpecialCategoryPermissions = ALL_SPECIAL_CATEGORIES,
+): Segment[] {
   const segments: Segment[] = [];
   for (let i = 0; i < events.length; i += 1) {
     const event = events[i];
@@ -84,7 +108,7 @@ export function buildSegments(events: NormalizedEvent[], now: Date): Segment[] {
       end,
       durationSec,
       status: event.status,
-      effective: effectiveStatus(event.status, special),
+      effective: effectiveStatus(event.status, special, permissions),
       special,
     });
   }

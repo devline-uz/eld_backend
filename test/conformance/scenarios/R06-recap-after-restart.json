@@ -1,0 +1,63 @@
+{
+  "id": "R06-recap-after-restart",
+  "rule": "RECAP",
+  "title": "After a restart only the post-restart day can recap",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-14T01:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-15T11:00:00.000Z",
+        "status": "ON"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance"
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-15T14:00:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [
+      {
+        "date": "2026-01-07",
+        "onDutySec": 32400
+      },
+      {
+        "date": "2026-01-08",
+        "onDutySec": 32400
+      },
+      {
+        "date": "2026-01-09",
+        "onDutySec": 32400
+      },
+      {
+        "date": "2026-01-10",
+        "onDutySec": 32400
+      },
+      {
+        "date": "2026-01-11",
+        "onDutySec": 32400
+      },
+      {
+        "date": "2026-01-12",
+        "onDutySec": 32400
+      },
+      {
+        "date": "2026-01-13",
+        "onDutySec": 32400
+      },
+      {
+        "date": "2026-01-14",
+        "onDutySec": 32400
+      }
+    ],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "cycleRemainingSec": 241200,
+    "cycleRecapAt": "2026-01-23T05:00:00.000Z",
+    "violations": []
+  }
+}

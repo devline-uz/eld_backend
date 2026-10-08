@@ -25,7 +25,7 @@ const CARRIER = {
   name: 'OneBook Logistics',
   dotNumber: '3355123',
   timezone: 'America/New_York',
-  eldIdentifier: 'OBK1',
+  eldIdentifier: 'OBK001',
   eldRegistrationId: null,
   erodsMode: 'TEST',
 } as never;
@@ -144,6 +144,16 @@ const dto = (overrides: Partial<CreateTransferDto> = {}): CreateTransferDto =>
     ...overrides,
   });
 
+// Appendix A 4.8.2.2(d) puts the creation date in the file name — pin the clock (Date only).
+const NOW = new Date('2026-09-11T17:00:00Z'); // 13:00 EDT
+const FIRST_NAME = 'SMITH3841091126-000000000.csv';
+beforeAll(() => {
+  jest.useFakeTimers({ now: NOW, doNotFake: ['nextTick', 'setImmediate', 'setTimeout', 'setInterval', 'queueMicrotask', 'clearTimeout', 'clearInterval', 'clearImmediate'] });
+});
+afterAll(() => {
+  jest.useRealTimers();
+});
+
 describe('TransfersService.create (tz.md §10)', () => {
   it('generates, validates and stores an Appendix A file, then queues the send step', async () => {
     const h = harness();
@@ -155,7 +165,7 @@ describe('TransfersService.create (tz.md §10)', () => {
       expect.objectContaining({ contentType: 'text/csv' }),
     );
     expect(validateOutputFile(h.puts[0].body.toString('utf8')).valid).toBe(true);
-    expect(view.transfer.fileName).toBe('SMITH38018.csv');
+    expect(view.transfer.fileName).toBe(FIRST_NAME);
     expect(view.transfer.status).toBe('QUEUED');
     expect(view.transfer.erodsMode).toBe('TEST');
     expect(h.queue.add).toHaveBeenCalledWith('transfer.send', { transferId: 'trf_1' }, expect.any(Object));
@@ -200,19 +210,19 @@ describe('TransfersService.create (tz.md §10)', () => {
     expect(finding?.details).toMatchObject({ codes: ['P'] });
   });
 
-  it('bumps the Appendix A file sequence to 02 for the second file of the same day', async () => {
+  it('makes the second file of the same day distinct through the 4.8.2.2(f) suffix', async () => {
     const h = harness({ countTransfersInWindow: jest.fn().mockResolvedValue(1) });
     const view = await h.service.create(dto(), ACTOR);
-    expect(view.transfer.fileName).toBe('SMITH38028.csv');
+    expect(view.transfer.fileName).toBe('SMITH3841091126-000000001.csv');
   });
 
-  it('uses the real day count in the file name (1-day range -> trailing 1)', async () => {
+  it('does not put the range day count in the file name (not part of 4.8.2.2)', async () => {
     const h = harness();
     const view = await h.service.create(
       dto({ rangeStart: new Date('2026-09-11T00:00:00Z'), rangeEnd: new Date('2026-09-11T00:00:00Z') }),
       ACTOR,
     );
-    expect(view.transfer.fileName).toBe('SMITH38011.csv');
+    expect(view.transfer.fileName).toBe(FIRST_NAME);
   });
 
   it('rejects a range wider than 8 days with RANGE_TOO_LARGE and stores nothing', async () => {
@@ -252,7 +262,7 @@ describe('TransfersService.create (tz.md §10)', () => {
         actorId: 'usr_1',
       }),
     );
-    expect(h.audits[0].after).toMatchObject({ fileName: 'SMITH38018.csv', erodsMode: 'TEST' });
+    expect(h.audits[0].after).toMatchObject({ fileName: FIRST_NAME, erodsMode: 'TEST' });
   });
 
   it('still returns the stored transfer when the queue is down (the file is not lost)', async () => {

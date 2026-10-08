@@ -4,7 +4,7 @@ jest.mock('../lib/pdf-render', () => ({
   renderPdf: jest.fn(async (_name: string, data: Record<string, unknown>) => Buffer.from(JSON.stringify(data))),
 }));
 jest.mock('../../transfers/snapshot', () => ({
-  buildSnapshot: jest.fn(() => ({})),
+  buildSnapshot: jest.fn(() => ({ driver: { timezoneOffsetMin: -240 } })),
   activeMalfunctionCodes: jest.fn(() => []),
   uncertifiedDayCount: jest.fn(() => 0),
 }));
@@ -22,7 +22,7 @@ const CARRIER = {
   name: 'OneBook Logistics',
   dotNumber: '3355123',
   timezone: 'America/New_York',
-  eldIdentifier: 'OBK1',
+  eldIdentifier: 'OBK001',
   eldRegistrationId: 'OBK1',
   erodsMode: 'PRODUCTION',
 };
@@ -77,6 +77,25 @@ describe('FmcsaPackGenerator', () => {
     expect(result.driverEntries.every((e) => e.status === 'INCLUDED')).toBe(true);
     expect(result.driverEntries.every((e) => e.fileKey)).toBe(true);
     expect(storage.put).toHaveBeenCalledTimes(2);
+  });
+
+  // Appendix A 4.8.2.2(d): the file name carries the CREATION date in home-terminal time
+  // (B-134 follow-up — the generator used to omit createdAt and pass a legacy dayCount).
+  it('names the stored RODS file per 4.8.2.2 with the home-terminal creation date', async () => {
+    jest.useFakeTimers({
+      now: new Date('2026-09-12T02:30:00Z'), // 22:30 EDT on 2026-09-11
+      doNotFake: ['nextTick', 'setImmediate', 'queueMicrotask', 'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'clearImmediate'],
+    });
+    try {
+      const { generator, storage } = makeGenerator();
+      await generator.build({ from: '2026-09-01', to: '2026-09-03', include: undefined }, 'rpt1');
+      // Smith, CDL-d1: digits "1" -> last two "01", digit sum "01"; first file of the day.
+      expect(storage.put).toHaveBeenCalledWith('reports/rpt1/d1-SMITH0101091126-000000000.csv', expect.any(Buffer), {
+        contentType: 'text/csv',
+      });
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('vehicleId filters the pack to only drivers who operated that unit in the period', async () => {

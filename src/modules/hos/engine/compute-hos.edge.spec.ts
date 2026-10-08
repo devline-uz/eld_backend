@@ -215,51 +215,92 @@ describe('boundary inputs', () => {
 });
 
 describe('§8.2 rules 10/11 — personal conveyance and yard move', () => {
+  // PC/YM only take effect for a driver authorised to use them (Driver.allowPersonalConveyance /
+  // allowYardMove, absent ⇒ false — B-131).
+  const allowed = { driver: driver({ allowPersonalConveyance: true, allowYardMove: true }) };
+  const runAllowed = (steps: Parameters<typeof timeline>[1]): HosState => run(steps, allowed);
+
   it('PC time is never driving time', () => {
-    expect(run([[10 * H, 'OFF'], [6 * H, 'D', 'PC'], [2 * H, 'D']]).driveUsedSec).toBe(2 * H);
+    expect(runAllowed([[10 * H, 'OFF'], [6 * H, 'D', 'PC'], [2 * H, 'D']]).driveUsedSec).toBe(2 * H);
   });
 
   it('PC time does not count against the cycle', () => {
-    expect(run([[10 * H, 'OFF'], [6 * H, 'D', 'PC']]).cycleRemainingSec).toBe(70 * H);
+    expect(runAllowed([[10 * H, 'OFF'], [6 * H, 'D', 'PC']]).cycleRemainingSec).toBe(70 * H);
   });
 
   it('PC time does not start the 14-hour window', () => {
-    expect(run([[10 * H, 'OFF'], [6 * H, 'D', 'PC']]).shiftStartedAt).toBeNull();
+    expect(runAllowed([[10 * H, 'OFF'], [6 * H, 'D', 'PC']]).shiftStartedAt).toBeNull();
   });
 
   it('10 hours of PC is a valid reset', () => {
-    const state = run([[10 * H, 'OFF'], [5 * H, 'D'], [10 * H, 'D', 'PC'], [2 * H, 'D']]);
+    const state = runAllowed([[10 * H, 'OFF'], [5 * H, 'D'], [10 * H, 'D', 'PC'], [2 * H, 'D']]);
     expect(state.driveUsedSec).toBe(2 * H);
   });
 
   it('PC satisfies the 30-minute break', () => {
-    expect(run([[10 * H, 'OFF'], [4 * H, 'D'], [30 * M, 'D', 'PC'], [5 * H, 'D']]).violations).toEqual([]);
+    expect(runAllowed([[10 * H, 'OFF'], [4 * H, 'D'], [30 * M, 'D', 'PC'], [5 * H, 'D']]).violations).toEqual([]);
   });
 
   it('carries the 10-mile PC location precision through normalisation', () => {
-    const state = run([[10 * H, 'OFF'], [2 * H, 'D', 'PC']], {});
+    const state = runAllowed([[10 * H, 'OFF'], [2 * H, 'D', 'PC']]);
     expect(state.dailyTotals.off).toBe(12 * H);
   });
 
   it('YM time is never driving time', () => {
-    expect(run([[10 * H, 'OFF'], [6 * H, 'D', 'YM'], [2 * H, 'D']]).driveUsedSec).toBe(2 * H);
+    expect(runAllowed([[10 * H, 'OFF'], [6 * H, 'D', 'YM'], [2 * H, 'D']]).driveUsedSec).toBe(2 * H);
   });
 
   it('YM time does count against the cycle', () => {
-    expect(run([[10 * H, 'OFF'], [6 * H, 'D', 'YM']]).cycleRemainingSec).toBe(64 * H);
+    expect(runAllowed([[10 * H, 'OFF'], [6 * H, 'D', 'YM']]).cycleRemainingSec).toBe(64 * H);
   });
 
   it('YM time starts the 14-hour window', () => {
-    expect(run([[10 * H, 'OFF'], [6 * H, 'D', 'YM']]).shiftStartedAt?.toISOString()).toBe('2025-01-14T15:00:00.000Z');
+    expect(runAllowed([[10 * H, 'OFF'], [6 * H, 'D', 'YM']]).shiftStartedAt?.toISOString()).toBe('2025-01-14T15:00:00.000Z');
   });
 
   it('YM time never counts as rest', () => {
-    const state = run([[10 * H, 'OFF'], [5 * H, 'D'], [10 * H, 'OFF', 'YM'], [2 * H, 'D']]);
+    const state = runAllowed([[10 * H, 'OFF'], [5 * H, 'D'], [10 * H, 'OFF', 'YM'], [2 * H, 'D']]);
     expect(state.driveUsedSec).toBe(7 * H);
   });
 
   it('YM does not satisfy a 10-hour reset but does satisfy the 30-minute break', () => {
-    expect(run([[10 * H, 'OFF'], [4 * H, 'D'], [30 * M, 'D', 'YM'], [5 * H, 'D']]).violations).toEqual([]);
+    expect(runAllowed([[10 * H, 'OFF'], [4 * H, 'D'], [30 * M, 'D', 'YM'], [5 * H, 'D']]).violations).toEqual([]);
+  });
+  it('unauthorised PC is driving time — the recorded status stands', () => {
+    const state = run([[10 * H, 'OFF'], [6 * H, 'D', 'PC'], [2 * H, 'D']], { driver: driver({ allowPersonalConveyance: false }) });
+    expect(state.driveUsedSec).toBe(8 * H);
+    expect(state.currentStatus).toBe('D');
+  });
+
+  it('an absent allowPersonalConveyance flag means not authorised', () => {
+    expect(run([[10 * H, 'OFF'], [6 * H, 'D', 'PC'], [2 * H, 'D']]).driveUsedSec).toBe(8 * H);
+  });
+
+  it('unauthorised PC is not a 10-hour reset', () => {
+    const state = run([[10 * H, 'OFF'], [1 * H, 'D'], [10 * H, 'D', 'PC']]);
+    expect(state.driveUsedSec).toBe(11 * H);
+    // 11 h of driving without a 30-minute interruption: the PC-tagged driving did not rest anything.
+    expect(state.violations.map((v) => v.type)).toEqual(['BREAK_30']);
+  });
+
+  it('unauthorised PC tagged on an OFF record stays off duty', () => {
+    expect(run([[10 * H, 'OFF'], [2 * H, 'OFF', 'PC']]).dailyTotals.off).toBe(12 * H);
+  });
+
+  it('unauthorised YM is driving time — the recorded status stands', () => {
+    const state = run([[10 * H, 'OFF'], [2 * H, 'D', 'YM'], [6 * H, 'D']], { driver: driver({ allowYardMove: false }) });
+    expect(state.driveUsedSec).toBe(8 * H);
+  });
+
+  it('an absent allowYardMove flag means not authorised', () => {
+    expect(run([[10 * H, 'OFF'], [2 * H, 'D', 'YM']]).currentStatus).toBe('D');
+  });
+
+  it('PC authorisation does not authorise YM, and vice versa', () => {
+    const pcOnly = driver({ allowPersonalConveyance: true });
+    expect(run([[10 * H, 'OFF'], [2 * H, 'D', 'YM']], { driver: pcOnly }).driveUsedSec).toBe(2 * H);
+    const ymOnly = driver({ allowYardMove: true });
+    expect(run([[10 * H, 'OFF'], [2 * H, 'D', 'PC']], { driver: ymOnly }).driveUsedSec).toBe(2 * H);
   });
 });
 

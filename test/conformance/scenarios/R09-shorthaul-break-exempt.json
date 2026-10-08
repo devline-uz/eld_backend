@@ -1,0 +1,32 @@
+{
+  "id": "R09-shorthaul-break-exempt",
+  "rule": "SHORT_HAUL",
+  "title": "395.1(e)(1) \u2014 a short-haul driver has no 30-minute break duty",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-15T01:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-15T11:00:00.000Z",
+        "status": "D"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance",
+      "shortHaulException": true
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-15T21:00:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "breakRemainingSec": 28800,
+    "nextBreakDueAt": null,
+    "driveUsedSec": 36000,
+    "violations": []
+  }
+}

@@ -146,7 +146,8 @@ export class TransfersService {
       lastName: driver.lastName,
       cdlNumber: driver.cdlNumber,
       sequence: priorToday + 1,
-      dayCount,
+      createdAt: generatedAt,
+      timezoneOffsetMin: snapshot.driver.timezoneOffsetMin,
     });
 
     const body = Buffer.from(generated.csv, 'utf8');

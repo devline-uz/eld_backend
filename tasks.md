@@ -198,7 +198,7 @@ Dispatch and safety features.
 Carrier profile, integrations, API access, support tooling.
 **Owner:** `eld-fleet-ops` (carrier, support) · `eld-reports-jobs` (integrations, webhooks) · `eld-auth-rbac` (API keys) · support: `eld-compliance-rods`, `eld-security`
 - [x] Carrier module (single-row profile table, not env config) — `eld-fleet-ops`
-- [x] Carrier eRODS fields reviewed: `eldIdentifier`/`eldRegistrationId` exactly 4 chars, `erodsMode` — `eld-compliance-rods`
+- [x] Carrier eRODS fields reviewed: `eldIdentifier` exactly 6 chars (Appendix A 7.15) / `eldRegistrationId` exactly 4 chars (7.17), `erodsMode` — `eld-compliance-rods` (corrected 2026-10-08, B-138)
 - [x] Integrations module: TMS, fuel card; secrets encrypted at rest — `eld-reports-jobs` + `eld-security`
 - [x] Webhook support (HMAC-SHA256 signing, 3 retries) — `eld-reports-jobs`
 - [x] API key management: hashing, prefix display, scopes, revoke — `eld-auth-rbac` + `eld-security`
@@ -340,7 +340,7 @@ Source: `../backend_tasks.md` (section numbers in brackets). Depends on: Phases 
 - [x] MR-11 `DvirSubmitDto.odometerMi` optional (`Dvir.odometerMi` nullable; falls back to the unit odometer when known) + `clientId` replay on `POST /mobile/dvir` — D-118, B-127
 - [x] MR-14 `GET /mobile/dvirs` rows `trailerNumber`/`odometerMi`; `GET /mobile/dvirs/{id}` `location` (also name-only) + `trailerNumber` — B-127
 - [x] MR-27 `GET/PUT/DELETE /mobile/saved-signature` (`DriverSavedSignature`, base64 or `signatureImageId`, ledger-idempotent) — D-118
-- [ ] MR-33 mobile HOS scenarios through the TS engine — runner `src/modules/hos/mobile-scenarios.conformance.spec.ts` + format `test/conformance/scenarios/README.md` done; BLOCKED until the 74 `mobile/test/conformance/scenarios/*.json` files are copied in (not present locally; suite reports `todo`)
+- [x] MR-33 mobile HOS scenarios through the TS engine — runner `src/modules/hos/mobile-scenarios.conformance.spec.ts` reads the real mobile format (`id`/`rule`/`title`/`input`/`expect`), README updated; 74/74 pass after engine fixes B-131 (PC/YM authorisation flags), B-132 (`lastBreakEndedAt` shift-scoped), B-133 (`cycleRecapAt` = first upcoming recap) — D-119
 
 ## Global gates
 From TZ §25 — apply across every phase, not just at the end:
@@ -383,7 +383,7 @@ From TZ §23 — authoritative wording lives in `tz.md` §23.
 - [x] Personal Conveyance location coarsened to 10 miles **before** storage
 - [x] RODS day boundary follows `driver.homeTerminalTimezone`
 - [x] Output file name follows Appendix A §4.8.2.2, unit tested
-- [x] `eldIdentifier` and `eldRegistrationId` are exactly 4 characters
+- [x] `eldIdentifier` is exactly 6 characters (Appendix A 7.15) and `eldRegistrationId` exactly 4 (7.17) — DTO + DB CHECK + generator + validator (B-138, migration `20261008130000_eld_identifier_six_chars`)
 - [x] Email transfer is encrypted and restricted to `fmcsa.dot.gov`
 - [x] ~~Google Sign-In never bypasses 2FA~~ — moot: 2FA removed 2026-09-13 at user request (D-050)
 - [x] Dart and TypeScript engines match 100% on shared fixtures
@@ -394,6 +394,6 @@ From TZ §23 — authoritative wording lives in `tz.md` §23.
 From TZ §26 ("Qolgan aniqlik talab qiladigan narsalar") — unresolved as of this writing.
 
 1. **Flutter wrapper availability for the Pacific Track SDK** (native Android/iOS). Blocked on: mobile app team. Impact: no backend effect; relevant only to Phase 4b/6 mobile integration timing.
-2. **Output file name format (§10.2)** — *file name RESOLVED, column order still open.* The 4.8.2.2 name rule is implemented as a pure function with unit tests (`transfers/filename.ts`), and the settled parts of the file format are enforced mechanically (segment order, 9-line header, 4.4.5.3 line check values, 4.4.5.4 file check value, 4-char ELD identifier, MMDDYY/HHMMSS, 4-hex sequence ids, 0.01°/0.1° position, 60-char comment/annotation, printable ASCII). What is STILL unconfirmed against the current FMCSA revision is the column order inside each data line; `eld.docs/pt30_docs/` holds PT30 hardware material only, no Appendix A. Blocked on: the FMCSA document. Impact: contained — the layout is declared once in `transfers/segments.ts` and both the generator and the validator read it, so the diff is a single-file edit (decisions.md D-024). Confirm before the PRODUCTION toggle.
+2. **Output file name format (§10.2)** — *RESOLVED 2026-10-08.* The official eCFR text of 49 CFR 395 Subpart B Appendix A (2026-10-06) is now in the repo (`docs/fmcsa/49cfr395-subpartB-appendixA.txt`) and the whole file was diffed against it column by column (decisions.md D-024 closed, D-120 choices): segment order 4.8.2.1.1–.11 incl. Login/Logout and Engine Power segments, 7-line header, 4.4.5 check values (Table 3 mapping, rotate/XOR; file value 4 hex), the 4.8.2.2 25-character file name (`SMITH3841091126-000000000.csv`), and the 6-character ELD Identifier (7.15; B-134…B-138). Layout still lives in one table (`transfers/segments.ts`) read by both writer and validator; reference bytes in `eld.docs/erods-conformance/`. Remaining caveat: Table 3 (character mapping) is missing from the flattened text and was taken from the eCFR table (B-135). Not blocking the PRODUCTION toggle any more.
 3. **FMCSA email encryption public key and subject-line format (§10.4).** *Still OPEN — no key invented.* Config seams are in place: `FMCSA_PUBLIC_KEY` (PEM or base64; unset today, so `FmcsaEncryptionService.configured` is false and an email transfer raises `TRANSFER_ENCRYPTION_UNAVAILABLE` rather than emailing plaintext), `FMCSA_EMAIL_SUBJECT_TEMPLATE`, `FMCSA_WEB_SERVICES_URL`. The envelope we emit is named (`OBK-ERODS-RSA-OAEP-SHA256+AES-256-GCM/1`) so a confirmed FMCSA format is a strategy swap. There is also no SMTP transport in the project: `MAIL_PORT` is bound to `LoggingMailTransport`, which records the attempt and reports `NO_MAIL_TRANSPORT` (decisions.md D-026). Blocked on: FMCSA-side info + a reviewed mail transport. Impact: does not block TEST mode; required before enabling PRODUCTION email transfer.
 4. **Source of the 8-day `previousDays` cycle history on first run** (no historical data exists). Blocked on: backend / migration decision. Impact: first 8 days of cycle calc show incorrectly unless resolved; proposed fix is a manual-entry form during migration — schedule within Phase 1 or Phase 4 rollout.

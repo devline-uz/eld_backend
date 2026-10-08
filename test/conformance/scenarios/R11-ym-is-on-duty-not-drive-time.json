@@ -1,0 +1,43 @@
+{
+  "id": "R11-ym-is-on-duty-not-drive-time",
+  "rule": "YARD_MOVE",
+  "title": "A yard move is ON duty and never driving time",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-15T01:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-15T11:00:00.000Z",
+        "status": "ON",
+        "special": "YM"
+      },
+      {
+        "at": "2026-01-15T13:00:00.000Z",
+        "status": "D"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance",
+      "allowYardMove": true
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-15T19:00:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "driveUsedSec": 21600,
+    "driveRemainingSec": 18000,
+    "dailyTotals": {
+      "off": 21600,
+      "sb": 0,
+      "drive": 21600,
+      "on": 7200
+    },
+    "shiftRemainingSec": 21600,
+    "violations": []
+  }
+}

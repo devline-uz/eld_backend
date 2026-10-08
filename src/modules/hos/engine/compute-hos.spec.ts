@@ -224,6 +224,18 @@ describe('§8.2 rule 3 — the 30-minute break', () => {
     expect(run([[10 * H, 'OFF'], [4 * H, 'D'], [30 * M, 'OFF']]).lastBreakEndedAt?.toISOString()).toBe('2025-01-14T19:30:00.000Z');
   });
 
+  it('leaves lastBreakEndedAt null in a fresh shift — the 10-hour reset is not a break inside it', () => {
+    expect(run([[10 * H, 'OFF'], [4 * H, 'D'], [29 * M, 'OFF'], [1 * H, 'D']]).lastBreakEndedAt).toBeNull();
+  });
+
+  it('clears lastBreakEndedAt while the driver is still in a 10-hour reset', () => {
+    expect(run([[10 * H, 'OFF'], [4 * H, 'D'], [30 * M, 'OFF'], [1 * H, 'D'], [10 * H, 'OFF']]).lastBreakEndedAt).toBeNull();
+  });
+
+  it('counts 30 minutes of on-duty right after a reset as the first break of the new shift', () => {
+    expect(run([[10 * H, 'OFF'], [30 * M, 'ON'], [1 * H, 'D']]).lastBreakEndedAt?.toISOString()).toBe('2025-01-14T15:30:00.000Z');
+  });
+
   it('leaves lastBreakEndedAt null when the driver has not rested', () => {
     expect(run([[4 * H, 'D']]).lastBreakEndedAt).toBeNull();
   });
@@ -265,11 +277,11 @@ describe('current status and daily totals', () => {
   });
 
   it('reports PC as off duty', () => {
-    expect(run([[10 * H, 'OFF'], [2 * H, 'D', 'PC']]).currentStatus).toBe('OFF');
+    expect(run([[10 * H, 'OFF'], [2 * H, 'D', 'PC']], { driver: driver({ allowPersonalConveyance: true, allowYardMove: true }) }).currentStatus).toBe('OFF');
   });
 
   it('reports YM as on duty', () => {
-    expect(run([[10 * H, 'OFF'], [2 * H, 'D', 'YM']]).currentStatus).toBe('ON');
+    expect(run([[10 * H, 'OFF'], [2 * H, 'D', 'YM']], { driver: driver({ allowPersonalConveyance: true, allowYardMove: true }) }).currentStatus).toBe('ON');
   });
 
   it('reports when the current status began', () => {
@@ -282,11 +294,11 @@ describe('current status and daily totals', () => {
   });
 
   it('counts PC time as off duty in the daily totals', () => {
-    expect(run([[10 * H, 'OFF'], [2 * H, 'D', 'PC']]).dailyTotals).toEqual({ off: 12 * H, sb: 0, drive: 0, on: 0 });
+    expect(run([[10 * H, 'OFF'], [2 * H, 'D', 'PC']], { driver: driver({ allowPersonalConveyance: true, allowYardMove: true }) }).dailyTotals).toEqual({ off: 12 * H, sb: 0, drive: 0, on: 0 });
   });
 
   it('counts YM time as on duty in the daily totals', () => {
-    expect(run([[10 * H, 'OFF'], [2 * H, 'D', 'YM']]).dailyTotals).toEqual({ off: 10 * H, sb: 0, drive: 0, on: 2 * H });
+    expect(run([[10 * H, 'OFF'], [2 * H, 'D', 'YM']], { driver: driver({ allowPersonalConveyance: true, allowYardMove: true }) }).dailyTotals).toEqual({ off: 10 * H, sb: 0, drive: 0, on: 2 * H });
   });
 
   it('excludes yesterday from the daily totals', () => {
@@ -372,7 +384,18 @@ describe('cycle, restart and recap in the assembled state', () => {
     expect(state.cycleRecapAt?.toISOString()).toBe('2025-01-15T05:00:00.000Z');
   });
 
-  it('reports no recap when nothing drops out', () => {
-    expect(run([[10 * H, 'OFF'], [1 * H, 'ON']]).cycleRecapAt).toBeNull();
+  it("reports today's own hours coming back after the full window when nothing drops out sooner", () => {
+    // 2025-01-14 is the only day with hours; it leaves the 8-day window at the end of 2025-01-21.
+    expect(run([[10 * H, 'OFF'], [1 * H, 'ON']]).cycleRecapAt?.toISOString()).toBe('2025-01-22T05:00:00.000Z');
+  });
+
+  it('reports no recap for an idle window', () => {
+    expect(run([[10 * H, 'OFF']]).cycleRecapAt).toBeNull();
+  });
+
+  it('skips days before a 34-hour restart when forecasting the recap', () => {
+    const state = run([[34 * H, 'OFF'], [1 * H, 'ON']], { previousDays: [{ date: '2025-01-09', onDutySec: 9 * H }] });
+    // 01-09 precedes the restart; the next recap is the post-restart day 2025-01-15 leaving the window.
+    expect(state.cycleRecapAt?.toISOString()).toBe('2025-01-23T05:00:00.000Z');
   });
 });

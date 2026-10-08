@@ -1,0 +1,35 @@
+{
+  "id": "R09-shorthaul-still-bound-by-11",
+  "rule": "SHORT_HAUL",
+  "title": "Short haul does not lift the 11-hour driving limit",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-15T01:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-15T11:00:00.000Z",
+        "status": "D"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance",
+      "shortHaulException": true
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-15T22:01:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "violations": [
+      {
+        "type": "DRIVING_11",
+        "logDate": "2026-01-15",
+        "exceededBySec": 60
+      }
+    ]
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "id": "R07-split-short-part-may-be-off-duty",
+  "rule": "SPLIT_SLEEPER",
+  "title": "The shorter part may be OFF duty rather than sleeper berth",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-14T19:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-15T05:00:00.000Z",
+        "status": "ON"
+      },
+      {
+        "at": "2026-01-15T07:00:00.000Z",
+        "status": "SB"
+      },
+      {
+        "at": "2026-01-15T15:00:00.000Z",
+        "status": "D"
+      },
+      {
+        "at": "2026-01-15T19:00:00.000Z",
+        "status": "OFF"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance"
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-15T21:00:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "driveUsedSec": 14400,
+    "driveRemainingSec": 25200,
+    "shiftStartedAt": "2026-01-15T15:00:00.000Z",
+    "shiftEndsAt": "2026-01-16T07:00:00.000Z",
+    "violations": []
+  }
+}

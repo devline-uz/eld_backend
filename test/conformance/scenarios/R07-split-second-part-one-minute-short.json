@@ -1,0 +1,43 @@
+{
+  "id": "R07-split-second-part-one-minute-short",
+  "rule": "SPLIT_SLEEPER",
+  "title": "The second part is 1:59 old \u2014 one minute before the pair closes",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-14T19:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-15T05:00:00.000Z",
+        "status": "ON"
+      },
+      {
+        "at": "2026-01-15T07:00:00.000Z",
+        "status": "SB"
+      },
+      {
+        "at": "2026-01-15T15:00:00.000Z",
+        "status": "D"
+      },
+      {
+        "at": "2026-01-15T19:00:00.000Z",
+        "status": "SB"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance"
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-15T20:59:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "shiftStartedAt": "2026-01-15T05:00:00.000Z",
+    "shiftEndsAt": "2026-01-16T03:00:00.000Z",
+    "shiftRemainingSec": 21660,
+    "violations": []
+  }
+}

@@ -53,10 +53,10 @@ model Carrier {
   complianceEmail         String?
   logoUrl                 String?
 
-  // eRODS — §395 Appendix A: ELD Identifier / Registration ID, exactly 4 chars from [A-Z0-9].
-  // Enforced by CHECK eld_identifier_format / eld_registration_id_format (migration
-  // 20260911150000_erods_identifier_charset) — VarChar(4) alone allows shorter/illegal values.
-  eldIdentifier     String    @default("OBK1") @db.VarChar(4)
+  // eRODS — §395 Appendix A: ELD Identifier 6 chars (7.15), Registration ID 4 chars (7.17), [A-Z0-9].
+  // Enforced by CHECK eld_identifier_format (^[A-Z0-9]{6}$, migration 20261008130000_eld_identifier_six_chars)
+  // / eld_registration_id_format (20260911150000_erods_identifier_charset) — VarChar alone allows shorter/illegal values.
+  eldIdentifier     String    @default("OBK001") @db.VarChar(6)
   eldRegistrationId String?   @db.VarChar(4)
   erodsMode         ErodsMode @default(TEST)
 

@@ -1,0 +1,54 @@
+{
+  "id": "R04-cycle60-under",
+  "rule": "CYCLE",
+  "title": "54 h behind + 5 h today = 59 h on the 60/7",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-15T01:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-15T11:00:00.000Z",
+        "status": "ON"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance"
+    },
+    "ruleset": "US_60_7_PROPERTY",
+    "now": "2026-01-15T16:00:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [
+      {
+        "date": "2026-01-09",
+        "onDutySec": 32400
+      },
+      {
+        "date": "2026-01-10",
+        "onDutySec": 32400
+      },
+      {
+        "date": "2026-01-11",
+        "onDutySec": 32400
+      },
+      {
+        "date": "2026-01-12",
+        "onDutySec": 32400
+      },
+      {
+        "date": "2026-01-13",
+        "onDutySec": 32400
+      },
+      {
+        "date": "2026-01-14",
+        "onDutySec": 32400
+      }
+    ],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "cycleRemainingSec": 3600,
+    "violations": []
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "id": "R10-pc-counts-toward-the-10h-reset",
+  "rule": "PERSONAL_CONVEYANCE",
+  "title": "10 hours of personal conveyance is a valid reset",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-14T11:00:00.000Z",
+        "status": "ON"
+      },
+      {
+        "at": "2026-01-14T23:00:00.000Z",
+        "status": "OFF",
+        "special": "PC"
+      },
+      {
+        "at": "2026-01-15T09:00:00.000Z",
+        "status": "D"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance",
+      "allowPersonalConveyance": true
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-15T11:00:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "driveUsedSec": 7200,
+    "driveRemainingSec": 32400,
+    "shiftStartedAt": "2026-01-15T09:00:00.000Z",
+    "violations": []
+  }
+}

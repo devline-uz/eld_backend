@@ -1,0 +1,48 @@
+{
+  "id": "R10-pc-is-not-drive-time",
+  "rule": "PERSONAL_CONVEYANCE",
+  "title": "Personal conveyance is OFF duty and never driving time",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-15T01:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-15T11:00:00.000Z",
+        "status": "D"
+      },
+      {
+        "at": "2026-01-15T15:00:00.000Z",
+        "status": "OFF",
+        "special": "PC"
+      },
+      {
+        "at": "2026-01-15T17:00:00.000Z",
+        "status": "D"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance",
+      "allowPersonalConveyance": true
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-15T19:00:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "driveUsedSec": 21600,
+    "driveRemainingSec": 18000,
+    "dailyTotals": {
+      "off": 28800,
+      "sb": 0,
+      "drive": 21600,
+      "on": 0
+    },
+    "breakRemainingSec": 21600,
+    "shiftRemainingSec": 21600,
+    "violations": []
+  }
+}

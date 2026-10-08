@@ -1,0 +1,29 @@
+{
+  "id": "R03-break30-759-driving",
+  "rule": "BREAK_30",
+  "title": "7:59 of driving \u2014 one minute of break credit left",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-15T01:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-15T11:00:00.000Z",
+        "status": "D"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance"
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-15T18:59:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "breakRemainingSec": 60,
+    "violations": []
+  }
+}

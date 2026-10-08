@@ -33,7 +33,11 @@ export function computeHos(input: HosInput): HosState {
   const { timezone, now } = input;
   const limits = resolveLimits(input.ruleset, input.driver);
   const events = normalizeEvents(input.events, now);
-  const segments = buildSegments(events, now);
+  // An unauthorised PC/YM tag leaves the recorded status in force (absent flag ⇒ not allowed, B-131).
+  const segments = buildSegments(events, now, {
+    allowPc: input.driver.allowPersonalConveyance === true,
+    allowYm: input.driver.allowYardMove === true,
+  });
   const restRuns = findRestRuns(segments);
   const runByEndIndex = new Map<number, RestRun>();
   for (const run of restRuns) runByEndIndex.set(run.endIndex, run);
@@ -95,7 +99,12 @@ export function computeHos(input: HosInput): HosState {
       // waits for its partner — including the FIRST half of a pair that closes later. Missing
       // this is what produced phantom SHIFT_14 violations under the pre-2020 reading (§8.2.1).
       const part = splits.excludedWhilePendingByEndIndex.get(i);
-      applyRestRun(run, state, pair ?? null, pair === undefined && part !== undefined, part?.partSec ?? 0, segments);
+      const fullReset = applyRestRun(run, state, pair ?? null, pair === undefined && part !== undefined, part?.partSec ?? 0, segments);
+      // A 10 h reset opens a fresh shift: rest before it is not a break INSIDE that shift (B-132).
+      if (fullReset) {
+        nonDriveSec = 0;
+        nonDriveEnd = null;
+      }
     }
   }
 
@@ -155,7 +164,7 @@ export function computeHos(input: HosInput): HosState {
     violations: violations.list(),
     nextBreakDueAt,
     shiftEndsAt,
-    cycleRecapAt: recapAt(totalsByDay, timezone, now, limits.cycleDays),
+    cycleRecapAt: recapAt(totalsByDay, timezone, now, limits.cycleDays, restartDay),
     restartAvailableAt,
     dailyTotals: dailyTotals(segments, timezone, todayKey, now),
   };
@@ -217,7 +226,7 @@ function accrueDriving(
 
 /**
  * §8.2 rule 1 / §395.1(g)(1) — what a completed rest run does to the shift.
- *   ≥ 10 h continuous OFF/SB      → full reset, both clocks to zero
+ *   ≥ 10 h continuous OFF/SB      → full reset, both clocks to zero (returns true)
  *   closing half of a split pair  → CFR LOOK-BACK (see `applySplitLookBack`)
  *   unpaired qualifying part      → excluded from the window, driving time keeps accumulating
  */
@@ -228,22 +237,24 @@ function applyRestRun(
   isPendingPart: boolean,
   pendingPartSec: number,
   segments: Segment[],
-): void {
+): boolean {
   if (run.durationSec >= RESET_REST) {
     state.shiftStart = null;
     state.excludedSec = 0;
     state.driveUsedSec = 0;
     state.driveSinceBreakSec = 0;
-    state.lastBreakEndedAt = run.end;
-    return;
+    // `lastBreakEndedAt` is shift-scoped: the new shift has had no 30-minute break yet (B-132).
+    state.lastBreakEndedAt = null;
+    return true;
   }
   if (closingPair) {
     applySplitLookBack(run, state, closingPair, segments);
-    return;
+    return false;
   }
   if (isPendingPart && state.shiftStart !== null) {
     state.excludedSec += pendingPartSec;
   }
+  return false;
 }
 
 /**

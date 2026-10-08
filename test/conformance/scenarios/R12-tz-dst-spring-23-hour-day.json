@@ -1,0 +1,46 @@
+{
+  "id": "R12-tz-dst-spring-23-hour-day",
+  "rule": "TIMEZONE",
+  "title": "DST spring forward \u2014 2026-03-08 is a 23-hour RODS day in America/New_York",
+  "input": {
+    "events": [
+      {
+        "at": "2026-03-07T23:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-03-08T10:00:00.000Z",
+        "status": "ON"
+      },
+      {
+        "at": "2026-03-08T16:00:00.000Z",
+        "status": "D"
+      },
+      {
+        "at": "2026-03-08T22:00:00.000Z",
+        "status": "OFF"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance"
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-03-08T23:00:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "driveUsedSec": 21600,
+    "shiftStartedAt": "2026-03-08T10:00:00.000Z",
+    "shiftRemainingSec": 3600,
+    "dailyTotals": {
+      "off": 21600,
+      "sb": 0,
+      "drive": 21600,
+      "on": 21600
+    },
+    "cycleRemainingSec": 208800,
+    "violations": []
+  }
+}

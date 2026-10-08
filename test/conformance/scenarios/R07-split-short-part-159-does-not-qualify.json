@@ -1,0 +1,44 @@
+{
+  "id": "R07-split-short-part-159-does-not-qualify",
+  "rule": "SPLIT_SLEEPER",
+  "title": "1:59 is not a short part \u2014 the long part alone only extends the window",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-14T19:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-15T05:00:00.000Z",
+        "status": "ON"
+      },
+      {
+        "at": "2026-01-15T07:00:00.000Z",
+        "status": "SB"
+      },
+      {
+        "at": "2026-01-15T15:00:00.000Z",
+        "status": "D"
+      },
+      {
+        "at": "2026-01-15T19:00:00.000Z",
+        "status": "OFF"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance"
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-15T20:59:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "driveUsedSec": 14400,
+    "shiftStartedAt": "2026-01-15T05:00:00.000Z",
+    "shiftEndsAt": "2026-01-16T03:00:00.000Z",
+    "shiftRemainingSec": 21660,
+    "violations": []
+  }
+}

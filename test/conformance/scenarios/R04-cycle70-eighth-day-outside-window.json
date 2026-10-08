@@ -1,0 +1,58 @@
+{
+  "id": "R04-cycle70-eighth-day-outside-window",
+  "rule": "CYCLE",
+  "title": "The 8th day back is outside the window and does not count",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-15T01:00:00.000Z",
+        "status": "OFF"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance"
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-15T11:00:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [
+      {
+        "date": "2026-01-07",
+        "onDutySec": 36000
+      },
+      {
+        "date": "2026-01-08",
+        "onDutySec": 28800
+      },
+      {
+        "date": "2026-01-09",
+        "onDutySec": 28800
+      },
+      {
+        "date": "2026-01-10",
+        "onDutySec": 28800
+      },
+      {
+        "date": "2026-01-11",
+        "onDutySec": 28800
+      },
+      {
+        "date": "2026-01-12",
+        "onDutySec": 28800
+      },
+      {
+        "date": "2026-01-13",
+        "onDutySec": 28800
+      },
+      {
+        "date": "2026-01-14",
+        "onDutySec": 28800
+      }
+    ],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "cycleRemainingSec": 50400,
+    "violations": []
+  }
+}

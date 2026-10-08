@@ -1,0 +1,32 @@
+{
+  "id": "R11-ym-counts-toward-the-cycle",
+  "rule": "YARD_MOVE",
+  "title": "Yard-move time counts against the 70-hour cycle",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-15T01:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-15T11:00:00.000Z",
+        "status": "ON",
+        "special": "YM"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance",
+      "allowYardMove": true
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-15T17:00:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "cycleRemainingSec": 230400,
+    "driveUsedSec": 0,
+    "violations": []
+  }
+}

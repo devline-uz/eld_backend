@@ -1,0 +1,40 @@
+{
+  "id": "R10-pc-ignored-when-not-allowed",
+  "rule": "PERSONAL_CONVEYANCE",
+  "title": "allowPersonalConveyance = false \u2014 the recorded driving status stands",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-15T01:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-15T11:00:00.000Z",
+        "status": "D"
+      },
+      {
+        "at": "2026-01-15T15:00:00.000Z",
+        "status": "D",
+        "special": "PC"
+      },
+      {
+        "at": "2026-01-15T17:00:00.000Z",
+        "status": "D"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance"
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-15T19:00:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "driveUsedSec": 28800,
+    "driveRemainingSec": 10800,
+    "breakRemainingSec": 0,
+    "violations": []
+  }
+}

@@ -63,7 +63,7 @@ To'liq mantiqiy reviziya natijasi. 24 ta muammo tuzatildi.
 | 18 | PE oralig'i hamma joyda 30 sek | 3.2 |
 | 19 | Qolgan 26 model to'liq yozildi | 5.10 |
 | 20 | Output fayl nomi Appendix A 4.8.2.2 bo'yicha | 10.2 |
-| 21 | `eldIdentifier` — 4 belgi (`OBK1`) | 5.1, 10.1 |
+| 21 | `eldIdentifier` — 6 belgi (`OBK001`, Appendix A 7.15; B-138), `eldRegistrationId` — 4 belgi (7.17) | 5.1, 10.1 |
 | 22 | Email uzatish shifrlanadi | 10.4 |
 | 23 | Hodisa hajmi bahosi realga keltirildi | 1.2 |
 | 24 | Dart dvigateli va conformance bosqichlarga kiritildi | 24 |
@@ -377,8 +377,8 @@ model Carrier {
   logoUrl       String?
 
   // eRODS
-  // Appendix A: ELD Identifier va ELD Registration ID — aynan 4 belgili alfanumerik
-  eldIdentifier     String @default("OBK1") @db.VarChar(4)
+  // Appendix A 7.15: ELD Identifier — aynan 6 belgili alfanumerik; 7.17: ELD Registration ID — aynan 4
+  eldIdentifier     String @default("OBK001") @db.VarChar(6)
   eldRegistrationId String? @db.VarChar(4)
   erodsMode         ErodsMode @default(TEST)     // TEST | PRODUCTION
 
@@ -390,10 +390,12 @@ enum ErodsMode { TEST PRODUCTION }
 
 ```sql
 ALTER TABLE "Carrier" ADD CONSTRAINT carrier_singleton CHECK (id = 'carrier');
-ALTER TABLE "Carrier" ADD CONSTRAINT eld_identifier_len CHECK (char_length("eldIdentifier") = 4);
+ALTER TABLE "Carrier" ADD CONSTRAINT eld_identifier_format CHECK ("eldIdentifier" ~ '^[A-Z0-9]{6}$');
+ALTER TABLE "Carrier" ADD CONSTRAINT eld_registration_id_format
+  CHECK ("eldRegistrationId" IS NULL OR "eldRegistrationId" ~ '^[A-Z0-9]{4}$');
 ```
 
-> **Diqqat:** `eldIdentifier` va `eldRegistrationId` — Appendix A bo'yicha **aynan 4 belgi**. `TEST01` / `ONEB01` kabi 6 belgili qiymatlar output faylni yaroqsiz qiladi. TEST rejimida `OBK1`, ro'yxatdan o'tgach FMCSA bergan kod qo'yiladi. Figma va qo'llanmalardagi `#ONEB01` ham shunga moslanadi.
+> **Diqqat (2026-10-08, B-138 — §395 ustun):** Appendix A 7.15 bo'yicha `eldIdentifier` — **aynan 6 belgi** `[A-Z0-9]` (ELD provayderi sertifikatlangan model/versiyaga beradi, masalan `1001ZE`); 7.17 bo'yicha `eldRegistrationId` — **aynan 4 belgi** `[A-Z0-9]` (FMCSA beradi, masalan `ZA10`). Avvalgi «ikkalasi ham 4 belgi, 6 belgili qiymat faylni yaroqsiz qiladi» qoidasi §395 ga zid edi. TEST rejimida `eldIdentifier = OBK001`; mavjud 4 belgili qiymatlar migratsiyada ko'chirildi (`OBK1` → `OBK001`, boshqalari oxiriga `00`; D-121). Figma va qo'llanmalardagi `#ONEB01` (6 belgi) identifikator sifatida to'g'ri shaklda.
 
 ### 5.2. Foydalanuvchilar va rollar
 
@@ -2151,10 +2153,10 @@ FMCSA ro'yxatidan o'tish **hali boshlanmagan**. Shuning uchun:
 
 ```prisma
 erodsMode     ErodsMode @default(TEST)          // TEST | PRODUCTION
-eldIdentifier String    @default("OBK1") @db.VarChar(4)
+eldIdentifier String    @default("OBK001") @db.VarChar(6)
 ```
 
-> `eldIdentifier` — **aynan 4 belgi** (Appendix A). Oldingi versiyadagi `TEST01` (6 belgi) output faylni yaroqsiz qilardi. TEST rejimida `OBK1`, ro'yxatdan o'tgach FMCSA bergan kod.
+> `eldIdentifier` — **aynan 6 belgi** `[A-Z0-9]` (Appendix A 7.15), `eldRegistrationId` — **aynan 4 belgi** (7.17). TEST rejimida `OBK001` (registration ID bo'sh bo'lishi mumkin); PRODUCTION'da — sertifikatlangan model/versiyaning ELD identifikatori va FMCSA bergan registration ID. Oldingi «4 belgi» qoidasi §395 ga zid edi (B-138, D-121).
 
 **TEST rejimida:**
 - Output fayl **to'liq va to'g'ri** generatsiya qilinadi
@@ -2165,8 +2167,8 @@ eldIdentifier String    @default("OBK1") @db.VarChar(4)
 
 **PRODUCTION'ga o'tish** — faqat sozlama:
 ```
-1. Carrier.eldIdentifier = FMCSA bergan haqiqiy kod
-2. Carrier.eldRegistrationId = registration ID
+1. Carrier.eldIdentifier = sertifikatlangan ELD identifikatori (6 belgi, 7.15)
+2. Carrier.eldRegistrationId = FMCSA bergan registration ID (4 belgi, 7.17)
 3. Carrier.erodsMode = PRODUCTION
 4. FMCSA credential'lari sirlar papkasiga qo'yiladi
 ```
@@ -2174,35 +2176,40 @@ Kod o'zgarmaydi.
 
 ### 10.2. Output fayl formati
 
-§395 Appendix A, 7-bo'lim bo'yicha CSV. Segmentlar tartibi:
+§395 Appendix A 4.8.2.1 bo'yicha CSV (CRLF, har qatorda Line Data Check Value). Rasmiy matn: `docs/fmcsa/49cfr395-subpartB-appendixA.txt`; ustunlar jadvali — `transfers/segments.ts` (D-024), o'zgarishlar ro'yxati — `docs/erods-changes-2026-10-08.md`. Segmentlar tartibi (4.8.2.1.1–.11):
 
-Header → User list → CMV list → Malfunction/diagnostic list → Event list → Annotation/comment list → Certification list → Unidentified driving list → File data check value.
+Header (7 qator) → User List → CMV List → ELD Event List (faqat 1/2/3-tur) → Annotations/Comments → Certification → Malfunctions and Data Diagnostic Events → ELD Login/Logout Report → CMV Engine Power-Up and Shut Down Activity → Unidentified Driver Profile Records → End of File (File Data Check Value, 4 hex).
+
+> ⚠️ Oldingi versiyadagi tartib (Header → User → CMV → **Malfunction** → Event → … , login/logout va engine power segmentlarisiz) §395 ga mos emas edi (B-134). §395 ustun.
+
+**Header 7-qator:** Registration ID (4 belgi, 7.17), ELD Identifier (**6 belgi**, 7.15), Authentication Value, Output File Comment (≤60).
 
 #### Fayl nomi — Appendix A 4.8.2.2
 
-⚠️ Oldingi versiyada fayl nomi `{ELD_IDENTIFIER}_{LastName}_{YYYYMMDD}.csv` (`TEST01_Smith_20250910.csv`) deb berilgan edi. **Bu FMCSA formati emas.** Appendix A fayl nomini ELD identifikatoridan emas, **drayverning ma'lumotidan** yasashni talab qiladi:
+⚠️ Oldingi versiyalarda `{ELD_IDENTIFIER}_{LastName}_{YYYYMMDD}.csv` va keyin `[familiya 5][prava 2][ketma-ketlik 2][kunlar 1].csv` (`SMITH38018.csv`) deb berilgan edi. **Ikkalasi ham FMCSA formati emas** (B-136). Appendix A 4.8.2.2 — 25 belgi + `.csv`:
 
 ```
-[familiyaning dastlabki 5 belgisi]
-[prava raqamining oxirgi 2 belgisi]
-[fayl ketma-ketligi — 2 raqam]
-[oraliq kunlari soni — 1 raqam]
+(a) familiyaning dastlabki 5 HARFI, katta harf, 5 dan qisqa bo'lsa `_` bilan to'ldiriladi
+(b) prava raqamining oxirgi 2 RAQAMI (2 tadan kam bo'lsa — oldidan `0`)
+(c) prava raqamidagi barcha raqamlar yig'indisi, oxirgi 2 raqam (`0` bilan to'ldirilgan)
+(d) fayl yaratilgan sana MMDDYY — drayver uy terminali vaqtida
+(e) `-`
+(f) 9 belgi — shu kunda shu drayver uchun nechanchi fayl ekani − 1, 9 raqam (`DataTransfer` dan)
 .csv
 ```
 
 ```
-John Smith · CDL W8569238 · 8 kunlik oraliq · shu kunning 1-fayli
-→  SMITH3801 8 .csv   →   SMITH38018.csv
+John Smith · CDL W8569238 · 2026-09-11 (EDT) · shu kunning 1-fayli
+→  SMITH + 38 + 41 + 091126 + - + 000000000  →  SMITH3841091126-000000000.csv
 ```
 
 **Qoidalar:**
-- Familiya 5 belgidan qisqa bo'lsa — qanday bo'lsa shunday (to'ldirilmaydi)
-- Faqat `A–Z` va `0–9`; boshqa belgilar (`-`, `'`, bo'sh joy) **tashlab yuboriladi**
-- Barcha harflar **katta**
-- Fayl ketma-ketligi (`01`, `02`, …) shu kunda o'sha drayver uchun nechanchi fayl ekanini bildiradi — `DataTransfer` jadvalidan olinadi
-- Oraliq kunlari: odatda `8`
+- Familiya qismida faqat harflar (`O'Brien` → `OBRIE`, `Ng` → `NG___`)
+- Prava qismlarida faqat raqamlar hisobga olinadi (`7` → `07`)
+- Sana — `createdAt` (header'dagi Current Date bilan bir xil lahza), uy terminali vaqti
+- Ikkinchi fayl shu kuni `…-000000001.csv`; oraliq kunlari soni nomga **kirmaydi**
 
-> **Amalga oshirish talabi:** fayl nomi generatori `transfers/filename.ts` da alohida sof funksiya bo'ladi va **unit test bilan qoplanadi** (familiya qisqa, apostrofli familiya, ketma-ketlik 01→02, prava raqami qisqa). Figmadagi `ONEB01_Smith_20250910.csv` matni ham shunga moslanadi.
+> **Amalga oshirish talabi:** fayl nomi generatori `transfers/filename.ts` da alohida sof funksiya (`createdAt` majburiy) va **unit test bilan qoplanadi** (familiya qisqa, apostrofli familiya, ketma-ketlik 01→02 = suffiks `000000000`→`000000001`, prava raqami qisqa). Figmadagi `ONEB01_Smith_20250910.csv` matni ham shunga moslanadi.
 
 ### 10.3. Yuborishdan oldingi validatsiya
 
@@ -2921,7 +2928,7 @@ Reverse proxy — **Caddy** (repoda allaqachon bor).
 - [ ] PC joylashuvi 10 milyagacha **saqlashdan oldin** qo'pollashtiriladi
 - [ ] RODS kuni `driver.homeTerminalTimezone` bo'yicha bo'linadi
 - [ ] Output fayl nomi Appendix A 4.8.2.2 bo'yicha, unit test bilan qoplangan
-- [ ] `eldIdentifier` va `eldRegistrationId` — aynan 4 belgi
+- [ ] `eldIdentifier` — aynan 6 belgi (7.15), `eldRegistrationId` — aynan 4 belgi (7.17)
 - [ ] Email uzatish shifrlangan va faqat `fmcsa.dot.gov` domeniga
 - [ ] ~~Google Sign-In 2FA ni chetlab o'tmaydi~~ — 2FA butunlay olib tashlandi (D-050), band emas
 - [ ] Dart va TypeScript dvigatellari umumiy fikstyuralarda 100% mos

@@ -24,26 +24,28 @@ describe('Appendix A output file validator', () => {
     const result = validateOutputFile(good);
     expect(result.issues).toEqual([]);
     expect(result.valid).toBe(true);
-    expect(result.fileCheckValue).toMatch(/^[0-9A-F]{2}$/);
+    expect(result.fileCheckValue).toMatch(/^[0-9A-F]{4}$/);
   });
 
   it('reports the data-line count of every segment', () => {
     const { counts } = validateOutputFile(good);
     expect(counts).toMatchObject({
-      header: 9,
-      users: 2,
+      header: 7,
+      users: 3,
       cmvs: 1,
-      malfunctions: 2,
-      events: 8,
+      events: 7,
       annotations: 2,
       certifications: 2,
+      malfunctions: 2,
+      loginLogout: 2,
+      enginePower: 2,
       unidentified: 1,
       endOfFile: 1,
     });
   });
 
   it('catches a tampered data line through its line check value', () => {
-    const tampered = rechecksum(good.replace('OneBook Logistics LLC', 'Someone Else LLC'));
+    const tampered = rechecksum(good.replace('OneBook Logistics; LLC', 'Someone Else LLC'));
     const result = validateOutputFile(tampered);
     expect(result.valid).toBe(false);
     expect(result.issues.map((i) => i.code)).toContain('LINE_CHECK_VALUE');
@@ -52,7 +54,7 @@ describe('Appendix A output file validator', () => {
   it('catches a wrong file data check value', () => {
     const lines = good.split('\r\n');
     const endIdx = lines.indexOf(SEGMENT_TITLES.endOfFile);
-    lines[endIdx + 1] = lines[endIdx + 1] === 'FF' ? '00' : 'FF';
+    lines[endIdx + 1] = lines[endIdx + 1] === 'FFFF' ? '0000' : 'FFFF';
     const result = validateOutputFile(lines.join('\r\n'));
     expect(result.issues.map((i) => i.code)).toContain('FILE_CHECK_VALUE');
   });
@@ -74,9 +76,9 @@ describe('Appendix A output file validator', () => {
     expect(result.issues.map((i) => i.code)).toContain('SEGMENT_ORDER');
   });
 
-  it('catches a 6-character ELD identifier smuggled into the header', () => {
+  it('catches a 4-character ELD identifier in the header (7.15 requires 6)', () => {
     const lines = good.split('\r\n');
-    lines[8] = renderDataLine(['OBK1', 'TEST01', 'A1B2C3D4']);
+    lines[7] = renderDataLine(['OBK1', 'OBK1', 'A1B2C3D4', '']);
     const result = validateOutputFile(rechecksum(lines.join('\r\n')));
     expect(result.valid).toBe(false);
     expect(result.issues.map((i) => i.code)).toContain('ELD_IDENTIFIER_LENGTH');
@@ -108,7 +110,7 @@ describe('Appendix A output file validator', () => {
 
   it('catches a non-hex event sequence id and an out-of-range record status', () => {
     const badLine = renderDataLine([
-      '1', '9', '1', '1', '3', '090426', '090000', '100', '10.0', '41.32', '-72.93', '0', '1', '1', '0', '0',
+      'G1', '9', '1', '1', '3', '090426', '090000', '100', '10.0', '41.32', '-72.93', '0', '1', '1', '0', '0', '26',
     ]);
     const broken = good.replace(SEGMENT_TITLES.events + '\r\n', SEGMENT_TITLES.events + '\r\n' + badLine + '\r\n');
     const codes = validateOutputFile(rechecksum(broken)).issues.map((i) => i.code);
@@ -118,7 +120,7 @@ describe('Appendix A output file validator', () => {
 
   it('catches a malformed event date / time', () => {
     const badLine = renderDataLine([
-      '0001', '1', '1', '1', '3', '2026-09-04', '25:00', '100', '10.0', '41.32', '-72.93', '0', '1', '1', '0', '0',
+      '0001', '1', '1', '1', '3', '2026-09-04', '25:00', '100', '10.0', '41.32', '-72.93', '0', '1', '1', '0', '0', '26',
     ]);
     const broken = good.replace(SEGMENT_TITLES.events + '\r\n', SEGMENT_TITLES.events + '\r\n' + badLine + '\r\n');
     const codes = validateOutputFile(rechecksum(broken)).issues.map((i) => i.code);
@@ -128,9 +130,45 @@ describe('Appendix A output file validator', () => {
 
   it('catches an over-long output file comment in the header', () => {
     const lines = good.split('\r\n');
-    lines[9] = renderDataLine(['C'.repeat(61)]);
+    lines[7] = renderDataLine(['OBK1', 'OBK001', 'A1B2C3D4', 'C'.repeat(61)]);
     const codes = validateOutputFile(rechecksum(lines.join('\r\n'))).issues.map((i) => i.code);
     expect(codes).toContain('OUTPUT_FILE_COMMENT_TOO_LONG');
+  });
+
+  it('catches header values outside Appendix A 7.26 / 7.41 / 7.1', () => {
+    const lines = good.split('\r\n');
+    lines[4] = renderDataLine(['3355123', 'OneBook', '8', '0000', '4']);
+    lines[5] = renderDataLine(['BOL-55120', 'N']);
+    const codes = validateOutputFile(rechecksum(lines.join('\r\n'))).issues.map((i) => i.code);
+    expect(codes).toEqual(
+      expect.arrayContaining(['PERIOD_START_TIME_FORMAT', 'TIME_ZONE_OFFSET_FORMAT', 'EXEMPT_DRIVER_CONFIGURATION']),
+    );
+  });
+
+  it('catches mismatched position markers, distance above 6 and a missing event data check value', () => {
+    const badLine = renderDataLine([
+      '0001', '1', '1', '1', '3', '090426', '090000', '100', '10.0', 'M', 'X', '7', '1', '1', '0', '0', 'Z',
+    ]);
+    const broken = good.replace(SEGMENT_TITLES.events + '\r\n', SEGMENT_TITLES.events + '\r\n' + badLine + '\r\n');
+    const codes = validateOutputFile(rechecksum(broken)).issues.map((i) => i.code);
+    expect(codes).toEqual(
+      expect.arrayContaining(['POSITION_MARKER_MISMATCH', 'DISTANCE_SINCE_LAST_VALID_RANGE', 'EVENT_DATA_CHECK_VALUE_FORMAT']),
+    );
+  });
+
+  it('rejects an out-of-range latitude', () => {
+    const badLine = renderDataLine([
+      '0001', '1', '1', '1', '3', '090426', '090000', '100', '10.0', '91.00', '-72.93', '0', '1', '1', '0', '0', '26',
+    ]);
+    const broken = good.replace(SEGMENT_TITLES.events + '\r\n', SEGMENT_TITLES.events + '\r\n' + badLine + '\r\n');
+    expect(validateOutputFile(rechecksum(broken)).issues.map((i) => i.code)).toContain('LATITUDE_FORMAT');
+  });
+
+  it('rejects a 2-digit file data check value (7.27 is 4 hex digits)', () => {
+    const lines = good.split('\r\n');
+    const endIdx = lines.indexOf(SEGMENT_TITLES.endOfFile);
+    lines[endIdx + 1] = 'C6';
+    expect(validateOutputFile(lines.join('\r\n')).issues.map((i) => i.code)).toContain('FILE_CHECK_VALUE_FORMAT');
   });
 
   it('catches a missing final CRLF', () => {
@@ -139,7 +177,7 @@ describe('Appendix A output file validator', () => {
   });
 
   it('catches a missing file data check value line', () => {
-    const codes = validateOutputFile(good.replace(/[0-9A-F]{2}\r\n$/, '')).issues.map((i) => i.code);
+    const codes = validateOutputFile(good.replace(/[0-9A-F]{4}\r\n$/, '')).issues.map((i) => i.code);
     expect(codes).toContain('FILE_CHECK_VALUE_MISSING');
   });
 
@@ -157,10 +195,12 @@ describe('Appendix A output file validator', () => {
         'header',
         'users',
         'cmvs',
-        'malfunctions',
         'events',
         'annotations',
         'certifications',
+        'malfunctions',
+        'loginLogout',
+        'enginePower',
         'unidentified',
         'endOfFile',
       ]);

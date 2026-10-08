@@ -1988,7 +1988,7 @@
                     "id": "carrier",
                     "name": "Acme Trucking",
                     "dotNumber": "1234567",
-                    "eldIdentifier": "OBK1",
+                    "eldIdentifier": "OBK001",
                     "erodsMode": "TEST"
                   }
                 }
@@ -2187,7 +2187,7 @@
                     "name": "Universal Logistics Inc.",
                     "dotNumber": "1234567",
                     "timezone": "America/New_York",
-                    "eldIdentifier": "OBK1",
+                    "eldIdentifier": "OBK001",
                     "eldRegistrationId": null,
                     "erodsMode": "TEST"
                   }
@@ -2290,7 +2290,7 @@
             }
           },
           "422": {
-            "description": "VALIDATION_FAILED — eldIdentifier must be exactly 4 characters from [A-Z0-9] (Appendix A).",
+            "description": "VALIDATION_FAILED — eldIdentifier must be exactly 6 characters (7.15), eldRegistrationId exactly 4 (7.17), from [A-Z0-9] (Appendix A).",
             "content": {
               "application/json": {
                 "schema": {
@@ -2328,7 +2328,7 @@
                   "example": {
                     "statusCode": 422,
                     "code": "VALIDATION_FAILED",
-                    "message": "eldIdentifier must be exactly 4 characters from [A-Z0-9] (Appendix A).",
+                    "message": "eldIdentifier must be exactly 6 characters (7.15), eldRegistrationId exactly 4 (7.17), from [A-Z0-9] (Appendix A).",
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
                   }
@@ -2367,7 +2367,7 @@
                 "schema": {
                   "example": {
                     "timezone": "America/New_York",
-                    "eldIdentifier": "OBK1",
+                    "eldIdentifier": "OBK001",
                     "eldRegistrationId": null,
                     "erodsMode": "TEST"
                   }
@@ -59524,7 +59524,11 @@
           "signatureBase64"
         ]
       },
-      "ErodsIdentifierSchema": {
+      "EldIdentifierSchema": {
+        "type": "string",
+        "pattern": "^[A-Z0-9]{6}$"
+      },
+      "EldRegistrationIdSchema": {
         "type": "string",
         "pattern": "^[A-Z0-9]{4}$"
       },
@@ -61686,10 +61690,10 @@
             "maxLength": 500
           },
           "eldIdentifier": {
-            "$ref": "#/components/schemas/ErodsIdentifierSchema"
+            "$ref": "#/components/schemas/EldIdentifierSchema"
           },
           "eldRegistrationId": {
-            "$ref": "#/components/schemas/ErodsIdentifierSchema"
+            "$ref": "#/components/schemas/EldRegistrationIdSchema"
           },
           "erodsMode": {
             "$ref": "#/components/schemas/ErodsModeEnum"

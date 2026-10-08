@@ -1,0 +1,60 @@
+{
+  "id": "R05-restart-broken-by-on-duty",
+  "rule": "RESTART_34",
+  "title": "15 minutes ON duty inside the rest breaks the 34-hour restart",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-14T01:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-15T01:00:00.000Z",
+        "status": "ON"
+      },
+      {
+        "at": "2026-01-15T01:15:00.000Z",
+        "status": "OFF"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance"
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-15T13:00:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [
+      {
+        "date": "2026-01-08",
+        "onDutySec": 36000
+      },
+      {
+        "date": "2026-01-09",
+        "onDutySec": 36000
+      },
+      {
+        "date": "2026-01-10",
+        "onDutySec": 36000
+      },
+      {
+        "date": "2026-01-11",
+        "onDutySec": 36000
+      },
+      {
+        "date": "2026-01-12",
+        "onDutySec": 36000
+      },
+      {
+        "date": "2026-01-13",
+        "onDutySec": 36000
+      }
+    ],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "cycleRemainingSec": 35100,
+    "shiftStartedAt": null,
+    "restartAvailableAt": "2026-01-16T11:15:00.000Z",
+    "violations": []
+  }
+}

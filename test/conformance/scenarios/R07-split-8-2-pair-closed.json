@@ -1,0 +1,53 @@
+{
+  "id": "R07-split-8-2-pair-closed",
+  "rule": "SPLIT_SLEEPER",
+  "title": "tz.md 8.2.1 worked example \u2014 8 h SB / 4 h D / 2 h SB, look-back per 395.1(g)(1)",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-14T19:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-15T05:00:00.000Z",
+        "status": "ON"
+      },
+      {
+        "at": "2026-01-15T07:00:00.000Z",
+        "status": "SB"
+      },
+      {
+        "at": "2026-01-15T15:00:00.000Z",
+        "status": "D"
+      },
+      {
+        "at": "2026-01-15T19:00:00.000Z",
+        "status": "SB"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance"
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-15T21:00:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "driveUsedSec": 14400,
+    "driveRemainingSec": 25200,
+    "shiftStartedAt": "2026-01-15T15:00:00.000Z",
+    "shiftEndsAt": "2026-01-16T07:00:00.000Z",
+    "shiftRemainingSec": 36000,
+    "breakRemainingSec": 28800,
+    "currentStatus": "SB",
+    "dailyTotals": {
+      "off": 0,
+      "sb": 36000,
+      "drive": 14400,
+      "on": 7200
+    },
+    "violations": []
+  }
+}

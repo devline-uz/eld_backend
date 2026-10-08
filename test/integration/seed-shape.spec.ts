@@ -38,7 +38,7 @@ describe('seed shape matches tz.md §22.3.6 (Figma demo dataset)', () => {
     const carrier = await prisma.carrier.findUnique({ where: { id: 'carrier' } });
     expect(carrier?.name).toBe('Universal Logistics Inc.');
     expect(carrier?.dotNumber).toBe('1234567');
-    expect(carrier?.eldIdentifier).toHaveLength(4);
+    expect(carrier?.eldIdentifier).toBe('OBK001'); // Appendix A 7.15 — 6 chars (B-138)
   });
 
   it('has 4 roles and 12 users, including admin Sarah Chen', async () => {
