@@ -26,6 +26,7 @@
     "migrate:dev:unguarded": "prisma migrate dev",
     "migrate:deploy": "prisma migrate deploy",
     "db:seed": "ts-node prisma/seed.ts",
+    "db:seed:hos-logs": "ts-node prisma/seed-hos-logs.ts",
     "db:reset:dev": "bash scripts/db-reset-dev.sh",
     "db:check-drift": "bash scripts/check-drift.sh",
     "migrate:test-updown": "bash scripts/migrate-updown-dev.sh",

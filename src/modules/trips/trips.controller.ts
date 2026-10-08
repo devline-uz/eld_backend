@@ -59,6 +59,8 @@ export class TripsController {
       apiError.fieldConflicts([
         { code: ERROR_CODES.CONFLICT, field: 'number', message: 'A trip with this number already exists.' },
         { code: ERROR_CODES.TRIP_SCHEDULE_CONFLICT, field: 'vehicleId', message: 'Unit 1 is already assigned to another trip (TRP-1001) from 2026-10-10 12:00 UTC to 2026-10-20 12:00 UTC.' },
+        { code: ERROR_CODES.TRIP_SCHEDULE_CONFLICT, field: 'driverId', message: 'Driver John Smith is already assigned to another trip (TRP-1001) from 2026-10-10 12:00 UTC to 2026-10-20 12:00 UTC.' },
+        { code: ERROR_CODES.TRIP_SCHEDULE_CONFLICT, field: 'trailerId', message: 'Trailer T-12 is already assigned to another trip (TRP-1001) from 2026-10-10 12:00 UTC to 2026-10-20 12:00 UTC.' },
       ]),
       apiError.unprocessable(ERROR_CODES.TRAILER_NOT_FOUND, 'trailerId is unknown or names a deleted trailer.'),
     ],
@@ -78,6 +80,8 @@ export class TripsController {
       apiError.fieldConflicts([
         { code: ERROR_CODES.CONFLICT, field: 'status', message: 'Illegal status transition.' },
         { code: ERROR_CODES.TRIP_SCHEDULE_CONFLICT, field: 'vehicleId', message: "The trip's unit already has another trip in the new time range." },
+        { code: ERROR_CODES.TRIP_SCHEDULE_CONFLICT, field: 'driverId', message: "The trip's driver already has another trip in the new time range." },
+        { code: ERROR_CODES.TRIP_SCHEDULE_CONFLICT, field: 'trailerId', message: "The trip's trailer already has another trip in the new time range." },
         { code: ERROR_CODES.TRIP_NOT_EDITABLE, field: 'status', message: 'A delivered trip cannot be edited.' },
       ]),
     ],
@@ -113,6 +117,8 @@ export class TripsController {
       apiError.fieldConflicts([
         { code: ERROR_CODES.CONFLICT, field: 'status', message: 'Only a planned or assigned trip can be (re)assigned.' },
         { code: ERROR_CODES.TRIP_SCHEDULE_CONFLICT, field: 'vehicleId', message: "The new unit already has another trip in this trip's time range." },
+        { code: ERROR_CODES.TRIP_SCHEDULE_CONFLICT, field: 'driverId', message: "The new driver already has another trip in this trip's time range." },
+        { code: ERROR_CODES.TRIP_SCHEDULE_CONFLICT, field: 'trailerId', message: "The new trailer already has another trip in this trip's time range." },
       ]),
       apiError.unprocessable(ERROR_CODES.TRAILER_NOT_FOUND, 'trailerId is unknown or names a deleted trailer.'),
     ],
