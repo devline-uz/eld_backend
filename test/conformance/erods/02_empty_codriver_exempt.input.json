@@ -1,0 +1,69 @@
+{
+  "driver": {
+    "lastName": "O'Brien-Núñez, Jr.",
+    "firstName": "Seán",
+    "username": "obrien",
+    "licenseState": "NY",
+    "licenseNumber": "ny 55-21 b",
+    "multidayBasis": 7,
+    "exempt": true,
+    "timezoneOffsetMin": -300
+  },
+  "coDriver": {
+    "lastName": "Webb",
+    "firstName": "Marcus",
+    "username": "marcuswebb"
+  },
+  "currentCmv": {
+    "powerUnitNumber": "",
+    "vin": "",
+    "trailerNumbers": ""
+  },
+  "current": null,
+  "shippingDocumentNumber": "",
+  "carrier": {
+    "usdotNumber": "3355123",
+    "name": "OneBook Logistics, LLC"
+  },
+  "eldIdentifier": "OBK001",
+  "eldRegistrationId": "",
+  "eldAuthenticationValue": "",
+  "outputFileComment": "ROADSIDE, INSPECTION\r\n\t2025-09-10 XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+  "generatedAt": "2025-01-15T05:00:00.000Z",
+  "users": [
+    {
+      "orderNumber": 1,
+      "username": "obrien",
+      "lastName": "O'Brien",
+      "firstName": "Sean",
+      "accountType": "D"
+    },
+    {
+      "orderNumber": 2,
+      "username": "marcuswebb",
+      "lastName": "Webb",
+      "firstName": "Marcus",
+      "accountType": "D"
+    },
+    {
+      "orderNumber": 3,
+      "username": "unidentified",
+      "lastName": "Unidentified",
+      "firstName": "Driver",
+      "accountType": "D"
+    }
+  ],
+  "cmvs": [],
+  "malfunctions": [],
+  "events": [],
+  "loginLogout": [],
+  "enginePower": [],
+  "annotations": [],
+  "certifications": [],
+  "unidentified": [],
+  "fileNameInput": {
+    "rangeStart": "2025-01-15",
+    "rangeEnd": "2025-01-15",
+    "sequence": 12
+  }
+}

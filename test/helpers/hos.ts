@@ -70,7 +70,7 @@ export function timeline(startIso: string, steps: Array<[number, DutyStatus, Spe
 // Conformance fixtures (TZ §8.6) — the SAME files are read by the Dart engine.
 // ---------------------------------------------------------------------------
 
-export const CONFORMANCE_DIR = join(__dirname, '..', '..', '..', 'eld.docs', 'hos-conformance');
+export const CONFORMANCE_DIR = join(__dirname, '..', 'conformance', 'golden');
 
 export interface ConformanceFixture {
   name: string;

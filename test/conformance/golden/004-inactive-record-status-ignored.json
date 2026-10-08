@@ -1,0 +1,35 @@
+{
+  "name": "inactive-record-status-ignored",
+  "spec": "\u00a78.3 step 1 \u2014 only recordStatus = 1 is counted",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-01-14T17:00:00Z",
+    "ruleset": "US_70_8_PROPERTY",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true
+    },
+    "previousDays": [],
+    "lastRestartEndedAt": null,
+    "events": [
+      {
+        "at": "2025-01-14T05:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-14T15:00:00Z",
+        "status": "D"
+      },
+      {
+        "at": "2025-01-14T16:00:00Z",
+        "status": "OFF",
+        "recordStatus": 2
+      }
+    ]
+  },
+  "expected": {
+    "currentStatus": "D",
+    "driveUsedSec": 7200,
+    "violations": []
+  }
+}

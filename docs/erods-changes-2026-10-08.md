@@ -3,7 +3,7 @@
 Source: official 49 CFR 395 Subpart B Appendix A (eCFR 2026-10-06), `backend/docs/fmcsa/49cfr395-subpartB-appendixA.txt`.
 Backend: `src/modules/transfers/{segments,output-file,check-value,filename,validator,snapshot}.ts`.
 Bugs B-134 … B-138, decisions D-024 (closed), D-116 (verified), D-120 (choices), D-121 (6-char ELD Identifier data path).
-Reference bytes: `eld.docs/erods-conformance/*.expected.{csv,json}` (regenerated). The Dart port must match them byte for byte.
+Reference bytes: `backend/test/conformance/erods/*.expected.{csv,json}` (regenerated). The Dart port must match them byte for byte.
 
 ## Whole file
 
@@ -92,4 +92,4 @@ Position markers E > fix > M > X (4.6.1.4(d)/(e), 4.3.2.7(c)); 0.01° / 0.1° (P
 
 Dart port: take `carrier.eldIdentifier` from bootstrap as-is, validate `^[A-Z0-9]{6}$` (not 4), and keep
 `^[A-Z0-9]{4}$` for the registration id. A cached 4-char value from an older bootstrap must be
-refreshed, never padded on the device. Reference bytes in `eld.docs/erods-conformance/` now carry `OBK001`.
+refreshed, never padded on the device. Reference bytes in `backend/test/conformance/erods/` now carry `OBK001`.

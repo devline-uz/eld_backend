@@ -1,0 +1,42 @@
+{
+  "name": "home-terminal-timezone-decides-the-log-date",
+  "spec": "\u00a78 hard rule \u2014 the RODS day follows the HOME TERMINAL, not the carrier",
+  "input": {
+    "timezone": "America/Los_Angeles",
+    "now": "2025-01-15T10:00:00Z",
+    "ruleset": "US_70_8_PROPERTY",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true
+    },
+    "previousDays": [],
+    "lastRestartEndedAt": null,
+    "events": [
+      {
+        "at": "2025-01-14T05:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-14T22:00:00Z",
+        "status": "D"
+      }
+    ]
+  },
+  "expected": {
+    "driveUsedSec": 43200,
+    "violations": [
+      {
+        "type": "BREAK_30",
+        "logDate": "2025-01-14",
+        "occurredAt": "2025-01-15T06:00:00Z",
+        "exceededBySec": 14400
+      },
+      {
+        "type": "DRIVING_11",
+        "logDate": "2025-01-15",
+        "occurredAt": "2025-01-15T09:00:00Z",
+        "exceededBySec": 3600
+      }
+    ]
+  }
+}

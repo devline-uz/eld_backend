@@ -1,0 +1,40 @@
+{
+  "name": "split-7h30-2h30-pair",
+  "spec": "§395.1(g)(1) — 7.5/2.5 qualifies; look-back to the end of the 7.5 h period",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-01-14T20:30:00Z",
+    "ruleset": "US_70_8_PROPERTY",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true
+    },
+    "previousDays": [],
+    "lastRestartEndedAt": null,
+    "events": [
+      {
+        "at": "2025-01-14T05:00:00Z",
+        "status": "SB"
+      },
+      {
+        "at": "2025-01-14T12:30:00Z",
+        "status": "D"
+      },
+      {
+        "at": "2025-01-14T16:00:00Z",
+        "status": "SB"
+      },
+      {
+        "at": "2025-01-14T18:30:00Z",
+        "status": "D"
+      }
+    ]
+  },
+  "expected": {
+    "driveRemainingSec": 19800,
+    "driveUsedSec": 19800,
+    "shiftStartedAt": "2025-01-14T12:30:00Z",
+    "shiftEndsAt": "2025-01-15T05:00:00Z",
+    "violations": []
+  }
+}

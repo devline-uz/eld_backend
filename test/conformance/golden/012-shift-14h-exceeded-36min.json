@@ -1,0 +1,48 @@
+{
+  "name": "shift-14h-exceeded-36min",
+  "spec": "\u00a78.2 rule 2 \u2014 the window pauses for nothing",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-01-15T05:36:00Z",
+    "ruleset": "US_70_8_PROPERTY",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true
+    },
+    "previousDays": [],
+    "lastRestartEndedAt": null,
+    "events": [
+      {
+        "at": "2025-01-14T05:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-14T15:00:00Z",
+        "status": "ON"
+      },
+      {
+        "at": "2025-01-14T19:00:00Z",
+        "status": "D"
+      },
+      {
+        "at": "2025-01-15T02:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-15T02:36:00Z",
+        "status": "D"
+      }
+    ]
+  },
+  "expected": {
+    "shiftRemainingSec": 0,
+    "driveUsedSec": 36000,
+    "violations": [
+      {
+        "type": "SHIFT_14",
+        "logDate": "2025-01-15",
+        "exceededBySec": 2160
+      }
+    ]
+  }
+}

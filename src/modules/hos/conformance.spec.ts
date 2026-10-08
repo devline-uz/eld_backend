@@ -1,5 +1,5 @@
 /**
- * TZ §8.6 — the shared conformance suite. These JSON files in `eld.docs/hos-conformance/` are
+ * TZ §8.6 — the shared conformance suite. These JSON files in `test/conformance/golden/` are
  * language-neutral: the Dart engine (`lib/hos/engine/`, Phase 4b) reads the EXACT same files
  * and must produce the same answers. A single failure here blocks the build in both repos.
  *
@@ -11,7 +11,7 @@ import { expectFixture, fixtureToInput, loadFixtures, type ConformanceFixture } 
 
 const fixtures = loadFixtures();
 
-describe('HOS conformance fixtures (eld.docs/hos-conformance)', () => {
+describe('HOS conformance fixtures (test/conformance/golden)', () => {
   it('ships at least 40 shared fixtures for the Dart port', () => {
     expect(fixtures.length).toBeGreaterThanOrEqual(40);
   });

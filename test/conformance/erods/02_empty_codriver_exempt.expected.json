@@ -1,0 +1,19 @@
+{
+  "fileName": "OBRIE2113011525-000000011.csv",
+  "fileCheckValue": "B6AE",
+  "lineCount": 22,
+  "sizeBytes": 623,
+  "counts": {
+    "header": 7,
+    "users": 3,
+    "cmvs": 0,
+    "events": 0,
+    "annotations": 0,
+    "certifications": 0,
+    "malfunctions": 0,
+    "loginLogout": 0,
+    "enginePower": 0,
+    "unidentified": 0,
+    "endOfFile": 1
+  }
+}

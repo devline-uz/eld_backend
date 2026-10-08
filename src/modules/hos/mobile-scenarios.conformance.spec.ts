@@ -4,7 +4,7 @@
  * unchanged into `backend/test/conformance/scenarios/` (format: README.md there). The mobile format
  * is `{ id, rule, title, input, expect }`; `input` is already a TS `HosInput` (ISO-8601 instants),
  * so this runner only renames `id`→`name` / `expect`→`expected` and reuses the SAME converter and
- * matcher as the `eld.docs/hos-conformance` suite. Reference: the mobile `conformance_test.dart`.
+ * matcher as the `test/conformance/golden` suite. Reference: the mobile `conformance_test.dart`.
  */
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';

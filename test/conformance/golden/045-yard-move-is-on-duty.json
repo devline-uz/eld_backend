@@ -1,0 +1,43 @@
+{
+  "name": "yard-move-is-on-duty",
+  "spec": "\u00a78.2 rule 11 \u2014 YM is on duty but not driving time",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-01-14T20:00:00Z",
+    "ruleset": "US_70_8_PROPERTY",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true,
+      "allowYardMove": true
+    },
+    "previousDays": [],
+    "lastRestartEndedAt": null,
+    "events": [
+      {
+        "at": "2025-01-14T05:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-14T15:00:00Z",
+        "status": "D",
+        "special": "YM"
+      },
+      {
+        "at": "2025-01-14T18:00:00Z",
+        "status": "D"
+      }
+    ]
+  },
+  "expected": {
+    "driveUsedSec": 7200,
+    "cycleRemainingSec": 234000,
+    "shiftStartedAt": "2025-01-14T15:00:00Z",
+    "dailyTotals": {
+      "off": 36000,
+      "sb": 0,
+      "drive": 7200,
+      "on": 10800
+    },
+    "violations": []
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "fileName": "SMITH3841091126-000000000.csv",
+  "fileCheckValue": "F6D8",
+  "lineCount": 41,
+  "sizeBytes": 1733,
+  "counts": {
+    "header": 7,
+    "users": 3,
+    "cmvs": 1,
+    "events": 7,
+    "annotations": 2,
+    "certifications": 2,
+    "malfunctions": 2,
+    "loginLogout": 2,
+    "enginePower": 2,
+    "unidentified": 1,
+    "endOfFile": 1
+  }
+}

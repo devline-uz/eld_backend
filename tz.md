@@ -1910,7 +1910,7 @@ Bu qoida 2020-yil 29-sentyabrdan amal qiladi. Ilgari (2020 gacha) faqat ≥8 soa
 >
 > **Nega:** repodagi ustuvorlik tartibi **FMCSA 49 CFR §395 > pt30_docs > tz.md**. §8.2.1 ning
 > nollash matni TZ xatosi deb tan olindi; egasining qarori `backend/decisions.md` **D-012** da.
-> Engine va `eld.docs/hos-conformance/` fixture'lari look-back bo'yicha ishlaydi.
+> Engine va `backend/test/conformance/golden/` fixture'lari look-back bo'yicha ishlaydi.
 > Kvalifikatsiya shartlari (≥7 soat SB + ≥2 soat SB/OFF, jami ≥10 soat) va "ikkala qism ham
 > oynadan chiqariladi" qoidasi — **o'zgarishsiz, to'g'ri**.
 
@@ -2033,7 +2033,7 @@ Demak bitta qoidalar to'plami **ikki marta** yoziladi:
 
 1. **Yagona spetsifikatsiya** — 8.2 va 8.3-bo'limlar. Har ikkala implementatsiya faqat shundan yoziladi.
 
-2. **Umumiy oltin testlar.** `eld.docs/hos-conformance/` papkasida til-neytral JSON fayllar:
+2. **Umumiy oltin testlar.** `backend/test/conformance/golden/` papkasida til-neytral JSON fayllar:
    ```json
    {
      "name": "11-hour limit exceeded by 26 min",
@@ -2944,7 +2944,7 @@ Reverse proxy — **Caddy** (repoda allaqachon bor).
 | **1** | Poydevor | Nest skeleton, Prisma, **dev+prod DB**, seed, auth (parol + Google), rollar, audit | Login ishlaydi, seed ma'lumoti Figmaga mos |
 | **2** | Fleet | Vehicles, Drivers, Devices, odometer kalibrlash, import/export | Fleet bo'limlari to'liq |
 | **3** | Ingest | `/ingest/*`, birliklar konvertatsiyasi, BLE holati, stored events, partition | Ilovadan ma'lumot oqadi |
-| **4** | ⭐ HOS dvigateli (TS) | Qoidalar, 300 test, recalc job, violations, **`eld.docs/hos-conformance/` fikstyuralari yoziladi** | Soatlar serverda to'g'ri |
+| **4** | ⭐ HOS dvigateli (TS) | Qoidalar, 300 test, recalc job, violations, **`backend/test/conformance/golden/` fikstyuralari yoziladi** | Soatlar serverda to'g'ri |
 | **4b** | ⭐ HOS dvigateli (Dart) | Ayni spetsifikatsiyadan `lib/hos/engine/`, **o'sha JSON fikstyuralar bilan 100% conformance**, `HOS_ENGINE_VERSION` ikkala tomonda bir xil, `POST /mobile/hos-state` va tungi drift solishtiruvi | Soatlar offline'da ham to'g'ri |
 | **5** | RODS | Kunlik jurnal, tuzatish, sertifikatlash, unidentified | HOS Logs to'liq |
 | **6** | Mobil API | bootstrap, sync, duty-status, DVIR, imzo | Drayver ilovasi ishlaydi |

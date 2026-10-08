@@ -1,0 +1,19 @@
+{
+  "fileName": "NG___0707110225-000000099.csv",
+  "fileCheckValue": "CEBD",
+  "lineCount": 33,
+  "sizeBytes": 1218,
+  "counts": {
+    "header": 7,
+    "users": 2,
+    "cmvs": 1,
+    "events": 6,
+    "annotations": 1,
+    "certifications": 1,
+    "malfunctions": 1,
+    "loginLogout": 1,
+    "enginePower": 1,
+    "unidentified": 0,
+    "endOfFile": 1
+  }
+}

@@ -1,0 +1,58 @@
+{
+  "name": "cycle-60-7-ignores-8th-day",
+  "spec": "\u00a78.2 rule 6 \u2014 the 60/7 window is 7 days, not 8",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-01-14T18:00:00Z",
+    "ruleset": "US_60_7_PROPERTY",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true
+    },
+    "previousDays": [
+      {
+        "date": "2025-01-07",
+        "onDutySec": 72000
+      },
+      {
+        "date": "2025-01-08",
+        "onDutySec": 34200
+      },
+      {
+        "date": "2025-01-09",
+        "onDutySec": 34200
+      },
+      {
+        "date": "2025-01-10",
+        "onDutySec": 34200
+      },
+      {
+        "date": "2025-01-11",
+        "onDutySec": 34200
+      },
+      {
+        "date": "2025-01-12",
+        "onDutySec": 34200
+      },
+      {
+        "date": "2025-01-13",
+        "onDutySec": 34200
+      }
+    ],
+    "lastRestartEndedAt": null,
+    "events": [
+      {
+        "at": "2025-01-14T05:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-14T15:00:00Z",
+        "status": "ON"
+      }
+    ]
+  },
+  "expected": {
+    "cycleRemainingSec": 0,
+    "violations": []
+  }
+}

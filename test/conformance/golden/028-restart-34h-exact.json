@@ -1,0 +1,34 @@
+{
+  "name": "restart-34h-exact",
+  "spec": "\u00a78.2 rule 5 \u2014 34 continuous hours zero the cycle",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-01-15T17:00:00Z",
+    "ruleset": "US_70_8_PROPERTY",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true
+    },
+    "previousDays": [
+      {
+        "date": "2025-01-13",
+        "onDutySec": 216000
+      }
+    ],
+    "lastRestartEndedAt": null,
+    "events": [
+      {
+        "at": "2025-01-14T05:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-15T15:00:00Z",
+        "status": "D"
+      }
+    ]
+  },
+  "expected": {
+    "cycleRemainingSec": 244800,
+    "violations": []
+  }
+}

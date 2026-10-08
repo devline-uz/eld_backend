@@ -1,0 +1,43 @@
+{
+  "name": "drive-11h-exceeded-by-1s",
+  "spec": "\u00a78.2 rule 1 \u2014 one second over is a violation",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-01-15T02:30:01Z",
+    "ruleset": "US_70_8_PROPERTY",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true
+    },
+    "previousDays": [],
+    "lastRestartEndedAt": null,
+    "events": [
+      {
+        "at": "2025-01-14T05:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-14T15:00:00Z",
+        "status": "D"
+      },
+      {
+        "at": "2025-01-14T23:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-14T23:30:00Z",
+        "status": "D"
+      }
+    ]
+  },
+  "expected": {
+    "driveRemainingSec": 0,
+    "violations": [
+      {
+        "type": "DRIVING_11",
+        "logDate": "2025-01-14",
+        "exceededBySec": 1
+      }
+    ]
+  }
+}
