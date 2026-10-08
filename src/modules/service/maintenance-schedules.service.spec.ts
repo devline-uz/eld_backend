@@ -59,6 +59,55 @@ describe('MaintenanceSchedulesService (TZ §5.10)', () => {
     expect(result.nextDueMi).toBe(1040200);
   });
 
+  it('complete() also marks the task COMPLETED (M-40)', async () => {
+    const schedule = makeSchedule();
+    repo.findById.mockResolvedValue(schedule as never);
+    vehicles.findById.mockResolvedValue({ id: 'veh_1', odometerMi: 1015200 } as never);
+    repo.update.mockImplementation((_where, data) => Promise.resolve({ ...schedule, ...data } as never));
+    await service.complete('ms_1', {});
+    expect(repo.update).toHaveBeenCalledWith({ id: 'ms_1' }, expect.objectContaining({ status: 'COMPLETED' }));
+  });
+
+  describe('update() — review of a driver submission (M-40)', () => {
+    beforeEach(() => {
+      repo.findById.mockResolvedValue(makeSchedule({ status: 'OPEN', reviewNote: null }) as never);
+      vehicles.findById.mockResolvedValue({ id: 'veh_1', odometerMi: 1015200 } as never);
+      repo.update.mockImplementation((_where, data) => Promise.resolve({ id: 'ms_1', ...data } as never));
+    });
+
+    it('rejecting without a reviewNote is a 422 and writes nothing', async () => {
+      await expect(service.update('ms_1', { status: 'REJECTED' }, 'usr_1')).rejects.toMatchObject({ code: 'VALIDATION_FAILED', status: 422 });
+      expect(repo.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects with the note, recording who reviewed it', async () => {
+      await service.update('ms_1', { status: 'REJECTED', reviewNote: ' Amount does not match ' }, 'usr_1');
+      const [, data] = repo.update.mock.calls[0] as [unknown, Record<string, unknown>];
+      expect(data).toMatchObject({ status: 'REJECTED', reviewNote: 'Amount does not match', reviewedBy: { connect: { id: 'usr_1' } } });
+      expect(data.reviewedAt).toBeInstanceOf(Date);
+    });
+
+    it('approving (COMPLETED) resets the interval clock from the current odometer', async () => {
+      await service.update('ms_1', { status: 'COMPLETED' }, 'usr_1');
+      const [, data] = repo.update.mock.calls[0] as [unknown, Record<string, unknown>];
+      expect(data).toMatchObject({ status: 'COMPLETED', lastServiceMi: 1015200, nextDueMi: 1040200 });
+    });
+
+    it('a status-less edit leaves status and reviewer untouched', async () => {
+      await service.update('ms_1', { name: 'Brake service 2' }, 'usr_1');
+      const [, data] = repo.update.mock.calls[0] as [unknown, Record<string, unknown>];
+      expect(data).not.toHaveProperty('status');
+      expect(data).not.toHaveProperty('reviewedBy');
+    });
+
+    it('does not set the reviewer for a non-user caller (API key)', async () => {
+      await service.update('ms_1', { status: 'CANCELLED' });
+      const [, data] = repo.update.mock.calls[0] as [unknown, Record<string, unknown>];
+      expect(data).toMatchObject({ status: 'CANCELLED' });
+      expect(data).not.toHaveProperty('reviewedBy');
+    });
+  });
+
   describe('sweepDue', () => {
     it('returns only OVERDUE/DUE_SOON schedules', async () => {
       repo.listEnabledWithVehicle.mockResolvedValue([

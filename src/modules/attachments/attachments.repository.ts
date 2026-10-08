@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import type { EditorType } from '@prisma/client';
 import { PrismaService } from '../../core/prisma/prisma.service';
 
 /** Just enough of the owning chain to decide who may see the file (§20 B-41). */
@@ -8,6 +9,11 @@ export interface AttachmentOwnerRow {
   dvirId: string | null;
   defectId: string | null;
   ticketId: string | null;
+  /** M-39 — who uploaded it (a driver's own `POST /mobile/signature` upload, or a user). */
+  uploadedById: string | null;
+  uploadedByType: EditorType;
+  /** M-39 — maintenance schedules this file is the submitted invoice of (id only). */
+  maintenanceInvoiceFor: Array<{ id: string }>;
   dvir: { driverId: string } | null;
   defect: { dvir: { driverId: string } } | null;
   ticket: { createdByUserId: string | null; createdByDriverId: string | null } | null;
@@ -26,6 +32,9 @@ export class AttachmentsRepository {
         dvirId: true,
         defectId: true,
         ticketId: true,
+        uploadedById: true,
+        uploadedByType: true,
+        maintenanceInvoiceFor: { select: { id: true }, take: 1 },
         dvir: { select: { driverId: true } },
         defect: { select: { dvir: { select: { driverId: true } } } },
         ticket: { select: { createdByUserId: true, createdByDriverId: true } },

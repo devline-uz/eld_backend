@@ -87,11 +87,16 @@ export const DvirSubmitDto = z.object({
 export type DvirSubmitDto = z.infer<typeof DvirSubmitDto>;
 
 /** `POST /mobile/signature` — standalone signature capture, reusable by certify and DVIR. */
-export const SignatureUploadDto = z.object({
-  purpose: z.enum(['CERTIFICATION', 'DVIR', 'DVIR_PHOTO']),
-  base64: z.string().min(16),
-  mimeType: z.enum(['image/png', 'image/jpeg']).default('image/png'),
-});
+export const SignatureUploadDto = z
+  .object({
+    purpose: z.enum(['CERTIFICATION', 'DVIR', 'DVIR_PHOTO', 'INVOICE']),
+    base64: z.string().min(16),
+    mimeType: z.enum(['image/png', 'image/jpeg', 'application/pdf']).default('image/png'),
+  })
+  .refine((v) => v.mimeType !== 'application/pdf' || v.purpose === 'INVOICE', {
+    path: ['mimeType'],
+    message: 'application/pdf is only accepted for purpose INVOICE.',
+  });
 export type SignatureUploadDto = z.infer<typeof SignatureUploadDto>;
 
 /**

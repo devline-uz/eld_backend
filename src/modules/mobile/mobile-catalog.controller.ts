@@ -29,14 +29,15 @@ export class MobileCatalogController {
     description:
       '`code` is stable and unique per `part`; send it as `defects[].category` in `POST /mobile/dvir`. `critical` is a hint that a defect on this ' +
       'item is typically out-of-service class — the driver still picks the defect `severity`. Unknown categories are still accepted by the DVIR ' +
-      'submit (lenient, for older app builds that send the English item name).',
+      'submit (lenient, for older app builds that send the English item name). M-29: the list is the design\'s (rows verbatim, in design order); `isPhoto` marks the ' +
+      '"Accident Photo" row — a photo capture, not an inspection item.',
   })
   @ApiQuery({ name: 'part', required: false, enum: ['TRUCK', 'TRAILER'], description: 'Omit to get both parts.' })
-  @ApiOkResponse({ schema: { example: [{ code: 'BRAKES_SERVICE', name: 'Brakes, Service', part: 'TRUCK', category: 'Brakes', critical: true }] } })
+  @ApiOkResponse({ schema: { example: [{ code: 'ACCIDENT_PHOTO', name: 'Accident Photo', part: 'TRUCK', category: 'Accident', critical: false, isPhoto: true }, { code: 'BRAKES_SERVICE', name: 'Brakes, Service', part: 'TRUCK', category: 'Brakes', critical: true, isPhoto: false }] } })
   @ApiStandardErrors()
   async defectCatalog(@Query(zodBody(DefectCatalogQueryDto)) query: DefectCatalogQueryDto) {
     const rows = await this.catalog.listCatalog(query.part);
-    return rows.map((row) => ({ code: row.code, name: row.name, part: row.part, category: row.category, critical: row.critical }));
+    return rows.map((row) => ({ code: row.code, name: row.name, part: row.part, category: row.category, critical: row.critical, isPhoto: row.isPhoto }));
   }
 
   @Get('saved-signature')

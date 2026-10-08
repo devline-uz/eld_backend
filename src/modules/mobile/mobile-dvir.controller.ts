@@ -21,9 +21,9 @@ export class MobileDvirController {
   constructor(private readonly dvir: MobileDvirService) {}
 
   @Post('signature')
-  @ApiOperation({ summary: 'Uploads captured signature/photo bytes to object storage; returns an id referenced by /mobile/dvir or /mobile/certify. purpose = DVIR_PHOTO also creates an Attachment row (attachmentId) to pass in defects[].photoAttachmentIds (MB-6).' })
+  @ApiOperation({ summary: 'Uploads captured signature/photo bytes to object storage; returns an id referenced by /mobile/dvir or /mobile/certify. purpose = DVIR_PHOTO also creates an Attachment row (attachmentId) to pass in defects[].photoAttachmentIds (MB-6). M-39: purpose = INVOICE accepts application/pdf (max 10 MiB, `%PDF-` header verified; PNG/JPEG 2 MB) and creates an Attachment (kind INVOICE) whose id is `invoiceAttachmentId` of POST /mobile/maintenance/:id/submit; the uploader reads it back with GET /attachments/:id/presign.' })
   @ApiCreatedResponse({ schema: { example: { signatureImageId: 'sig_9c2a', attachmentId: null, key: 'signatures/drv_1/sig_9c2a.png', sha256: 'a1b2...', sizeBytes: 4821 } } })
-  @ApiStandardErrors({ errors: [apiError.unprocessable(ERROR_CODES.VALIDATION_FAILED, 'The base64 payload decoded to zero bytes.')] })
+  @ApiStandardErrors({ errors: [apiError.unprocessable(ERROR_CODES.VALIDATION_FAILED, 'The base64 payload decoded to zero bytes, application/pdf with a purpose other than INVOICE, or bytes without a %PDF- header.')] })
   uploadSignature(@Body(zodBody(SignatureUploadDto)) dto: SignatureUploadDto, @CurrentUser('id') driverId: string) {
     return this.dvir.uploadSignature(driverId, dto);
   }

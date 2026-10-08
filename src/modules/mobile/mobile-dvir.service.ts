@@ -39,8 +39,15 @@ export class MobileDvirService {
   ) {}
 
   async uploadSignature(driverId: string, dto: SignatureUploadDto) {
-    const prefix = dto.purpose === 'DVIR_PHOTO' ? 'dvir-photos' : 'signatures';
+    const prefix = dto.purpose === 'DVIR_PHOTO' ? 'dvir-photos' : dto.purpose === 'INVOICE' ? 'invoices' : 'signatures';
     const stored = await this.signatures.store(prefix, driverId, dto.base64, dto.mimeType);
+    if (dto.purpose === 'INVOICE') {
+      // M-39 — the invoice file is an `Attachment` (kind INVOICE) owned by the uploader; the id is
+      // what `POST /mobile/maintenance/:id/submit` takes as `invoiceAttachmentId`, and the existing
+      // `GET /attachments/:id/presign` lets the uploading driver read it back.
+      await this.photos.createPhoto({ id: stored.id, key: stored.key, mimeType: dto.mimeType, sizeBytes: stored.sizeBytes, sha256: stored.sha256, driverId, kind: 'INVOICE' });
+      return { signatureImageId: stored.id, attachmentId: stored.id, key: stored.key, sha256: stored.sha256, sizeBytes: stored.sizeBytes };
+    }
     if (dto.purpose === 'DVIR_PHOTO') {
       // MB-6 — a DVIR photo must exist as an `Attachment` row so `POST /mobile/dvir`
       // (`defects[].photoAttachmentIds`) can link it to the defect. Signatures stay key-only

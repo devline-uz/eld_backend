@@ -21,7 +21,8 @@ export class MobileCatalogRepository {
   listCatalogLabels(parts: DefectPart[]): Promise<Pick<DefectCatalogItem, 'part' | 'code' | 'name'>[]> {
     if (!parts.length) return Promise.resolve([]);
     return this.prisma.defectCatalogItem.findMany({
-      where: { part: { in: parts }, active: true },
+      // Hidden (inactive) rows stay valid labels: earlier DVIRs and old app builds still send their codes.
+      where: { part: { in: parts } },
       select: { part: true, code: true, name: true },
     });
   }

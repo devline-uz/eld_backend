@@ -1,11 +1,12 @@
 import { Injectable } from '@nestjs/common';
-import type { MaintenanceSchedule, Prisma } from '@prisma/client';
+import type { MaintenanceSchedule, MaintenanceScheduleStatus, Prisma } from '@prisma/client';
 import { BaseRepository, ModelDelegate } from '../../core/prisma/base.repository';
 import { PrismaService } from '../../core/prisma/prisma.service';
 
 export interface ScheduleListFilter {
   vehicleId?: string;
   enabled?: boolean;
+  status?: MaintenanceScheduleStatus;
 }
 
 export interface ScheduleListPage {
@@ -39,6 +40,7 @@ export class MaintenanceSchedulesRepository extends BaseRepository<
     const where: Prisma.MaintenanceScheduleWhereInput = {
       ...(filter.vehicleId && { vehicleId: filter.vehicleId }),
       ...(filter.enabled !== undefined && { enabled: filter.enabled }),
+      ...(filter.status && { status: filter.status }),
     };
     const [items, total] = await Promise.all([
       this.prisma.maintenanceSchedule.findMany({ where, orderBy: { name: 'asc' }, skip: (page - 1) * limit, take: limit }),

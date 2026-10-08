@@ -62,7 +62,7 @@ const SELF_SCOPED_ROUTES = new Map<string, string>([
   ['POST /notifications/:id/read', 'B-56 — repo update is filtered by the caller\'s own userId/driverId; a foreign id is 404.'],
   [
     'GET /attachments/:id/presign',
-    'B-41 — AttachmentsService.mayView walks the owning DVIR/defect/ticket: owning driver, dvir/support READ, or the ticket author; unknown owner chain and foreign ids are 404 (D-096).',
+    'B-41 — AttachmentsService.mayView walks the owning DVIR/defect/ticket: owning driver, dvir/support READ, or the ticket author; M-39 — a driver may presign only files THEY uploaded (invoice PDFs), back office maintenance READ+ only for a submitted invoice; unknown owner chain and foreign ids are 404 (D-096).',
   ],
   [
     'POST /logs/:driverId/certify',

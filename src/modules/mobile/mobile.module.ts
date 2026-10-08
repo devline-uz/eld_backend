@@ -25,6 +25,9 @@ import { MobileDvirHistoryController } from './mobile-dvir-history.controller';
 import { MobileDvirHistoryService } from './mobile-dvir-history.service';
 import { MobileDvirService } from './mobile-dvir.service';
 import { MobileFleetOpsRepository } from './mobile-fleet-ops.repository';
+import { MobileMaintenanceController } from './mobile-maintenance.controller';
+import { MobileMaintenanceRepository } from './mobile-maintenance.repository';
+import { MobileMaintenanceService } from './mobile-maintenance.service';
 import { MobileMessagingController } from './mobile-messaging.controller';
 import { MobileMessagingRepository } from './mobile-messaging.repository';
 import { MobileMessagingService } from './mobile-messaging.service';
@@ -67,6 +70,7 @@ import { SignatureService } from './signature.service';
     PushTokensController,
     DeviceHealthController,
     MobileMessagingController,
+    MobileMaintenanceController,
   ],
   providers: [
     MobileRepository,
@@ -91,6 +95,9 @@ import { SignatureService } from './signature.service';
     DeviceHealthService,
     MobileMessagingRepository,
     MobileMessagingService,
+    // M-38..M-42 (wave 4) — driver maintenance tasks + invoice submission.
+    MobileMaintenanceRepository,
+    MobileMaintenanceService,
   ],
   exports: [MobileRepository, SignatureService, MobileFleetOpsRepository],
 })

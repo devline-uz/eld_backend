@@ -17,7 +17,7 @@ export interface PresignedUrl {
  * §20 B-41 — reusable presign helper.
  *
  * `presignAttachment` is the authorization-checked path for `GET /attachments/:id/presign`:
- * it walks the `Attachment` row's owning DVIR/defect/support-ticket and only signs a URL
+ * a driver may read any file they uploaded themselves (M-39 invoice PDFs); otherwise it walks the `Attachment` row's owning DVIR/defect/support-ticket and only signs a URL
  * for a caller who may actually see that owner (the DVIR's driver, a back-office user with
  * `dvir` READ+, or — for ticket attachments — the ticket's own author or `support` READ+).
  * Unknown/unlinked attachments (message photos, fuel-purchase receipts — no read endpoint
@@ -50,6 +50,13 @@ export class AttachmentsService {
   }
 
   private mayView(attachment: AttachmentOwnerRow, actor: ContextUser): boolean {
+    // M-39/M-41 — a driver may always read back a file THEY uploaded (maintenance invoice PDF, DVIR
+    // photo not yet linked); never somebody else's.
+    if (actor.type === 'driver' && attachment.uploadedByType === 'DRIVER' && attachment.uploadedById === actor.id) return true;
+    // M-39 — a submitted maintenance invoice is readable from the back office with `maintenance` READ+.
+    if (attachment.maintenanceInvoiceFor.length > 0 && actor.type !== 'driver') {
+      return (actor.permissions?.maintenance ?? 'NONE') !== 'NONE';
+    }
     const driverId = attachment.dvir?.driverId ?? attachment.defect?.dvir.driverId;
     if (driverId !== undefined) {
       if (actor.type === 'driver') return actor.id === driverId;

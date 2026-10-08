@@ -1,5 +1,6 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiCreatedResponse, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Audit } from '../../common/decorators/audit.decorator';
 import { FigmaScreen } from '../../common/decorators/figma-screen.decorator';
 import { Perm } from '../../common/decorators/perm.decorator';
@@ -11,6 +12,7 @@ import {
   MaintenanceScheduleListQueryDto,
   UpdateMaintenanceScheduleDto,
 } from './dto/service.dto';
+import type { ContextUser } from '../../core/context/request-context';
 import { MaintenanceSchedulesService } from './maintenance-schedules.service';
 
 /** TZ §5.10 — maintenance scheduling (interval by mileage/date), due + overdue surfaced per
@@ -29,6 +31,7 @@ export class MaintenanceSchedulesController {
   @ApiQuery({ name: 'limit', required: false })
   @ApiQuery({ name: 'vehicleId', required: false })
   @ApiQuery({ name: 'enabled', required: false })
+  @ApiQuery({ name: 'status', required: false, enum: ['OPEN', 'COMPLETED', 'CANCELLED', 'REJECTED'], description: 'M-40 — e.g. OPEN to find driver submissions awaiting review (submittedAt set).' })
   @ApiQuery({ name: 'dueOnly', required: false, description: 'Only schedules currently DUE_SOON or OVERDUE.' })
   @ApiOperation({ summary: 'Lists maintenance schedules with computed due state.' })
   @ApiOkResponse({ schema: { example: { items: [{ id: 'ms_1', vehicleId: 'veh_1', name: 'Brake service', intervalMi: 25000, due: { state: 'DUE_SOON', nextDueMi: 995000, milesRemaining: 300 } }], page: 1, limit: 25, total: 1, totalPages: 1 } } })
@@ -59,11 +62,15 @@ export class MaintenanceSchedulesController {
   @Patch(':id')
   @Perm('maintenance', 'FULL')
   @Audit({ object: 'MaintenanceSchedule', action: 'UPDATE' })
-  @ApiOperation({ summary: 'Edits a maintenance schedule.' })
-  @ApiOkResponse({ schema: { example: { id: 'ms_1', enabled: false } } })
-  @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.MAINTENANCE_SCHEDULE_NOT_FOUND, 'Maintenance schedule not found.')] })
-  update(@Param('id') id: string, @Body(zodBody(UpdateMaintenanceScheduleDto)) dto: UpdateMaintenanceScheduleDto) {
-    return this.schedules.update(id, dto);
+  @ApiOperation({
+    summary: 'Edits a maintenance schedule; `status` + `reviewNote` approve (COMPLETED) / reject (REJECTED) a driver invoice submission.',
+    description: 'M-40 — COMPLETED resets the interval clock like `/complete`; REJECTED requires `reviewNote` (shown to the driver). The submitted invoice is read via `invoiceAttachmentId` -> `GET /attachments/:id/presign`.',
+  })
+  @ApiOkResponse({ schema: { example: { id: 'ms_1', enabled: false, status: 'REJECTED', reviewNote: 'Amount does not match the PDF.' } } })
+  @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.MAINTENANCE_SCHEDULE_NOT_FOUND, 'Maintenance schedule not found.'), apiError.unprocessable(ERROR_CODES.VALIDATION_FAILED, 'status REJECTED without a reviewNote.')] })
+  update(@Param('id') id: string, @Body(zodBody(UpdateMaintenanceScheduleDto)) dto: UpdateMaintenanceScheduleDto, @CurrentUser() actor: ContextUser) {
+    // `reviewedById` is a User FK: API-key callers carry no user id.
+    return this.schedules.update(id, dto, actor.type === 'user' ? actor.id : undefined);
   }
 
   @Delete(':id')

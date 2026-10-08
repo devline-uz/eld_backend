@@ -55,6 +55,15 @@ describe('MobileDvirService — MB-6 DVIR photo persistence (regression)', () =>
     expect(sig.attachmentId).toBeNull();
   });
 
+  it('uploadSignature(INVOICE) stores under invoices/, creates a kind=INVOICE Attachment and returns its id as attachmentId (M-39)', async () => {
+    const { service, photos, signatures } = build();
+    signatures.store.mockResolvedValueOnce({ id: PHOTO_A, key: `invoices/drv_1/${PHOTO_A}.pdf`, sha256: 'bb', sizeBytes: 900 });
+    const out = await service.uploadSignature('drv_1', { purpose: 'INVOICE', base64: 'JVBERi0xLjQKJcfsj6IK', mimeType: 'application/pdf' });
+    expect(signatures.store).toHaveBeenCalledWith('invoices', 'drv_1', 'JVBERi0xLjQKJcfsj6IK', 'application/pdf');
+    expect(photos.createPhoto).toHaveBeenCalledWith({ id: PHOTO_A, key: `invoices/drv_1/${PHOTO_A}.pdf`, mimeType: 'application/pdf', sizeBytes: 900, sha256: 'bb', driverId: 'drv_1', kind: 'INVOICE' });
+    expect(out).toMatchObject({ signatureImageId: PHOTO_A, attachmentId: PHOTO_A, key: `invoices/drv_1/${PHOTO_A}.pdf` });
+  });
+
   it('submit passes photoAttachmentIds through to repo.createDvir per defect (the bug: they were dropped)', async () => {
     const { service, repo, photos } = build();
     await service.submit('drv_1', dto([{ photoAttachmentIds: [PHOTO_A] }, { photoAttachmentIds: [PHOTO_B] }]), DRIVER);

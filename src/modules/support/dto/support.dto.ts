@@ -66,6 +66,8 @@ export const FeedbackAnswersDto = z
     ease: FeedbackAnswer.optional(),
     hosSatisfaction: FeedbackAnswer.optional(),
     recommend: FeedbackAnswer.optional(),
+    /** M-46 (wave 4) — overall experience star rating, integer 1-5. */
+    overallExperience: z.number().int().min(1).max(5).optional(),
   })
   .catchall(z.unknown());
 export type FeedbackAnswersDto = z.infer<typeof FeedbackAnswersDto>;

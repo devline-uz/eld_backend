@@ -33,14 +33,14 @@ export class MaintenanceSchedulesService {
       const all = await this.repo.listEnabledWithVehicle();
       const now = new Date();
       const due = all
-        .filter((s) => !query.vehicleId || s.vehicleId === query.vehicleId)
+        .filter((s) => (!query.vehicleId || s.vehicleId === query.vehicleId) && (!query.status || s.status === query.status))
         .map((s) => this.withDue(s, s.vehicle.odometerMi, now))
         .filter((s) => s.due.state !== 'OK');
       const start = (query.page - 1) * query.limit;
       return toOffsetPage(due.slice(start, start + query.limit), due.length, query.page, query.limit);
     }
 
-    const { items, total } = await this.repo.list({ vehicleId: query.vehicleId, enabled: query.enabled }, query.page, query.limit);
+    const { items, total } = await this.repo.list({ vehicleId: query.vehicleId, enabled: query.enabled, status: query.status }, query.page, query.limit);
     const withVehicleOdometer = await Promise.all(
       items.map(async (s) => {
         const vehicle = await this.vehicles.findById({ id: s.vehicleId });
@@ -79,6 +79,7 @@ export class MaintenanceSchedulesService {
     return this.repo.create({
       vehicle: { connect: { id: dto.vehicleId } },
       name: dto.name,
+      ...(dto.scheduleType !== undefined && { scheduleType: dto.scheduleType }),
       intervalMi: dto.intervalMi ?? null,
       intervalDays: dto.intervalDays ?? null,
       lastServiceMi: dto.lastServiceMi ?? null,
@@ -89,14 +90,23 @@ export class MaintenanceSchedulesService {
     });
   }
 
-  async update(id: string, dto: UpdateMaintenanceScheduleDto): Promise<MaintenanceSchedule> {
+  async update(id: string, dto: UpdateMaintenanceScheduleDto, actorId?: string): Promise<MaintenanceSchedule> {
     const schedule = await this.getOrThrow(id);
     const vehicle = await this.vehicles.findById({ id: schedule.vehicleId });
 
+    // M-40 — a rejection is only useful to the driver with the reason.
+    const reviewNote = dto.reviewNote === undefined ? undefined : dto.reviewNote?.trim() || null;
+    if (dto.status === 'REJECTED' && !(reviewNote ?? schedule.reviewNote)) {
+      throw new AppException(ERROR_CODES.VALIDATION_FAILED, 'reviewNote is required when rejecting a submission.', 422, { reviewNote: 'Required with status REJECTED.' });
+    }
+    // Approving (-> COMPLETED) is "serviced now": same clock reset as `complete`, unless the caller
+    // supplies the service point explicitly.
+    const approving = dto.status === 'COMPLETED' && schedule.status !== 'COMPLETED';
+
     const intervalMi = dto.intervalMi !== undefined ? dto.intervalMi : schedule.intervalMi;
     const intervalDays = dto.intervalDays !== undefined ? dto.intervalDays : schedule.intervalDays;
-    const lastServiceMi = dto.lastServiceMi ?? schedule.lastServiceMi;
-    const lastServiceAt = dto.lastServiceAt ? new Date(dto.lastServiceAt) : schedule.lastServiceAt;
+    const lastServiceMi = dto.lastServiceMi ?? (approving ? (vehicle?.odometerMi ?? schedule.lastServiceMi) : schedule.lastServiceMi);
+    const lastServiceAt = dto.lastServiceAt ? new Date(dto.lastServiceAt) : approving ? new Date() : schedule.lastServiceAt;
 
     const due = computeDue({
       intervalMi,
@@ -109,6 +119,10 @@ export class MaintenanceSchedulesService {
 
     const data: Prisma.MaintenanceScheduleUpdateInput = {
       ...(dto.name !== undefined && { name: dto.name }),
+      ...(dto.scheduleType !== undefined && { scheduleType: dto.scheduleType }),
+      ...(dto.status !== undefined && { status: dto.status }),
+      ...(reviewNote !== undefined && { reviewNote }),
+      ...(dto.status !== undefined && dto.status !== schedule.status && actorId && { reviewedBy: { connect: { id: actorId } }, reviewedAt: new Date() }),
       intervalMi,
       intervalDays,
       lastServiceMi,
@@ -143,7 +157,7 @@ export class MaintenanceSchedulesService {
 
     return this.repo.update(
       { id },
-      { lastServiceMi, lastServiceAt, nextDueMi: due.nextDueMi, nextDueAt: due.nextDueAt },
+      { status: 'COMPLETED', lastServiceMi, lastServiceAt, nextDueMi: due.nextDueMi, nextDueAt: due.nextDueAt },
     );
   }
 

@@ -20,6 +20,10 @@ export function configureApp(app: INestApplication): AppConfigService {
   // TZ §7.3 rule 2 — an ingest batch may be up to 1 MB (500 §395 events). Express's default
   // JSON limit is 100 KB, which rejected legitimate batches with a body-parser error before
   // validation could ever see them.
+  // M-39 — `POST /mobile/signature` may carry an invoice PDF (10 MiB -> ~14 MB of base64 JSON); only
+  // this one route gets the larger parser (it runs first and marks the body parsed). The service
+  // still enforces 2 MiB for images and 10 MiB for PDFs on the DECODED bytes.
+  app.use(`/${config.get('API_PREFIX')}/mobile/signature`, json({ limit: '14mb' }));
   app.use(json({ limit: '1mb' }));
   app.enableCors({
     origin: config.corsOrigins,
