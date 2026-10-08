@@ -39,6 +39,7 @@ import {
 import { hashPassword } from '../src/modules/auth/lib/password.util';
 import { coarsenLocation } from '../src/common/units/location';
 import { seedFixTime } from '../src/modules/live/live-fleet.seed';
+import { seedHosLogs, type HosMockDriver } from './seed-hos-logs';
 
 const prisma = new PrismaClient();
 
@@ -354,6 +355,7 @@ async function main(): Promise<void> {
 
   // ---- Drivers (58) --------------------------------------------------------
   const driverIds: string[] = [];
+  const driverRows: HosMockDriver[] = [];
   let johnSmithId = '';
   let marcusWebbId = '';
   for (let i = 0; i < 58; i++) {
@@ -416,6 +418,7 @@ async function main(): Promise<void> {
           },
         });
     driverIds.push(driver.id);
+    driverRows.push({ id: driver.id, timezone: driver.homeTerminalTimezone, vehicleId: driver.assignedVehicleId });
     if (i === 0) johnSmithId = driver.id;
     if (i === 1) marcusWebbId = driver.id;
   }
@@ -536,6 +539,12 @@ async function main(): Promise<void> {
       update: {},
     });
   }
+
+  // ---- HOS logs mock: 10 driver-day logs, 4 drivers ACTIVE right now (prisma/seed-hos-logs.ts) --
+  // Slots A..E = William Bond (unit #104) + demo drivers #3..#6. John Smith / Marcus Webb keep
+  // their own TZ §22.3.6 dataset above. Relative to the real "now", so the active ones are live.
+  const hosMockSummary = await seedHosLogs(prisma, [driverRows[2], driverRows[3], driverRows[4], driverRows[5], driverRows[6]]);
+  console.log(`HOS logs mock:\n  ${hosMockSummary.join('\n  ')}`);
 
   // ---- DVIRs: #88214 (pre-trip, no defects) & #88208 (post-trip, defects fixed) ----
   const dvir88214 = await prisma.dvir.findFirst({ where: { driverId: johnSmithId, odometerMi: 88214 } });
