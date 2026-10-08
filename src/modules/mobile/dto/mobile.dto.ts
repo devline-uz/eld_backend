@@ -6,6 +6,7 @@ import {
   LocationDto,
   refineSpecialCondition,
 } from '../../logs/dto/logs.dto';
+import { TRAILER_NUMBER_PATTERN } from './mobile-fleet-ops.dto';
 
 /** §13.4 — hard batch ceilings, same numbers `IngestEventsDto` uses (§7.3 rule 2). */
 export const MAX_SYNC_CHANGES = 500;
@@ -65,6 +66,16 @@ export type DvirDefectDto = z.infer<typeof DvirDefectDto>;
 export const DvirSubmitDto = z.object({
   vehicleId: z.string().uuid(),
   trailerId: z.string().uuid().optional(),
+  /** D-129 — the trailer by NUMBER, free text (Appendix A 7.42 format: trimmed, upper-cased, 1-10 chars
+   * `[A-Z0-9-]`). Linked to an ACTIVE carrier trailer when the number matches; never 422 when it doesn't. */
+  trailerNumber: z
+    .string()
+    .trim()
+    .transform((value) => value.toUpperCase())
+    .refine((value) => TRAILER_NUMBER_PATTERN.test(value), {
+      message: 'A trailer number is 1-10 characters A-Z, 0-9 or "-" (49 CFR 395 Appendix A 7.42).',
+    })
+    .optional(),
   type: z.enum(['PRE_TRIP', 'POST_TRIP', 'INTERMEDIATE']),
   submittedAt: isoDateTime,
   /** MR-11 — optional. Absent/null: the vehicle's current odometer is used when known, else it stays empty. */

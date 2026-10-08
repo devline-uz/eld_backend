@@ -1,5 +1,5 @@
 /** MR-12 / MR-13 / MR-16 — pure per-day extras of the driver-app log view. */
-import { annotateSegments, dayIndicators, tripBlockForDay, type DayTrip, type ExtrasEvent } from './day-extras';
+import { annotateSegments, dayIndicators, mergeDayDetails, tripBlockForDay, type DayTrip, type ExtrasEvent } from './day-extras';
 import type { RodsSegment } from './rods';
 
 const DAY_START = new Date('2026-06-01T04:00:00Z');
@@ -83,6 +83,19 @@ describe('annotateSegments (MR-13)', () => {
     expect(second).toMatchObject({ eventId: '6', odometerMi: 950, locationDescription: '2 mi N of Dayton, OH', carriedOver: false });
   });
 
+  it('§395 App. A 4.4.2 — a stored position without text gets the offline geo-location (PC: 10-mile steps)', () => {
+    const [plain] = annotateSegments(
+      [segment('2026-06-01T04:00:00Z', '2026-06-01T05:00:00Z')],
+      [ev({ id: 8n, at: '2026-06-01T04:00:00Z', eventCode: 4, latitude: '39.962', longitude: '-82.999' })],
+    );
+    expect(plain.locationDescription).toBe('OH Columbus');
+    const [pc] = annotateSegments(
+      [segment('2026-06-01T04:00:00Z', '2026-06-01T05:00:00Z')],
+      [ev({ id: 9n, at: '2026-06-01T04:00:00Z', eventCode: 1, latitude: 39.961, longitude: -83.063, locationPrecisionMi: 10 })],
+    );
+    expect(pc.locationDescription).toMatch(/^(\d?0mi [NSEW]{1,3} )?OH \S/);
+  });
+
   it('yields nulls when no record precedes the segment', () => {
     const [only] = annotateSegments([segment('2026-06-01T04:00:00Z', '2026-06-01T05:00:00Z')], []);
     expect(only).toMatchObject({ eventId: null, odometerMi: null, engineHours: null, locationDescription: null, carriedOver: false });
@@ -144,5 +157,26 @@ describe('tripBlockForDay (MR-12)', () => {
 
   it('reports bobtail when the day’s trip declared no trailer', () => {
     expect(tripBlockForDay([{ ...base, bobtail: true }], DAY_START, DAY_END, NOW).bobtail).toBe(true);
+  });
+});
+
+describe('mergeDayDetails (D-129)', () => {
+  const block = { shippingDocuments: ['BOL-1'], trailerNumbers: ['TR-1'], notes: 'trip', bobtail: false, tripIds: ['t1'], tripNumbers: ['T-1'] };
+
+  it('unions trip + day-details lists without duplicates; trip notes win', () => {
+    expect(mergeDayDetails(block, { shippingDocuments: ['BOL-1', 'BOL-2'], trailerNumbers: ['X1'], bobtail: false, notes: 'day' })).toEqual({
+      ...block,
+      shippingDocuments: ['BOL-1', 'BOL-2'],
+      trailerNumbers: ['TR-1', 'X1'],
+      notes: 'trip',
+      dayDetails: true,
+    });
+  });
+
+  it('no row -> the trip block unchanged with dayDetails:false; bobtail only when no trailer is left', () => {
+    expect(mergeDayDetails(block, null)).toEqual({ ...block, dayDetails: false });
+    const empty = { shippingDocuments: [], trailerNumbers: [], notes: null, bobtail: false, tripIds: [], tripNumbers: [] };
+    expect(mergeDayDetails(empty, { shippingDocuments: [], trailerNumbers: [], bobtail: true, notes: 'n' })).toMatchObject({ bobtail: true, notes: 'n' });
+    expect(mergeDayDetails(block, { shippingDocuments: [], trailerNumbers: [], bobtail: true, notes: null }).bobtail).toBe(false);
   });
 });

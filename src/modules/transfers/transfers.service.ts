@@ -16,6 +16,7 @@ import { FmcsaTransferService } from './fmcsa-transfer.service';
 import { buildOutputFile } from './output-file';
 import { PreSendFinding, runPreSendChecks } from './pre-send-checks';
 import { activeMalfunctionCodes, buildSnapshot, uncertifiedDayCount } from './snapshot';
+import { loadTripDetails } from './trip-details';
 import { TransfersRepository } from './transfers.repository';
 import { validateOutputFile } from './validator';
 
@@ -110,6 +111,8 @@ export class TransfersService {
       this.repo.findUsers(editorIds),
     ]);
 
+    const tripDetails = await loadTripDetails(this.repo, driver.id, timezone, dayKey('UTC', rangeStart), dayKey('UTC', rangeEnd), generatedAt);
+
     const snapshot = buildSnapshot({
       driver,
       carrier,
@@ -123,6 +126,8 @@ export class TransfersService {
       eldIdentifier: carrier.eldIdentifier,
       eldRegistrationId: carrier.eldRegistrationId ?? '',
       eldAuthenticationValue: this.authenticationValue(carrier, driver.id),
+      currentTripDetails: tripDetails.current,
+      tripDetailsByDay: tripDetails.byDay,
     });
 
     const generated = buildOutputFile(snapshot);

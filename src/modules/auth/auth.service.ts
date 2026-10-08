@@ -16,6 +16,7 @@ import { DriverAuthRepository } from './repositories/driver-auth.repository';
 import { DriverSessionRepository } from './repositories/driver-session.repository';
 import { SessionRepository } from './repositories/session.repository';
 import { UserAuthRepository, UserWithRole } from './repositories/user-auth.repository';
+import { RodsLoginRecorder } from '../logs/rods-login-recorder';
 
 /** How long a back-office invite stays acceptable after `invitedAt` (web §11.18 footer copy). */
 export const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -63,6 +64,7 @@ export class AuthService {
     private readonly carrier: CarrierRepository,
     private readonly attachments: AttachmentsService,
     @Inject(TRANSACTIONAL_MAIL) private readonly mail: TransactionalMailPort,
+    private readonly loginRecords: RodsLoginRecorder,
   ) {}
 
   // ---------------------------------------------------------------------
@@ -113,6 +115,11 @@ export class AuthService {
       ip: meta.ip,
       expiresAt: new Date(Date.now() + this.tokens.refreshTtlMs('driver')),
     });
+    // D-130 — §395 Appendix A 4.5.1.5: authenticating on an already-assigned unit is an ELD
+    // login (idempotent: no second record while one is open on that unit; never throws).
+    if (driver.assignedVehicleId) {
+      await this.loginRecords.login(driver.id, driver.assignedVehicleId, 'AUTH_LOGIN');
+    }
     return { accessToken, refreshToken, tokenType: 'Bearer', driverId: driver.id };
   }
 
@@ -271,7 +278,7 @@ export class AuthService {
     return { accessToken, refreshToken: newRefreshToken, tokenType: 'Bearer' };
   }
 
-  async logout(subjectType: 'user' | 'driver', refreshToken: string): Promise<void> {
+  async logout(subjectType: 'user' | 'driver', refreshToken: string, subjectId?: string): Promise<void> {
     const hash = sha256(refreshToken);
     if (subjectType === 'user') {
       const session = await this.sessions.findByRefreshHash(hash);
@@ -279,6 +286,9 @@ export class AuthService {
     } else {
       const session = await this.driverSessions.findByRefreshHash(hash);
       if (session && !session.revokedAt) await this.driverSessions.revoke(session.id);
+      // D-130 — §395 Appendix A 4.5.1.5 logout record for the open login (none open = no record).
+      const driverId = subjectId ?? session?.driverId;
+      if (driverId) await this.loginRecords.logout(driverId, 'AUTH_LOGOUT');
     }
   }
 
@@ -404,6 +414,19 @@ export class AuthService {
    * per-user home-terminal timezone column; the account's carrier timezone is used, same
    * value the topbar would otherwise fetch via a second `/me/profile` call. */
   async meProfile(user: ContextUser): Promise<ContextUser | (ContextUser & Record<string, unknown>)> {
+    if (user.type === 'driver') {
+      // Mobile wave 4 (M-31 / D-120) — the ELD username (Appendix A 7.38) for the Driver ID line
+      // and the phone-built eRODS file; claims stay as they were, the profile fields are additive.
+      const driver = await this.drivers.findById(user.id);
+      if (!driver) return user;
+      return {
+        ...user,
+        username: driver.username,
+        fullName: `${driver.firstName} ${driver.lastName}`.trim(),
+        email: driver.email ?? null,
+        homeTerminalTimezone: driver.homeTerminalTimezone,
+      };
+    }
     if (user.type !== 'user') return user;
     const account = await this.users.findByIdWithRole(user.id);
     if (!account) return user;

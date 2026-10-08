@@ -83,6 +83,8 @@ function harness(overrides: Partial<Record<string, unknown>> = {}): Harness {
     findPendingUnidentifiedSegments: jest.fn().mockResolvedValue([]),
     findVehicles: jest.fn().mockResolvedValue([{ id: 'veh_1', unitNumber: '101', vin: '1FUJGLDR9CSBK1234' }]),
     findUsers: jest.fn().mockResolvedValue([]),
+    findDayTrips: jest.fn().mockResolvedValue([]),
+    findDayDetails: jest.fn().mockResolvedValue([]),
     countTransfersInWindow: jest.fn().mockResolvedValue(0),
     createTransfer: jest.fn().mockImplementation(({ data }: never) => data),
     updateTransfer: jest.fn(),
@@ -155,6 +157,26 @@ afterAll(() => {
 });
 
 describe('TransfersService.create (tz.md §10)', () => {
+  it('D-129: header lines 3/4 carry the trailers and shipping documents of today (trip + no-trip day details)', async () => {
+    const h = harness({
+      findDayTrips: jest.fn().mockResolvedValue([
+        {
+          id: 't1', number: 'T-1', status: 'IN_PROGRESS', shippingDocument: null, shippingDocuments: ['BOL-TRIP'], trailerNumbers: [],
+          trailerNumber: null, bobtail: false, notes: null, plannedStartAt: null, plannedEndAt: null,
+          startedAt: new Date('2026-09-11T12:00:00Z'), completedAt: null, createdAt: new Date('2026-09-10T00:00:00Z'),
+        },
+      ]),
+      findDayDetails: jest.fn().mockResolvedValue([
+        { logDate: new Date('2026-09-11T00:00:00.000Z'), shippingDocuments: ['BOL-DAY'], trailerNumbers: ['X53-1188'], bobtail: false, notes: null },
+      ]),
+    });
+    await h.service.create(dto(), ACTOR);
+    const lines = h.puts[0].body.toString('utf8').split(/\r?\n/);
+    expect(lines[3]).toMatch(/^101,1FUJGLDR9CSBK1234,X53-1188,/);
+    expect(lines[5]).toMatch(/^BOL-TRIP BOL-DAY,0,/);
+    expect(h.repo.findDayDetails).toHaveBeenCalledWith('drv_1', new Date('2026-09-04T00:00:00.000Z'), new Date('2026-09-11T00:00:00.000Z'));
+  });
+
   it('generates, validates and stores an Appendix A file, then queues the send step', async () => {
     const h = harness();
     const view = await h.service.create(dto(), ACTOR);

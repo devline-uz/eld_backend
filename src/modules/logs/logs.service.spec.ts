@@ -99,6 +99,8 @@ class FakeRepo {
   });
   findLastVehicleReading = jest.fn(async () => this.reading);
   findTripsForDriver = jest.fn(async () => this.trips);
+  dayDetails: unknown[] = [];
+  findDayDetailsForDriver = jest.fn(async () => this.dayDetails);
   findMalfunctionEvents = jest.fn(async () => this.malfunctionEvents);
 
   upsertDailyLog = jest.fn(async (args: Record<string, unknown>) => {
@@ -1139,5 +1141,18 @@ describe('MR-12 / MR-13 / MR-16 — GET /mobile/logs day extras', () => {
     const on = day.graph.find((segment) => segment.status === 'ON');
     expect(on).toMatchObject({ eventId: '1', locationDescription: '3.40 mi W of Columbus, OH', odometerMi: 1000, annotation: 'Pre-trip', carriedOver: false });
     expect(day.events[0]).toMatchObject({ eventId: '1', locationDescription: '3.40 mi W of Columbus, OH', odometerMi: 1000 });
+  });
+
+  it('D-129: merges the no-trip day details of that RODS day into the trip block', async () => {
+    const { service, repo } = build();
+    repo.events = [evt({ id: 1n, at: '2026-06-01T12:00:00Z', code: 4 })];
+    repo.dayDetails = [
+      { logDate: new Date('2026-06-01T00:00:00.000Z'), shippingDocuments: ['BOL-DAY'], trailerNumbers: ['X53-1'], bobtail: false, notes: 'yard' },
+      { logDate: new Date('2026-05-31T00:00:00.000Z'), shippingDocuments: ['OTHER'], trailerNumbers: [], bobtail: false, notes: null },
+    ];
+
+    const day = await service.getDay(DRIVER, '2026-06-01', new Date('2026-06-02T12:00:00Z'));
+
+    expect(day.trip).toMatchObject({ shippingDocuments: ['BOL-DAY'], trailerNumbers: ['X53-1'], notes: 'yard', dayDetails: true, tripIds: [] });
   });
 });

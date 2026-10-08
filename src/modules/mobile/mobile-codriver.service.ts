@@ -11,6 +11,7 @@ import type { CoDriverSwitchDto } from './dto/mobile-fleet-ops.dto';
 import { MobileFleetOpsRepository } from './mobile-fleet-ops.repository';
 import { MobileTripService } from './mobile-trip.service';
 import { MobileRepository } from './mobile.repository';
+import { RodsLoginRecorder } from '../logs/rods-login-recorder';
 
 /**
  * mobile/tz.md §21.1 MB-3, screens S-11/S-18/S-19 — the driver-seat handoff between an
@@ -30,6 +31,7 @@ export class MobileCoDriverService {
     private readonly auth: AuthService,
     private readonly audit: AuditRepository,
     private readonly trips: MobileTripService,
+    private readonly loginRecords: RodsLoginRecorder,
   ) {}
 
   /** MR-15 — the caller's active pairing (as either seat), or null. */
@@ -80,6 +82,9 @@ export class MobileCoDriverService {
       startedAt: now,
       startedById: driverId,
     });
+    // D-130 — the co-driver taking the seat authenticates on the unit: §395 Appendix A 4.5.1.5
+    // login (idempotent). The handing-over driver stays logged in as the co-driver (4.1.4(b)).
+    await this.loginRecords.login(coDriverId, pairing.vehicleId, 'CO_DRIVER_SWITCH');
 
     await this.writeAudit(actor, 'CO_DRIVER_SWITCHED', driverId, {
       pairingId: pairing.id,
@@ -97,6 +102,8 @@ export class MobileCoDriverService {
     const now = new Date();
     await this.repo.endPairing(pairing.id, driverId, now);
     await this.repo.clearAssignedVehicle(driverId);
+    // D-130 — leaving the team ends this driver's ELD session on the unit (logout record).
+    await this.loginRecords.logout(driverId, 'CO_DRIVER_LEAVE', { onlyVehicleId: pairing.vehicleId });
 
     await this.writeAudit(actor, 'CO_DRIVER_LEFT', driverId, { pairingId: pairing.id });
 

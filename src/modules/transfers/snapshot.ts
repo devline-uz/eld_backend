@@ -6,7 +6,7 @@
  * Section numbers below are 49 CFR §395 Subpart B Appendix A (`docs/fmcsa/`).
  */
 import type { Carrier, DailyLog, Driver, EldEvent, User, Vehicle } from '@prisma/client';
-import { offsetMs } from '../hos/engine/timezone';
+import { dayKey, offsetMs } from '../hos/engine/timezone';
 import type {
   OutputFileAnnotation,
   OutputFileCertification,
@@ -41,7 +41,53 @@ export interface SnapshotInput {
   eldRegistrationId: string;
   eldAuthenticationValue: string;
   coDriver?: Driver | null;
+  /** Explicit header Shipping Document Number; wins over `currentTripDetails` when set. */
   shippingDocumentNumber?: string;
+  /**
+   * D-129 — trailers / shipping documents in force at file generation (trips of that RODS day
+   * merged with the driver's day details): header lines 3 and 4 (4.8.2.1.1, 7.42 / 7.39).
+   */
+  currentTripDetails?: TripDetails | null;
+  /** D-129 — the same per home-terminal RODS day (`YYYY-MM-DD`), for engine power rows (4.8.2.1.9). */
+  tripDetailsByDay?: Record<string, TripDetails>;
+}
+
+/** D-129 — trailer numbers / shipping documents of a RODS day (trips + day details). */
+export interface TripDetails {
+  trailerNumbers: string[];
+  shippingDocuments: string[];
+}
+
+/** Appendix A 7.42 — Trailer Number(s): space-separated, max 32 chars; only whole numbers are kept. */
+export const TRAILER_FIELD_MAX = 32;
+/** Appendix A 7.39 — Shipping Document Number: max 40 chars. */
+export const SHIPPING_DOCUMENT_FIELD_MAX = 40;
+
+/**
+ * Joins values with single spaces without ever cutting one in half: values that would push the
+ * field past `max` are dropped (a lone over-long first value is truncated so the field is never
+ * blank when something was entered).
+ */
+function joinWithin(values: string[], max: number): string {
+  let out = '';
+  for (const raw of values) {
+    const value = raw.trim().replace(/\s+/g, ' ');
+    if (!value) continue;
+    const next = out ? `${out} ${value}` : value;
+    if (next.length <= max) out = next;
+    else if (!out) return value.slice(0, max);
+  }
+  return out;
+}
+
+/** Appendix A 7.42 — `{BX987 POP712 10567}`. */
+export function formatTrailerField(numbers: string[]): string {
+  return joinWithin(numbers, TRAILER_FIELD_MAX);
+}
+
+/** Appendix A 7.39 — several documents of one day share the single 0-40 char field, space-separated. */
+export function formatShippingDocumentField(documents: string[]): string {
+  return joinWithin(documents, SHIPPING_DOCUMENT_FIELD_MAX);
 }
 
 /** 60/7 rulesets use a 7-day multiday basis, 70/8 rulesets use 8 (Appendix A 7.36). */
@@ -154,6 +200,10 @@ export function buildSnapshot(input: SnapshotInput): OutputFileInput {
       diagnosticCode: e.diagnosticCode,
       locationDescription: manualLocationDescription(e),
       positioningMalfunction: positioningMalfunctionAt(e.eventDateTime),
+      // 4.8.2.1.9 — engine power rows carry the trailers / shipping documents of their RODS day (D-129).
+      ...(e.eventType === EVENT_TYPE.POWER && input.tripDetailsByDay
+        ? powerRowTripFields(input.tripDetailsByDay[dayKey(timezone, e.eventDateTime)])
+        : {}),
     };
   };
 
@@ -229,10 +279,10 @@ export function buildSnapshot(input: SnapshotInput): OutputFileInput {
     currentCmv: {
       powerUnitNumber: currentVehicle?.unitNumber ?? '',
       vin: currentVehicle?.vin ?? '',
-      trailerNumbers: '',
+      trailerNumbers: formatTrailerField(input.currentTripDetails?.trailerNumbers ?? []),
     },
     current: currentPosition(input.events, positioningMalfunctionAt(input.generatedAt)),
-    shippingDocumentNumber: input.shippingDocumentNumber ?? '',
+    shippingDocumentNumber: input.shippingDocumentNumber || formatShippingDocumentField(input.currentTripDetails?.shippingDocuments ?? []),
     carrier: { usdotNumber: carrier.dotNumber, name: carrier.name },
     eldIdentifier: input.eldIdentifier,
     eldRegistrationId: input.eldRegistrationId,
@@ -252,6 +302,14 @@ export function buildSnapshot(input: SnapshotInput): OutputFileInput {
 }
 
 const UNIDENTIFIED_KEY = '__unidentified__';
+
+function powerRowTripFields(details: TripDetails | undefined): Pick<OutputFileEvent, 'trailerNumbers' | 'shippingDocumentNumber'> {
+  if (!details) return {};
+  return {
+    trailerNumbers: formatTrailerField(details.trailerNumbers),
+    shippingDocumentNumber: formatShippingDocumentField(details.shippingDocuments),
+  };
+}
 
 /** `value - base` rounded to `digits` decimals; null when either side is unknown or it goes negative. */
 function difference(value: number | null, base: number | null, digits: number): number | null {

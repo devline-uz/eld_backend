@@ -62,6 +62,8 @@ describe('FmcsaPackGenerator', () => {
       findPendingUnidentifiedSegments: jest.fn(async () => []),
       findVehicles: jest.fn(async () => []),
       findUsers: jest.fn(async () => []),
+      findDayTrips: jest.fn(async () => []),
+      findDayDetails: jest.fn(async () => []),
     };
     const storage = { put: jest.fn(async (key: string) => key) };
 

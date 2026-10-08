@@ -120,7 +120,7 @@ export class LogsController {
     summary:
       'Every §395 record of a RODS day, including superseded (2), proposed (3) and rejected (4) ones — the audit trail the inspector sees.',
   })
-  @ApiOkResponse({ description: 'Append-only audit trail: active (1), superseded (2), proposed (3) and rejected (4) records.', schema: { example: { driverId: 'drv_1', date: '2026-09-10', events: [{ id: 'evt_8801', eventType: 1, eventCode: 3, eventSequenceId: 1042, recordStatus: 2, recordOrigin: 1, dutyStatus: 'ON', occurredAt: '2026-09-10T18:26:58.000Z', odometerMiles: 993590, latitude: 38.02, longitude: -84.5, locationDescription: '0.64 mi N of Florence, KY', totalEngineHours: 4321.4, checksumValid: true }] } } })
+  @ApiOkResponse({ description: 'Append-only audit trail: active (1), superseded (2), proposed (3) and rejected (4) records.', schema: { example: { driverId: 'drv_1', date: '2026-09-10', events: [{ id: 'evt_8801', eventType: 1, eventCode: 3, eventSequenceId: 1042, recordStatus: 2, recordOrigin: 1, dutyStatus: 'ON', occurredAt: '2026-09-10T18:26:58.000Z', odometerMiles: 993590, latitude: 38.02, longitude: -84.5, locationDescription: '1mi N KY Florence', totalEngineHours: 4321.4, checksumValid: true }] } } })
   @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.')] })
   getEvents(@Param('driverId') driverId: string, @Query(zodBody(LogDateQueryDto)) query: LogDateQueryDto) {
     return this.logs.getEvents(driverId, query.date);

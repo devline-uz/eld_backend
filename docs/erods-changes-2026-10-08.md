@@ -59,9 +59,28 @@ Reference bytes: `backend/test/conformance/erods/*.expected.{csv,json}` (regener
 | Malfunctions | title | `ELD Malfunction and Data Diagnostic Event Records:` | `Malfunctions and Data Diagnostic Events:` | 4.8.2.1.7 |
 | Login/Logout (NEW) | title + cols | — | `ELD Login/Logout Report:` · Seq, Code, ELD Username, Date, Time, Total Miles, Total Hours | 4.8.2.1.8 |
 | Engine Power (NEW) | title + cols | — | `CMV Engine Power-Up and Shut Down Activity:` · Seq, Code, Date, Time, Total Miles, Total Hours, Lat, Lon (E/M/X rules), Power Unit, VIN (from CMV list), Trailers, Shipping Doc | 4.8.2.1.9 |
+| Unidentified | title | `Unidentified Vehicle Profile Records:` | `Unidentified Driver Profile Records:` (`src/modules/transfers/segments.ts:31`, `SEGMENT_TITLES.unidentified`) | 4.8.2.1.10 |
 | Unidentified | col 8, 9 | Total miles / hours | Accumulated / Elapsed | 4.8.2.1.10 |
 | Unidentified | col 14, 15 (new) | — | **Malfunction Indicator Status**, **Event Data Check Value** (username `unidentified`) | 4.8.2.1.10 |
 | End of File | value | 2 hex | 4 hex | 4.8.2.1.11, 7.27 |
+
+### Header lines 3 / 4 and engine power rows — trailers and shipping documents (D-129, mobile wave 4)
+
+| Field | Before | After | § |
+|---|---|---|---|
+| Header line 3, `Trailer Number(s)` | always blank | trailers of the RODS day in force at generation (trips overlapping the day ∪ the driver's no-trip day details), joined by ONE space, whole numbers only, max 32 chars | 7.42 |
+| Header line 4, `Shipping Document Number` | blank unless passed explicitly | same source, documents joined by one space, whole documents only, max 40 chars (a lone longer one is cut to 40) | 7.39 |
+| Engine Power rows, `Trailer Number(s)` / `Shipping Document Number` | blank | the same lists for the record's home-terminal RODS day | 4.8.2.1.9 |
+
+"The day in force" = the generation day, or the range's last day when the range ends before today. Each
+trailer number is 1-10 chars `[A-Z0-9-]` (no inner space — space is the 7.42 separator), validated at input.
+
+### Login/Logout Report — rows now exist (D-130, mobile wave 4)
+
+The server writes the eventType 5 records itself (code 1 login on `/auth/login/driver` with an assigned unit,
+`select-vehicle`, `co-driver/switch`; code 2 on `/auth/logout`, `release-vehicle`, `co-driver/leave`):
+`recordOrigin=1`, `recordStatus=1`, the per-driver sequence id, the unit's last odometer / engine hours. The
+app never creates them; a phone-built file takes them from the synced records like any other event.
 
 ## File name (4.8.2.2) — completely new shape
 

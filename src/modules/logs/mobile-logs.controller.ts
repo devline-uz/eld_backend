@@ -133,11 +133,12 @@ export class MobileLogsController {
     summary: "The driver's own RODS day (grid, records, certification state).",
     description:
       'Additive fields (2026-10-08): `trip` {shippingDocuments, trailerNumbers, notes, bobtail, tripIds, tripNumbers} ' +
-      'from the trips overlapping the day (MR-12); `malfunctionIndicator` / `diagnosticIndicator` — an Appendix A ' +
+      'from the trips overlapping the day (MR-12), merged (D-129) with the driver\'s no-trip day details for that day ' +
+      '(union of lists, trip notes win; `dayDetails: true` when a day-details row exists — written by `PATCH /mobile/trip` with no active trip); `malfunctionIndicator` / `diagnosticIndicator` — an Appendix A ' +
       'malfunction / data diagnostic was in force at some instant of the day (MR-16); every `graph` segment carries ' +
       '`eventId`, `locationDescription`, `odometerMi`, `engineHours`, `annotation`, `carriedOver` of the record that ' +
       'opened it, and every event `eventId`, `locationDescription`, `odometerMi`, `engineHours`, `specialCondition` (MR-13). ' +
-      '`locationDescription` is the stored location text (device-provided or driver-entered); no reverse geocoding.',
+      '`locationDescription` is the stored location text (device-provided or driver-entered); when there is none, the server computes the §395 Appendix A 7.29 geo-location offline from the stored position (`3mi W OH Columbus`, PC: 10-mile steps — `docs/location-description.md`).',
   })
   @ApiOkResponse({
     schema: {
@@ -146,8 +147,8 @@ export class MobileLogsController {
         date: '2026-09-10',
         timezone: 'America/New_York',
         summary: { drivingSec: 32400, onDutySec: 7200, offDutySec: 39600, sleeperSec: 7200, certified: false },
-        graph: [{ status: 'OFF', effective: 'OFF', special: 'NONE', startAt: '2026-09-10T04:00:00.000Z', durationSec: 3600, eventId: '9100', locationDescription: '3.40 mi W of Columbus, OH', odometerMi: 120345, engineHours: 5321.4, annotation: null, carriedOver: true }],
-        trip: { shippingDocuments: ['BOL-4821'], trailerNumbers: ['TR-778'], notes: null, bobtail: false, tripIds: ['5b0c…'], tripNumbers: ['T-1042'] },
+        graph: [{ status: 'OFF', effective: 'OFF', special: 'NONE', startAt: '2026-09-10T04:00:00.000Z', durationSec: 3600, eventId: '9100', locationDescription: '3mi W OH Columbus', odometerMi: 120345, engineHours: 5321.4, annotation: null, carriedOver: true }],
+        trip: { shippingDocuments: ['BOL-4821'], trailerNumbers: ['TR-778'], notes: null, bobtail: false, tripIds: ['5b0c…'], tripNumbers: ['T-1042'], dayDetails: false },
         malfunctionIndicator: false,
         diagnosticIndicator: false,
       },

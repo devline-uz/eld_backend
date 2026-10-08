@@ -27,7 +27,7 @@ export class MobileBootstrapController {
       example: {
         serverTime: '2026-09-11T15:41:00.000Z',
         hosEngineVersion: '1.0.1',
-        driver: { id: 'drv_1', firstName: 'John', lastName: 'Smith', cdlNumber: 'W8569238', cdlState: 'KY', email: 'john@example.com', phone: '+15025550100', exemptDriverStatus: false },
+        driver: { id: 'drv_1', username: 'johnsmith', firstName: 'John', lastName: 'Smith', cdlNumber: 'W8569238', cdlState: 'KY', email: 'john@example.com', phone: '+15025550100', exemptDriverStatus: false },
         carrier: { name: 'Acme Freight', dotNumber: '1234567', mainOfficeAddress: '1 Main St, Columbus, OH 43004', eldProvider: 'OneBook ELD', eldIdentifier: 'OBK001', eldRegistrationId: 'AB12' },
         vehicle: { id: 'veh_1', unitNumber: '4821' },
         device: { id: 'dev_1', serial: 'PT30-001', bleState: 'CONNECTED' },

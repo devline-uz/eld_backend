@@ -12,6 +12,10 @@ import { PrismaClient } from '@prisma/client';
 import request from 'supertest';
 import { AppModule } from '../../src/app.module';
 import { configureApp } from '../../src/main';
+import { MobileRepository } from '../../src/modules/mobile/mobile.repository';
+import { buildOutputFile } from '../../src/modules/transfers/output-file';
+import { buildSnapshot } from '../../src/modules/transfers/snapshot';
+import { TransfersRepository } from '../../src/modules/transfers/transfers.repository';
 
 const prisma = new PrismaClient();
 const tinySignaturePng =
@@ -21,6 +25,8 @@ describe('Mobile requests 2026-10-08 (e2e smoke)', () => {
   let app: INestApplication;
   let token: string;
   let driverId: string;
+  let vehicleId: string;
+  let loginAt: Date;
   const server = () => app.getHttpServer();
   const bearer = () => ({ Authorization: `Bearer ${token}` });
 
@@ -34,6 +40,8 @@ describe('Mobile requests 2026-10-08 (e2e smoke)', () => {
       orderBy: { username: 'asc' },
     });
     driverId = driver.id;
+    vehicleId = driver.assignedVehicleId as string;
+    loginAt = new Date();
     const login = await request(server())
       .post('/api/auth/login/driver')
       .send({ username: driver.username, password: 'Onebook2026' });
@@ -43,6 +51,7 @@ describe('Mobile requests 2026-10-08 (e2e smoke)', () => {
 
   afterAll(async () => {
     await prisma.driverSavedSignature.deleteMany({ where: { driverId } });
+    await prisma.driverDayDetails.deleteMany({ where: { driverId } });
     await app.close();
     await prisma.$disconnect();
   });
@@ -171,6 +180,97 @@ describe('Mobile requests 2026-10-08 (e2e smoke)', () => {
     it('PUT /mobile/saved-signature rejects a body with neither bytes nor an id', async () => {
       const res = await request(server()).put('/api/mobile/saved-signature').set(bearer()).send({});
       expect([400, 422]).toContain(res.status);
+    });
+  });
+
+  describe('mobile wave 4 (D-129 / D-130 / M-31)', () => {
+    const loginRecords = () =>
+      prisma.eldEvent.findMany({
+        where: { driverId, eventType: 5, recordStatus: 1 },
+        orderBy: [{ eventDateTime: 'desc' }, { eventSequenceId: 'desc' }],
+      });
+
+    it('D-130: logging in on an assigned unit leaves an open §395 login (eventType 5 code 1, origin 1) on it', async () => {
+      const [latest] = await loginRecords();
+      expect(latest).toEqual(expect.objectContaining({ eventCode: 1, vehicleId, recordOrigin: 1, recordStatus: 1 }));
+    });
+
+    it('D-130: a second login on the same unit writes no duplicate record', async () => {
+      const before = (await loginRecords()).length;
+      const driver = await prisma.driver.findUniqueOrThrow({ where: { id: driverId } });
+      const again = await request(server()).post('/api/auth/login/driver').send({ username: driver.username, password: 'Onebook2026' });
+      expect([200, 201]).toContain(again.status);
+      expect((await loginRecords()).length).toBe(before);
+    });
+
+    it('D-117: delegation proof sees the server-written login on that unit', async () => {
+      expect(await app.get(MobileRepository).findLoginVehicleAt(driverId, new Date())).toBe(vehicleId);
+    });
+
+    it('D-130: the eRODS ELD Login/Logout Report lists the server-written login under the driver username', async () => {
+      const [driver, carrier] = await Promise.all([
+        prisma.driver.findUniqueOrThrow({ where: { id: driverId } }),
+        prisma.carrier.findFirstOrThrow(),
+      ]);
+      // The open login may predate this run (idempotent: an earlier run's login is still open).
+      const [open] = await loginRecords();
+      const from = new Date(Math.min(loginAt.getTime(), open.eventDateTime.getTime()) - 1_000);
+      const events = await app.get(TransfersRepository).findEvents(driverId, from, new Date());
+      const snapshot = buildSnapshot({
+        driver,
+        carrier,
+        events,
+        unidentifiedEvents: [],
+        vehicles: await prisma.vehicle.findMany({ where: { id: vehicleId } }),
+        users: [],
+        dailyLogs: [],
+        outputFileComment: 'e2e',
+        generatedAt: new Date(),
+        eldIdentifier: carrier.eldIdentifier,
+        eldRegistrationId: carrier.eldRegistrationId ?? '',
+        eldAuthenticationValue: 'E2E',
+      });
+      expect(snapshot.loginLogout?.some((row) => row.eventCode === 1)).toBe(true);
+      const segment = buildOutputFile(snapshot).csv.split('ELD Login/Logout Report:')[1].split('CMV Engine Power-Up')[0];
+      expect(segment).toContain(`,1,${driver.username},`);
+    });
+
+    it('M-31: GET /auth/me and /mobile/bootstrap expose the driver ELD username', async () => {
+      const driver = await prisma.driver.findUniqueOrThrow({ where: { id: driverId } });
+      const me = await request(server()).get('/api/auth/me').set(bearer());
+      expect(me.status).toBe(200);
+      expect(me.body.data).toEqual(expect.objectContaining({ id: driverId, type: 'driver', username: driver.username }));
+      const boot = await request(server()).get('/api/mobile/bootstrap').set(bearer());
+      expect(boot.status).toBe(200);
+      expect(boot.body.data.driver).toEqual(expect.objectContaining({ id: driverId, username: driver.username }));
+    });
+
+    it('D-129: GET /mobile/trip is never null; with no active trip PATCH stores free-text day details that GET /mobile/logs merges', async () => {
+      const current = await request(server()).get('/api/mobile/trip').set(bearer());
+      expect(current.status).toBe(200);
+      expect(['TRIP', 'DAY_DETAILS']).toContain(current.body.data.source);
+      if (current.body.data.source !== 'DAY_DETAILS') return; // this driver has a trip: PATCH would edit it
+
+      const patch = await request(server())
+        .patch('/api/mobile/trip')
+        .set(bearer())
+        .send({ trailerNumbers: ['zz-e2e-1'], shippingDocuments: ['BOL-E2E'] });
+      expect(patch.status).toBe(200);
+      expect(patch.body.data).toEqual(
+        expect.objectContaining({ source: 'DAY_DETAILS', id: null, trailerNumbers: ['ZZ-E2E-1'], trailerId: null, shippingDocuments: ['BOL-E2E'] }),
+      );
+      const logDate = patch.body.data.logDate as string;
+
+      const got = await request(server()).get(`/api/mobile/trip?date=${logDate}`).set(bearer());
+      expect(got.body.data).toEqual(expect.objectContaining({ trailerNumbers: ['ZZ-E2E-1'], logDate }));
+
+      const day = await request(server()).get(`/api/mobile/logs?date=${logDate}`).set(bearer());
+      expect(day.status).toBe(200);
+      expect(day.body.data.trip).toEqual(expect.objectContaining({ dayDetails: true }));
+      expect(day.body.data.trip.trailerNumbers).toContain('ZZ-E2E-1');
+
+      const bad = await request(server()).patch('/api/mobile/trip').set(bearer()).send({ trailerNumbers: ['HAS SPACE'] });
+      expect(bad.status).toBe(422);
     });
   });
 });

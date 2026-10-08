@@ -148,6 +148,7 @@ export const FIGMA_UNMAPPED_ROUTES: Record<string, string> = {
   'POST /api/mobile/conversations': 'Driver app M-15 "+" start a conversation (MR-3) — mobile Figma export missing.',
   'GET /api/mobile/certification-status': 'Driver app Logs certification banner (MR-26) — mobile Figma export missing.',
   'GET /api/mobile/support/tickets/{id}': 'Driver app M-30 ticket detail (MR-20) — mobile Figma export missing.',
+  'POST /api/mobile/device/mac': 'Driver app BLE connect to the unit\'s PT30 — reports the observed MAC (MG-BLE-1/2, no screen of its own); mobile Figma export missing.',
   // In-app notification inbox — a bell icon shown on every screen, not a screen of its own;
   // the role-guide exports do not capture it separately from the pages it overlays.
   'GET /api/notifications': 'In-app notification bell (TZ §14) — not a distinct screen in the role-guide export.',
@@ -164,6 +165,7 @@ export const FIGMA_UNMAPPED_ROUTES: Record<string, string> = {
   'GET /api/reports/schedules': 'Reports — schedule list, not a distinct role-guide page.',
   'POST /api/reports/schedules': 'Reports — "New schedule" action, not a distinct role-guide page.',
   'PATCH /api/reports/schedules/{id}': 'Reports — edit schedule, not a distinct role-guide page.',
+  'DELETE /api/reports/schedules/{id}': 'Reports — delete schedule, not a distinct role-guide page.',
   'GET /api/reports/activity': 'Reports — Activity tab; role-guide export only captured the IFTA/FMCSA tabs (p.20/p.21).',
   'GET /api/reports/activity/summary':
     'Reports — Activity tab JSON aggregate (gap B-46) feeding W-13/W-15/dashboard; same Activity tab as GET /api/reports/activity above, not a distinct role-guide page.',

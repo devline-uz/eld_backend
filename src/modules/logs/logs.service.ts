@@ -3,6 +3,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { EditorType, type Prisma } from '@prisma/client';
 import { Queue } from 'bullmq';
 import type { EldEvent } from '@prisma/client';
+import { locationTextOf } from '../../common/geo-location/location-description';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
 import type { ContextUser } from '../../core/context/request-context';
@@ -21,7 +22,7 @@ import {
   recertificationRequired,
   uncertifiedAlertDue,
 } from './certification';
-import { annotateSegments, dayIndicators, tripBlockForDay, type ExtrasEvent } from './day-extras';
+import { annotateSegments, dayIndicators, mergeDayDetails, tripBlockForDay, type ExtrasEvent } from './day-extras';
 import {
   AppendRow,
   formatProposalMeta,
@@ -178,6 +179,9 @@ export class LogsService {
     const headers = await this.repo.findDailyLogs(driverId, utcDate(fromKey), utcDate(toKey));
     // MR-12 / MR-16 — read-path extras only (the header rebuild paths never need them).
     const trips = extras ? await this.repo.findTripsForDriver(driverId, windowStart, windowEnd) : [];
+    // D-129 — the driver's no-trip day details, merged into the same per-day `trip` block.
+    const dayDetails = extras ? await this.repo.findDayDetailsForDriver(driverId, utcDate(fromKey), utcDate(toKey)) : [];
+    const dayDetailsByKey = new Map(dayDetails.map((row) => [dayKey('UTC', row.logDate), row]));
     const indicatorEvents: ExtrasEvent[] = extras
       ? [
           ...(await this.repo.findMalfunctionEvents(
@@ -238,8 +242,9 @@ export class LogsService {
         graph: annotateSegments(day.segments, events),
         events: dayEvents.map((event) => this.toEventView(event)),
         ...(extras && {
-          /** MR-12 — shipping documents / trailers of the trips overlapping this day. */
-          trip: tripBlockForDay(trips, day.startAt, day.endAt, now),
+          /** MR-12 — shipping documents / trailers of the trips overlapping this day, plus (D-129)
+           * the driver's day details for it (`dayDetails: true` when a row exists). */
+          trip: mergeDayDetails(tripBlockForDay(trips, day.startAt, day.endAt, now), dayDetailsByKey.get(key)),
           /** MR-16 — Appendix A malfunction / data-diagnostic indicator, rolled up per day. */
           ...dayIndicators(indicatorEvents, day.startAt, day.endAt),
         }),
@@ -1262,7 +1267,7 @@ export class LogsService {
       vehicleId: event.vehicleId,
       // MR-13 — mobile-facing aliases of the Appendix A fields above (additive).
       eventId: String(event.id),
-      locationDescription: event.locationName,
+      locationDescription: locationTextOf(event),
       odometerMi: event.totalVehicleMiles,
       engineHours: toNumberOrNull(event.totalEngineHours),
       /** MR-23 — eventType 3 records: PC (1) / YM (2) / NONE (0, cleared). */

@@ -64,6 +64,8 @@ export class MobileBootstrapService {
       hosEngineVersion: HOS_ENGINE_VERSION,
       driver: {
         id: driver.id,
+        /** Mobile wave 4 (M-31 / D-120) — the ELD username (Appendix A 7.38): Driver ID line + phone-built eRODS file. */
+        username: driver.username,
         firstName: driver.firstName,
         lastName: driver.lastName,
         cdlNumber: driver.cdlNumber,

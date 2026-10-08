@@ -44,7 +44,10 @@ export class AuthController {
   @Public()
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post('login/driver')
-  @ApiOperation({ summary: 'Driver password login (TZ §6.1).' })
+  @ApiOperation({
+    summary: 'Driver password login (TZ §6.1).',
+    description: 'D-130 — when the driver already has an assigned unit, the server writes the §395 Appendix A 4.5.1.5 login record (eventType 5, code 1) on it (idempotent).',
+  })
   @ApiOkResponse({
     description: 'MB-9 — `driverId` is additive so the mobile app can name its per-driver offline DB file.',
     schema: { example: { accessToken: 'eyJ...', refreshToken: 'a1b2...', tokenType: 'Bearer', driverId: 'drv_1' } },
@@ -86,11 +89,15 @@ export class AuthController {
 
   @Post('logout')
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Revokes the session behind the given refresh token.' })
+  @ApiOperation({
+    summary: 'Revokes the session behind the given refresh token.',
+    description: 'D-130 — for a driver it also writes the §395 Appendix A 4.5.1.5 logout record (eventType 5, code 2) for the open ELD login, if any.',
+  })
   @ApiOkResponse({ schema: { example: { success: true } } })
   @ApiStandardErrors()
-  async logout(@Body(zodBody(LogoutDto)) dto: LogoutDto, @CurrentUser('type') subjectType: 'user' | 'driver') {
-    await this.auth.logout(subjectType, dto.refreshToken);
+  async logout(@Body(zodBody(LogoutDto)) dto: LogoutDto, @CurrentUser() actor: ContextUser) {
+    // Same subject mapping as before (an api-key principal never had a refresh session either).
+    await this.auth.logout(actor.type as 'user' | 'driver', dto.refreshToken, actor.type === 'driver' ? actor.id : undefined);
     return { success: true };
   }
 
@@ -152,7 +159,10 @@ export class AuthController {
 
   @Get('me')
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'The authenticated principal (TZ §6.3 token claims), plus B-34 topbar fields for a `user` subject.' })
+  @ApiOperation({
+    summary: 'The authenticated principal (TZ §6.3 token claims), plus B-34 topbar fields for a `user` subject.',
+    description: 'A `driver` subject additionally gets `username` (the ELD username, Appendix A 7.38), `fullName`, `email`, `homeTerminalTimezone`.',
+  })
   @ApiOkResponse({
     schema: { example: { id: 'usr_1', type: 'user', role: 'ADMIN', permissions: {}, fullName: 'Sarah Chen', email: 'sarah.chen@universal-logistics.com', avatarUrl: null, carrierName: 'Universal Logistics Inc.', homeTerminalTimezone: 'America/New_York' } },
   })

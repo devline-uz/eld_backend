@@ -3,6 +3,7 @@ import type {
   CoDriverPairing,
   Device,
   Driver,
+  DriverDayDetails,
   Dvir,
   Prisma,
   Role,
@@ -162,9 +163,53 @@ export class MobileFleetOpsRepository {
     });
   }
 
-  /** MR-4 — live trailers by exact number in ONE query (no per-number lookups). */
+  /** MR-4 / D-129 — live ACTIVE carrier trailers by number (case-insensitive) in ONE query; used
+   * only to LINK a typed trailer number — an unmatched number is accepted as free text. */
   findTrailersByNumbers(numbers: string[]): Promise<Trailer[]> {
-    return this.prisma.trailer.findMany({ where: { number: { in: numbers }, deletedAt: null } });
+    return this.prisma.trailer.findMany({
+      where: { number: { in: numbers, mode: 'insensitive' }, deletedAt: null, status: 'ACTIVE' },
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // D-129 — per-RODS-day driver trip details (no active trip)
+  // ---------------------------------------------------------------------
+
+  findDriverTimezone(driverId: string): Promise<{ homeTerminalTimezone: string } | null> {
+    return this.prisma.driver.findUnique({ where: { id: driverId }, select: { homeTerminalTimezone: true } });
+  }
+
+  findDayDetails(driverId: string, logDate: Date): Promise<DriverDayDetails | null> {
+    return this.prisma.driverDayDetails.findUnique({ where: { driverId_logDate: { driverId, logDate } } });
+  }
+
+  /** D-129 / tz.md §9.2 — a header change on a CERTIFIED day drops the certification (count kept). */
+  async dropCertification(driverId: string, logDate: Date): Promise<number> {
+    const result = await this.prisma.dailyLog.updateMany({
+      where: { driverId, logDate, certified: true },
+      data: { certified: false, certifiedAt: null, certifiedById: null, certifierType: null },
+    });
+    return result.count;
+  }
+
+  upsertDayDetails(
+    driverId: string,
+    logDate: Date,
+    data: Pick<Prisma.DriverDayDetailsUncheckedUpdateInput, 'shippingDocuments' | 'trailerNumbers' | 'trailerId' | 'bobtail' | 'notes'>,
+  ): Promise<DriverDayDetails> {
+    return this.prisma.driverDayDetails.upsert({
+      where: { driverId_logDate: { driverId, logDate } },
+      create: {
+        driverId,
+        logDate,
+        shippingDocuments: (data.shippingDocuments as string[] | undefined) ?? [],
+        trailerNumbers: (data.trailerNumbers as string[] | undefined) ?? [],
+        trailerId: (data.trailerId as string | null | undefined) ?? null,
+        bobtail: (data.bobtail as boolean | undefined) ?? false,
+        notes: (data.notes as string | null | undefined) ?? null,
+      },
+      update: data,
+    });
   }
 
   findTrailerById(id: string): Promise<Trailer | null> {

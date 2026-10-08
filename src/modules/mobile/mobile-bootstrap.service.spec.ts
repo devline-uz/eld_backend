@@ -8,6 +8,7 @@ import type { MobileRepository } from './mobile.repository';
 
 const DRIVER = {
   id: 'drv_1',
+  username: 'jdriver',
   firstName: 'A',
   lastName: 'B',
   cdlNumber: 'X',
@@ -85,5 +86,12 @@ describe('MobileBootstrapService — appUpdate (MB-19)', () => {
       notes: null,
       storeUrl: { ios: null, android: null },
     });
+  });
+});
+
+describe('MobileBootstrapService — driver.username (mobile wave 4, M-31 / D-120)', () => {
+  it('exposes the ELD username in the driver block', async () => {
+    const result = await build({}).bootstrap('drv_1');
+    expect(result.driver).toMatchObject({ id: 'drv_1', username: 'jdriver' });
   });
 });

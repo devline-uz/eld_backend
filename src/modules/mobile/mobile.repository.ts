@@ -18,6 +18,8 @@ export interface DvirCreateInput {
   driverId: string;
   vehicleId: string;
   trailerId?: string | null;
+  /** D-129 — the free-text trailer number the driver typed (null when only `trailerId` was sent). */
+  trailerNumber?: string | null;
   type: 'PRE_TRIP' | 'POST_TRIP' | 'INTERMEDIATE';
   submittedAt: Date;
   odometerMi: number | null;
@@ -148,6 +150,14 @@ export class MobileRepository extends BaseRepository<
     return this.prisma.vehicle.findUnique({ where: { id: vehicleId } });
   }
 
+  /** D-129 — the live ACTIVE carrier trailer with this number (case-insensitive), to link a typed DVIR trailer. */
+  findActiveTrailerByNumber(number: string): Promise<{ id: string; number: string } | null> {
+    return this.prisma.trailer.findFirst({
+      where: { number: { equals: number, mode: 'insensitive' }, deletedAt: null, status: 'ACTIVE' },
+      select: { id: true, number: true },
+    });
+  }
+
   /** Any trailer row, live or soft-deleted — `MobileDvirService.submit` decides. */
   findTrailer(trailerId: string): Promise<{ id: string; deletedAt: Date | null } | null> {
     return this.prisma.trailer.findUnique({ where: { id: trailerId }, select: { id: true, deletedAt: true } });
@@ -235,6 +245,7 @@ export class MobileRepository extends BaseRepository<
         driverId: input.driverId,
         vehicleId: input.vehicleId,
         trailerId: input.trailerId ?? null,
+        trailerNumber: input.trailerNumber ?? null,
         type: input.type,
         submittedAt: input.submittedAt,
         odometerMi: input.odometerMi,

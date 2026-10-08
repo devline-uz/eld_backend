@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import type { EditorType, Prisma } from '@prisma/client';
+import { resolveLocationText } from '../../common/geo-location/location-description';
 import { coarsenLocation } from '../../common/units';
 import { offsetMs } from '../hos/engine/timezone';
 import { computeChecksum } from '../ingest/checksum';
@@ -84,7 +85,11 @@ export class RodsEventWriter {
         deviceId: ctx.deviceId ?? null,
         eventSequenceId: sequenceIds[index],
         locationPrecisionMi: precisionMi,
-        locationName: ctx.location?.name ?? null,
+        // §395 App. A 4.4.2 — a supplied name wins; otherwise the offline geo-location text of
+        // the COARSENED position (10-mile distance steps under personal conveyance).
+        locationName: resolveLocationText(ctx.location?.name, position?.lat, position?.lon, {
+          reducedPrecision: ctx.personalConveyance === true,
+        }),
         totalVehicleMiles: ctx.totalVehicleMiles ?? null,
         annotation: row.annotation.slice(0, 60),
         comment: ctx.comment ?? null,

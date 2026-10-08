@@ -34,11 +34,12 @@ export class MobileDvirController {
     description:
       'MR-9: `defects[].category` should be a `code` from `GET /mobile/defect-catalog` (unknown values are still accepted and stored as sent). ' +
       'MR-10: optional `mechanicName`, `mechanicSignatureBase64`, `mechanicSignatureMimeType` (PNG/JPEG, 2 MB; a signature needs the name). ' +
-      'MR-11: `odometerMi` is optional (falls back to the unit odometer when known). `clientId` makes a replay return the first answer (409 if spent on another operation).',
+      'MR-11: `odometerMi` is optional (falls back to the unit odometer when known). `clientId` makes a replay return the first answer (409 if spent on another operation). ' +
+      'D-129: optional `trailerNumber` (free text, trimmed + upper-cased, 1-10 chars `[A-Z0-9-]`, Appendix A 7.42) is stored as typed and linked to an ACTIVE carrier trailer when it matches — never 422; an explicit `trailerId` must still exist.',
   })
   @ApiCreatedResponse({
     schema: {
-      example: { id: 'dvir_1', vehicleId: 'veh_1', type: 'PRE_TRIP', vehicleCondition: 'DEFECTS_FOUND', defectCount: 1, photoCount: 2, outOfService: false, mechanicSignatureImageId: null, applied: true },
+      example: { id: 'dvir_1', vehicleId: 'veh_1', trailerId: null, trailerNumber: 'X53-1188', type: 'PRE_TRIP', vehicleCondition: 'DEFECTS_FOUND', defectCount: 1, photoCount: 2, outOfService: false, mechanicSignatureImageId: null, applied: true },
     },
   })
   @ApiStandardErrors({ errors: [apiError.conflict(ERROR_CODES.CONFLICT, 'clientId already used by another operation.'), apiError.notFound(ERROR_CODES.VEHICLE_NOT_FOUND, 'Vehicle not found.'), apiError.unprocessable(ERROR_CODES.VALIDATION_FAILED, 'photoAttachmentIds must reference this driver\'s own, not yet attached DVIR_PHOTO uploads (MB-6); mechanicName is required with mechanicSignatureBase64.'), apiError.unprocessable(ERROR_CODES.TRAILER_NOT_FOUND, 'trailerId is unknown, or names a trailer deleted before this inspection.')] })

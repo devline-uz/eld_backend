@@ -9,6 +9,7 @@
  *    indicator status", rolled up per day (true when one was in force at any instant of it).
  *  - `tripBlockForDay`: §395.8(d)(11)-(12) shipping document / trailer numbers of the day.
  */
+import { locationTextOf } from '../../common/geo-location/location-description';
 import { activeRecords, type RodsEvent, type RodsSegment } from './rods';
 
 /** The `EldEvent` columns the extras read (structural, so tests need no Prisma model). */
@@ -16,12 +17,15 @@ export interface ExtrasEvent extends RodsEvent {
   totalEngineHours?: unknown;
   malfunctionCode?: string | null;
   diagnosticCode?: string | null;
+  latitude?: unknown;
+  longitude?: unknown;
+  locationPrecisionMi?: number | null;
 }
 
 export interface AnnotatedSegment extends RodsSegment {
   /** Id of the active record that opened this status (may lie before the day: carried over). */
   eventId: string | null;
-  /** §395 location description of that record (FMCSA style when the device sent one). */
+  /** §395 App. A 7.29 location description of that record (stored text, else offline geo-location). */
   locationDescription: string | null;
   odometerMi: number | null;
   engineHours: number | null;
@@ -53,7 +57,7 @@ export function annotateSegments(segments: RodsSegment[], events: ExtrasEvent[])
     return {
       ...segment,
       eventId: source?.id !== undefined && source?.id !== null ? String(source.id) : null,
-      locationDescription: source?.locationName ?? null,
+      locationDescription: locationTextOf(source),
       odometerMi: source?.totalVehicleMiles ?? null,
       engineHours: toNumberOrNull(source?.totalEngineHours),
       annotation: source?.annotation ?? null,
@@ -182,6 +186,36 @@ export function tripBlockForDay(trips: DayTrip[], startAt: Date, endAt: Date, no
     bobtail: overlapping.length > 0 && trailers.length === 0 && overlapping.some(({ trip }) => trip.bobtail),
     tripIds: overlapping.map(({ trip }) => trip.id),
     tripNumbers: overlapping.map(({ trip }) => trip.number),
+  };
+}
+
+/** D-129 — the driver's per-RODS-day details (`DriverDayDetails`), entered when no trip was active. */
+export interface DayDetailsRow {
+  shippingDocuments: string[];
+  trailerNumbers: string[];
+  bobtail: boolean;
+  notes: string | null;
+}
+
+/**
+ * D-129 — merges the day details into the trip block: documents / trailers are the union (trips
+ * first, then the day details, no duplicates); trip notes win, else the day-details notes; bobtail
+ * only when no trailer is left and a trip or the day details declared it. `dayDetails` tells the
+ * app whether the driver stored anything for the day without a trip.
+ */
+export function mergeDayDetails(block: DayTripBlock, details: DayDetailsRow | null | undefined): DayTripBlock & { dayDetails: boolean } {
+  if (!details) return { ...block, dayDetails: false };
+  const shippingDocuments = [...block.shippingDocuments];
+  for (const doc of details.shippingDocuments) if (!shippingDocuments.includes(doc)) shippingDocuments.push(doc);
+  const trailerNumbers = [...block.trailerNumbers];
+  for (const trailer of details.trailerNumbers) if (!trailerNumbers.includes(trailer)) trailerNumbers.push(trailer);
+  return {
+    ...block,
+    shippingDocuments,
+    trailerNumbers,
+    notes: block.notes ?? details.notes ?? null,
+    bobtail: trailerNumbers.length === 0 && (block.bobtail || details.bobtail),
+    dayDetails: true,
   };
 }
 

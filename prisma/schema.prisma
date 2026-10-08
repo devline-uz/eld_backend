@@ -215,6 +215,7 @@ model Driver {
   syncedChanges          SyncedChange[]
   documents              DriverDocument[]
   savedSignature         DriverSavedSignature?
+  dayDetails             DriverDayDetails[]
 
   @@index([status])
   // Partial unique indexes (WHERE "deletedAt" IS NULL) live in the migration SQL only; whitelisted
@@ -590,6 +591,29 @@ model DailyLog {
   @@index([certified, logDate])
 }
 
+/// M-09/M-12 (mobile wave 4, D-129) — §395.8(d) daily-log header data the driver enters when
+/// there is NO active trip: shipping document number(s) and trailer number(s) for one RODS day
+/// (home-terminal day, same `logDate` key as `DailyLog`). `PATCH /mobile/trip` writes here when the
+/// driver has no IN_PROGRESS/ASSIGNED trip; `GET /mobile/logs` and the eRODS header merge it with
+/// the trips overlapping the day. Trailer numbers are free text (Appendix A 7.42); `trailerId`
+/// links the first one that matches an ACTIVE carrier trailer.
+model DriverDayDetails {
+  id                String   @id @default(uuid())
+  driverId          String
+  logDate           DateTime @db.Date
+  shippingDocuments String[] @default([])
+  trailerNumbers    String[] @default([])
+  trailerId         String?
+  bobtail           Boolean  @default(false)
+  notes             String?  @db.VarChar(60)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  driver Driver @relation(fields: [driverId], references: [id], onDelete: Cascade)
+
+  @@unique([driverId, logDate])
+}
+
 model HosViolation {
   id             String          @id @default(uuid())
   driverId       String
@@ -650,6 +674,10 @@ model Dvir {
   driverId            String
   vehicleId           String
   trailerId           String?
+  /// D-129 — the trailer number as the driver typed it (free text, Appendix A 7.42 format); set
+  /// whenever the DVIR names a trailer by number. `trailerId` links it when it matches an ACTIVE
+  /// carrier trailer.
+  trailerNumber       String?
   type                DvirType
   submittedAt         DateTime
   /// MR-11 — optional on the driver's DVIR (nullable: older rows keep their value; an app that omits it and a

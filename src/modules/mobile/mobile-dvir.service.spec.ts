@@ -10,6 +10,7 @@ function build() {
   const repo = {
     findVehicle: jest.fn().mockResolvedValue({ id: 'veh_1' }),
     findTrailer: jest.fn().mockResolvedValue({ id: 'trl_1', deletedAt: null }),
+    findActiveTrailerByNumber: jest.fn().mockResolvedValue(null),
     createDvir: jest.fn().mockResolvedValue({ id: 'dvir_1', defects: [] }),
     markVehicleOutOfService: jest.fn().mockResolvedValue({}),
     findSyncedByClientId: jest.fn().mockResolvedValue(null),
@@ -103,6 +104,30 @@ describe('MobileDvirService — MB-6 DVIR photo persistence (regression)', () =>
   });
 });
 
+describe('MobileDvirService — location (B-144, §395 App. A 4.4.2)', () => {
+  it('coarsens the position to 1 mile before storage and fills the geo-location when no name came', async () => {
+    const { service, repo } = build();
+    await service.submit('drv_1', { ...dto([]), location: { lat: 39.961176, lon: -82.998794 } }, DRIVER);
+    const [input] = repo.createDvir.mock.calls[0] as [DvirCreateInput];
+    expect(input.latitude).not.toBe(39.961176);
+    expect(input.longitude).not.toBe(-82.998794);
+    expect(Math.abs((input.latitude as number) - 39.961176)).toBeLessThan(1 / 69);
+    expect(input.locationName).toMatch(/^(\d{1,2}mi [NSEW]{1,3} )?OH \S/);
+  });
+
+  it('keeps an app-supplied location name', async () => {
+    const { service, repo } = build();
+    await service.submit('drv_1', { ...dto([]), location: { lat: 39.96, lon: -83, name: 'Terminal 4' } }, DRIVER);
+    expect((repo.createDvir.mock.calls[0] as [DvirCreateInput])[0].locationName).toBe('Terminal 4');
+  });
+
+  it('no location -> nulls', async () => {
+    const { service, repo } = build();
+    await service.submit('drv_1', dto([]), DRIVER);
+    expect((repo.createDvir.mock.calls[0] as [DvirCreateInput])[0]).toMatchObject({ latitude: null, longitude: null, locationName: null });
+  });
+});
+
 describe('MobileDvirService — trailerId must name a live trailer (soft-deleted trailers)', () => {
   const TRL = '44444444-4444-4444-8444-444444444444';
   const base = () => ({ ...dto([]), vehicleCondition: 'SATISFACTORY' as const, trailerId: TRL });
@@ -133,6 +158,25 @@ describe('MobileDvirService — trailerId must name a live trailer (soft-deleted
     const { service, repo } = build();
     repo.findTrailer.mockResolvedValueOnce(null);
     await expect(service.submit('drv_1', base(), DRIVER)).rejects.toMatchObject({ code: 'TRAILER_NOT_FOUND', status: 422 });
+  });
+});
+
+describe('MobileDvirService — D-129 free-text trailerNumber', () => {
+  const base = () => ({ ...dto([]), vehicleCondition: 'SATISFACTORY' as const, trailerNumber: 'X53-1188' });
+
+  it('stores an unknown trailer number as free text (no TRAILER_NOT_FOUND) with no link', async () => {
+    const { service, repo } = build();
+    const res = await service.submit('drv_1', base(), DRIVER);
+    expect(repo.findActiveTrailerByNumber).toHaveBeenCalledWith('X53-1188');
+    expect((repo.createDvir.mock.calls[0] as [DvirCreateInput])[0]).toMatchObject({ trailerId: null, trailerNumber: 'X53-1188' });
+    expect(res).toMatchObject({ trailerId: null, trailerNumber: 'X53-1188' });
+  });
+
+  it('links the number when it matches an ACTIVE carrier trailer', async () => {
+    const { service, repo } = build();
+    repo.findActiveTrailerByNumber.mockResolvedValueOnce({ id: 'trl_7', number: 'X53-1188' });
+    await service.submit('drv_1', base(), DRIVER);
+    expect((repo.createDvir.mock.calls[0] as [DvirCreateInput])[0]).toMatchObject({ trailerId: 'trl_7', trailerNumber: 'X53-1188' });
   });
 });
 

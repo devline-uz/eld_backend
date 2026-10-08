@@ -4,6 +4,7 @@ import type {
   DailyLog,
   DataTransfer,
   Driver,
+  DriverDayDetails,
   EldEvent,
   Prisma,
   UnidentifiedSegment,
@@ -12,6 +13,8 @@ import type {
 } from '@prisma/client';
 import { BaseRepository, ModelDelegate } from '../../core/prisma/base.repository';
 import { PrismaService } from '../../core/prisma/prisma.service';
+import type { DayTrip } from '../logs/day-extras';
+import { findDayTrips } from '../logs/logs.repository';
 
 /** TZ §3.5 / §10 — every database call of the eRODS transfer module lives here. */
 @Injectable()
@@ -129,6 +132,16 @@ export class TransfersRepository extends BaseRepository<
       // B-83 — PENDING_CONFIRMATION is still unresolved: the records remain unidentified until the driver confirms.
       where: { status: { in: ['PENDING', 'PENDING_CONFIRMATION'] }, startAt: { lte: to }, endAt: { gte: from } },
     });
+  }
+
+  /** D-129 — trips that can overlap `[from, to]` (same query `GET /mobile/logs` uses). */
+  findDayTrips(driverId: string, from: Date, to: Date): Promise<DayTrip[]> {
+    return findDayTrips(this.prisma, driverId, from, to);
+  }
+
+  /** D-129 — the driver's no-trip day details for the RODS days `[fromDate, toDate]` (`@db.Date`). */
+  findDayDetails(driverId: string, fromDate: Date, toDate: Date): Promise<DriverDayDetails[]> {
+    return this.prisma.driverDayDetails.findMany({ where: { driverId, logDate: { gte: fromDate, lte: toDate } } });
   }
 
   findVehicles(ids: string[]): Promise<Vehicle[]> {

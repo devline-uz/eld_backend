@@ -2,6 +2,7 @@ import type { AuditRepository } from '../audit/audit.repository';
 import { MobileFleetOpsRepository } from './mobile-fleet-ops.repository';
 import { MobileRepository } from './mobile.repository';
 import { MobileVehicleService } from './mobile-vehicle.service';
+import type { RodsLoginRecorder } from '../logs/rods-login-recorder';
 
 const ACTOR = { id: 'drv_1', type: 'driver' as const };
 
@@ -20,12 +21,14 @@ function build() {
     recordSyncedResult: jest.fn().mockResolvedValue({ status: 'ACCEPTED', errorCode: null }),
   };
   const audit = { insert: jest.fn().mockResolvedValue(undefined) };
+  const loginRecords = { login: jest.fn().mockResolvedValue(1), logout: jest.fn().mockResolvedValue(1) };
   const service = new MobileVehicleService(
     repo as unknown as MobileFleetOpsRepository,
     audit as unknown as AuditRepository,
     mobileRepo as unknown as MobileRepository,
+    loginRecords as unknown as RodsLoginRecorder,
   );
-  return { service, repo, audit, mobileRepo };
+  return { service, repo, audit, mobileRepo, loginRecords };
 }
 
 const VEHICLE = {
@@ -93,6 +96,16 @@ describe('MobileVehicleService (MB-2)', () => {
     expect(audit.insert).toHaveBeenCalledWith(expect.objectContaining({ action: 'DRIVER_VEHICLE_SELECTED', objectId: 'drv_1' }));
   });
 
+  it('D-130: select writes the §395 login on the unit and closes the replaced stale holder\'s login', async () => {
+    const { service, repo, loginRecords } = build();
+    repo.findVehicleWithDevice.mockResolvedValue(VEHICLE);
+    repo.findVehicleHolder.mockResolvedValue({ id: 'drv_2', status: 'INACTIVE' });
+    repo.assignVehicle.mockResolvedValue({});
+    await service.select('drv_1', { vehicleId: 'veh_1' }, ACTOR);
+    expect(loginRecords.logout).toHaveBeenCalledWith('drv_2', 'STALE_HOLDER_REPLACED', { onlyVehicleId: 'veh_1' });
+    expect(loginRecords.login).toHaveBeenCalledWith('drv_1', 'veh_1', 'SELECT_VEHICLE');
+  });
+
   it('allows re-selecting a unit the driver already holds (no stale-holder clear)', async () => {
     const { service, repo } = build();
     repo.findVehicleWithDevice.mockResolvedValue(VEHICLE);
@@ -130,12 +143,13 @@ describe('MobileVehicleService (MB-2)', () => {
     });
 
     it('clears the unit, ends a pairing on that unit and records the clientId', async () => {
-      const { service, mobileRepo, repo } = build();
+      const { service, mobileRepo, repo, loginRecords } = build();
       mobileRepo.findDriver.mockResolvedValue({ id: 'drv_1', assignedVehicleId: 'veh_1' });
       mobileRepo.findActivePairing.mockResolvedValue({ id: 'pair_1', vehicleId: 'veh_1' });
       const result = await service.release('drv_1', { clientId: 'c-1', reason: 'done' }, ACTOR);
       expect(result).toEqual({ released: true, vehicleId: 'veh_1' });
       expect(repo.releaseVehicle).toHaveBeenCalledWith('drv_1', 'pair_1', expect.any(Date));
+      expect(loginRecords.logout).toHaveBeenCalledWith('drv_1', 'RELEASE_VEHICLE', { onlyVehicleId: 'veh_1' });
       expect(mobileRepo.recordSyncedResult).toHaveBeenCalledWith('drv_1', 'c-1', 'release_vehicle', expect.any(Date), 'ACCEPTED', null, result);
     });
 

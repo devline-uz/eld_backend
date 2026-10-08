@@ -8,6 +8,7 @@ import { AuditRepository } from '../audit/audit.repository';
 import type { AvailableVehiclesQueryDto, ReleaseVehicleDto, SelectVehicleDto } from './dto/mobile-fleet-ops.dto';
 import { MobileFleetOpsRepository, VehicleWithDevice } from './mobile-fleet-ops.repository';
 import { MobileRepository } from './mobile.repository';
+import { RodsLoginRecorder } from '../logs/rods-login-recorder';
 
 /** M-03 "select vehicle" response — the SAME shape `GET /mobile/bootstrap` uses for
  * `vehicle`, so the app can drop the result straight into its cached bootstrap state. */
@@ -44,6 +45,7 @@ export class MobileVehicleService {
     private readonly repo: MobileFleetOpsRepository,
     private readonly audit: AuditRepository,
     private readonly mobileRepo: MobileRepository,
+    private readonly loginRecords: RodsLoginRecorder,
   ) {}
 
   async availableVehicles(driverId: string, query: AvailableVehiclesQueryDto = {}) {
@@ -77,6 +79,8 @@ export class MobileVehicleService {
     const pairing = await this.mobileRepo.findActivePairing(driverId);
     const endPairingId = pairing && pairing.vehicleId === vehicleId ? pairing.id : null;
     await this.repo.releaseVehicle(driverId, endPairingId, new Date());
+    // D-130 — leaving the unit ends the ELD session on it: §395 Appendix A 4.5.1.5 logout record.
+    await this.loginRecords.logout(driverId, 'RELEASE_VEHICLE', { onlyVehicleId: vehicleId });
 
     const result: ReleaseVehicleResult = { released: true, vehicleId };
     if (dto.clientId) {
@@ -123,6 +127,10 @@ export class MobileVehicleService {
     const staleHolderId = holder && holder.id !== driverId ? holder.id : null;
 
     await this.repo.assignVehicle(driverId, dto.vehicleId, staleHolderId);
+    // D-130 — authenticated driver on a unit = §395 Appendix A 4.5.1.5 login (an open login on
+    // another unit is closed first); a replaced non-ACTIVE holder's open login on it is closed.
+    if (staleHolderId) await this.loginRecords.logout(staleHolderId, 'STALE_HOLDER_REPLACED', { onlyVehicleId: dto.vehicleId });
+    await this.loginRecords.login(driverId, dto.vehicleId, 'SELECT_VEHICLE');
 
     await this.writeAudit(actor, driverId, dto.vehicleId);
 

@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { TokenVerifier } from '../../common/guards/token-verifier.port';
 import { AttachmentsModule } from '../attachments/attachments.module';
 import { CarrierModule } from '../carrier/carrier.module';
+import { RodsLoginModule } from '../logs/rods-login-recorder';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { DriverAuthRepository } from './repositories/driver-auth.repository';
@@ -20,9 +21,10 @@ import { TokenService } from './token.service';
  * one-directional dependency (`CarrierModule` never imports `AuthModule` back).
  * `AttachmentsModule` — B-34/B-51 `avatarUrl` reuses the reusable presign helper
  * (`AttachmentsService.presignKey`, §20 B-41) instead of `STORAGE_PORT` directly.
+ * `RodsLoginModule` — D-130 §395 login/logout records on driver login/logout; import-free module.
  */
 @Module({
-  imports: [CarrierModule, AttachmentsModule],
+  imports: [CarrierModule, AttachmentsModule, RodsLoginModule],
   controllers: [AuthController],
   providers: [
     AuthService,

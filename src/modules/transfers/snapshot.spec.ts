@@ -1,5 +1,12 @@
 import { buildOutputFile } from './output-file';
-import { activeMalfunctionCodes, buildSnapshot, multidayBasisOf, uncertifiedDayCount } from './snapshot';
+import {
+  activeMalfunctionCodes,
+  buildSnapshot,
+  formatShippingDocumentField,
+  formatTrailerField,
+  multidayBasisOf,
+  uncertifiedDayCount,
+} from './snapshot';
 import { validateOutputFile } from './validator';
 
 const DRIVER = {
@@ -290,6 +297,58 @@ describe('buildSnapshot — segment routing (tz.md §10.2)', () => {
     expect(multidayBasisOf({ hosRuleset: 'US_60_7_PASSENGER' } as never)).toBe(7);
     expect(multidayBasisOf({ hosRuleset: 'US_70_8_PROPERTY' } as never)).toBe(8);
     expect(multidayBasisOf({ hosRuleset: 'US_70_8_PASSENGER' } as never)).toBe(8);
+  });
+});
+
+describe('buildSnapshot — trailers / shipping documents and server login records (D-129 / D-130)', () => {
+  it('fills header lines 3 and 4 from the current trip details (7.42 space-separated, 7.39)', () => {
+    const snap = snapshot({ currentTripDetails: { trailerNumbers: ['X53-1188', 'TR-2'], shippingDocuments: ['BOL-1', 'BOL-2'] } });
+    expect(snap.currentCmv.trailerNumbers).toBe('X53-1188 TR-2');
+    expect(snap.shippingDocumentNumber).toBe('BOL-1 BOL-2');
+    const csv = buildOutputFile(snap).csv;
+    expect(csv).toContain(',X53-1188 TR-2,');
+    expect(csv).toContain('BOL-1 BOL-2,0,');
+    expect(validateOutputFile(csv).issues).toEqual([]);
+  });
+
+  it('keeps an explicit shippingDocumentNumber over the trip details', () => {
+    expect(snapshot({ shippingDocumentNumber: 'EXPLICIT', currentTripDetails: { trailerNumbers: [], shippingDocuments: ['BOL-1'] } }).shippingDocumentNumber).toBe('EXPLICIT');
+  });
+
+  it('never cuts a trailer number or document in half to fit 32 / 40 chars', () => {
+    expect(formatTrailerField(['AAAAAAAAAA', 'BBBBBBBBBB', 'CCCCCCCCCC', 'D'])).toBe('AAAAAAAAAA BBBBBBBBBB CCCCCCCCCC');
+    expect(formatTrailerField([])).toBe('');
+    expect(formatShippingDocumentField(['B'.repeat(30), 'C'.repeat(10), 'D'])).toBe(`${'B'.repeat(30)} D`);
+    expect(formatShippingDocumentField(['E'.repeat(50)])).toBe('E'.repeat(40));
+  });
+
+  it('gives engine power rows the trailers / documents of their home-terminal RODS day (4.8.2.1.9)', () => {
+    const snap = snapshot({
+      events: [event({ eventSequenceId: 3, eventType: 6, eventCode: 1, eventDateTime: new Date('2026-09-08T02:00:00Z') })],
+      // 02:00Z on 09-08 is 22:00 EDT on 09-07.
+      tripDetailsByDay: { '2026-09-07': { trailerNumbers: ['TR-7'], shippingDocuments: ['BOL-7'] }, '2026-09-08': { trailerNumbers: ['TR-8'], shippingDocuments: [] } },
+    });
+    expect(snap.enginePower?.[0]).toMatchObject({ trailerNumbers: 'TR-7', shippingDocumentNumber: 'BOL-7' });
+    expect(validateOutputFile(buildOutputFile(snap).csv).issues).toEqual([]);
+  });
+
+  it('lists a server-written login/logout pair (origin 1, no editor) under the driver ELD username (4.8.2.1.8)', () => {
+    const snap = snapshot({
+      events: [
+        event({ eventSequenceId: 1 }),
+        event({ eventSequenceId: 2, eventType: 5, eventCode: 1, eventDateTime: new Date('2026-09-08T12:00:00Z'), latitude: null, longitude: null }),
+        event({ eventSequenceId: 4, eventType: 5, eventCode: 2, eventDateTime: new Date('2026-09-08T20:00:00Z'), latitude: null, longitude: null }),
+      ],
+    });
+    expect(snap.loginLogout?.map((e) => [e.sequenceId, e.eventCode, e.userOrderNumber])).toEqual([
+      [2, 1, 1],
+      [4, 2, 1],
+    ]);
+    const csv = buildOutputFile(snap).csv;
+    const segment = csv.split('ELD Login/Logout Report:')[1].split('CMV Engine Power-Up')[0];
+    // Most recent activity on top; 3rd column is the driver's ELD username.
+    expect(segment.trim().split(/\r?\n/).map((line) => line.split(',').slice(0, 3).join(','))).toEqual(['0004,2,jsmith', '0002,1,jsmith']);
+    expect(validateOutputFile(csv).issues).toEqual([]);
   });
 });
 

@@ -4,6 +4,8 @@ import { EditorType, Prisma } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
+import { resolveLocationText } from '../../common/geo-location/location-description';
+import { coarsenLocation } from '../../common/units';
 import type { ContextUser } from '../../core/context/request-context';
 import { RequestContext } from '../../core/context/request-context';
 import { EventBusService } from '../../core/events/event-bus.service';
@@ -94,6 +96,13 @@ export class MobileDvirService {
       }
     }
 
+    // D-129 — a trailer typed by number is free text; it is linked when it matches an ACTIVE
+    // carrier trailer and never rejected when it does not (an explicit `trailerId` still wins).
+    let trailerId = dto.trailerId ?? null;
+    if (!trailerId && dto.trailerNumber) {
+      trailerId = (await this.repo.findActiveTrailerByNumber(dto.trailerNumber))?.id ?? null;
+    }
+
     // MB-6 — every referenced photo must be the driver's own, not yet attached DVIR_PHOTO upload;
     // checked BEFORE the signature is stored so a bad id leaves no orphan object behind.
     const photoIds = [...new Set(dto.defects.flatMap((defect) => defect.photoAttachmentIds))];
@@ -135,17 +144,24 @@ export class MobileDvirService {
       photoAttachmentIds: defect.photoAttachmentIds,
     }));
 
+    const position =
+      typeof dto.location?.lat === 'number' && typeof dto.location?.lon === 'number'
+        ? coarsenLocation({ lat: dto.location.lat, lon: dto.location.lon }, 'ONE_MILE')
+        : null;
     const dvir = await this.repo.createDvir({
       driverId,
       vehicleId: dto.vehicleId,
-      trailerId: dto.trailerId ?? null,
+      trailerId,
+      trailerNumber: dto.trailerNumber ?? null,
       type: dto.type,
       submittedAt: dto.submittedAt,
       // MR-11 — optional: fall back to the unit's known odometer; NULL when neither is known.
       odometerMi: dto.odometerMi ?? knownOdometerMi(vehicle),
-      latitude: dto.location?.lat ?? null,
-      longitude: dto.location?.lon ?? null,
-      locationName: dto.location?.name ?? null,
+      // B-144 — coarsened to 1 mile BEFORE storage (raw coordinates are stored nowhere);
+      // §395 App. A 4.4.2 — no name from the app -> the offline geo-location text.
+      latitude: position?.lat ?? null,
+      longitude: position?.lon ?? null,
+      locationName: resolveLocationText(dto.location?.name, position?.lat, position?.lon),
       vehicleCondition: dto.vehicleCondition,
       notes: dto.notes ?? null,
       driverSignatureUrl: signature.key,
@@ -176,6 +192,9 @@ export class MobileDvirService {
       id: dvir.id,
       driverId,
       vehicleId: dto.vehicleId,
+      /** D-129 — the linked carrier trailer (null for a free-text number) and the typed number. */
+      trailerId,
+      trailerNumber: dto.trailerNumber ?? null,
       type: dto.type,
       submittedAt: dto.submittedAt,
       vehicleCondition: dto.vehicleCondition,

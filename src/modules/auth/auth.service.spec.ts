@@ -24,6 +24,7 @@ describe('AuthService', () => {
   let carrier: MockRepo;
   let attachments: MockRepo;
   let mail: MockRepo;
+  let loginRecords: MockRepo;
 
   const activeUser = {
     id: 'u1',
@@ -85,6 +86,7 @@ describe('AuthService', () => {
     (hashUtil.randomOpaqueToken as jest.Mock).mockReturnValue('opaque-refresh');
 
     mail = { send: jest.fn().mockResolvedValue({ delivered: true, reference: 'm1' }) };
+    loginRecords = { login: jest.fn().mockResolvedValue(1), logout: jest.fn().mockResolvedValue(1) };
     service = new AuthService(
       users as never,
       drivers as never,
@@ -96,6 +98,7 @@ describe('AuthService', () => {
       carrier as never,
       attachments as never,
       mail as never,
+      loginRecords as never,
     );
   });
 
@@ -174,6 +177,18 @@ describe('AuthService', () => {
         tokenType: 'Bearer',
         driverId: 'd1',
       });
+    });
+
+    it('D-130: writes the §395 login record only when the driver already holds a unit', async () => {
+      drivers.findByUsername.mockResolvedValueOnce({ ...driver, assignedVehicleId: 'veh_1' });
+      driverSessions.create.mockResolvedValue({});
+      await service.loginDriver('john', 'pw', {});
+      expect(loginRecords.login).toHaveBeenCalledWith('d1', 'veh_1', 'AUTH_LOGIN');
+
+      loginRecords.login.mockClear();
+      drivers.findByUsername.mockResolvedValueOnce({ ...driver, assignedVehicleId: null });
+      await service.loginDriver('john', 'pw', {});
+      expect(loginRecords.login).not.toHaveBeenCalled();
     });
 
     it('uses TokenService.refreshTtlMs(driver) for the session expiry (MB-21)', async () => {
@@ -440,6 +455,19 @@ describe('AuthService', () => {
       await service.logout('driver', 'rt');
       expect(driverSessions.revoke).not.toHaveBeenCalled();
     });
+
+    it('D-130: a driver logout writes the §395 logout record for the caller; a user logout never does', async () => {
+      driverSessions.findByRefreshHash.mockResolvedValue({ id: 's1', driverId: 'd9', revokedAt: null });
+      await service.logout('driver', 'rt', 'd1');
+      expect(loginRecords.logout).toHaveBeenCalledWith('d1', 'AUTH_LOGOUT');
+      loginRecords.logout.mockClear();
+      await service.logout('driver', 'rt');
+      expect(loginRecords.logout).toHaveBeenCalledWith('d9', 'AUTH_LOGOUT');
+      loginRecords.logout.mockClear();
+      sessions.findByRefreshHash.mockResolvedValue(null);
+      await service.logout('user', 'rt', 'u1');
+      expect(loginRecords.logout).not.toHaveBeenCalled();
+    });
   });
 
   describe('sessions', () => {
@@ -624,11 +652,18 @@ describe('AuthService', () => {
       expect(attachments.presignKey).not.toHaveBeenCalled();
     });
 
-    it('passes through a driver subject unchanged (B-34 is user-only)', async () => {
+    it('adds the ELD username (and name/email/timezone) for a driver subject (M-31 / D-120)', async () => {
       const driver = { id: 'drv_1', type: 'driver' as const };
+      drivers.findById.mockResolvedValue({ id: 'drv_1', username: 'johnsmith', firstName: 'John', lastName: 'Smith', email: null, homeTerminalTimezone: 'America/Chicago' });
       const result = await service.meProfile(driver);
-      expect(result).toEqual(driver);
+      expect(result).toEqual({ ...driver, username: 'johnsmith', fullName: 'John Smith', email: null, homeTerminalTimezone: 'America/Chicago' });
       expect(users.findByIdWithRole).not.toHaveBeenCalled();
+    });
+
+    it('passes a driver subject through unchanged when the row is gone', async () => {
+      const driver = { id: 'drv_x', type: 'driver' as const };
+      drivers.findById.mockResolvedValue(null);
+      expect(await service.meProfile(driver)).toEqual(driver);
     });
   });
 });
