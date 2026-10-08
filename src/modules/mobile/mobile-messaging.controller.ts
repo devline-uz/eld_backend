@@ -1,11 +1,11 @@
 import { Body, Controller, Get, HttpCode, Param, Post, Query, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiCreatedResponse, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiBody, ApiCreatedResponse, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { DriverGuard } from '../../common/guards/driver.guard';
 import { zodBody } from '../../common/pipes/zod-validation.pipe';
 import type { ContextUser } from '../../core/context/request-context';
 import { apiError, ApiStandardErrors, ERROR_CODES } from '../../common/errors';
-import { ListMessagesQueryDto, MobileSendMessageDto } from './dto/mobile-messaging.dto';
+import { ListMessagesQueryDto, MobileSendMessageDto, StartConversationDto } from './dto/mobile-messaging.dto';
 import { MobileMessagingService } from './mobile-messaging.service';
 
 /**
@@ -21,17 +21,34 @@ export class MobileMessagingController {
 
   @Get()
   @ApiOperation({ summary: 'Lists the driver\'s conversations with the last message and unread count (S-14).' })
-  @ApiOkResponse({ schema: { example: { items: [{ id: 'cnv_1', type: 'DIRECT', lastMessage: { id: 'msg_1', body: 'On schedule.' }, unreadCount: 2 }] } } })
+  @ApiOkResponse({ schema: { example: { items: [{ id: 'cnv_1', type: 'DIRECT', title: 'Jane Dispatcher', participants: [{ id: 'drv_1', type: 'DRIVER', name: 'John Smith' }, { id: 'usr_1', type: 'STAFF', name: 'Jane Dispatcher' }], lastMessage: { id: 'msg_1', body: 'On schedule.', senderId: 'usr_1', senderType: 'STAFF', senderName: 'Jane Dispatcher', readAt: null, clientId: null }, unreadCount: 2 }] } } })
   @ApiStandardErrors()
   listConversations(@CurrentUser('id') driverId: string) {
     return this.service.listConversations(driverId);
+  }
+
+  @Post()
+  @ApiOperation({
+    summary: 'MR-3 — starts (or reuses) a conversation with a contact from `GET /mobile/contacts` and sends the first message.',
+    description:
+      '`contactId` is a staff user id, the active co-driver id, or `"support"`. An existing DIRECT conversation with that contact is reused. ' +
+      'Idempotent on `clientId` (uuid, required): a replay returns the first response. The thread shows in the admin panel conversations list; ' +
+      'a `conversation.new` realtime event goes to the staff contact\'s `user:{id}` room and `message.new` to `conversation:{id}`.',
+  })
+  @ApiBody({ schema: { example: { contactId: 'f3b1c2d4-0000-4000-8000-000000000001', body: 'Running 20 min late.', clientId: '0b9d6f5e-0000-4000-8000-000000000002' } } })
+  @ApiCreatedResponse({
+    schema: { example: { conversationId: 'cnv_1', message: { id: 'msg_1', body: 'Running 20 min late.', sentAt: '2026-10-08T15:00:00.000Z', senderId: 'drv_1', senderType: 'DRIVER', clientId: '0b9d6f5e-0000-4000-8000-000000000002' } } },
+  })
+  @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.NOT_FOUND, 'Contact not found.')] })
+  startConversation(@Body(zodBody(StartConversationDto)) dto: StartConversationDto, @CurrentUser() actor: ContextUser) {
+    return this.service.startConversation(actor.id, dto, actor);
   }
 
   @Get(':id/messages')
   @ApiQuery({ name: 'limit', required: false })
   @ApiQuery({ name: 'before', required: false })
   @ApiOperation({ summary: 'Cursor-paginated message history for a conversation the driver participates in.' })
-  @ApiOkResponse({ schema: { example: { items: [{ id: 'msg_1', body: 'On schedule.', sentAt: '2026-09-11T15:00:00.000Z' }], limit: 50 } } })
+  @ApiOkResponse({ schema: { example: { items: [{ id: 'msg_1', body: 'On schedule.', sentAt: '2026-09-11T15:00:00.000Z', senderId: 'usr_1', senderType: 'STAFF', senderName: 'Jane Dispatcher', readAt: null, clientId: null }], limit: 50 } } })
   @ApiStandardErrors({
     errors: [
       apiError.notFound(ERROR_CODES.NOT_FOUND, 'Conversation not found.'),
@@ -47,7 +64,7 @@ export class MobileMessagingController {
   }
 
   @Post(':id/messages')
-  @ApiOperation({ summary: 'Sends a message into a conversation the driver participates in (fires realtime message.new).' })
+  @ApiOperation({ summary: 'Sends a message into a conversation the driver participates in (fires realtime message.new). Idempotent on clientId: a replay returns the stored message.' })
   @ApiCreatedResponse({ schema: { example: { id: 'msg_2', body: 'Confirmed.', sentAt: '2026-09-11T15:05:00.000Z' } } })
   @ApiStandardErrors({
     errors: [

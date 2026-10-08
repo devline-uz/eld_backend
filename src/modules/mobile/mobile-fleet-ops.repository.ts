@@ -15,7 +15,7 @@ import type {
 import { PrismaService } from '../../core/prisma/prisma.service';
 
 export type VehicleWithDevice = Vehicle & { device: Device | null };
-export type DvirWithDetail = Prisma.DvirGetPayload<{ include: { defects: { include: { photos: true } }; photos: true } }>;
+export type DvirWithDetail = Prisma.DvirGetPayload<{ include: { defects: { include: { photos: true } }; photos: true; trailer: { select: { number: true } } } }>;
 export type StaffContact = Pick<User, 'id' | 'firstName' | 'lastName' | 'phone'> & { role: Pick<Role, 'key'> };
 
 /**
@@ -37,16 +37,42 @@ export class MobileFleetOpsRepository {
 
   /** Vehicles assigned to `driverId`, or ACTIVE and not currently assigned to a *different*
    * ACTIVE driver — exactly the M-03 "select vehicle" list. */
-  findAvailableVehicles(driverId: string): Promise<VehicleWithDevice[]> {
-    return this.prisma.vehicle.findMany({
-      where: {
+  findAvailableVehicles(driverId: string, opts: { q?: string; limit?: number } = {}): Promise<VehicleWithDevice[]> {
+    const q = opts.q?.trim();
+    const and: Prisma.VehicleWhereInput[] = [
+      {
         OR: [
           { driver: { id: driverId } },
           { status: 'ACTIVE', OR: [{ driver: null }, { driver: { status: { not: 'ACTIVE' } } }] },
         ],
       },
+    ];
+    if (q) {
+      and.push({
+        OR: [
+          { unitNumber: { contains: q, mode: 'insensitive' } },
+          { vin: { contains: q, mode: 'insensitive' } },
+          { make: { contains: q, mode: 'insensitive' } },
+          { model: { contains: q, mode: 'insensitive' } },
+          { device: { is: { serial: { contains: q, mode: 'insensitive' } } } },
+        ],
+      });
+    }
+    return this.prisma.vehicle.findMany({
+      where: { deletedAt: null, AND: and },
       include: { device: true },
       orderBy: { unitNumber: 'asc' },
+      ...(opts.limit ? { take: opts.limit } : {}),
+    });
+  }
+
+  /** MR-2 — clears the driver's unit and ends the active co-driver pairing on it (if any), atomically. */
+  async releaseVehicle(driverId: string, pairingId: string | null, endedAt: Date): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      await tx.driver.update({ where: { id: driverId }, data: { assignedVehicleId: null } });
+      if (pairingId) {
+        await tx.coDriverPairing.update({ where: { id: pairingId }, data: { endedAt, endedById: driverId } });
+      }
     });
   }
 
@@ -136,6 +162,29 @@ export class MobileFleetOpsRepository {
     });
   }
 
+  /** MR-4 — live trailers by exact number in ONE query (no per-number lookups). */
+  findTrailersByNumbers(numbers: string[]): Promise<Trailer[]> {
+    return this.prisma.trailer.findMany({ where: { number: { in: numbers }, deletedAt: null } });
+  }
+
+  findTrailerById(id: string): Promise<Trailer | null> {
+    return this.prisma.trailer.findUnique({ where: { id } });
+  }
+
+  /** MR-8 — carrier's (single-tenant) live, ACTIVE trailers, optional number/VIN search. */
+  listActiveTrailers(q: string | undefined, limit: number): Promise<Trailer[]> {
+    const term = q?.trim();
+    return this.prisma.trailer.findMany({
+      where: {
+        deletedAt: null,
+        status: 'ACTIVE',
+        ...(term ? { OR: [{ number: { contains: term, mode: 'insensitive' } }, { vin: { contains: term, mode: 'insensitive' } }] } : {}),
+      },
+      orderBy: { number: 'asc' },
+      take: limit,
+    });
+  }
+
   /** Live (not soft-deleted) trailer only — a deleted trailer cannot be put on a trip. */
   findTrailerByNumber(number: string): Promise<Trailer | null> {
     return this.prisma.trailer.findFirst({ where: { number, deletedAt: null } });
@@ -143,7 +192,7 @@ export class MobileFleetOpsRepository {
 
   updateTrip(
     tripId: string,
-    data: { shippingDocument?: string; trailerId?: string | null; notes?: string },
+    data: Prisma.TripUncheckedUpdateInput,
   ): Promise<Trip & { stops: TripStop[] }> {
     return this.prisma.trip.update({ where: { id: tripId }, data, include: { stops: { orderBy: { sequence: 'asc' } } } });
   }
@@ -152,18 +201,19 @@ export class MobileFleetOpsRepository {
   // MB-10 — own DVIR history (M-10/M-11/P-07)
   // ---------------------------------------------------------------------
 
-  listOwnDvirs(driverId: string, since: Date): Promise<(Dvir & { _count: { defects: number } })[]> {
+  listOwnDvirs(driverId: string, since: Date): Promise<(Dvir & { _count: { defects: number }; trailer: { number: string } | null })[]> {
     return this.prisma.dvir.findMany({
       where: { driverId, submittedAt: { gte: since } },
       orderBy: { submittedAt: 'desc' },
-      include: { _count: { select: { defects: true } } },
+      // MR-14 — `trailer.number` rides the same query (one join, no per-row lookup).
+      include: { _count: { select: { defects: true } }, trailer: { select: { number: true } } },
     });
   }
 
   getOwnDvir(id: string, driverId: string): Promise<DvirWithDetail | null> {
     return this.prisma.dvir.findFirst({
       where: { id, driverId },
-      include: { defects: { include: { photos: true } }, photos: true },
+      include: { defects: { include: { photos: true } }, photos: true, trailer: { select: { number: true } } },
     });
   }
 

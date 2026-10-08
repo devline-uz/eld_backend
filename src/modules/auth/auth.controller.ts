@@ -1,5 +1,5 @@
-import { Body, Controller, Get, Post, Req } from '@nestjs/common';
-import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Body, Controller, Get, HttpCode, Post, Req } from '@nestjs/common';
+import { ApiBearerAuth, ApiBody, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import type { Request } from 'express';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -11,6 +11,7 @@ import { apiError, ApiStandardErrors, ERROR_CODES } from '../../common/errors';
 import { FigmaScreen } from '../../common/decorators/figma-screen.decorator';
 import {
   DriverLoginDto,
+  DriverForgotPasswordDto,
   ForgotPasswordDto,
   GoogleLoginDto,
   LoginDto,
@@ -110,6 +111,32 @@ export class AuthController {
   @ApiStandardErrors({ public: true, errors: [{ status: 401, code: ERROR_CODES.TOKEN_EXPIRED, message: 'The reset link has expired — request a new one.' }] })
   async resetPassword(@Body(zodBody(ResetPasswordDto)) dto: ResetPasswordDto) {
     await this.auth.resetPassword(dto.token, dto.newPassword);
+    return { success: true };
+  }
+
+  @Public()
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Post('driver/password/forgot')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'MR-31 — driver requests a password-reset code by username or email. Always 200 (no user enumeration); the code is emailed when the driver has an email on file.' })
+  @ApiBody({ schema: { example: { username: 'johnsmith' } } })
+  @ApiOkResponse({ schema: { example: { success: true } } })
+  @ApiStandardErrors({ public: true, errors: [apiError.rateLimited('Limited to 5 requests per minute per IP.')] })
+  async forgotDriverPassword(@Body(zodBody(DriverForgotPasswordDto)) dto: DriverForgotPasswordDto) {
+    const result = await this.auth.forgotDriverPassword((dto.username ?? dto.email) as string);
+    return { success: true, ...result };
+  }
+
+  @Public()
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post('driver/password/reset')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'MR-31 — completes a driver password reset with the emailed code; revokes all driver sessions.' })
+  @ApiBody({ schema: { example: { token: 'eyJ...', newPassword: 'NewPassw0rd!' } } })
+  @ApiOkResponse({ schema: { example: { success: true } } })
+  @ApiStandardErrors({ public: true, errors: [{ status: 401, code: ERROR_CODES.TOKEN_INVALID, message: 'The code is invalid, already used or expired.' }, apiError.rateLimited()] })
+  async resetDriverPassword(@Body(zodBody(ResetPasswordDto)) dto: ResetPasswordDto) {
+    await this.auth.resetDriverPassword(dto.token, dto.newPassword);
     return { success: true };
   }
 

@@ -27,10 +27,25 @@ export class MobileBootstrapController {
       example: {
         serverTime: '2026-09-11T15:41:00.000Z',
         hosEngineVersion: '1.0.1',
-        driver: { id: 'drv_1', firstName: 'John', lastName: 'Smith', cdlNumber: 'W8569238', cdlState: 'KY' },
+        driver: { id: 'drv_1', firstName: 'John', lastName: 'Smith', cdlNumber: 'W8569238', cdlState: 'KY', email: 'john@example.com', phone: '+15025550100', exemptDriverStatus: false },
+        carrier: { name: 'Acme Freight', dotNumber: '1234567', mainOfficeAddress: '1 Main St, Columbus, OH 43004', eldProvider: 'OneBook ELD', eldIdentifier: 'OBK1', eldRegistrationId: 'AB12' },
         vehicle: { id: 'veh_1', unitNumber: '4821' },
         device: { id: 'dev_1', serial: 'PT30-001', bleState: 'CONNECTED' },
-        hos: { state: { currentStatus: 'ON', driveRemainingSec: 39600 } },
+        // MR-24 — `hos.state` also carries statusSince / nextBreakDueAt / shiftEndsAt /
+        // cycleRecapAt / restartAvailableAt (ISO-8601 or null), same shape as hos-state `serverState`.
+        hos: {
+          computedAt: '2026-09-11T15:41:00.000Z',
+          timezone: 'America/Chicago',
+          state: {
+            currentStatus: 'ON',
+            driveRemainingSec: 39600,
+            statusSince: '2026-09-11T15:10:00.000Z',
+            nextBreakDueAt: null,
+            shiftEndsAt: '2026-09-12T05:10:00.000Z',
+            cycleRecapAt: null,
+            restartAvailableAt: null,
+          },
+        },
         inspectionPacket: { days: [] },
         syncConfig: { batchMaxChanges: 500, batchMaxBytes: 1048576 },
       },

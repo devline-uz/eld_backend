@@ -29,14 +29,20 @@ export class MobileDvirController {
   }
 
   @Post('dvir')
-  @ApiOperation({ summary: 'Driver DVIR submission: inspection, defects and the driver signature.' })
+  @ApiOperation({
+    summary: 'Driver DVIR submission: inspection, defects and the driver signature (+ optional mechanic name/signature).',
+    description:
+      'MR-9: `defects[].category` should be a `code` from `GET /mobile/defect-catalog` (unknown values are still accepted and stored as sent). ' +
+      'MR-10: optional `mechanicName`, `mechanicSignatureBase64`, `mechanicSignatureMimeType` (PNG/JPEG, 2 MB; a signature needs the name). ' +
+      'MR-11: `odometerMi` is optional (falls back to the unit odometer when known). `clientId` makes a replay return the first answer (409 if spent on another operation).',
+  })
   @ApiCreatedResponse({
     schema: {
-      example: { id: 'dvir_1', vehicleId: 'veh_1', type: 'PRE_TRIP', vehicleCondition: 'DEFECTS_FOUND', defectCount: 1, photoCount: 2, outOfService: false, applied: true },
+      example: { id: 'dvir_1', vehicleId: 'veh_1', type: 'PRE_TRIP', vehicleCondition: 'DEFECTS_FOUND', defectCount: 1, photoCount: 2, outOfService: false, mechanicSignatureImageId: null, applied: true },
     },
   })
-  @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.VEHICLE_NOT_FOUND, 'Vehicle not found.'), apiError.unprocessable(ERROR_CODES.VALIDATION_FAILED, 'photoAttachmentIds must reference this driver\'s own, not yet attached DVIR_PHOTO uploads (MB-6).'), apiError.unprocessable(ERROR_CODES.TRAILER_NOT_FOUND, 'trailerId is unknown, or names a trailer deleted before this inspection.')] })
+  @ApiStandardErrors({ errors: [apiError.conflict(ERROR_CODES.CONFLICT, 'clientId already used by another operation.'), apiError.notFound(ERROR_CODES.VEHICLE_NOT_FOUND, 'Vehicle not found.'), apiError.unprocessable(ERROR_CODES.VALIDATION_FAILED, 'photoAttachmentIds must reference this driver\'s own, not yet attached DVIR_PHOTO uploads (MB-6); mechanicName is required with mechanicSignatureBase64.'), apiError.unprocessable(ERROR_CODES.TRAILER_NOT_FOUND, 'trailerId is unknown, or names a trailer deleted before this inspection.')] })
   submit(@Body(zodBody(DvirSubmitDto)) dto: DvirSubmitDto, @CurrentUser() actor: ContextUser) {
-    return this.dvir.submit(actor.id, dto, actor);
+    return this.dvir.submitIdempotent(actor.id, dto, actor);
   }
 }

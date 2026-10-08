@@ -13,12 +13,16 @@ import {
   ANNOTATION_MAX,
   ELD_IDENTIFIER_LENGTH,
   LIST_COLUMNS,
+  LOCATION_DESCRIPTION_MAX,
   OUTPUT_FILE_COMMENT_MAX,
   SEGMENT_TITLES,
 } from './segments';
 
 /** Appendix A line terminator: CRLF, so the file opens unchanged on an inspector's laptop. */
 export const LINE_TERMINATOR = '\r\n';
+
+/** §395 eventType 5 — login/logout records carry no position (Appendix A 4.5.1.5). */
+const LOGIN_LOGOUT_EVENT_TYPE = 5;
 
 export interface OutputFileDriver {
   lastName: string;
@@ -77,6 +81,14 @@ export interface OutputFileEvent {
   diagnosticIndicator: boolean;
   malfunctionCode?: string | null;
   diagnosticCode?: string | null;
+  /**
+   * Appendix A 4.3.2.7 / 7.12 — the Driver's Location Description, set ONLY when the driver
+   * entered the location by hand because there was no valid position (MR-6 `locationName`
+   * with no lat/lon). Drives the `M` position marker (4.6.1.4(b)). Geocoded names stay null.
+   */
+  locationDescription?: string | null;
+  /** Appendix A 4.6.1.4(c) — a positioning compliance malfunction (`L`) was active. */
+  positioningMalfunction?: boolean;
 }
 
 export interface OutputFileAnnotation {
@@ -85,6 +97,8 @@ export interface OutputFileAnnotation {
   text: string;
   dateTime: Date;
   timezoneOffsetMin: number;
+  /** Appendix A 4.8.2.1.6 Driver's Location Description (manual entries only, 5-60 chars). */
+  locationDescription?: string | null;
 }
 
 export interface OutputFileCertification {
@@ -189,6 +203,30 @@ export function formatCoordinate(value: number | null, precisionMi: number): str
   return value.toFixed(precisionMi >= 10 ? 1 : 2);
 }
 
+/**
+ * Appendix A 4.6.1.4 / 7.31 / 7.36 — the Event Latitude / Event Longitude pair.
+ *
+ *   positioning compliance malfunction active -> `E`,`E` (4.6.1.4(c), even if a location was typed)
+ *   valid position                            -> decimal degrees (0.01 deg, 0.1 deg at 10-mi precision)
+ *   no position, driver typed the location    -> `M`,`M` (4.6.1.4(b))
+ *   no position, nothing typed                -> `X`,`X` (4.6.1.4(b))
+ *
+ * Login/logout records (eventType 5) carry no location in Appendix A 4.5.1.5, so they keep the
+ * plain formatter (empty when unknown) and never get a marker.
+ */
+export function formatEventPosition(e: OutputFileEvent): [string, string] {
+  if (e.eventType === LOGIN_LOGOUT_EVENT_TYPE) {
+    return [formatCoordinate(e.latitude, e.locationPrecisionMi), formatCoordinate(e.longitude, e.locationPrecisionMi)];
+  }
+  if (e.positioningMalfunction) return ['E', 'E'];
+  const valid = (v: number | null): v is number => v !== null && v !== undefined && Number.isFinite(v);
+  if (valid(e.latitude) && valid(e.longitude)) {
+    return [formatCoordinate(e.latitude, e.locationPrecisionMi), formatCoordinate(e.longitude, e.locationPrecisionMi)];
+  }
+  if (csvField(e.locationDescription) !== '') return ['M', 'M'];
+  return ['X', 'X'];
+}
+
 /** Integer miles; empty when unknown (Appendix A allows an empty field, never a fake 0). */
 export function formatMiles(value: number | null): string {
   return value === null || value === undefined ? '' : String(Math.trunc(value));
@@ -231,6 +269,7 @@ function headerLines(input: OutputFileInput): string[][] {
 }
 
 function eventFields(e: OutputFileEvent): string[] {
+  const [latitude, longitude] = formatEventPosition(e);
   return [
     formatSequenceId(e.sequenceId),
     String(e.recordStatus),
@@ -241,8 +280,8 @@ function eventFields(e: OutputFileEvent): string[] {
     formatEventTime(e.dateTime, e.timezoneOffsetMin),
     formatMiles(e.totalVehicleMiles),
     formatEngineHours(e.totalEngineHours),
-    formatCoordinate(e.latitude, e.locationPrecisionMi),
-    formatCoordinate(e.longitude, e.locationPrecisionMi),
+    latitude,
+    longitude,
     formatMiles(e.distanceSinceLastValidCoords),
     formatOrder(e.cmvOrderNumber),
     formatOrder(e.userOrderNumber),
@@ -340,6 +379,7 @@ export function buildOutputFile(input: OutputFileInput): GeneratedOutputFile {
       csvField(a.text, ANNOTATION_MAX),
       formatEventDate(a.dateTime, a.timezoneOffsetMin),
       formatEventTime(a.dateTime, a.timezoneOffsetMin),
+      csvField(a.locationDescription, LOCATION_DESCRIPTION_MAX),
     ]);
   }
 

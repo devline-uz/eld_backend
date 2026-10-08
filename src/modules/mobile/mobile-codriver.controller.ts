@@ -1,5 +1,6 @@
-import { Body, Controller, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Post, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiCreatedResponse, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import type { Request } from 'express';
 import { apiError, ApiStandardErrors, ERROR_CODES } from '../../common/errors';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -18,13 +19,34 @@ import { MobileCoDriverService } from './mobile-codriver.service';
 export class MobileCoDriverController {
   constructor(private readonly service: MobileCoDriverService) {}
 
+  @Get()
+  @ApiOperation({ summary: 'MR-15 — the caller\'s active co-driver pairing (either seat) with the co-driver\'s identity and the active trip\'s documents/trailers; `null` when not paired.' })
+  @ApiOkResponse({
+    schema: {
+      nullable: true,
+      example: {
+        pairingId: 'pair_1',
+        startedAt: '2026-10-08T08:00:00.000Z',
+        coDriver: { id: 'drv_2', firstName: 'Jane', lastName: 'Doe', username: 'jdoe' },
+        trip: { shippingDocuments: ['BOL-2201'], trailerNumbers: ['TR-1'] },
+      },
+    },
+  })
+  @ApiStandardErrors()
+  current(@CurrentUser('id') driverId: string) {
+    return this.service.current(driverId);
+  }
+
+  /** B-119 — this route verifies the co-driver's PASSWORD and returns their tokens, so it is
+   * a login endpoint and gets the same 5/min/IP budget as `/auth/driver/login` (§6.5). */
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post('switch')
   @ApiOperation({ summary: 'S-11/S-18/S-19 — hands the driver seat to the paired co-driver; returns the CO-DRIVER\'s own token pair.' })
   @ApiCreatedResponse({ schema: { example: { accessToken: 'eyJ...', refreshToken: 'a1b2...', tokenType: 'Bearer' } } })
   @ApiStandardErrors({
     errors: [
       apiError.notFound(ERROR_CODES.NOT_FOUND, 'No active co-driver pairing for this driver.'),
-      apiError.unauthorized('Invalid co-driver password.'),
+      apiError.unprocessable(ERROR_CODES.CO_DRIVER_PASSWORD_INVALID, 'The co-driver password is incorrect.'),
     ],
   })
   switch(@Body(zodBody(CoDriverSwitchDto)) dto: CoDriverSwitchDto, @CurrentUser() actor: ContextUser, @Req() req: Request) {
@@ -32,7 +54,10 @@ export class MobileCoDriverController {
   }
 
   @Post('leave')
-  @ApiOperation({ summary: 'S-19 — ends the active co-driver pairing and clears the leaving driver\'s assigned unit.' })
+  @ApiOperation({
+    summary: 'S-19 — ends the active co-driver pairing and clears the leaving driver\'s assigned unit.',
+    description: 'Without an active pairing it is a no-op returning `{ended:false}` and the unit is NOT released; use `POST /mobile/release-vehicle` for that (MR-2).',
+  })
   @ApiOkResponse({ schema: { example: { ended: true } } })
   @ApiStandardErrors()
   leave(@CurrentUser() actor: ContextUser) {

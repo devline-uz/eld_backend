@@ -236,7 +236,6 @@ export class LogsController {
     errors: [
       apiError.forbidden('Certifying on behalf of a driver requires hosCertifyOnBehalf = FULL.'),
       apiError.notFound(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.'),
-      apiError.unprocessable(ERROR_CODES.RECERTIFICATION_REQUIRED, 'The log changed after the last certification — it must be certified again.'),
     ],
   })
   certify(

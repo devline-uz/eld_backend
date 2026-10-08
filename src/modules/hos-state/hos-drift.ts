@@ -18,6 +18,32 @@ export interface MobileHosState {
   cycleRemainingSec: number;
   dailyTotals: { off: number; sb: number; drive: number; on: number };
   violations: Array<{ type: ViolationType; exceededBySec: number }>;
+  /**
+   * MR-24 — optional engine timestamps (ISO-8601 or null). The app MAY post them; they are
+   * stored with the snapshot but never compared (the counters above already carry the drift).
+   */
+  statusSince?: string | null;
+  nextBreakDueAt?: string | null;
+  shiftEndsAt?: string | null;
+  cycleRecapAt?: string | null;
+  restartAvailableAt?: string | null;
+}
+
+/**
+ * MR-24 — what the server SENDS (hos-state `serverState`, bootstrap `hos.state`): the mobile
+ * shape plus the engine's own timestamps, so the home timer no longer derives them locally.
+ */
+export interface ServerHosState extends MobileHosState {
+  /** When the current duty status started. */
+  statusSince: string;
+  /** When the 30-minute break is due: set while driving (or already overdue), else null. */
+  nextBreakDueAt: string | null;
+  /** When the 14-hour window ends; null when no shift is open. */
+  shiftEndsAt: string | null;
+  /** End of today (home-terminal zone) when the oldest recap day carries on-duty hours that drop off; else null. */
+  cycleRecapAt: string | null;
+  /** While OFF/SB: when the current rest reaches 34 h (restart); null while ON/D. */
+  restartAvailableAt: string | null;
 }
 
 export interface DriftField {
@@ -40,8 +66,10 @@ export interface DriftComparison {
   drift: boolean;
 }
 
-/** Server-side counters, flattened to the same shape the app posts. */
-export function toMobileShape(state: HosState): MobileHosState {
+const iso = (value: Date | null): string | null => (value ? value.toISOString() : null);
+
+/** Server-side counters, flattened to the same shape the app posts, plus the MR-24 timestamps. */
+export function toMobileShape(state: HosState): ServerHosState {
   return {
     currentStatus: state.currentStatus,
     driveRemainingSec: state.driveRemainingSec,
@@ -50,6 +78,11 @@ export function toMobileShape(state: HosState): MobileHosState {
     cycleRemainingSec: state.cycleRemainingSec,
     dailyTotals: { ...state.dailyTotals },
     violations: worstPerType(state.violations).map(([type, exceededBySec]) => ({ type, exceededBySec })),
+    statusSince: state.statusSince.toISOString(),
+    nextBreakDueAt: iso(state.nextBreakDueAt),
+    shiftEndsAt: iso(state.shiftEndsAt),
+    cycleRecapAt: iso(state.cycleRecapAt),
+    restartAvailableAt: iso(state.restartAvailableAt),
   };
 }
 

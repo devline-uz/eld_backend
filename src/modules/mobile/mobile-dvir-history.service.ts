@@ -66,13 +66,26 @@ export class MobileDvirHistoryService {
       type: dvir.type,
       submittedAt: dvir.submittedAt,
       odometerMi: dvir.odometerMi,
-      location: dvir.latitude && dvir.longitude ? { lat: dvir.latitude, lon: dvir.longitude, name: dvir.locationName } : null,
+      // MR-14 — also returned when only a place name was captured (no GPS fix); lat/lon are then null.
+      location:
+        dvir.latitude !== null || dvir.longitude !== null || dvir.locationName
+          ? { lat: dvir.latitude === null ? null : Number(dvir.latitude), lon: dvir.longitude === null ? null : Number(dvir.longitude), name: dvir.locationName }
+          : null,
+      trailerNumber: dvir.trailer?.number ?? null,
       vehicleCondition: dvir.vehicleCondition,
       notes: dvir.notes,
       repairStatus: dvir.repairStatus,
       driverSignature: { key: dvir.driverSignatureUrl, url: driverSignatureUrl, hash: dvir.driverSignatureHash },
       mechanicSignature: dvir.mechanicSignedAt
-        ? { name: dvir.mechanicName, signedAt: dvir.mechanicSignedAt, note: dvir.mechanicNote }
+        ? {
+            name: dvir.mechanicName,
+            signedAt: dvir.mechanicSignedAt,
+            note: dvir.mechanicNote,
+            // MR-10 — the signature image captured in the app (null for back-office sign-offs without one).
+            key: dvir.mechanicSignatureUrl,
+            url: dvir.mechanicSignatureUrl ? await this.storage.presignGet(dvir.mechanicSignatureUrl, PRESIGN_TTL_SEC) : null,
+            hash: dvir.mechanicSignatureHash,
+          }
         : null,
       nextDriverReviewedAt: dvir.nextDriverReviewedAt,
       defects,
@@ -85,7 +98,7 @@ export class MobileDvirHistoryService {
   }
 }
 
-function toSummaryShape(dvir: Dvir & { _count: { defects: number } }) {
+function toSummaryShape(dvir: Dvir & { _count: { defects: number }; trailer: { number: string } | null }) {
   return {
     id: dvir.id,
     vehicleId: dvir.vehicleId,
@@ -94,5 +107,8 @@ function toSummaryShape(dvir: Dvir & { _count: { defects: number } }) {
     vehicleCondition: dvir.vehicleCondition,
     defectCount: dvir._count.defects,
     repairStatus: dvir.repairStatus,
+    // MR-14 (additive)
+    trailerNumber: dvir.trailer?.number ?? null,
+    odometerMi: dvir.odometerMi,
   };
 }

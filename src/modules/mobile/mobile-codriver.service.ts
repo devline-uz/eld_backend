@@ -9,6 +9,7 @@ import { AuthService } from '../auth/auth.service';
 import { AuditRepository } from '../audit/audit.repository';
 import type { CoDriverSwitchDto } from './dto/mobile-fleet-ops.dto';
 import { MobileFleetOpsRepository } from './mobile-fleet-ops.repository';
+import { MobileTripService } from './mobile-trip.service';
 import { MobileRepository } from './mobile.repository';
 
 /**
@@ -28,7 +29,23 @@ export class MobileCoDriverService {
     private readonly mobileRepo: MobileRepository,
     private readonly auth: AuthService,
     private readonly audit: AuditRepository,
+    private readonly trips: MobileTripService,
   ) {}
+
+  /** MR-15 — the caller's active pairing (as either seat), or null. */
+  async current(driverId: string) {
+    const pairing = await this.mobileRepo.findActivePairing(driverId);
+    if (!pairing) return null;
+    const coDriverId = pairing.primaryDriverId === driverId ? pairing.coDriverId : pairing.primaryDriverId;
+    const [coDriver, trip] = await Promise.all([this.mobileRepo.findDriver(coDriverId), this.trips.activeTripLists(driverId)]);
+    if (!coDriver) return null;
+    return {
+      pairingId: pairing.id,
+      startedAt: pairing.startedAt,
+      coDriver: { id: coDriver.id, firstName: coDriver.firstName, lastName: coDriver.lastName, username: coDriver.username },
+      ...(trip ? { trip } : {}),
+    };
+  }
 
   async switch(driverId: string, dto: CoDriverSwitchDto, actor: ContextUser, meta: RequestMeta): Promise<AccessTokenPair> {
     const pairing = await this.mobileRepo.findActivePairing(driverId);
@@ -42,8 +59,17 @@ export class MobileCoDriverService {
     }
 
     // Verifies the co-driver's own password/status and issues THEIR token pair — never the
-    // calling driver's. Wrong password surfaces the existing 401 INVALID_CREDENTIALS.
-    const tokens = await this.auth.loginDriver(coDriver.username, dto.coDriverPassword, meta);
+    // calling driver's. A wrong password is 422 CO_DRIVER_PASSWORD_INVALID (MR-22), not the
+    // login 401 — the caller's own session is fine and the app must not treat it as expired.
+    let tokens: AccessTokenPair;
+    try {
+      tokens = await this.auth.loginDriver(coDriver.username, dto.coDriverPassword, meta);
+    } catch (err) {
+      if (err instanceof AppException && err.code === ERROR_CODES.INVALID_CREDENTIALS) {
+        throw new AppException(ERROR_CODES.CO_DRIVER_PASSWORD_INVALID, 'The co-driver password is incorrect.', 422);
+      }
+      throw err;
+    }
 
     const now = new Date();
     await this.repo.endPairing(pairing.id, driverId, now);

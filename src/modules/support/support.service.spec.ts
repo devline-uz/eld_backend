@@ -110,6 +110,46 @@ describe('SupportService', () => {
     });
   });
 
+  describe('B-125 — a clientId spent on another operation is a 409', () => {
+    const CLIENT = '6f1d2a9e-1b6c-4f1e-9a51-0c2d7d0e4a11';
+    it('feedback and ticket replays never return another type\'s stored result', async () => {
+      const ledger = repo as unknown as { findLedger: jest.Mock };
+      ledger.findLedger = jest.fn().mockResolvedValue({ type: 'release_vehicle', status: 'ACCEPTED', result: { released: true } });
+      await expect(service.createFeedbackForDriver({ answers: {}, clientId: CLIENT }, 'drv_1')).rejects.toMatchObject({
+        code: 'CONFLICT',
+      });
+      await expect(
+        service.createForDriver({ subject: 'Help', body: 'body', priority: 'NORMAL', clientId: CLIENT }, 'drv_1'),
+      ).rejects.toMatchObject({ code: 'CONFLICT' });
+      expect(repo.create).not.toHaveBeenCalled();
+      expect(repo.createFeedback).not.toHaveBeenCalled();
+    });
+
+    it('a same-type replay still returns the first result', async () => {
+      const ledger = repo as unknown as { findLedger: jest.Mock };
+      ledger.findLedger = jest.fn().mockResolvedValue({ type: 'feedback', status: 'ACCEPTED', result: { id: 'fbk_1' } });
+      await expect(service.createFeedbackForDriver({ answers: {}, clientId: CLIENT }, 'drv_1')).resolves.toEqual({ id: 'fbk_1' });
+    });
+  });
+
+  describe('createForDriver — MR-20 contactMethod', () => {
+    it('persists contactMethod on the row; omitted means no column value', async () => {
+      repo.count.mockResolvedValue(0);
+      repo.create.mockResolvedValue(makeTicket({ contactMethod: 'PHONE' }) as never);
+
+      const ticket = await service.createForDriver(
+        { subject: 'Help', body: 'body', priority: 'NORMAL', contactMethod: 'PHONE' },
+        'drv_1',
+      );
+
+      expect(repo.create).toHaveBeenCalledWith(expect.objectContaining({ contactMethod: 'PHONE', createdByDriverId: 'drv_1' }));
+      expect(ticket).toMatchObject({ contactMethod: 'PHONE' });
+
+      await service.createForDriver({ subject: 'Help', body: 'body', priority: 'NORMAL', contactMethod: null }, 'drv_1');
+      expect(repo.create.mock.calls[1][0]).not.toHaveProperty('contactMethod');
+    });
+  });
+
   describe('create — B-91 server-collected attachments', () => {
     it('collects the requested attachments after the ticket is created, scoped to vehicleId', async () => {
       repo.count.mockResolvedValue(0);

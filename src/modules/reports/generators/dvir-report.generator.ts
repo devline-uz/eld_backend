@@ -14,7 +14,8 @@ export interface DvirReportRow {
   type: string;
   vehicleId: string;
   driverId: string;
-  odometerMi: number;
+  /** Empty when the driver's DVIR carried no odometer (MR-11). */
+  odometerMi: number | '';
   vehicleCondition: string;
   repairStatus: string;
   defectCount: number;
@@ -57,7 +58,7 @@ export class DvirReportGenerator {
           type: dvir.type,
           vehicleId: dvir.vehicleId,
           driverId: dvir.driverId,
-          odometerMi: dvir.odometerMi,
+          odometerMi: dvir.odometerMi ?? '',
           vehicleCondition: dvir.vehicleCondition,
           repairStatus: dvir.repairStatus,
           defectCount: dvir.defects.length,

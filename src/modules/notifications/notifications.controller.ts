@@ -22,8 +22,14 @@ export class NotificationsController {
   @ApiQuery({ name: 'limit', required: false })
   @ApiQuery({ name: 'unreadOnly', required: false })
   @ApiQuery({ name: 'category', required: false, enum: ['VIOLATIONS', 'MAINTENANCE'] })
-  @ApiOperation({ summary: "Lists the caller's own in-app notifications, with segment counts." })
-  @ApiOkResponse({ schema: { example: { items: [{ id: 'ntf_1', type: 'hos_violation', kind: 'VIOLATION', title: 'HOS violation', body: 'An HOS violation was detected.', objectType: 'Driver', objectId: 'drv_1', category: 'VIOLATIONS', severity: 'CRITICAL', readAt: null }], page: 1, limit: 25, total: 1, totalPages: 1, counts: { all: 12, violations: 5, maintenance: 3 } } } })
+  @ApiOperation({
+    summary: "Lists the caller's own in-app notifications, with segment counts.",
+    description:
+      'Every item carries `createdAt` (ISO-8601, newest first). `total`/`totalPages` describe the filtered list (honour `unreadOnly`/`category`). ' +
+      '`counts` are TOTAL rows per segment (read + unread), ignoring `unreadOnly`/`category` — they are NOT unread counts. ' +
+      '`unreadCount` is the number of unread notifications across all categories (badge number).',
+  })
+  @ApiOkResponse({ schema: { example: { items: [{ id: 'ntf_1', type: 'hos_violation', kind: 'VIOLATION', title: 'HOS violation', body: 'An HOS violation was detected.', objectType: 'Driver', objectId: 'drv_1', category: 'VIOLATIONS', severity: 'CRITICAL', readAt: null, createdAt: '2026-10-08T15:41:00.000Z' }], page: 1, limit: 25, total: 1, totalPages: 1, counts: { all: 12, violations: 5, maintenance: 3 }, unreadCount: 4 } } })
   @ApiStandardErrors({ errors: [apiError.unauthorized()] })
   list(@Query(zodBody(NotificationListQueryDto)) query: NotificationListQueryDto, @CurrentUser() actor: ContextUser) {
     return this.notifications.list(actor, query);

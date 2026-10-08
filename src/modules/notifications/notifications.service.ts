@@ -15,13 +15,14 @@ function toRecipient(actor: ContextUser) {
 export class NotificationsService {
   constructor(private readonly repo: NotificationsRepository) {}
 
-  async list(actor: ContextUser, query: NotificationListQueryDto): Promise<OffsetPage<unknown> & { counts: { all: number; violations: number; maintenance: number } }> {
+  async list(actor: ContextUser, query: NotificationListQueryDto): Promise<OffsetPage<unknown> & { counts: { all: number; violations: number; maintenance: number }; unreadCount: number }> {
     const recipient = toRecipient(actor);
-    const [{ items, total }, counts] = await Promise.all([
+    const [{ items, total }, counts, unreadCount] = await Promise.all([
       this.repo.list(recipient, query.page, query.limit, query.unreadOnly, query.category),
       this.repo.counts(recipient),
+      this.repo.countUnread(recipient),
     ]);
-    return { items, page: query.page, limit: query.limit, total, totalPages: Math.max(1, Math.ceil(total / query.limit)), counts };
+    return { items, page: query.page, limit: query.limit, total, totalPages: Math.max(1, Math.ceil(total / query.limit)), counts, unreadCount };
   }
 
   async readAll(actor: ContextUser) {

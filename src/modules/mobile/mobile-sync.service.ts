@@ -1,10 +1,12 @@
 import { InjectQueue } from '@nestjs/bullmq';
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
+import { EditorType } from '@prisma/client';
 import type { Prisma } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
-import type { ContextUser } from '../../core/context/request-context';
+import { RequestContext, type ContextUser } from '../../core/context/request-context';
+import { AuditRepository } from '../audit/audit.repository';
 import { EventBusService } from '../../core/events/event-bus.service';
 import { QUEUES } from '../../core/queue/queue.constants';
 import { HOS_ENGINE_VERSION } from '../hos/hos.constants';
@@ -35,6 +37,17 @@ export interface SyncResult {
  * §395.30(c)(2) driving-time immutability, so an out-of-order replay can never shorten
  * driving time even if a client sends it in the wrong order.
  */
+/** MR-25 — device clock tolerance for a delegated change's timestamps. */
+const DELEGATION_CLOCK_SKEW_MS = 5 * 60_000;
+
+/** MR-25 — why a change may be applied to another driver (feeds the AuditLog row). */
+interface DelegationGrant {
+  target: string;
+  pairingId: string | null;
+  vehicleId: string | null;
+  evidence: 'CO_DRIVER_PAIRING' | 'ELD_LOGIN_SESSION';
+}
+
 @Injectable()
 export class MobileSyncService {
   private readonly logger = new Logger(MobileSyncService.name);
@@ -51,6 +64,7 @@ export class MobileSyncService {
     private readonly signatures: SignatureService,
     private readonly events: EventBusService,
     @InjectQueue(QUEUES.ALERT) private readonly alertQueue: Queue,
+    @Optional() private readonly audit?: AuditRepository,
   ) {}
 
   async sync(driverId: string, dto: SyncRequestDto, actor: ContextUser, now: Date = new Date()): Promise<SyncResult> {
@@ -63,7 +77,7 @@ export class MobileSyncService {
     const ordered = [...dto.changes].sort((a, b) => a.occurredAt.getTime() - b.occurredAt.getTime());
 
     for (const change of ordered) {
-      const outcome = await this.processOne(driverId, change, actor);
+      const outcome = await this.processOne(driverId, change, actor, now);
       if (outcome.status === 'ACCEPTED') accepted.push(change.clientId);
       else rejected.push({ clientId: change.clientId, code: outcome.errorCode ?? ERROR_CODES.INTERNAL_ERROR, message: outcome.message });
     }
@@ -86,6 +100,7 @@ export class MobileSyncService {
     driverId: string,
     change: SyncChangeDto,
     actor: ContextUser,
+    now: Date,
   ): Promise<{ status: 'ACCEPTED' | 'REJECTED'; errorCode: string | null; message?: string }> {
     // §13.6 — same clientId twice: idempotent, the first outcome wins, nothing is re-applied.
     const existing = await this.repo.findSyncedByClientId(driverId, change.clientId);
@@ -99,7 +114,7 @@ export class MobileSyncService {
     let result: Record<string, unknown> | undefined;
 
     try {
-      result = (await this.dispatch(driverId, change, actor)) as Record<string, unknown>;
+      result = (await this.dispatch(driverId, change, actor, now)) as Record<string, unknown>;
     } catch (err) {
       status = 'REJECTED';
       if (err instanceof AppException) {
@@ -129,16 +144,24 @@ export class MobileSyncService {
     return { status: recorded.status, errorCode: recorded.errorCode, message };
   }
 
-  private async dispatch(driverId: string, change: SyncChangeDto, actor: ContextUser): Promise<unknown> {
+  private async dispatch(driverId: string, change: SyncChangeDto, actor: ContextUser, now: Date): Promise<unknown> {
+    const grant = await this.resolveTargetDriver(driverId, change, now);
+    const target = grant?.target ?? driverId;
     switch (change.type) {
-      case 'duty_status':
-        return this.logs.createLogEntry(
-          driverId,
+      case 'duty_status': {
+        const result = await this.logs.createLogEntry(
+          target,
           { ...change.payload, annotation: change.payload.annotation ?? DEFAULT_DUTY_STATUS_ANNOTATION },
           actor,
         );
-      case 'log_entry':
-        return this.logs.createLogEntry(driverId, change.payload, actor);
+        if (grant) await this.auditDelegation(driverId, change, grant, actor);
+        return result;
+      }
+      case 'log_entry': {
+        const result = await this.logs.createLogEntry(target, change.payload, actor);
+        if (grant) await this.auditDelegation(driverId, change, grant, actor);
+        return result;
+      }
       case 'certify': {
         // MB-8 — offline certification has no `signatureImageId` yet (that id is only minted
         // by `POST /mobile/signature`, which needs the network): store the captured bytes
@@ -158,6 +181,95 @@ export class MobileSyncService {
           type: (exhaustive as SyncChangeDto).type,
         });
       }
+    }
+  }
+
+  /**
+   * MR-25 — shared tablet. A change may name another `driverId` only when:
+   *   - it is a duty-status / log-entry change (certification and DVIR carry the signer's own
+   *     signature, §395.30(b) / §396.11 — never delegated) that ADDS a record: `originalEventId`
+   *     (correcting one of the other driver's existing records) is never delegated;
+   *   - that driver exists, is ACTIVE and not deleted (single-carrier deployment, so no
+   *     cross-carrier reach is possible; a foreign id simply does not exist);
+   *   - `occurredAt` and the record's `startAt` lie inside the offline window (not older than
+   *     `SYNC_CONFIG.localEventRetentionDays`, not more than 5 min in the future);
+   *   - the two drivers shared one unit over the WHOLE record interval `[startAt, endAt ?? startAt]`
+   *     (bugs.md B-118 — the client-chosen `occurredAt` proves nothing): one co-driver pairing
+   *     covering both ends, or both logged in to the same unit at both ends per their §395 login
+   *     records (eventType 5). Team driving on one device is the only §395 setting where another
+   *     driver's record is entered here.
+   * Anything else rejects THIS change only (`SYNC_DELEGATION_NOT_ALLOWED`); the batch goes on.
+   * The record keeps `editedById` = the token's driver; the AuditLog row naming both drivers is
+   * written by `dispatch` only after the change was actually applied.
+   */
+  private async resolveTargetDriver(driverId: string, change: SyncChangeDto, now: Date): Promise<DelegationGrant | null> {
+    const requested = change.driverId;
+    if (!requested || requested === driverId) return null;
+    const reject = (reason: string): never => {
+      throw new AppException(ERROR_CODES.SYNC_DELEGATION_NOT_ALLOWED, `This change cannot be applied for another driver: ${reason}.`, 403, {
+        driverId: requested,
+        reason,
+      });
+    };
+    if (change.type !== 'duty_status' && change.type !== 'log_entry') {
+      return reject('only duty_status and log_entry may be delegated');
+    }
+    const payload = change.payload;
+    if (payload.originalEventId) reject("another driver's existing records cannot be corrected from this device");
+
+    const oldest = now.getTime() - SYNC_CONFIG.localEventRetentionDays * 86_400_000;
+    const newest = now.getTime() + DELEGATION_CLOCK_SKEW_MS;
+    const from = payload.startAt;
+    const to = payload.endAt ?? payload.startAt;
+    for (const at of [change.occurredAt, from, to]) {
+      if (at.getTime() < oldest || at.getTime() > newest) reject('occurredAt / startAt / endAt outside the offline sync window');
+    }
+
+    const other = await this.repo.findDriver(requested);
+    if (!other || other.deletedAt || other.status !== 'ACTIVE') reject('no session or assignment shared on this unit at that time');
+
+    // Evidence of a shared unit over the whole record: a co-driver pairing (one unit,
+    // time-bounded) covering both ends, else both drivers' §395 login records on one unit.
+    const pairing = await this.repo.findPairingCovering(driverId, requested, from);
+    if (pairing && (!pairing.endedAt || pairing.endedAt.getTime() >= to.getTime())) {
+      return { target: requested, pairingId: pairing.id, vehicleId: pairing.vehicleId, evidence: 'CO_DRIVER_PAIRING' };
+    }
+    const [mineFrom, theirsFrom, mineTo, theirsTo] = await Promise.all([
+      this.repo.findLoginVehicleAt(driverId, from),
+      this.repo.findLoginVehicleAt(requested, from),
+      this.repo.findLoginVehicleAt(driverId, to),
+      this.repo.findLoginVehicleAt(requested, to),
+    ]);
+    if (!mineFrom || ![theirsFrom, mineTo, theirsTo].every((vehicle) => vehicle === mineFrom)) {
+      reject('no session or assignment shared on this unit at that time');
+    }
+    return { target: requested, pairingId: null, vehicleId: mineFrom, evidence: 'ELD_LOGIN_SESSION' };
+  }
+
+  private async auditDelegation(driverId: string, change: SyncChangeDto, grant: DelegationGrant, actor: ContextUser): Promise<void> {
+    try {
+      await this.audit?.insert({
+        actorId: actor.id,
+        actorType: EditorType.DRIVER,
+        action: 'SYNC_DELEGATED_CHANGE',
+        objectType: 'Driver',
+        objectId: grant.target,
+        after: {
+          onBehalfOfDriverId: grant.target,
+          submittedByDriverId: driverId,
+          pairingId: grant.pairingId,
+          vehicleId: grant.vehicleId,
+          evidence: grant.evidence,
+          clientId: change.clientId,
+          type: change.type,
+          occurredAt: change.occurredAt.toISOString(),
+        },
+        detail: 'Shared-tablet change applied to the co-driver sharing the unit (MR-25).',
+        ip: RequestContext.get()?.ip,
+        userAgent: RequestContext.get()?.userAgent,
+      });
+    } catch (err) {
+      this.logger.error({ err, clientId: change.clientId }, 'Failed to write the delegated-sync audit entry');
     }
   }
 

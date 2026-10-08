@@ -134,6 +134,42 @@ describe('buildSnapshot — segment routing (tz.md §10.2)', () => {
     expect(snap.annotations.map((a) => a.text)).toEqual(['Fuel stop', 'Dispatcher note', 'Wrong status selected']);
   });
 
+  it('treats a locationName with no lat/lon as a manual location and gives it an annotation row', () => {
+    const snap = snapshot({
+      events: [
+        event({ eventSequenceId: 1, latitude: null, longitude: null, locationName: 'Pilot Exit 12' }),
+        // Geocoded label next to a fix: not a manual entry, no annotation row.
+        event({ eventSequenceId: 2, locationName: '2 mi N of Dayton, OH' }),
+        event({ eventSequenceId: 3, latitude: null, longitude: null, locationName: 'Yard 4', annotation: 'Fuel' }),
+      ],
+    });
+    expect(snap.events.map((e) => e.locationDescription)).toEqual(['Pilot Exit 12', null, 'Yard 4']);
+    expect(snap.annotations).toEqual([
+      expect.objectContaining({ sequenceId: 1, text: '', locationDescription: 'Pilot Exit 12' }),
+      expect.objectContaining({ sequenceId: 3, text: 'Fuel', locationDescription: 'Yard 4' }),
+    ]);
+    const lines = buildOutputFile(snap).csv.split('\r\n');
+    expect(lines.find((l) => l.startsWith('0001,'))?.split(',').slice(9, 11)).toEqual(['M', 'M']);
+  });
+
+  it('flags records inside an active positioning malfunction (L) window for the E marker', () => {
+    const at = (iso: string) => new Date(iso);
+    const snap = snapshot({
+      events: [
+        event({ eventSequenceId: 1, eventDateTime: at('2026-09-08T10:00:00Z') }),
+        event({ eventSequenceId: 2, eventType: 7, eventCode: 1, malfunctionCode: 'L', eventDateTime: at('2026-09-08T11:00:00Z') }),
+        event({ eventSequenceId: 3, latitude: null, longitude: null, eventDateTime: at('2026-09-08T12:00:00Z') }),
+        event({ eventSequenceId: 4, eventType: 7, eventCode: 2, malfunctionCode: 'L', eventDateTime: at('2026-09-08T13:00:00Z') }),
+        event({ eventSequenceId: 5, eventDateTime: at('2026-09-08T14:00:00Z') }),
+      ],
+    });
+    expect(snap.events.map((e) => [e.sequenceId, e.positioningMalfunction])).toEqual([
+      [1, false],
+      [3, true],
+      [5, false],
+    ]);
+  });
+
   it('sets the malfunction / diagnostic indicator flags from the record codes', () => {
     const snap = snapshot({
       events: [event({ malfunctionCode: 'E' }), event({ eventSequenceId: 2, diagnosticCode: '3' })],

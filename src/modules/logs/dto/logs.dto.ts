@@ -11,6 +11,10 @@ export const DutyStatusEnum = z.enum(['OFF', 'SB', 'D', 'ON']);
 export const SelfEditStatusEnum = z.enum(['OFF', 'SB', 'ON']);
 
 export const LogDateQueryDto = z.object({ date: dayKeySchema.optional() });
+
+/** MR-26 — `GET /mobile/certification-status?days=8` (1..14, default 8). */
+export const CertificationStatusQueryDto = z.object({ days: z.coerce.number().int().min(1).max(14).default(8) });
+export type CertificationStatusQueryDto = z.infer<typeof CertificationStatusQueryDto>;
 export type LogDateQueryDto = z.infer<typeof LogDateQueryDto>;
 
 export const LogRangeQueryDto = z
@@ -118,21 +122,61 @@ export const CertifyDto = z.object({
   signatureImageId: z.string().max(200).optional(),
   /** Back office only, and only with `hosCertifyOnBehalf = FULL` (§9.2). */
   driverId: z.string().uuid().optional(),
+  /**
+   * MR-5 — offline-queue idempotency key. A replay with the same `clientId` returns the FIRST
+   * response and appends no second certification record (`certificationCount` is unchanged).
+   */
+  clientId: z.string().uuid().optional(),
 });
 export type CertifyDto = z.infer<typeof CertifyDto>;
 
-/** TZ §9.3 — `POST /mobile/log-entries`, the driver's own correction. */
-export const CreateLogEntryDto = z.object({
+/**
+ * §395 Appendix A §7 data element "Driver's Location Description" — a manually entered location is free
+ * text of 5 to 60 characters. MR-6 asked for "≤60"; the §395 floor of 5 wins (decisions.md D-116).
+ */
+export const manualLocationSchema = z.string().trim().min(5).max(60);
+
+/** MR-23 — §395.1(e) special driving category on a driver entry. */
+export const SpecialConditionEnum = z.enum(['NONE', 'PC', 'YM']);
+export type SpecialCondition = z.infer<typeof SpecialConditionEnum>;
+
+/** Shape of `POST /mobile/log-entries` before the cross-field PC/YM refinement (kept extendable). */
+export const CreateLogEntryBaseDto = z.object({
   date: dayKeySchema.optional(),
   status: SelfEditStatusEnum,
   startAt: isoDateTime,
   endAt: isoDateTime.optional(),
   annotation: annotationSchema,
   location: LocationDto.optional(),
+  /**
+   * MR-6 — the location as a name only ("Columbus, OH"), accepted WITHOUT coordinates; wins
+   * over `location.name` when both are sent. Stored as the record's location description.
+   */
+  locationName: manualLocationSchema.nullish(),
   odometerMi: z.number().int().min(0).max(9_999_999).optional(),
+  /** MR-13 — Appendix A "total engine hours" at the record. */
+  engineHours: z.number().min(0).max(99_999).nullish(),
+  /**
+   * MR-23 — `PC` (personal conveyance, needs `status: OFF`) or `YM` (yard move, needs
+   * `status: ON`), recorded as an Appendix A eventType 3 record. Allowed only when the driver's
+   * exceptions permit it (`allowPersonalConveyance` / `allowYardMove`), else 422
+   * `SPECIAL_CONDITION_NOT_ALLOWED`. Absent / `NONE` = a plain status (an active PC/YM ends).
+   */
+  specialCondition: SpecialConditionEnum.nullish(),
   /** Set when the entry corrects an existing record rather than adding a missing one. */
   originalEventId: z.string().regex(/^\d+$/).optional(),
 });
+
+/** MR-23 — PC is an OFF-duty category and YM an ON-duty one (§395.1(e)(1)/(2)). */
+export function refineSpecialCondition(
+  value: { status: string; specialCondition?: SpecialCondition | null },
+  ctx: z.RefinementCtx,
+): void {
+  checkSpecial(value.status, value.specialCondition ?? undefined, ctx, 'specialCondition');
+}
+
+/** TZ §9.3 — `POST /mobile/log-entries`, the driver's own correction. */
+export const CreateLogEntryDto = CreateLogEntryBaseDto.superRefine(refineSpecialCondition);
 export type CreateLogEntryDto = z.infer<typeof CreateLogEntryDto>;
 
 export const EditRequestListQueryDto = z.object({

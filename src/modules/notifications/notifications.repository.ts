@@ -129,6 +129,13 @@ export class NotificationsRepository {
     return { all, violations, maintenance };
   }
 
+  /** MR-19 — unread rows for the recipient (all categories, ignores `category`/`unreadOnly`). */
+  countUnread(recipient: { userId?: string; driverId?: string }): Promise<number> {
+    return this.prisma.notification.count({
+      where: { ...(recipient.userId ? { userId: recipient.userId } : { driverId: recipient.driverId }), readAt: null },
+    });
+  }
+
   async markAllRead(recipient: { userId?: string; driverId?: string }): Promise<number> {
     const result = await this.prisma.notification.updateMany({
       where: { ...(recipient.userId ? { userId: recipient.userId } : { driverId: recipient.driverId }), readAt: null },

@@ -14,12 +14,29 @@ import {
   HOS_DRIFT_THRESHOLD_SEC,
   type DriftComparison,
   type MobileHosState,
+  type ServerHosState,
 } from './hos-drift';
 import type { HosStateDto } from './dto/hos-state.dto';
 import { HosStateRepository } from './hos-state.repository';
 
 /** §8.6 — the alert name the panel and Sentry key off. */
 export const HOS_ENGINE_DRIFT_ALERT = 'alert.hos_engine_drift';
+
+/**
+ * MR-1 — `POST /mobile/hos-state` only compares a snapshot computed within the last hour. An
+ * older one (an offline-queue replay) is stored but answered with `reason: "STALE"`: events and
+ * accepted edits that arrived since make the old numbers legitimately different.
+ */
+export const HOS_SNAPSHOT_STALE_SEC = 3600;
+
+/**
+ * MR-1 / D-NNN — the nightly sweep runs once a day, so its staleness bound must cover every
+ * snapshot posted since the previous run (24 h) plus slack for a late or retried run.
+ */
+export const HOS_SWEEP_STALE_SEC = 36 * 3600;
+
+/** Why a stored snapshot was not compared. Optional and additive on the response. */
+export type HosCompareSkipReason = 'STALE' | 'VERSION_MISMATCH' | 'DRIVER_NOT_FOUND';
 
 export interface HosStateSubmitResult {
   /** The SERVER's engine version — the app shows the "update the app" banner when it differs. */
@@ -28,12 +45,16 @@ export interface HosStateSubmitResult {
   /** True when the app's engine version is not the server's: stored, but NOT compared (§8.6). */
   versionMismatch: boolean;
   compared: boolean;
+  /** MR-1 — set only when `compared` is false: `STALE` or `VERSION_MISMATCH`. */
+  reason?: HosCompareSkipReason;
+  /** MR-1 — with `reason: "STALE"`: how many seconds old the snapshot's `computedAt` is. */
+  staleSec?: number;
   drift: boolean;
   maxDriftSec: number | null;
   fields: DriftComparison['fields'];
   statusMismatch: boolean;
   /** The server's own numbers, so the app can show the authoritative state immediately. */
-  serverState: MobileHosState | null;
+  serverState: ServerHosState | null;
   driftThresholdSec: number;
   message?: string;
 }
@@ -42,11 +63,15 @@ export interface CompareResult {
   driverId: string;
   compared: boolean;
   skippedVersion: boolean;
+  /** MR-1 — not compared because `computedAt` is older than the staleness bound. */
+  skippedStale?: boolean;
+  /** MR-1 — age of the snapshot (`now - computedAt`, never negative), in seconds. */
+  staleSec?: number;
   drift: boolean;
   maxDriftSec: number | null;
   comparison: DriftComparison | null;
   /** The server's own counters, already flattened — computed once, reused by the response. */
-  serverState: MobileHosState | null;
+  serverState: ServerHosState | null;
 }
 
 @Injectable()
@@ -78,7 +103,7 @@ export class HosStateService {
       state: dto.state,
     });
 
-    const result = await this.compareSnapshot(snapshot, now);
+    const result = await this.compareSnapshot(snapshot, now, HOS_SNAPSHOT_STALE_SEC);
     const base = {
       hosEngineVersion: HOS_ENGINE_VERSION,
       accepted: true as const,
@@ -90,12 +115,29 @@ export class HosStateService {
         ...base,
         versionMismatch: true,
         compared: false,
+        reason: 'VERSION_MISMATCH',
         drift: false,
         maxDriftSec: null,
         fields: [],
         statusMismatch: false,
         serverState: null,
         message: `Stored, but not compared: this app computes HOS with engine ${dto.hosEngineVersion} and the server runs ${HOS_ENGINE_VERSION}. Update the app.`,
+      };
+    }
+
+    if (result.skippedStale) {
+      return {
+        ...base,
+        versionMismatch: false,
+        compared: false,
+        reason: 'STALE',
+        staleSec: result.staleSec,
+        drift: false,
+        maxDriftSec: null,
+        fields: [],
+        statusMismatch: false,
+        serverState: null,
+        message: `Stored, but not compared: computedAt is ${result.staleSec} s old (limit ${HOS_SNAPSHOT_STALE_SEC} s).`,
       };
     }
 
@@ -123,8 +165,19 @@ export class HosStateService {
    * §8.6: when the snapshot's `hosEngineVersion` differs from the server's, the comparison is
    * SKIPPED entirely — an old app is not drift, and comparing two different rule versions would
    * alert on every driver who has not updated.
+   *
+   * MR-1 — the server state is computed AT `snapshot.computedAt` (the instant the app's numbers
+   * describe), never at `now`: comparing a 30-minute-old app state with the server's current
+   * state is 30 minutes of false drift. `now` is used only for `lastComparedAt` / `detectedAt`
+   * and the staleness check. A `computedAt` in the future (device clock ahead) is clamped to
+   * `now` — the server never projects HOS state forward. A snapshot older than `maxAgeSec` is
+   * not compared at all (`skippedStale`), so it can never raise a drift alert.
    */
-  async compareSnapshot(snapshot: DriverHosSnapshot, now: Date = new Date()): Promise<CompareResult> {
+  async compareSnapshot(
+    snapshot: DriverHosSnapshot,
+    now: Date = new Date(),
+    maxAgeSec: number = HOS_SWEEP_STALE_SEC,
+  ): Promise<CompareResult> {
     if (snapshot.hosEngineVersion !== HOS_ENGINE_VERSION) {
       this.logger.debug(
         { driverId: snapshot.driverId, appVersion: snapshot.hosEngineVersion, serverVersion: HOS_ENGINE_VERSION },
@@ -133,7 +186,17 @@ export class HosStateService {
       return { driverId: snapshot.driverId, compared: false, skippedVersion: true, drift: false, maxDriftSec: null, comparison: null, serverState: null };
     }
 
-    const server = await this.recalc.computeCurrentState(snapshot.driverId, now);
+    const staleSec = Math.max(0, Math.floor((now.getTime() - snapshot.computedAt.getTime()) / 1000));
+    if (staleSec > maxAgeSec) {
+      this.logger.debug(
+        { driverId: snapshot.driverId, staleSec, maxAgeSec },
+        'HOS drift comparison skipped — snapshot is stale',
+      );
+      return { driverId: snapshot.driverId, compared: false, skippedVersion: false, skippedStale: true, staleSec, drift: false, maxDriftSec: null, comparison: null, serverState: null };
+    }
+
+    const comparedAt = snapshot.computedAt.getTime() > now.getTime() ? now : snapshot.computedAt;
+    const server = await this.recalc.computeCurrentState(snapshot.driverId, comparedAt);
     if (!server) {
       return { driverId: snapshot.driverId, compared: false, skippedVersion: false, drift: false, maxDriftSec: null, comparison: null, serverState: null };
     }
@@ -155,6 +218,7 @@ export class HosStateService {
       driverId: snapshot.driverId,
       compared: true,
       skippedVersion: false,
+      staleSec,
       drift: comparison.drift,
       maxDriftSec: comparison.maxDriftSec,
       comparison,

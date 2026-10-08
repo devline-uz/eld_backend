@@ -12,6 +12,7 @@ import { AuditRepository } from '../../src/modules/audit/audit.repository';
 import { DvirPhotosRepository } from '../../src/modules/mobile/dvir-photos.repository';
 import { MobileDvirService } from '../../src/modules/mobile/mobile-dvir.service';
 import { MobileRepository } from '../../src/modules/mobile/mobile.repository';
+import { MobileCatalogRepository } from '../../src/modules/mobile/mobile-catalog.repository';
 import { SignatureService } from '../../src/modules/mobile/signature.service';
 
 const prisma = new PrismaClient();
@@ -28,6 +29,7 @@ const service = new MobileDvirService(
   new AuditRepository(prismaService),
   eventBus,
   alertQueue as never,
+  new MobileCatalogRepository(prismaService),
 );
 
 const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';

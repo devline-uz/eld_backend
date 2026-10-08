@@ -6,6 +6,7 @@ import {
   formatCoordinate,
   formatEngineHours,
   formatEventDate,
+  formatEventPosition,
   formatEventTime,
   formatMiles,
   formatSequenceId,
@@ -39,6 +40,24 @@ describe('Appendix A field formatters', () => {
     expect(formatCoordinate(-72.928932, 1)).toBe('-72.93');
     expect(formatCoordinate(41.318511, 10)).toBe('41.3');
     expect(formatCoordinate(null, 1)).toBe('');
+  });
+
+  it('writes the Appendix A 4.6.1.4 position markers: E (malfunction) > fix > M (manual) > X', () => {
+    expect(formatEventPosition(fixtureEvent())).toEqual(['41.32', '-72.93']);
+    expect(formatEventPosition(fixtureEvent({ locationPrecisionMi: 10 }))).toEqual(['41.3', '-72.9']);
+    const noFix = { latitude: null, longitude: null };
+    expect(formatEventPosition(fixtureEvent({ ...noFix, locationDescription: 'Pilot Truck Stop, Exit 12' }))).toEqual(['M', 'M']);
+    expect(formatEventPosition(fixtureEvent(noFix))).toEqual(['X', 'X']);
+    expect(formatEventPosition(fixtureEvent({ ...noFix, locationDescription: '   ' }))).toEqual(['X', 'X']);
+    // Half a position is no position.
+    expect(formatEventPosition(fixtureEvent({ longitude: null }))).toEqual(['X', 'X']);
+    // 4.6.1.4(c): E wins even when the driver typed a location.
+    expect(
+      formatEventPosition(fixtureEvent({ ...noFix, locationDescription: 'Yard', positioningMalfunction: true })),
+    ).toEqual(['E', 'E']);
+    expect(formatEventPosition(fixtureEvent({ positioningMalfunction: true }))).toEqual(['E', 'E']);
+    // Login/logout (eventType 5) carries no location: never a marker.
+    expect(formatEventPosition(fixtureEvent({ ...noFix, eventType: 5, eventCode: 1 }))).toEqual(['', '']);
   });
 
   it('leaves unknown miles / engine hours empty instead of inventing a zero', () => {
@@ -116,6 +135,53 @@ describe('Appendix A output file generator', () => {
       .filter(Boolean);
     expect(annotationSegment).toHaveLength(2);
     expect(annotationSegment[1].split(',')[2]).toHaveLength(60);
+  });
+
+  it('exports a manually located record as M,M plus its Driver\'s Location Description (4.3.2.7)', () => {
+    const base = fixtureOutputFileInput();
+    const manual = fixtureEvent({
+      sequenceId: 300,
+      recordOrigin: 2,
+      eventCode: 4,
+      latitude: null,
+      longitude: null,
+      distanceSinceLastValidCoords: 3,
+      locationDescription: 'Pilot, Exit 12, Hartford CT',
+    });
+    const out = buildOutputFile({
+      ...base,
+      events: [manual],
+      annotations: [
+        {
+          sequenceId: 300,
+          userOrderNumber: 1,
+          text: '',
+          dateTime: manual.dateTime,
+          timezoneOffsetMin: manual.timezoneOffsetMin,
+          locationDescription: 'Pilot, Exit 12, Hartford CT',
+        },
+      ],
+    });
+    const seg = (title: string, next: string) =>
+      out.csv.split(title + '\r\n')[1].split(next)[0].split('\r\n').filter(Boolean);
+    const [eventLine] = seg(SEGMENT_TITLES.events, SEGMENT_TITLES.annotations);
+    expect(eventLine.split(',').slice(9, 12)).toEqual(['M', 'M', '3']);
+    expect(verifyDataLine(eventLine)).toBe(true);
+    const [annotationLine] = seg(SEGMENT_TITLES.annotations, SEGMENT_TITLES.certifications);
+    // Commas are stripped (Appendix A has no quoting); the description is the 6th field.
+    expect(annotationLine.split(',')[5]).toBe('Pilot Exit 12 Hartford CT');
+    expect(verifyDataLine(annotationLine)).toBe(true);
+    expect(validateOutputFile(out.csv).issues).toEqual([]);
+  });
+
+  it('writes X,X for a located record with no position and no typed location', () => {
+    const eventSegment = file.csv
+      .split(SEGMENT_TITLES.events + '\r\n')[1]
+      .split(SEGMENT_TITLES.annotations)[0]
+      .split('\r\n')
+      .filter(Boolean);
+    const intermediate = eventSegment.find((l) => l.startsWith('0007,'));
+    expect(intermediate?.split(',').slice(9, 11)).toEqual(['X', 'X']);
   });
 
   it('keeps superseded (recordStatus 2) and edited (recordOrigin 2) records in the event list', () => {

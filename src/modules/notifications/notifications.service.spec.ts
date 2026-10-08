@@ -5,6 +5,7 @@ function buildService() {
   const repo = {
     list: jest.fn(async () => ({ items: [], total: 0 })),
     counts: jest.fn(async () => ({ all: 3, violations: 1, maintenance: 1 })),
+    countUnread: jest.fn(async () => 2),
     markAllRead: jest.fn(async () => 2),
     markRead: jest.fn(async () => null as { id: string; readAt: Date | null } | null),
   };
@@ -18,6 +19,7 @@ describe('NotificationsService — list (TZ §20 B-57)', () => {
     const { service, repo } = buildService();
     const result = await service.list(userActor, { page: 1, limit: 25, unreadOnly: false });
     expect(result.counts).toEqual({ all: 3, violations: 1, maintenance: 1 });
+    expect(result.unreadCount).toBe(2);
     expect(repo.counts).toHaveBeenCalledWith({ userId: 'usr_1' });
   });
 

@@ -13,6 +13,8 @@ export interface DriftSweepResult {
   compared: number;
   /** §8.6 — skipped because the app runs a different `HOS_ENGINE_VERSION`. */
   skippedVersion: number;
+  /** MR-1 — skipped because the snapshot's `computedAt` is older than `HOS_SWEEP_STALE_SEC`. */
+  skippedStale: number;
   /** Compared and found to drift beyond 60 s (or disagreeing about duty status). */
   drifted: number;
   /** Per-driver failures; one bad driver never aborts the sweep. */
@@ -41,6 +43,7 @@ export class HosDriftService {
       scanned: 0,
       compared: 0,
       skippedVersion: 0,
+      skippedStale: 0,
       drifted: 0,
       failed: 0,
       hosEngineVersion: HOS_ENGINE_VERSION,
@@ -60,6 +63,7 @@ export class HosDriftService {
         try {
           const comparison = await this.state.compareSnapshot(snapshot, now);
           if (comparison.skippedVersion) result.skippedVersion += 1;
+          if (comparison.skippedStale) result.skippedStale += 1;
           if (comparison.compared) result.compared += 1;
           if (comparison.drift) {
             result.drifted += 1;
@@ -80,6 +84,7 @@ export class HosDriftService {
         scanned: result.scanned,
         compared: result.compared,
         skippedVersion: result.skippedVersion,
+        skippedStale: result.skippedStale,
         drifted: result.drifted,
         failed: result.failed,
       },

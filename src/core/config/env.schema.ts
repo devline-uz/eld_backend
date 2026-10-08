@@ -124,6 +124,23 @@ export const envSchema = z.object({
   MOBILE_APP_STORE_URL_IOS: z.string().optional(),
   MOBILE_APP_STORE_URL_ANDROID: z.string().optional(),
 
+  // --- MR-7 / MR-30 public `GET /mobile/app-config` + `/mobile/legal/*` ------
+  /** All optional; unset = `null` in the response. Versions fall back to MOBILE_APP_MIN_VERSION /
+   * MOBILE_APP_LATEST_VERSION / MOBILE_APP_STORE_URL_ANDROID when the MOBILE_* key is unset. */
+  MOBILE_MIN_SUPPORTED_VERSION: z.string().optional(),
+  MOBILE_LATEST_VERSION: z.string().optional(),
+  MOBILE_STORE_URL: z.string().default('https://play.google.com/store/apps/details?id=com.onebook.eld_mobile'),
+  MOBILE_USER_MANUAL_URL: z.string().optional(),
+  MOBILE_PRIVACY_URL: z.string().optional(),
+  MOBILE_TERMS_URL: z.string().optional(),
+  /** Version label of the published legal text (`GET /mobile/legal/*` -> `version`). */
+  MOBILE_LEGAL_VERSION: z.string().optional(),
+  MOBILE_MIN_PT30_FIRMWARE: z.string().optional(),
+  MOBILE_RECOMMENDED_PT30_FIRMWARE: z.string().optional(),
+
+  /** MR-16 — ELD provider name shown on the RODS header / bootstrap.carrier.eldProvider. */
+  ELD_PROVIDER_NAME: z.string().max(60).optional(),
+
   // --- geocoding (TZ §20 B-93) ----------------------------------------------
   /** Nominatim-compatible `/search?q=&format=json` base URL for `type: 'ADDRESS'` geofences.
    * Unset by default — no paid geocoding vendor is wired in, so `POST/PATCH /geofences` with

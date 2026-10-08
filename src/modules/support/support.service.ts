@@ -1,14 +1,24 @@
 import { Injectable } from '@nestjs/common';
-import type { Feedback, Prisma, SupportTicket } from '@prisma/client';
+import type { Feedback, Prisma, SupportContactMethod, SupportTicket } from '@prisma/client';
 import { AppException } from '../../common/errors/app.exception';
 import { OffsetPage, parseSort, toOffsetPage } from '../../common/dto/list-query.dto';
 import { MessagingRepository } from '../messaging/messaging.repository';
 import { MessagingService } from '../messaging/messaging.service';
-import { CreateFeedbackDto, CreateSupportChatDto, CreateSupportTicketDto, SupportTicketListQueryDto, UpdateSupportTicketDto } from './dto/support.dto';
+import { CreateFeedbackDto, CreateSupportChatDto, MobileCreateSupportTicketDto, CreateSupportTicketDto, SupportTicketListQueryDto, UpdateSupportTicketDto } from './dto/support.dto';
 import { SupportRepository } from './support.repository';
 import { TicketAttachmentsService } from './ticket-attachments.service';
 
 const SORTABLE_FIELDS = ['createdAt', 'priority', 'status', 'number'] as const;
+
+/**
+ * bugs.md B-125 (same as B-122) — a `clientId` already spent on ANOTHER operation is a 409, never
+ * that operation's stored result.
+ */
+function assertLedgerType(prior: { type: string } | null, type: string, clientId: string): void {
+  if (prior && prior.type !== type) {
+    throw AppException.conflict('clientId already used by another operation.', { clientId, type: prior.type });
+  }
+}
 
 export interface RequesterContext {
   id: string;
@@ -53,8 +63,12 @@ export class SupportService {
   /** Retries on a `number` unique-constraint collision (concurrent creates racing the same
    * count-based sequence) — up to a handful of attempts, which is more than enough headroom
    * for realistic write rates on this table. */
-  async create(dto: CreateSupportTicketDto, requester: RequesterContext): Promise<SupportTicket> {
-    const ticket = await this.createTicketRow(dto, requester);
+  async create(
+    dto: CreateSupportTicketDto,
+    requester: RequesterContext,
+    contactMethod: SupportContactMethod | null = null,
+  ): Promise<SupportTicket> {
+    const ticket = await this.createTicketRow(dto, requester, contactMethod);
     // §20 B-91 — collected after the ticket exists (attachments FK to ticketId); best-effort,
     // never blocks the ticket itself.
     if (dto.attachments?.length) {
@@ -63,7 +77,49 @@ export class SupportService {
     return ticket;
   }
 
-  private async createTicketRow(dto: CreateSupportTicketDto, requester: RequesterContext): Promise<SupportTicket> {
+  /**
+   * MR-20 — driver create, idempotent on `clientId`: a replay returns the first ticket (with the
+   * `contactMethod` stored then, not the replay's). `contactMethod` is persisted on the row.
+   */
+  async createForDriver(dto: MobileCreateSupportTicketDto, driverId: string): Promise<SupportTicket> {
+    const { clientId, contactMethod, ...rest } = dto;
+    if (clientId) {
+      const prior = await this.repo.findLedger(driverId, clientId);
+      assertLedgerType(prior, 'support_ticket', clientId);
+      const ticketId = (prior?.result as { ticketId?: string } | null)?.ticketId;
+      const existing = ticketId ? await this.repo.findById({ id: ticketId }) : null;
+      if (existing) return existing;
+    }
+    const ticket = await this.create(rest, { id: driverId, type: 'driver' }, contactMethod ?? null);
+    if (clientId) await this.repo.recordLedger(driverId, clientId, 'support_ticket', { ticketId: ticket.id });
+    return ticket;
+  }
+
+  /** MR-20 — driver-scoped read; a foreign id is a 404 so ownership is never confirmed. */
+  async getForDriver(id: string, driverId: string): Promise<SupportTicket> {
+    const ticket = await this.repo.findById({ id });
+    if (!ticket || ticket.createdByDriverId !== driverId) throw AppException.notFound('Support ticket not found.');
+    return ticket;
+  }
+
+  /** MR-20 — feedback idempotent on `clientId` (replay returns the first row). */
+  async createFeedbackForDriver(dto: CreateFeedbackDto, driverId: string): Promise<Feedback> {
+    const { clientId, ...rest } = dto;
+    if (clientId) {
+      const prior = await this.repo.findLedger(driverId, clientId);
+      assertLedgerType(prior, 'feedback', clientId);
+      if (prior?.result) return prior.result as unknown as Feedback;
+    }
+    const row = await this.createFeedback(rest, { id: driverId, type: 'driver' });
+    if (clientId) await this.repo.recordLedger(driverId, clientId, 'feedback', JSON.parse(JSON.stringify(row)) as Prisma.InputJsonValue);
+    return row;
+  }
+
+  private async createTicketRow(
+    dto: CreateSupportTicketDto,
+    requester: RequesterContext,
+    contactMethod: SupportContactMethod | null = null,
+  ): Promise<SupportTicket> {
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const number = await this.nextTicketNumber();
       try {
@@ -73,6 +129,7 @@ export class SupportService {
           body: dto.body,
           category: dto.category,
           priority: dto.priority,
+          ...(contactMethod && { contactMethod }),
           ...(requester.type === 'driver' ? { createdByDriverId: requester.id } : { createdByUserId: requester.id }),
         });
       } catch (err) {

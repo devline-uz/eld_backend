@@ -65,6 +65,17 @@ describe('HosDriftService.runNightlySweep', () => {
     expect(result.drifted).toBe(0);
   });
 
+  it('MR-1: counts stale snapshots separately and never as drift', async () => {
+    const compare = jest.fn(async (s: DriverHosSnapshot) =>
+      s.driverId === 'old'
+        ? compared(s.driverId, { compared: false, skippedStale: true, staleSec: 200_000, maxDriftSec: null })
+        : compared(s.driverId),
+    );
+    const { service } = build([snapshot('a'), snapshot('old')], compare);
+    const result = await service.runNightlySweep(NOW);
+    expect(result).toMatchObject({ scanned: 2, compared: 1, skippedStale: 1, skippedVersion: 0, drifted: 0 });
+  });
+
   it('warns out loud when a version bump leaves part of the fleet uncomparable', async () => {
     const { service } = build([snapshot('a'), snapshot('b', '1.0.0')]);
     const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);

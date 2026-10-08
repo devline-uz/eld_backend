@@ -4,7 +4,7 @@ import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
 import { STORAGE_PORT, StoragePort } from '../../core/storage/storage.port';
 
-const MAX_SIGNATURE_BYTES = 2 * 1024 * 1024; // 2 MB — a signature/photo is a small PNG/JPEG.
+export const MAX_SIGNATURE_BYTES = 2 * 1024 * 1024; // 2 MB — a signature/photo is a small PNG/JPEG.
 
 export interface StoredSignature {
   id: string;

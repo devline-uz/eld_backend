@@ -10,6 +10,16 @@ export class DriverAuthRepository {
     return this.prisma.driver.findFirst({ where: { username, deletedAt: null } });
   }
 
+  /** MR-31 — login identifier OR email (case-insensitive), live rows only. */
+  findByUsernameOrEmail(identifier: string): Promise<Driver | null> {
+    return this.prisma.driver.findFirst({
+      where: {
+        deletedAt: null,
+        OR: [{ username: identifier }, { email: { equals: identifier, mode: 'insensitive' } }],
+      },
+    });
+  }
+
   findById(id: string): Promise<Driver | null> {
     return this.prisma.driver.findUnique({ where: { id } });
   }

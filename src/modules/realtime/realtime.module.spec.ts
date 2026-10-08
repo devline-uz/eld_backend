@@ -7,6 +7,7 @@ import { PrismaModule } from '../../core/prisma/prisma.module';
 import { PrismaService } from '../../core/prisma/prisma.service';
 import { EventsModule } from '../../core/events/events.module';
 import { FirebaseModule } from '../../core/firebase/firebase.module';
+import { MailModule } from '../../core/mail/mail.module';
 import { TokenService } from '../auth/token.service';
 import { RealtimeModule } from './realtime.module';
 import { CommonModule } from '../../common/common.module';
@@ -36,6 +37,7 @@ describe('RealtimeModule wiring', () => {
         PrismaModule,
         EventsModule,
         FirebaseModule,
+        MailModule, // @Global in AppModule; AuthService needs TRANSACTIONAL_MAIL (MR-31 driver reset)
         CommonModule,
         StorageModule,
         RealtimeModule,

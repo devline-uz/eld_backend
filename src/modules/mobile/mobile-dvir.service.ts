@@ -11,6 +11,7 @@ import { QUEUES } from '../../core/queue/queue.constants';
 import { AuditRepository } from '../audit/audit.repository';
 import type { DvirSubmitDto, SignatureUploadDto } from './dto/mobile.dto';
 import { DvirPhotosRepository } from './dvir-photos.repository';
+import { MobileCatalogRepository } from './mobile-catalog.repository';
 import { MobileRepository } from './mobile.repository';
 import { SignatureService } from './signature.service';
 
@@ -34,6 +35,7 @@ export class MobileDvirService {
     private readonly audit: AuditRepository,
     private readonly events: EventBusService,
     @InjectQueue(QUEUES.ALERT) private readonly alertQueue: Queue,
+    private readonly catalog: MobileCatalogRepository,
   ) {}
 
   async uploadSignature(driverId: string, dto: SignatureUploadDto) {
@@ -46,6 +48,25 @@ export class MobileDvirService {
       await this.photos.createPhoto({ id: stored.id, key: stored.key, mimeType: dto.mimeType, sizeBytes: stored.sizeBytes, sha256: stored.sha256, driverId });
     }
     return { signatureImageId: stored.id, attachmentId: dto.purpose === 'DVIR_PHOTO' ? stored.id : null, key: stored.key, sha256: stored.sha256, sizeBytes: stored.sizeBytes };
+  }
+
+  /**
+   * `POST /mobile/dvir` entry point. Idempotent on `dto.clientId` through the shared `SyncedChange`
+   * ledger (a replayed offline request returns the first answer); a `clientId` already spent on
+   * another operation type is a 409 (B-122). The `POST /mobile/sync` path calls `submit` directly —
+   * it has its own per-change ledger.
+   */
+  async submitIdempotent(driverId: string, dto: DvirSubmitDto, actor: ContextUser) {
+    if (!dto.clientId) return this.submit(driverId, dto, actor);
+    const prior = await this.repo.findSyncedByClientId(driverId, dto.clientId);
+    if (prior && prior.type !== 'dvir_submit') {
+      throw AppException.conflict('clientId already used by another operation.', { clientId: dto.clientId });
+    }
+    if (prior?.status === 'ACCEPTED' && prior.result) return prior.result as unknown as Awaited<ReturnType<MobileDvirService['submit']>>;
+
+    const result = await this.submit(driverId, dto, actor);
+    await this.repo.recordSyncedResult(driverId, dto.clientId, 'dvir_submit', new Date(), 'ACCEPTED', null, JSON.parse(JSON.stringify(result)) as Prisma.InputJsonValue);
+    return result;
   }
 
   async submit(driverId: string, dto: DvirSubmitDto, actor: ContextUser) {
@@ -82,7 +103,20 @@ export class MobileDvirService {
       }
     }
 
+    // MR-10 — a mechanic signature needs the mechanic's name (it is the §396.13 sign-off record).
+    const mechanicName = dto.mechanicName?.trim() || null;
+    if (dto.mechanicSignatureBase64 && !mechanicName) {
+      throw new AppException(ERROR_CODES.VALIDATION_FAILED, 'mechanicName is required with mechanicSignatureBase64.', 422, {
+        mechanicName: 'Required when a mechanic signature is sent.',
+      });
+    }
+
+    await this.warnUnknownCategories(dto);
+
     const signature = await this.signatures.store('signatures', driverId, dto.signatureBase64, dto.signatureMimeType);
+    const mechanicSignature = dto.mechanicSignatureBase64
+      ? await this.signatures.store('signatures', driverId, dto.mechanicSignatureBase64, dto.mechanicSignatureMimeType ?? 'image/png')
+      : null;
 
     const defects = dto.defects.map((defect) => ({
       vehicleId: dto.vehicleId,
@@ -100,7 +134,8 @@ export class MobileDvirService {
       trailerId: dto.trailerId ?? null,
       type: dto.type,
       submittedAt: dto.submittedAt,
-      odometerMi: dto.odometerMi,
+      // MR-11 — optional: fall back to the unit's known odometer; NULL when neither is known.
+      odometerMi: dto.odometerMi ?? knownOdometerMi(vehicle),
       latitude: dto.location?.lat ?? null,
       longitude: dto.location?.lon ?? null,
       locationName: dto.location?.name ?? null,
@@ -108,6 +143,10 @@ export class MobileDvirService {
       notes: dto.notes ?? null,
       driverSignatureUrl: signature.key,
       driverSignatureHash: signature.sha256,
+      mechanicName,
+      mechanicSignedAt: mechanicSignature ? new Date() : null,
+      mechanicSignatureUrl: mechanicSignature?.key ?? null,
+      mechanicSignatureHash: mechanicSignature?.sha256 ?? null,
       defects,
     });
 
@@ -137,8 +176,28 @@ export class MobileDvirService {
       photoCount: photoIds.length,
       outOfService: hasOutOfService,
       signatureImageId: signature.id,
+      mechanicSignatureImageId: mechanicSignature?.id ?? null,
       applied: true,
     };
+  }
+
+  /**
+   * MR-9 — `defects[].category` should be a `DefectCatalogItem.code` (or, for older app builds, its
+   * English `name`). Validation is LENIENT on purpose (decisions.md D-122): an unknown value is
+   * stored as sent and only logged, so a catalog edit can never reject a safety-critical DVIR.
+   * One catalog query per submit, none per defect.
+   */
+  private async warnUnknownCategories(dto: DvirSubmitDto): Promise<void> {
+    if (!dto.defects.length) return;
+    try {
+      const parts = [...new Set(dto.defects.map((defect) => defect.part))];
+      const rows = await this.catalog.listCatalogLabels(parts);
+      const known = new Set(rows.flatMap((row) => [`${row.part}:${row.code}`, `${row.part}:${row.name}`]));
+      const unknown = dto.defects.filter((defect) => !known.has(`${defect.part}:${defect.category}`)).map((defect) => `${defect.part}:${defect.category}`);
+      if (unknown.length) this.logger.warn({ unknownCategories: unknown }, 'DVIR submitted with defect categories outside the catalog (accepted)');
+    } catch (err) {
+      this.logger.error({ err }, 'Defect catalog lookup failed; DVIR accepted without category validation');
+    }
   }
 
   private async raiseAlert(name: string, payload: Record<string, unknown>): Promise<void> {
@@ -173,4 +232,9 @@ export class MobileDvirService {
       this.logger.error({ err, action, objectId }, 'Failed to write the DVIR audit entry');
     }
   }
+}
+
+/** MR-11 — the unit's last known odometer, or null when it was never set/calibrated (`Vehicle.odometerMi` defaults to 0). */
+function knownOdometerMi(vehicle: { odometerMi: number; deviceOdometerMi: number | null; odometerCalibratedAt: Date | null }): number | null {
+  return vehicle.odometerMi > 0 || vehicle.deviceOdometerMi !== null || vehicle.odometerCalibratedAt !== null ? vehicle.odometerMi : null;
 }

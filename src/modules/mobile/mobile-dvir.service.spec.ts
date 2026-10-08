@@ -12,6 +12,8 @@ function build() {
     findTrailer: jest.fn().mockResolvedValue({ id: 'trl_1', deletedAt: null }),
     createDvir: jest.fn().mockResolvedValue({ id: 'dvir_1', defects: [] }),
     markVehicleOutOfService: jest.fn().mockResolvedValue({}),
+    findSyncedByClientId: jest.fn().mockResolvedValue(null),
+    recordSyncedResult: jest.fn().mockResolvedValue({ status: 'ACCEPTED', errorCode: null }),
   };
   const photos = {
     createPhoto: jest.fn().mockResolvedValue({}),
@@ -21,8 +23,9 @@ function build() {
   const audit = { insert: jest.fn().mockResolvedValue({}) };
   const events = { publish: jest.fn().mockResolvedValue(undefined) };
   const alertQueue = { add: jest.fn().mockResolvedValue({}) };
-  const service = new MobileDvirService(repo as never, photos as never, signatures as never, audit as never, events as never, alertQueue as never);
-  return { service, repo, photos, signatures, audit };
+  const catalog = { listCatalogLabels: jest.fn().mockResolvedValue([{ part: 'TRUCK', code: 'BRAKES_SERVICE', name: 'Brakes, Service' }]) };
+  const service = new MobileDvirService(repo as never, photos as never, signatures as never, audit as never, events as never, alertQueue as never, catalog as never);
+  return { service, repo, photos, signatures, audit, catalog };
 }
 
 function dto(defects: Array<{ photoAttachmentIds: string[] }>) {
@@ -121,5 +124,78 @@ describe('MobileDvirService — trailerId must name a live trailer (soft-deleted
     const { service, repo } = build();
     repo.findTrailer.mockResolvedValueOnce(null);
     await expect(service.submit('drv_1', base(), DRIVER)).rejects.toMatchObject({ code: 'TRAILER_NOT_FOUND', status: 422 });
+  });
+});
+
+describe('MobileDvirService — MR-9/10/11 (catalog, mechanic signature, optional odometer, idempotency)', () => {
+  const base = () => ({ ...dto([{ photoAttachmentIds: [] }]), vehicleCondition: 'SATISFACTORY' as const });
+  const created = (repo: { createDvir: jest.Mock }) => (repo.createDvir.mock.calls[0] as [DvirCreateInput])[0];
+
+  it('MR-9 accepts a category that is not in the catalog (lenient) and stores it as sent', async () => {
+    const { service, repo, catalog } = build();
+    await service.submit('drv_1', { ...base(), defects: [{ part: 'TRUCK', category: 'Totally new item', severity: 'MINOR', description: 'x', photoAttachmentIds: [] }] }, DRIVER);
+    expect(catalog.listCatalogLabels).toHaveBeenCalledTimes(1);
+    expect(created(repo).defects[0].category).toBe('Totally new item');
+  });
+
+  it('MR-9 a failing catalog lookup never blocks the DVIR', async () => {
+    const { service, repo, catalog } = build();
+    catalog.listCatalogLabels.mockRejectedValueOnce(new Error('db down'));
+    await service.submit('drv_1', base(), DRIVER);
+    expect(repo.createDvir).toHaveBeenCalled();
+  });
+
+  it('MR-10 stores the mechanic name + signature (key, sha256, signedAt) and reports its id', async () => {
+    const { service, repo, signatures } = build();
+    signatures.store
+      .mockResolvedValueOnce({ id: 'sig_drv', key: 'signatures/drv_1/sig_drv.png', sha256: 'aa', sizeBytes: 10 })
+      .mockResolvedValueOnce({ id: 'sig_mech', key: 'signatures/drv_1/sig_mech.jpg', sha256: 'bb', sizeBytes: 12 });
+    const out = await service.submit('drv_1', { ...base(), mechanicName: ' Bob Mechanic ', mechanicSignatureBase64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB', mechanicSignatureMimeType: 'image/jpeg' }, DRIVER);
+    expect(signatures.store).toHaveBeenLastCalledWith('signatures', 'drv_1', 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB', 'image/jpeg');
+    expect(created(repo)).toMatchObject({ mechanicName: 'Bob Mechanic', mechanicSignatureUrl: 'signatures/drv_1/sig_mech.jpg', mechanicSignatureHash: 'bb' });
+    expect(created(repo).mechanicSignedAt).toBeInstanceOf(Date);
+    expect(out).toMatchObject({ signatureImageId: 'sig_drv', mechanicSignatureImageId: 'sig_mech' });
+  });
+
+  it('MR-10 mechanic signature without a name is a 422 and nothing is stored', async () => {
+    const { service, repo, signatures } = build();
+    await expect(service.submit('drv_1', { ...base(), mechanicSignatureBase64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB' }, DRIVER)).rejects.toMatchObject({ code: 'VALIDATION_FAILED', status: 422 });
+    expect(signatures.store).not.toHaveBeenCalled();
+    expect(repo.createDvir).not.toHaveBeenCalled();
+  });
+
+  it('MR-10 mechanic name alone is stored without a signedAt/signature', async () => {
+    const { service, repo } = build();
+    await service.submit('drv_1', { ...base(), mechanicName: 'Bob' }, DRIVER);
+    expect(created(repo)).toMatchObject({ mechanicName: 'Bob', mechanicSignedAt: null, mechanicSignatureUrl: null });
+  });
+
+  it('MR-11 odometerMi omitted: falls back to the vehicle odometer when known, null when never set', async () => {
+    const { service, repo } = build();
+    const { odometerMi: _omit, ...noOdo } = base();
+    repo.findVehicle.mockResolvedValueOnce({ id: 'veh_1', odometerMi: 51234, deviceOdometerMi: 10, odometerCalibratedAt: new Date() });
+    await service.submit('drv_1', noOdo, DRIVER);
+    expect((repo.createDvir.mock.calls[0] as [DvirCreateInput])[0].odometerMi).toBe(51234);
+
+    repo.createDvir.mockClear();
+    repo.findVehicle.mockResolvedValueOnce({ id: 'veh_1', odometerMi: 0, deviceOdometerMi: null, odometerCalibratedAt: null });
+    await service.submit('drv_1', { ...noOdo, odometerMi: null }, DRIVER);
+    expect((repo.createDvir.mock.calls[0] as [DvirCreateInput])[0].odometerMi).toBeNull();
+  });
+
+  it('idempotency: a replayed clientId returns the first answer; another operation type is a 409', async () => {
+    const { service, repo } = build();
+    const CID = 'client-0001-aaaa';
+    await service.submitIdempotent('drv_1', { ...base(), clientId: CID }, DRIVER);
+    expect(repo.recordSyncedResult).toHaveBeenCalledWith('drv_1', CID, 'dvir_submit', expect.any(Date), 'ACCEPTED', null, expect.objectContaining({ id: 'dvir_1' }));
+
+    repo.createDvir.mockClear();
+    repo.findSyncedByClientId.mockResolvedValueOnce({ type: 'dvir_submit', status: 'ACCEPTED', result: { id: 'dvir_first', applied: true } });
+    await expect(service.submitIdempotent('drv_1', { ...base(), clientId: CID }, DRIVER)).resolves.toEqual({ id: 'dvir_first', applied: true });
+    expect(repo.createDvir).not.toHaveBeenCalled();
+
+    repo.findSyncedByClientId.mockResolvedValueOnce({ type: 'release_vehicle', status: 'ACCEPTED', result: {} });
+    await expect(service.submitIdempotent('drv_1', { ...base(), clientId: CID }, DRIVER)).rejects.toMatchObject({ status: 409 });
+    expect(repo.createDvir).not.toHaveBeenCalled();
   });
 });

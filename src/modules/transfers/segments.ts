@@ -89,7 +89,14 @@ export const LIST_COLUMNS = {
     'Malfunction Indicator Status',
     'Data Diagnostic Event Indicator Status',
   ],
-  annotations: ['Event Sequence ID Number', 'User Order Number', 'Annotation/Comment Text', 'Event Date', 'Event Time'],
+  annotations: [
+    'Event Sequence ID Number',
+    'User Order Number',
+    'Annotation/Comment Text',
+    'Event Date',
+    'Event Time',
+    "Driver's Location Description",
+  ],
   certifications: ['Event Sequence ID Number', 'Event Code', 'Event Date', 'Event Time', 'Date of the Certified Record'],
   unidentified: [
     'Event Sequence ID Number',
@@ -114,3 +121,5 @@ export const ELD_IDENTIFIER_LENGTH = 4;
 export const OUTPUT_FILE_COMMENT_MAX = 60;
 /** §395 Appendix A — annotations are capped at 60 characters. */
 export const ANNOTATION_MAX = 60;
+/** §395 Appendix A 4.3.2.7 / 7.12 — a manually entered location description is 5-60 characters. */
+export const LOCATION_DESCRIPTION_MAX = 60;

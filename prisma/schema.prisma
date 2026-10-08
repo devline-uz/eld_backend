@@ -212,6 +212,7 @@ model Driver {
   sessions          DriverSession[]
   syncedChanges     SyncedChange[]
   documents         DriverDocument[]
+  savedSignature    DriverSavedSignature?
 
   @@index([status])
   // Partial unique indexes (WHERE "deletedAt" IS NULL) live in the migration SQL only; whitelisted
@@ -649,7 +650,9 @@ model Dvir {
   trailerId          String?
   type               DvirType
   submittedAt        DateTime
-  odometerMi         Int
+  /// MR-11 — optional on the driver's DVIR (nullable: older rows keep their value; an app that omits it and a
+  /// vehicle with no known odometer leaves it NULL rather than inventing 0).
+  odometerMi         Int?
   latitude           Decimal?      @db.Decimal(9, 6)
   longitude          Decimal?      @db.Decimal(9, 6)
   locationName       String?
@@ -661,6 +664,9 @@ model Dvir {
 
   mechanicName         String?
   mechanicSignedAt     DateTime?
+  /// MR-10 — object-storage key + sha256 of the mechanic's signature captured in the app at submit time.
+  mechanicSignatureUrl  String?
+  mechanicSignatureHash String?
   mechanicNote         String?
   repairStatus         RepairStatus @default(NOT_REQUIRED)
   nextDriverReviewedAt DateTime?
@@ -677,6 +683,39 @@ model Dvir {
   @@index([driverId, submittedAt])
   @@index([repairStatus])
   @@index([submittedAt])
+}
+
+/// MR-9 — server-side DVIR defect catalog (FMCSA §396.11 truck / trailer inspection items).
+/// `code` is what the app sends back in `defects[].category`; unique per `part` (TRUCK and TRAILER
+/// both have e.g. TIRES). Seeded by migration 20261008120000_mobile_dvir_catalog_signatures.
+model DefectCatalogItem {
+  id        String     @id @default(uuid())
+  code      String
+  name      String
+  part      DefectPart
+  /// Optional grouping label for the picker (e.g. "Brakes", "Lights").
+  category  String?
+  /// Hint: a defect on this item is typically out-of-service class (§396.9 / CVSA OOS criteria).
+  critical  Boolean    @default(false)
+  sortOrder Int        @default(0)
+  active    Boolean    @default(true)
+
+  @@unique([part, code])
+  @@index([part, active, sortOrder])
+}
+
+/// MR-27 — the driver's saved (reusable) signature; one row per driver. Bytes live in object
+/// storage, only the key + sha256 are persisted (same rule as every other signature, §6).
+model DriverSavedSignature {
+  driverId  String   @id
+  key       String
+  sha256    String
+  mimeType  String
+  sizeBytes Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  driver Driver @relation(fields: [driverId], references: [id], onDelete: Cascade)
 }
 
 /// Out-of-service rule: an OPEN CRITICAL defect flips Vehicle.status to OUT_OF_SERVICE
@@ -768,6 +807,12 @@ model Trip {
   trailerId        String?
   status           TripStatus @default(PLANNED)
   shippingDocument String?
+  /// MR-4 — multi-value variants of `shippingDocument` / the trailer (driver-editable via
+  /// `PATCH /mobile/trip`). The single fields stay the first element for old clients.
+  shippingDocuments String[] @default([])
+  trailerNumbers    String[] @default([])
+  /// MR-4 — driver declared "bobtail" (no trailer). Mutually exclusive with a trailer.
+  bobtail           Boolean  @default(false)
   commodity        String?
   weightLbs        Int?
   pieces           Int?
@@ -1172,6 +1217,8 @@ model SupportTicket {
   createdByUserId   String?
   createdByDriverId String?
   assignedToId      String?
+  /// MR-20 — how the driver wants to be contacted about the ticket (driver app only; null = not said).
+  contactMethod     SupportContactMethod?
   createdAt         DateTime       @default(now())
   updatedAt         DateTime       @default(now()) @updatedAt
   resolvedAt        DateTime?
@@ -1571,4 +1618,10 @@ enum TicketStatus {
   IN_PROGRESS
   RESOLVED
   CLOSED
+}
+
+/// MR-20 — `SupportTicket.contactMethod`.
+enum SupportContactMethod {
+  EMAIL
+  PHONE
 }

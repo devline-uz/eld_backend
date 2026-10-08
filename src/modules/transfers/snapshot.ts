@@ -95,6 +95,8 @@ export function buildSnapshot(input: SnapshotInput): OutputFileInput {
     cmvs.push({ orderNumber, powerUnitNumber: v?.unitNumber ?? e.vehicleId, vin: v?.vin ?? '' });
   }
 
+  const positioningMalfunctionAt = positioningMalfunctionTimeline(input.events);
+
   const toOutputEvent = (e: EldEvent): OutputFileEvent => ({
     sequenceId: e.eventSequenceId,
     recordStatus: e.recordStatus,
@@ -115,6 +117,8 @@ export function buildSnapshot(input: SnapshotInput): OutputFileInput {
     diagnosticIndicator: Boolean(e.diagnosticCode),
     malfunctionCode: e.malfunctionCode,
     diagnosticCode: e.diagnosticCode,
+    locationDescription: manualLocationDescription(e),
+    positioningMalfunction: positioningMalfunctionAt(e.eventDateTime),
   });
 
   const events: OutputFileEvent[] = [];
@@ -139,13 +143,16 @@ export function buildSnapshot(input: SnapshotInput): OutputFileInput {
       events.push(mapped);
     }
     const text = e.annotation ?? e.comment ?? e.editReason;
-    if (text) {
+    // Appendix A 4.8.2.1.6: the Driver's Location Description lives in the annotation
+    // segment, so a manually located record gets a row even when it carries no comment.
+    if (text || mapped.locationDescription) {
       annotations.push({
         sequenceId: e.eventSequenceId,
         userOrderNumber: mapped.userOrderNumber,
-        text,
+        text: text ?? '',
         dateTime: e.eventDateTime,
         timezoneOffsetMin: mapped.timezoneOffsetMin,
+        locationDescription: mapped.locationDescription,
       });
     }
   }
@@ -191,6 +198,39 @@ export function buildSnapshot(input: SnapshotInput): OutputFileInput {
     annotations,
     certifications,
     unidentified: input.unidentifiedEvents.map(toOutputEvent),
+  };
+}
+
+/**
+ * Appendix A 4.3.2.7 — a location is "manually entered" when the record has a driver-typed
+ * `locationName` but no valid position (MR-6, D-116). A `locationName` stored NEXT TO a
+ * lat/lon pair is a reverse-geocode label, not a manual entry, and is not exported here.
+ */
+export function manualLocationDescription(e: EldEvent): string | null {
+  const name = (e.locationName ?? '').trim();
+  if (!name) return null;
+  const hasPosition = toNumber(e.latitude) !== null && toNumber(e.longitude) !== null;
+  return hasPosition ? null : name;
+}
+
+/**
+ * Appendix A 4.6.1.4(c) — whether a positioning compliance malfunction (`L`, eventType 7
+ * code 1, cleared by code 2) was active at a given instant. Only malfunction records inside
+ * the exported range are visible here; an `L` set before the range start is not seen.
+ */
+export function positioningMalfunctionTimeline(events: EldEvent[]): (at: Date) => boolean {
+  const changes = events
+    .filter((e) => e.eventType === EVENT_TYPE.MALFUNCTION && e.malfunctionCode === 'L' && e.recordStatus === 1)
+    .filter((e) => e.eventCode === 1 || e.eventCode === 2)
+    .map((e) => ({ at: e.eventDateTime.getTime(), on: e.eventCode === 1 }))
+    .sort((a, b) => a.at - b.at);
+  return (at: Date): boolean => {
+    let on = false;
+    for (const c of changes) {
+      if (c.at > at.getTime()) break;
+      on = c.on;
+    }
+    return on;
   };
 }
 

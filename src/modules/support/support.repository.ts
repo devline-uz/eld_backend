@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { Feedback, Prisma, SupportTicket } from '@prisma/client';
 import { BaseRepository, ModelDelegate } from '../../core/prisma/base.repository';
+import { syncLedgerKey } from '../mobile/mobile.repository';
 import { PrismaService } from '../../core/prisma/prisma.service';
 
 export interface TicketListFilter {
@@ -59,6 +60,23 @@ export class SupportRepository extends BaseRepository<
       this.prisma.supportTicket.count({ where }),
     ]);
     return { items, total };
+  }
+
+  /** MR-20 — idempotency ledger (shared `SyncedChange` table, driver-namespaced key like the mobile sync). */
+  findLedger(driverId: string, clientId: string) {
+    return this.prisma.syncedChange.findFirst({
+      where: { OR: [{ clientId: syncLedgerKey(driverId, clientId) }, { clientId, driverId }] },
+    });
+  }
+
+  async recordLedger(driverId: string, clientId: string, type: string, result: Prisma.InputJsonValue): Promise<void> {
+    try {
+      await this.prisma.syncedChange.create({
+        data: { driverId, clientId: syncLedgerKey(driverId, clientId), type, status: 'ACCEPTED', occurredAt: new Date(), result },
+      });
+    } catch (err) {
+      if ((err as { code?: string }).code !== 'P2002') throw err;
+    }
   }
 
   createFeedback(data: Prisma.FeedbackCreateInput): Promise<Feedback> {

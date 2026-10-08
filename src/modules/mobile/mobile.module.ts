@@ -8,10 +8,15 @@ import { DeviceHealthService } from './device-health.service';
 import { DvirPhotosRepository } from './dvir-photos.repository';
 import { HosRecalcModule } from '../hos-recalc/hos-recalc.module';
 import { LogsModule } from '../logs/logs.module';
+import { MobileAppConfigController } from './mobile-app-config.controller';
+import { MobileAppConfigService } from './mobile-app-config.service';
 import { MobileBootstrapController } from './mobile-bootstrap.controller';
 import { MobileBootstrapService } from './mobile-bootstrap.service';
 import { MobileCoDriverController } from './mobile-codriver.controller';
 import { MobileCoDriverService } from './mobile-codriver.service';
+import { MobileCatalogController } from './mobile-catalog.controller';
+import { MobileCatalogRepository } from './mobile-catalog.repository';
+import { MobileSavedSignatureService } from './mobile-saved-signature.service';
 import { MobileContactsController } from './mobile-contacts.controller';
 import { MobileContactsService } from './mobile-contacts.service';
 import { MobileDutyStatusController } from './mobile-duty-status.controller';
@@ -25,7 +30,7 @@ import { MobileMessagingRepository } from './mobile-messaging.repository';
 import { MobileMessagingService } from './mobile-messaging.service';
 import { MobileSyncController } from './mobile-sync.controller';
 import { MobileSyncService } from './mobile-sync.service';
-import { MobileTripController } from './mobile-trip.controller';
+import { MobileTrailersController, MobileTripController } from './mobile-trip.controller';
 import { MobileTripService } from './mobile-trip.service';
 import { MobileVehicleController } from './mobile-vehicle.controller';
 import { MobileVehicleService } from './mobile-vehicle.service';
@@ -47,6 +52,7 @@ import { SignatureService } from './signature.service';
 @Module({
   imports: [HosRecalcModule, LogsModule, AuditModule, AuthModule, MessagingModule],
   controllers: [
+    MobileAppConfigController,
     MobileBootstrapController,
     MobileSyncController,
     MobileDutyStatusController,
@@ -54,7 +60,9 @@ import { SignatureService } from './signature.service';
     MobileVehicleController,
     MobileCoDriverController,
     MobileTripController,
+    MobileTrailersController,
     MobileDvirHistoryController,
+    MobileCatalogController,
     MobileContactsController,
     PushTokensController,
     DeviceHealthController,
@@ -62,11 +70,14 @@ import { SignatureService } from './signature.service';
   ],
   providers: [
     MobileRepository,
+    MobileAppConfigService,
     MobileBootstrapService,
     MobileSyncService,
     MobileDvirService,
     SignatureService,
     DvirPhotosRepository,
+    MobileCatalogRepository,
+    MobileSavedSignatureService,
     MobileFleetOpsRepository,
     MobileVehicleService,
     MobileCoDriverService,

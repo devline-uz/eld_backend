@@ -131,6 +131,20 @@ export const FIGMA_UNMAPPED_ROUTES: Record<string, string> = {
   'GET /api/mobile/conversations/{id}/messages': 'Driver app M-16 conversation thread (mobile/tz.md MB-15).',
   'POST /api/mobile/conversations/{id}/messages': 'Driver app M-16 composer / quick replies (mobile/tz.md MB-15).',
   'POST /api/mobile/conversations/{id}/read': 'Driver app M-16 open-thread read receipt (mobile/tz.md MB-15).',
+  // Mobile requests 2026-10-08 (docs/mobile-requests-2026-10-08.md) — mobile Figma export still missing from eld.docs.
+  'GET /api/mobile/app-config': 'Driver app pre-login update gate / About (MR-7) — public; mobile Figma export missing.',
+  'GET /api/mobile/legal/{kind}': 'Driver app Privacy policy / Terms links (MR-30) — public; mobile Figma export missing.',
+  'GET /api/mobile/ping': 'Driver app M-20 network speed test (MR-29) — mobile Figma export missing.',
+  'POST /api/mobile/release-vehicle': 'Driver app "Release unit" (MR-2) — mobile Figma export missing.',
+  'GET /api/mobile/co-driver': 'Driver app co-driver card (MR-15) — mobile Figma export missing.',
+  'GET /api/mobile/trailers': 'Driver app M-05 trailer picker (MR-8) — mobile Figma export missing.',
+  'GET /api/mobile/defect-catalog': 'Driver app DVIR defect picker (MR-9) — mobile Figma export missing.',
+  'GET /api/mobile/saved-signature': 'Driver app saved DVIR signature (MR-27) — mobile Figma export missing.',
+  'PUT /api/mobile/saved-signature': 'Driver app save DVIR signature (MR-27) — mobile Figma export missing.',
+  'DELETE /api/mobile/saved-signature': 'Driver app delete saved DVIR signature (MR-27) — mobile Figma export missing.',
+  'POST /api/mobile/conversations': 'Driver app M-15 "+" start a conversation (MR-3) — mobile Figma export missing.',
+  'GET /api/mobile/certification-status': 'Driver app Logs certification banner (MR-26) — mobile Figma export missing.',
+  'GET /api/mobile/support/tickets/{id}': 'Driver app M-30 ticket detail (MR-20) — mobile Figma export missing.',
   // In-app notification inbox — a bell icon shown on every screen, not a screen of its own;
   // the role-guide exports do not capture it separately from the pages it overlays.
   'GET /api/notifications': 'In-app notification bell (TZ §14) — not a distinct screen in the role-guide export.',

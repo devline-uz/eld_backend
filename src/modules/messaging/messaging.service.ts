@@ -68,6 +68,15 @@ export class MessagingService {
     return message;
   }
 
+  /** MR-3 — tells a staff member's open sessions a driver started a thread with them. */
+  async notifyConversationStarted(userId: string, conversationId: string, message: unknown): Promise<void> {
+    await this.events.publish('realtime.push', {
+      room: `user:${userId}`,
+      event: 'conversation.new',
+      payload: { conversationId, message },
+    });
+  }
+
   /** TZ §11.5 `POST /messages/broadcast` — one message, many one-to-one deliveries. */
   async broadcast(dto: BroadcastMessageDto, actor: ContextUser) {
     const results = [];

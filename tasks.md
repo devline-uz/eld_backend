@@ -306,6 +306,42 @@ Source: `../backend_tasks.md` (section numbers in brackets). Depends on: Phases 
 - [x] eld-security review of new endpoints (IDOR, presign scope, reset-password, sessions) — B-090..B-100, D-103, docs/threat-model.md §11a
 - [x] eld-qa-test: tests for every 13C–13I endpoint, full suite green, dev API :3002 restarted on new build
 
+## Mobile requests 2026-10-08 (`docs/mobile-requests-2026-10-08.md`)
+- [x] MR-2 `POST /mobile/release-vehicle` (idempotent on clientId via SyncedChange; 409 NO_ASSIGNED_VEHICLE; pairing/leave behaviour documented) — D-110
+- [x] MR-4 `PATCH /mobile/trip` null/"" clears, BOBTAIL / `bobtail`, `shippingDocuments[]`/`trailerNumbers[]` (migration `20261008100000_trip_mobile_arrays`) — D-111
+- [x] MR-8 `GET /mobile/trailers?q=`
+- [x] MR-15 `GET /mobile/co-driver`
+- [x] MR-21 select-vehicle response `device`
+- [x] MR-22 wrong co-driver password -> 422 CO_DRIVER_PASSWORD_INVALID
+- [x] MR-32 `GET /mobile/available-vehicles?q=&limit=` (plain array kept) — B-114
+- [x] MR-1 `POST /mobile/hos-state` compares at `snapshot.computedAt`; > 3600 s old -> `{compared:false, reason:"STALE", staleSec}`, no drift alert; nightly sweep also compares at computedAt (36 h bound, `skippedStale`) — B-115, D-113
+- [x] MR-24 `statusSince` / `nextBreakDueAt` / `shiftEndsAt` / `cycleRecapAt` / `restartAvailableAt` (ISO or null) on hos-state `serverState` + bootstrap `hos.state`; optional on the posted app state (stored, not compared) — B-116
+- [x] MR-3 `POST /mobile/conversations {contactId|"support", body, clientId}` — reuses DIRECT thread, ledger-idempotent, `conversation.new` realtime to staff `user:{id}`
+- [x] MR-16 bootstrap `carrier.mainOfficeAddress/eldProvider/eldRegistrationId`, `driver.exemptDriverStatus` (bootstrap part only; per-day logs indicators belong to the logs agent)
+- [x] MR-17 bootstrap `driver.email/phone`
+- [x] MR-18 chat messages `senderId/senderType/senderName/readAt/clientId`, conversations `participants[]`/`title`; send idempotent on clientId
+- [x] MR-19 notifications `createdAt` in Swagger, `counts` clarified, `unreadCount`
+- [x] MR-20 support: `number/body`, `clientId` (tickets + feedback), driver `GET /mobile/support/tickets/{id}`; `contactMethod` persisted (`SupportTicket.contactMethod` EMAIL|PHONE, migration `20261008110000_support_ticket_contact_method`) and returned in list/get; ledger type-checked — B-125, D-116
+- [x] MR-28 typed `CreateFeedbackDto.answers` (tenure/ease/hosSatisfaction/recommend + catchall)
+- [x] MR-7 public `GET /mobile/app-config?platform&appVersion` (env-driven, nulls, `updateRequired`) — D-115
+- [x] MR-29 `GET /mobile/ping?bytes=N` (driver auth, 1 MiB cap, no-store)
+- [x] MR-30 `GET /mobile/legal/{privacy|terms}` -> `{version,url,html:null}`
+- [x] MR-31 `POST /auth/driver/password/forgot|reset` (stateless token, no schema change, sessions revoked)
+- [x] MR-16 (logs part) `GET /mobile/logs` per-day `malfunctionIndicator` / `diagnosticIndicator` (derived from eventType 7) — D-116
+- [x] MR-5 `POST /mobile/certify` idempotent on `clientId` (SyncedChange ledger shared with sync; other-type/rejected key -> 409); Swagger: certify never returns 422 RECERTIFICATION_REQUIRED — B-123, B-124, D-116
+- [x] MR-6 `locationName` (5-60 chars per §395 Appendix A, no lat/lon needed) on duty-status, log-entries and sync payloads; shown in logs — D-116
+- [x] MR-12 `GET /mobile/logs` per-day `trip {shippingDocuments, trailerNumbers, notes, bobtail, tripIds, tripNumbers}`
+- [x] MR-13 events/segments `eventId`, `locationDescription`, `odometerMi`, `engineHours`, `annotation`; entries fill `totalVehicleMiles`/`totalEngineHours` from the unit's last reading (no geocode)
+- [x] MR-23 PC/YM via `specialCondition` (OFF+PC / ON+YM -> eventType 3 code 1/2, code 0 clears), gated by `allowPersonalConveyance`/`allowYardMove` (422 SPECIAL_CONDITION_NOT_ALLOWED), PC at 10-mile precision
+- [x] MR-25 `SyncChangeDto.driverId?` — pairing or both §395 logins on one unit over the whole record interval, bounded timestamps, no `originalEventId`, audited after apply; else per-change `SYNC_DELEGATION_NOT_ALLOWED` — B-118, D-117
+- [x] MR-26 `GET /mobile/certification-status?days=8` (1-14)
+- [x] MR-9 `GET /mobile/defect-catalog?part=` -> `[{code,name,part,category,critical}]` (table `DefectCatalogItem`, 47 default rows seeded in migration `20261008120000_mobile_dvir_catalog_signatures`; DVIR category validation lenient) — D-118
+- [x] MR-10 `DvirSubmitDto.mechanicName/mechanicSignatureBase64/mechanicSignatureMimeType` persisted (`Dvir.mechanicSignatureUrl/Hash`, shared `SignatureService` limits), shown in `GET /mobile/dvirs/{id}` — D-118
+- [x] MR-11 `DvirSubmitDto.odometerMi` optional (`Dvir.odometerMi` nullable; falls back to the unit odometer when known) + `clientId` replay on `POST /mobile/dvir` — D-118, B-127
+- [x] MR-14 `GET /mobile/dvirs` rows `trailerNumber`/`odometerMi`; `GET /mobile/dvirs/{id}` `location` (also name-only) + `trailerNumber` — B-127
+- [x] MR-27 `GET/PUT/DELETE /mobile/saved-signature` (`DriverSavedSignature`, base64 or `signatureImageId`, ledger-idempotent) — D-118
+- [ ] MR-33 mobile HOS scenarios through the TS engine — runner `src/modules/hos/mobile-scenarios.conformance.spec.ts` + format `test/conformance/scenarios/README.md` done; BLOCKED until the 74 `mobile/test/conformance/scenarios/*.json` files are copied in (not present locally; suite reports `todo`)
+
 ## Global gates
 From TZ §25 — apply across every phase, not just at the end:
 - [x] All endpoints documented in Swagger, with example responses

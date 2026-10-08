@@ -36,11 +36,41 @@ const DVIR = {
 describe('MobileDvirHistoryService (MB-10)', () => {
   it('list() summarizes defect count, condition and repair status', async () => {
     const { service, repo } = build();
-    repo.listOwnDvirs.mockResolvedValue([{ ...DVIR, _count: { defects: 1 } }]);
+    repo.listOwnDvirs.mockResolvedValue([{ ...DVIR, _count: { defects: 1 }, trailer: { number: 'T-77' } }]);
     const result = await service.list('drv_1', 14);
     expect(result).toEqual([
-      { id: 'dvir_1', vehicleId: 'veh_1', type: 'PRE_TRIP', submittedAt: DVIR.submittedAt, vehicleCondition: 'DEFECTS_FOUND', defectCount: 1, repairStatus: 'PENDING' },
+      { id: 'dvir_1', vehicleId: 'veh_1', type: 'PRE_TRIP', submittedAt: DVIR.submittedAt, vehicleCondition: 'DEFECTS_FOUND', defectCount: 1, repairStatus: 'PENDING', trailerNumber: 'T-77', odometerMi: 100 },
     ]);
+  });
+
+  it('MR-14 list() rows carry trailerNumber=null and odometerMi=null when the DVIR has neither', async () => {
+    const { service, repo } = build();
+    repo.listOwnDvirs.mockResolvedValue([{ ...DVIR, odometerMi: null, _count: { defects: 0 }, trailer: null }]);
+    const [row] = await service.list('drv_1', 14);
+    expect(row).toMatchObject({ trailerNumber: null, odometerMi: null });
+  });
+
+  it('MR-14 get() returns location (numbers; name-only too) and trailerNumber; MR-10 mechanic signature url', async () => {
+    const { service, repo, storage } = build();
+    repo.getOwnDvir.mockResolvedValue({
+      ...DVIR,
+      latitude: '39.961200',
+      longitude: '-82.998800',
+      locationName: 'Columbus, OH',
+      trailer: { number: 'T-77' },
+      mechanicName: 'Bob',
+      mechanicSignedAt: new Date('2026-09-10'),
+      mechanicSignatureUrl: 'signatures/drv_1/m.png',
+      mechanicSignatureHash: 'mm',
+    });
+    const full = await service.get('dvir_1', 'drv_1');
+    expect(full.location).toEqual({ lat: 39.9612, lon: -82.9988, name: 'Columbus, OH' });
+    expect(full.trailerNumber).toBe('T-77');
+    expect(full.mechanicSignature).toMatchObject({ name: 'Bob', key: 'signatures/drv_1/m.png', url: 'https://signed', hash: 'mm' });
+    expect(storage.presignGet).toHaveBeenCalledWith('signatures/drv_1/m.png', expect.any(Number));
+
+    repo.getOwnDvir.mockResolvedValue({ ...DVIR, locationName: 'Yard 3', trailer: null });
+    expect((await service.get('dvir_1', 'drv_1')).location).toEqual({ lat: null, lon: null, name: 'Yard 3' });
   });
 
   it('list() applies the days window', async () => {

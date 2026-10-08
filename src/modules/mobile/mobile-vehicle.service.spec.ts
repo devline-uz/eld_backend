@@ -1,5 +1,6 @@
 import type { AuditRepository } from '../audit/audit.repository';
 import { MobileFleetOpsRepository } from './mobile-fleet-ops.repository';
+import { MobileRepository } from './mobile.repository';
 import { MobileVehicleService } from './mobile-vehicle.service';
 
 const ACTOR = { id: 'drv_1', type: 'driver' as const };
@@ -10,10 +11,21 @@ function build() {
     findVehicleWithDevice: jest.fn(),
     findVehicleHolder: jest.fn(),
     assignVehicle: jest.fn(),
+    releaseVehicle: jest.fn(),
+  };
+  const mobileRepo = {
+    findDriver: jest.fn(),
+    findActivePairing: jest.fn().mockResolvedValue(null),
+    findSyncedByClientId: jest.fn().mockResolvedValue(null),
+    recordSyncedResult: jest.fn().mockResolvedValue({ status: 'ACCEPTED', errorCode: null }),
   };
   const audit = { insert: jest.fn().mockResolvedValue(undefined) };
-  const service = new MobileVehicleService(repo as unknown as MobileFleetOpsRepository, audit as unknown as AuditRepository);
-  return { service, repo, audit };
+  const service = new MobileVehicleService(
+    repo as unknown as MobileFleetOpsRepository,
+    audit as unknown as AuditRepository,
+    mobileRepo as unknown as MobileRepository,
+  );
+  return { service, repo, audit, mobileRepo };
 }
 
 const VEHICLE = {
@@ -26,7 +38,7 @@ const VEHICLE = {
   sleeperBerth: true,
   status: 'ACTIVE',
   odometerMi: 1000,
-  device: { serial: 'PT30-1' },
+  device: { id: 'dev_1', serial: 'PT30-1', model: 'PT30' },
 };
 
 describe('MobileVehicleService (MB-2)', () => {
@@ -76,6 +88,7 @@ describe('MobileVehicleService (MB-2)', () => {
       sleeperBerth: true,
       status: 'ACTIVE',
       odometerMi: 1000,
+      device: { id: 'dev_1', serial: 'PT30-1', model: 'PT30' },
     });
     expect(audit.insert).toHaveBeenCalledWith(expect.objectContaining({ action: 'DRIVER_VEHICLE_SELECTED', objectId: 'drv_1' }));
   });
@@ -88,5 +101,66 @@ describe('MobileVehicleService (MB-2)', () => {
 
     await service.select('drv_1', { vehicleId: 'veh_1' }, ACTOR);
     expect(repo.assignVehicle).toHaveBeenCalledWith('drv_1', 'veh_1', null);
+  });
+
+  it('MR-21: select() returns the bound device, null when none', async () => {
+    const { service, repo } = build();
+    repo.findVehicleWithDevice.mockResolvedValue(VEHICLE);
+    repo.findVehicleHolder.mockResolvedValue(null);
+    expect(await service.select('drv_1', { vehicleId: 'veh_1' }, ACTOR)).toMatchObject({
+      device: { id: 'dev_1', serial: 'PT30-1', model: 'PT30' },
+    });
+    repo.findVehicleWithDevice.mockResolvedValue({ ...VEHICLE, device: null });
+    expect(await service.select('drv_1', { vehicleId: 'veh_1' }, ACTOR)).toMatchObject({ device: null });
+  });
+
+  it('MR-32: passes q/limit through to the repository', async () => {
+    const { service, repo } = build();
+    repo.findAvailableVehicles.mockResolvedValue([]);
+    await service.availableVehicles('drv_1', { q: '10', limit: 5 });
+    expect(repo.findAvailableVehicles).toHaveBeenCalledWith('drv_1', { q: '10', limit: 5 });
+  });
+
+  describe('release (MR-2)', () => {
+    it('409 NO_ASSIGNED_VEHICLE when the driver holds no unit', async () => {
+      const { service, mobileRepo, repo } = build();
+      mobileRepo.findDriver.mockResolvedValue({ id: 'drv_1', assignedVehicleId: null });
+      await expect(service.release('drv_1', {}, ACTOR)).rejects.toMatchObject({ code: 'NO_ASSIGNED_VEHICLE', status: 409 });
+      expect(repo.releaseVehicle).not.toHaveBeenCalled();
+    });
+
+    it('clears the unit, ends a pairing on that unit and records the clientId', async () => {
+      const { service, mobileRepo, repo } = build();
+      mobileRepo.findDriver.mockResolvedValue({ id: 'drv_1', assignedVehicleId: 'veh_1' });
+      mobileRepo.findActivePairing.mockResolvedValue({ id: 'pair_1', vehicleId: 'veh_1' });
+      const result = await service.release('drv_1', { clientId: 'c-1', reason: 'done' }, ACTOR);
+      expect(result).toEqual({ released: true, vehicleId: 'veh_1' });
+      expect(repo.releaseVehicle).toHaveBeenCalledWith('drv_1', 'pair_1', expect.any(Date));
+      expect(mobileRepo.recordSyncedResult).toHaveBeenCalledWith('drv_1', 'c-1', 'release_vehicle', expect.any(Date), 'ACCEPTED', null, result);
+    });
+
+    it('replay with the same clientId returns the first answer, no 409 and no second write', async () => {
+      const { service, mobileRepo, repo } = build();
+      mobileRepo.findSyncedByClientId.mockResolvedValue({ type: 'release_vehicle', status: 'ACCEPTED', result: { released: true, vehicleId: 'veh_1' } });
+      mobileRepo.findDriver.mockResolvedValue({ id: 'drv_1', assignedVehicleId: null });
+      expect(await service.release('drv_1', { clientId: 'c-1' }, ACTOR)).toEqual({ released: true, vehicleId: 'veh_1' });
+      expect(repo.releaseVehicle).not.toHaveBeenCalled();
+    });
+
+    it('a clientId already used by another ledger operation is 409, never that operation\'s result', async () => {
+      const { service, mobileRepo, repo } = build();
+      mobileRepo.findSyncedByClientId.mockResolvedValue({ type: 'create_conversation', status: 'ACCEPTED', result: { conversationId: 'cnv_1' } });
+      mobileRepo.findDriver.mockResolvedValue({ id: 'drv_1', assignedVehicleId: 'veh_1' });
+      await expect(service.release('drv_1', { clientId: 'c-1' }, ACTOR)).rejects.toMatchObject({ status: 409 });
+      expect(repo.releaseVehicle).not.toHaveBeenCalled();
+    });
+
+    it('keeps a pairing that is on a different unit', async () => {
+      const { service, mobileRepo, repo } = build();
+      mobileRepo.findDriver.mockResolvedValue({ id: 'drv_1', assignedVehicleId: 'veh_1' });
+      mobileRepo.findActivePairing.mockResolvedValue({ id: 'pair_9', vehicleId: 'veh_2' });
+      await service.release('drv_1', {}, ACTOR);
+      expect(repo.releaseVehicle).toHaveBeenCalledWith('drv_1', null, expect.any(Date));
+    });
   });
 });
