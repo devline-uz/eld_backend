@@ -1,0 +1,33 @@
+{
+  "name": "empty-events",
+  "spec": "\u00a78.5 boundary \u2014 no events at all",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-01-14T17:00:00Z",
+    "ruleset": "US_70_8_PROPERTY",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true
+    },
+    "previousDays": [],
+    "lastRestartEndedAt": null,
+    "events": []
+  },
+  "expected": {
+    "currentStatus": "OFF",
+    "driveRemainingSec": 39600,
+    "shiftRemainingSec": 50400,
+    "breakRemainingSec": 28800,
+    "cycleRemainingSec": 252000,
+    "driveUsedSec": 0,
+    "shiftStartedAt": null,
+    "shiftEndsAt": null,
+    "violations": [],
+    "dailyTotals": {
+      "off": 0,
+      "sb": 0,
+      "drive": 0,
+      "on": 0
+    }
+  }
+}

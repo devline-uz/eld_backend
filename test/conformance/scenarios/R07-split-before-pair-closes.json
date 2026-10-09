@@ -1,0 +1,42 @@
+{
+  "id": "R07-split-before-pair-closes",
+  "rule": "SPLIT_SLEEPER",
+  "title": "Long part taken, pair not yet closed \u2014 the window is extended, driving is not reset",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-14T19:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-15T05:00:00.000Z",
+        "status": "ON"
+      },
+      {
+        "at": "2026-01-15T07:00:00.000Z",
+        "status": "SB"
+      },
+      {
+        "at": "2026-01-15T15:00:00.000Z",
+        "status": "D"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance"
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-15T18:00:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "driveUsedSec": 10800,
+    "driveRemainingSec": 28800,
+    "shiftStartedAt": "2026-01-15T05:00:00.000Z",
+    "shiftEndsAt": "2026-01-16T03:00:00.000Z",
+    "shiftRemainingSec": 32400,
+    "breakRemainingSec": 18000,
+    "violations": []
+  }
+}

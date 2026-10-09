@@ -144,6 +144,8 @@ export const CreateMaintenanceScheduleDto = z
   .object({
     vehicleId: z.string().uuid(),
     name: z.string().min(1).max(120),
+    /** M-38 — UPPER_SNAKE label the driver app shows ("OIL_CHANGE", "DOT_ANNUAL"); default SERVICE. */
+    scheduleType: z.string().trim().min(1).max(40).optional(),
     intervalMi: z.number().int().min(1).max(2_000_000).optional(),
     intervalDays: z.number().int().min(1).max(3660).optional(),
     lastServiceMi: z.number().int().min(0).optional(),
@@ -155,8 +157,15 @@ export const CreateMaintenanceScheduleDto = z
   });
 export type CreateMaintenanceScheduleDto = z.infer<typeof CreateMaintenanceScheduleDto>;
 
+export const MaintenanceScheduleStatusEnum = z.enum(['OPEN', 'COMPLETED', 'CANCELLED', 'REJECTED']);
+
 export const UpdateMaintenanceScheduleDto = z.object({
   name: z.string().min(1).max(120).optional(),
+  scheduleType: z.string().trim().min(1).max(40).optional(),
+  /** M-40 review of a driver submission: COMPLETED approves (resets the interval clock), REJECTED
+   * (needs `reviewNote`) sends it back to the driver, CANCELLED withdraws the task, OPEN reopens it. */
+  status: MaintenanceScheduleStatusEnum.optional(),
+  reviewNote: z.string().trim().max(500).nullable().optional(),
   intervalMi: z.number().int().min(1).max(2_000_000).nullable().optional(),
   intervalDays: z.number().int().min(1).max(3660).nullable().optional(),
   lastServiceMi: z.number().int().min(0).optional(),
@@ -166,6 +175,7 @@ export const UpdateMaintenanceScheduleDto = z.object({
 export type UpdateMaintenanceScheduleDto = z.infer<typeof UpdateMaintenanceScheduleDto>;
 
 export const MaintenanceScheduleListQueryDto = z.object({
+  status: MaintenanceScheduleStatusEnum.optional(),
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(200).default(25),
   vehicleId: z.string().uuid().optional(),

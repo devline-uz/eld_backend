@@ -5,6 +5,7 @@ import {
   celsiusToCelsius,
   galToL,
   kmToMi,
+  kmToMiUnrounded,
   kmhToMph,
   kmplToMpg,
   kpaToPsi,
@@ -34,6 +35,9 @@ describe('units/convert (TZ §4.2)', () => {
     });
     it('returns whole miles', () => {
       expect(Number.isInteger(kmToMi(123.456))).toBe(true);
+    });
+    it('kmToMiUnrounded keeps the fraction', () => {
+      expect(kmToMiUnrounded(10)).toBeCloseTo(6.21371, 6);
     });
   });
 

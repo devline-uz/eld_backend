@@ -1,0 +1,42 @@
+{
+  "name": "personal-conveyance-10-mile-precision",
+  "spec": "\u00a78.2 rule 10 \u2014 PC position is recorded at 10-mile precision",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-01-14T20:00:00Z",
+    "ruleset": "US_70_8_PROPERTY",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true,
+      "allowPersonalConveyance": true
+    },
+    "previousDays": [],
+    "lastRestartEndedAt": null,
+    "events": [
+      {
+        "at": "2025-01-14T05:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-14T15:00:00Z",
+        "status": "D",
+        "special": "PC",
+        "locationPrecisionMi": 10
+      },
+      {
+        "at": "2025-01-14T18:00:00Z",
+        "status": "D"
+      }
+    ]
+  },
+  "expected": {
+    "driveUsedSec": 7200,
+    "dailyTotals": {
+      "off": 46800,
+      "sb": 0,
+      "drive": 7200,
+      "on": 0
+    },
+    "violations": []
+  }
+}

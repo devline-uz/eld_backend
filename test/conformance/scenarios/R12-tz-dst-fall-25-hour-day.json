@@ -1,0 +1,45 @@
+{
+  "id": "R12-tz-dst-fall-25-hour-day",
+  "rule": "TIMEZONE",
+  "title": "DST fall back \u2014 2026-11-01 is a 25-hour RODS day in America/New_York",
+  "input": {
+    "events": [
+      {
+        "at": "2026-10-31T22:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-11-01T11:00:00.000Z",
+        "status": "ON"
+      },
+      {
+        "at": "2026-11-01T17:00:00.000Z",
+        "status": "D"
+      },
+      {
+        "at": "2026-11-01T23:00:00.000Z",
+        "status": "OFF"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance"
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-11-02T00:00:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "driveUsedSec": 21600,
+    "shiftStartedAt": "2026-11-01T11:00:00.000Z",
+    "dailyTotals": {
+      "off": 28800,
+      "sb": 0,
+      "drive": 21600,
+      "on": 21600
+    },
+    "cycleRemainingSec": 208800,
+    "violations": []
+  }
+}

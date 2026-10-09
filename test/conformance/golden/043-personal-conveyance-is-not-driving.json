@@ -1,0 +1,38 @@
+{
+  "name": "personal-conveyance-is-not-driving",
+  "spec": "\u00a78.2 rule 10 \u2014 PC is off duty and never driving time",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-01-14T20:00:00Z",
+    "ruleset": "US_70_8_PROPERTY",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true,
+      "allowPersonalConveyance": true
+    },
+    "previousDays": [],
+    "lastRestartEndedAt": null,
+    "events": [
+      {
+        "at": "2025-01-14T05:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-14T15:00:00Z",
+        "status": "D",
+        "special": "PC"
+      },
+      {
+        "at": "2025-01-14T18:00:00Z",
+        "status": "D"
+      }
+    ]
+  },
+  "expected": {
+    "driveUsedSec": 7200,
+    "driveRemainingSec": 32400,
+    "cycleRemainingSec": 244800,
+    "shiftStartedAt": "2025-01-14T18:00:00Z",
+    "violations": []
+  }
+}

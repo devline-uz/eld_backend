@@ -198,7 +198,7 @@ Dispatch and safety features.
 Carrier profile, integrations, API access, support tooling.
 **Owner:** `eld-fleet-ops` (carrier, support) · `eld-reports-jobs` (integrations, webhooks) · `eld-auth-rbac` (API keys) · support: `eld-compliance-rods`, `eld-security`
 - [x] Carrier module (single-row profile table, not env config) — `eld-fleet-ops`
-- [x] Carrier eRODS fields reviewed: `eldIdentifier`/`eldRegistrationId` exactly 4 chars, `erodsMode` — `eld-compliance-rods`
+- [x] Carrier eRODS fields reviewed: `eldIdentifier` exactly 6 chars (Appendix A 7.15) / `eldRegistrationId` exactly 4 chars (7.17), `erodsMode` — `eld-compliance-rods` (corrected 2026-10-08, B-138)
 - [x] Integrations module: TMS, fuel card; secrets encrypted at rest — `eld-reports-jobs` + `eld-security`
 - [x] Webhook support (HMAC-SHA256 signing, 3 retries) — `eld-reports-jobs`
 - [x] API key management: hashing, prefix display, scopes, revoke — `eld-auth-rbac` + `eld-security`
@@ -306,6 +306,63 @@ Source: `../backend_tasks.md` (section numbers in brackets). Depends on: Phases 
 - [x] eld-security review of new endpoints (IDOR, presign scope, reset-password, sessions) — B-090..B-100, D-103, docs/threat-model.md §11a
 - [x] eld-qa-test: tests for every 13C–13I endpoint, full suite green, dev API :3002 restarted on new build
 
+## Mobile requests 2026-10-08 (`docs/mobile-requests-2026-10-08.md`)
+- [x] MR-2 `POST /mobile/release-vehicle` (idempotent on clientId via SyncedChange; 409 NO_ASSIGNED_VEHICLE; pairing/leave behaviour documented) — D-110
+- [x] MR-4 `PATCH /mobile/trip` null/"" clears, BOBTAIL / `bobtail`, `shippingDocuments[]`/`trailerNumbers[]` (migration `20261008100000_trip_mobile_arrays`) — D-111
+- [x] MR-8 `GET /mobile/trailers?q=`
+- [x] MR-15 `GET /mobile/co-driver`
+- [x] MR-21 select-vehicle response `device`
+- [x] MR-22 wrong co-driver password -> 422 CO_DRIVER_PASSWORD_INVALID
+- [x] MR-32 `GET /mobile/available-vehicles?q=&limit=` (plain array kept) — B-114
+- [x] MR-1 `POST /mobile/hos-state` compares at `snapshot.computedAt`; > 3600 s old -> `{compared:false, reason:"STALE", staleSec}`, no drift alert; nightly sweep also compares at computedAt (36 h bound, `skippedStale`) — B-115, D-113
+- [x] MR-24 `statusSince` / `nextBreakDueAt` / `shiftEndsAt` / `cycleRecapAt` / `restartAvailableAt` (ISO or null) on hos-state `serverState` + bootstrap `hos.state`; optional on the posted app state (stored, not compared) — B-116
+- [x] MR-3 `POST /mobile/conversations {contactId|"support", body, clientId}` — reuses DIRECT thread, ledger-idempotent, `conversation.new` realtime to staff `user:{id}`
+- [x] MR-16 bootstrap `carrier.mainOfficeAddress/eldProvider/eldRegistrationId`, `driver.exemptDriverStatus` (bootstrap part only; per-day logs indicators belong to the logs agent)
+- [x] MR-17 bootstrap `driver.email/phone`
+- [x] MR-18 chat messages `senderId/senderType/senderName/readAt/clientId`, conversations `participants[]`/`title`; send idempotent on clientId
+- [x] MR-19 notifications `createdAt` in Swagger, `counts` clarified, `unreadCount`
+- [x] MR-20 support: `number/body`, `clientId` (tickets + feedback), driver `GET /mobile/support/tickets/{id}`; `contactMethod` persisted (`SupportTicket.contactMethod` EMAIL|PHONE, migration `20261008110000_support_ticket_contact_method`) and returned in list/get; ledger type-checked — B-125, D-116
+- [x] MR-28 typed `CreateFeedbackDto.answers` (tenure/ease/hosSatisfaction/recommend + catchall)
+- [x] MR-7 public `GET /mobile/app-config?platform&appVersion` (env-driven, nulls, `updateRequired`) — D-115
+- [x] MR-29 `GET /mobile/ping?bytes=N` (driver auth, 1 MiB cap, no-store)
+- [x] MR-30 `GET /mobile/legal/{privacy|terms}` -> `{version,url,html:null}`
+- [x] MR-31 `POST /auth/driver/password/forgot|reset` (stateless token, no schema change, sessions revoked)
+- [x] MR-16 (logs part) `GET /mobile/logs` per-day `malfunctionIndicator` / `diagnosticIndicator` (derived from eventType 7) — D-116
+- [x] MR-5 `POST /mobile/certify` idempotent on `clientId` (SyncedChange ledger shared with sync; other-type/rejected key -> 409); Swagger: certify never returns 422 RECERTIFICATION_REQUIRED — B-123, B-124, D-116
+- [x] MR-6 `locationName` (5-60 chars per §395 Appendix A, no lat/lon needed) on duty-status, log-entries and sync payloads; shown in logs — D-116
+- [x] MR-12 `GET /mobile/logs` per-day `trip {shippingDocuments, trailerNumbers, notes, bobtail, tripIds, tripNumbers}`
+- [x] MR-13 events/segments `eventId`, `locationDescription`, `odometerMi`, `engineHours`, `annotation`; entries fill `totalVehicleMiles`/`totalEngineHours` from the unit's last reading (no geocode)
+- [x] MR-23 PC/YM via `specialCondition` (OFF+PC / ON+YM -> eventType 3 code 1/2, code 0 clears), gated by `allowPersonalConveyance`/`allowYardMove` (422 SPECIAL_CONDITION_NOT_ALLOWED), PC at 10-mile precision
+- [x] MR-25 `SyncChangeDto.driverId?` — pairing or both §395 logins on one unit over the whole record interval, bounded timestamps, no `originalEventId`, audited after apply; else per-change `SYNC_DELEGATION_NOT_ALLOWED` — B-118, D-117
+- [x] MR-26 `GET /mobile/certification-status?days=8` (1-14)
+- [x] MR-9 `GET /mobile/defect-catalog?part=` -> `[{code,name,part,category,critical}]` (table `DefectCatalogItem`, 47 default rows seeded in migration `20261008120000_mobile_dvir_catalog_signatures`; DVIR category validation lenient) — D-118
+- [x] MR-10 `DvirSubmitDto.mechanicName/mechanicSignatureBase64/mechanicSignatureMimeType` persisted (`Dvir.mechanicSignatureUrl/Hash`, shared `SignatureService` limits), shown in `GET /mobile/dvirs/{id}` — D-118
+- [x] MR-11 `DvirSubmitDto.odometerMi` optional (`Dvir.odometerMi` nullable; falls back to the unit odometer when known) + `clientId` replay on `POST /mobile/dvir` — D-118, B-127
+- [x] MR-14 `GET /mobile/dvirs` rows `trailerNumber`/`odometerMi`; `GET /mobile/dvirs/{id}` `location` (also name-only) + `trailerNumber` — B-127
+- [x] MR-27 `GET/PUT/DELETE /mobile/saved-signature` (`DriverSavedSignature`, base64 or `signatureImageId`, ledger-idempotent) — D-118
+- [x] MR-33 mobile HOS scenarios through the TS engine — runner `src/modules/hos/mobile-scenarios.conformance.spec.ts` reads the real mobile format (`id`/`rule`/`title`/`input`/`expect`), README updated; 74/74 pass after engine fixes B-131 (PC/YM authorisation flags), B-132 (`lastBreakEndedAt` shift-scoped), B-133 (`cycleRecapAt` = first upcoming recap) — D-119
+
+### Mobile requests wave 4 (2026-10-08)
+- [x] M-38..M-42 `GET /mobile/maintenance`, `GET /mobile/maintenance/{id}`, `POST /mobile/maintenance/{id}/submit` (DriverGuard, scoped to `Driver.assignedVehicleId`, ledger-idempotent on `clientId`); `MaintenanceSchedule` gains scheduleType/status/invoice/submission/review fields (migration `20261008130000_mobile_maintenance` + `down.sql`, applied to dev + test DB, up-down-up verified); back office reviews via `PATCH /maintenance-schedules/:id {status, reviewNote}` — D-122
+- [x] M-39/M-41/M-42 `POST /mobile/signature` `purpose: INVOICE` + `application/pdf` (10 MiB, `%PDF-` verified, Attachment kind INVOICE); `GET /attachments/:id/presign` lets a driver presign only files they uploaded — D-123, B-140
+- [x] M-29 `GET /mobile/defect-catalog` = design rows verbatim in order (41 truck + 16 trailer, others hidden not deleted, `isPhoto` for Accident Photo) — migration `20261008131000_defect_catalog_design_rows` + `down.sql` — D-124
+- [x] M-46 `CreateFeedbackDto.answers.overallExperience` integer 1-5 (catchall kept) — D-125
+- [x] HOS engine 1.0.3 — `HOS_ENGINE_VERSION` 1.0.3 (bootstrap/sync/recalc/hos-state read the constant); `POST /mobile/hos-state` with a different app engine: stored, `compared:false`, `reason:"VERSION_MISMATCH"`, new `updateRequired` (true only when the app engine is older), no drift alert — D-126
+- [x] HOS 1.0.3 — `CYCLE_70/60` only for driving past the cycle (§395.3(b)/§395.5(b)); golden 023/024 drive, 056 rewritten, new 054/057/058; scenarios R04-cycle70-over/R04-cycle60-over drive — B-142, D-126
+- [x] HOS 1.0.3 — passenger rulesets per §395.5: 10 h driving / 15 h ON DUTY (off-duty not counted, violated only by driving) after 8 h off, no 34 h restart (§395.3(c)), §395.1(g)(3) split (2 SB periods ≥ 2 h, ≥ 8 h); golden 059–069, `compute-hos.passenger.spec.ts` — B-143, D-126
+- [x] HOS fixtures — golden 011 `driveUsedSec` integer, README Dart path `lib/core/hos/engine/` + 054 note; port list `docs/hos-engine-1.0.3-changes.md`
+- [x] Automatic location description — offline §395 App. A §7.29 geo-location (`2mi ESE IL Darien`, PC 10-mile steps) from GeoNames cities1000 US/CA/MX (`src/common/geo-location/data/places-na.tsv`, 27,147 places, CC BY 4.0; `scripts/build-geo-places.mjs`), grid index warmed at startup; written into `locationName` for ingest / duty-status / sync / log-entries / DVIR when no name was supplied, read-time fallback in `GET /mobile/logs` + DVIR detail; spec `docs/location-description.md` — D-127, B-144
+- [x] MG-BLE-7 — no `alert.eld_disconnected` for a device never connected (`lastSeenAt` null) — B-145
+- [x] MG-BLE-1/2 — `POST /mobile/device/mac {deviceId, macAddress}` (DriverGuard): report-only, empty -> stored + audited, equal -> no-op, different -> 409 `DEVICE_MAC_MISMATCH` + audit + `alert.device_mac_mismatch`; pairing stays back-office — D-128
+- [x] `app-config.minPt30Firmware` / `recommendedPt30Firmware` env-driven (`MOBILE_MIN_PT30_FIRMWARE` / `MOBILE_RECOMMENDED_PT30_FIRMWARE`, documented in `.env.example`), null until the vendor publishes versions
+- [x] M-09/M-12, T-04/T-05 — `DriverDayDetails` per driver + home-terminal RODS day (migration `20261008140000_driver_day_details` + `down.sql`, applied to dev + test DB, down-up verified on dev); `PATCH /mobile/trip` with no trip writes it (`logDate` optional, `source:"DAY_DETAILS"`), `GET /mobile/trip` never null, `GET /mobile/logs` `trip{}` merges it (`dayDetails`), certified day de-certified + audited — D-129
+- [x] Free-text trailer numbers (supersedes D-111's list rule): no `TRAILER_NOT_FOUND`, linked when an ACTIVE carrier trailer matches; §395 App. A 7.42 format 1-10 `[A-Z0-9-]`, joined ≤ 32 (§395 over the 1-32 request); shipping docs ≤ 40 (7.39); DVIR `trailerNumber` (new `Dvir.trailerNumber`) — D-129
+- [x] eRODS header Trailer Number(s) / Shipping Document Number + engine power rows from trips ∪ day details (transfer and FMCSA pack, `transfers/trip-details.ts`) — B-146, D-129
+- [x] §395 login/logout records written by the server (`RodsLoginRecorder`): code 1 on `/auth/login/driver` with a unit, `select-vehicle`, `co-driver/switch`; code 2 on `/auth/logout`, `release-vehicle`, `co-driver/leave` (+ replaced stale holder); idempotent, origin 1; ingest eventType 5 still accepted; D-117 + eRODS segment covered by e2e — B-147, D-130
+- [x] `bootstrap.driver.username` + driver `GET /auth/me` `username`/`fullName`/`email`/`homeTerminalTimezone` (M-31 / D-120)
+- [x] `docs/erods-changes-2026-10-08.md` — Unidentified title `Unidentified Vehicle Profile Records:` → `Unidentified Driver Profile Records:` (`segments.ts:31`), header trailer/shipping and Login/Logout rows
+- [x] Mobile #13 OpenAPI quality — every `/mobile/*` + `/auth/login/driver|refresh|me` + `/notifications*` 2xx has a typed enveloped schema (`@ApiEnvelopeResponse`, `*/dto/*.responses.ts`, named enums, nullable/optional per service), `POST /mobile/conversations` body = `StartConversationDto`, examples match current shapes (bootstrap `OBK001`, trip `source`, dvirs `trailerNumber/odometerMi`), e2e guard for typed schemas + real 2xx status, `docs/openapi.json` regenerated — D-131, B-152
+
 ## Global gates
 From TZ §25 — apply across every phase, not just at the end:
 - [x] All endpoints documented in Swagger, with example responses
@@ -347,7 +404,7 @@ From TZ §23 — authoritative wording lives in `tz.md` §23.
 - [x] Personal Conveyance location coarsened to 10 miles **before** storage
 - [x] RODS day boundary follows `driver.homeTerminalTimezone`
 - [x] Output file name follows Appendix A §4.8.2.2, unit tested
-- [x] `eldIdentifier` and `eldRegistrationId` are exactly 4 characters
+- [x] `eldIdentifier` is exactly 6 characters (Appendix A 7.15) and `eldRegistrationId` exactly 4 (7.17) — DTO + DB CHECK + generator + validator (B-138, migration `20261008130000_eld_identifier_six_chars`)
 - [x] Email transfer is encrypted and restricted to `fmcsa.dot.gov`
 - [x] ~~Google Sign-In never bypasses 2FA~~ — moot: 2FA removed 2026-09-13 at user request (D-050)
 - [x] Dart and TypeScript engines match 100% on shared fixtures
@@ -358,6 +415,6 @@ From TZ §23 — authoritative wording lives in `tz.md` §23.
 From TZ §26 ("Qolgan aniqlik talab qiladigan narsalar") — unresolved as of this writing.
 
 1. **Flutter wrapper availability for the Pacific Track SDK** (native Android/iOS). Blocked on: mobile app team. Impact: no backend effect; relevant only to Phase 4b/6 mobile integration timing.
-2. **Output file name format (§10.2)** — *file name RESOLVED, column order still open.* The 4.8.2.2 name rule is implemented as a pure function with unit tests (`transfers/filename.ts`), and the settled parts of the file format are enforced mechanically (segment order, 9-line header, 4.4.5.3 line check values, 4.4.5.4 file check value, 4-char ELD identifier, MMDDYY/HHMMSS, 4-hex sequence ids, 0.01°/0.1° position, 60-char comment/annotation, printable ASCII). What is STILL unconfirmed against the current FMCSA revision is the column order inside each data line; `eld.docs/pt30_docs/` holds PT30 hardware material only, no Appendix A. Blocked on: the FMCSA document. Impact: contained — the layout is declared once in `transfers/segments.ts` and both the generator and the validator read it, so the diff is a single-file edit (decisions.md D-024). Confirm before the PRODUCTION toggle.
+2. **Output file name format (§10.2)** — *RESOLVED 2026-10-08.* The official eCFR text of 49 CFR 395 Subpart B Appendix A (2026-10-06) is now in the repo (`docs/fmcsa/49cfr395-subpartB-appendixA.txt`) and the whole file was diffed against it column by column (decisions.md D-024 closed, D-120 choices): segment order 4.8.2.1.1–.11 incl. Login/Logout and Engine Power segments, 7-line header, 4.4.5 check values (Table 3 mapping, rotate/XOR; file value 4 hex), the 4.8.2.2 25-character file name (`SMITH3841091126-000000000.csv`), and the 6-character ELD Identifier (7.15; B-134…B-138). Layout still lives in one table (`transfers/segments.ts`) read by both writer and validator; reference bytes in `eld.docs/erods-conformance/`. Remaining caveat: Table 3 (character mapping) is missing from the flattened text and was taken from the eCFR table (B-135). Not blocking the PRODUCTION toggle any more.
 3. **FMCSA email encryption public key and subject-line format (§10.4).** *Still OPEN — no key invented.* Config seams are in place: `FMCSA_PUBLIC_KEY` (PEM or base64; unset today, so `FmcsaEncryptionService.configured` is false and an email transfer raises `TRANSFER_ENCRYPTION_UNAVAILABLE` rather than emailing plaintext), `FMCSA_EMAIL_SUBJECT_TEMPLATE`, `FMCSA_WEB_SERVICES_URL`. The envelope we emit is named (`OBK-ERODS-RSA-OAEP-SHA256+AES-256-GCM/1`) so a confirmed FMCSA format is a strategy swap. There is also no SMTP transport in the project: `MAIL_PORT` is bound to `LoggingMailTransport`, which records the attempt and reports `NO_MAIL_TRANSPORT` (decisions.md D-026). Blocked on: FMCSA-side info + a reviewed mail transport. Impact: does not block TEST mode; required before enabling PRODUCTION email transfer.
 4. **Source of the 8-day `previousDays` cycle history on first run** (no historical data exists). Blocked on: backend / migration decision. Impact: first 8 days of cycle calc show incorrectly unless resolved; proposed fix is a manual-entry form during migration — schedule within Phase 1 or Phase 4 rollout.

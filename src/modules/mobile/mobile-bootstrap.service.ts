@@ -64,10 +64,17 @@ export class MobileBootstrapService {
       hosEngineVersion: HOS_ENGINE_VERSION,
       driver: {
         id: driver.id,
+        /** Mobile wave 4 (M-31 / D-120) — the ELD username (Appendix A 7.38): Driver ID line + phone-built eRODS file. */
+        username: driver.username,
         firstName: driver.firstName,
         lastName: driver.lastName,
         cdlNumber: driver.cdlNumber,
         cdlState: driver.cdlState,
+        /** MR-17 — contact details for the profile screen; `null` when not on file. */
+        email: driver.email ?? null,
+        phone: driver.phone ?? null,
+        /** MR-16 — §395.1 exempt driver status (mirror of `exceptions.eldExempt`). */
+        exemptDriverStatus: driver.eldExempt,
         status: driver.status,
         homeTerminalName: driver.homeTerminalName,
         homeTerminalTimezone: driver.homeTerminalTimezone,
@@ -141,6 +148,11 @@ export class MobileBootstrapService {
             allowPersonalConveyance: carrier.allowPersonalConveyance,
             allowYardMove: carrier.allowYardMove,
             eldIdentifier: carrier.eldIdentifier,
+            /** MR-16 — one line "street, city, ST zip" built from the carrier address; `null` if none on file. */
+            mainOfficeAddress: formatMainOfficeAddress(carrier),
+            /** MR-16 — ELD provider name (env `ELD_PROVIDER_NAME`, default "OneBook ELD"). */
+            eldProvider: this.config.get('ELD_PROVIDER_NAME') ?? 'OneBook ELD',
+            eldRegistrationId: carrier.eldRegistrationId ?? null,
             erodsMode: carrier.erodsMode,
           }
         : null,
@@ -170,4 +182,10 @@ export class MobileBootstrapService {
       },
     };
   }
+}
+
+function formatMainOfficeAddress(c: { addressLine1: string | null; city: string | null; state: string | null; zip: string | null }): string | null {
+  const stateZip = [c.state, c.zip].filter(Boolean).join(' ');
+  const parts = [c.addressLine1, c.city, stateZip].filter((p): p is string => Boolean(p));
+  return parts.length ? parts.join(', ') : null;
 }

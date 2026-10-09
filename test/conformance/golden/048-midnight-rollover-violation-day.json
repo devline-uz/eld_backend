@@ -1,0 +1,42 @@
+{
+  "name": "midnight-rollover-violation-day",
+  "spec": "\u00a78.5 time \u2014 the violation belongs to the day it happened on",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-01-15T10:00:00Z",
+    "ruleset": "US_70_8_PROPERTY",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true
+    },
+    "previousDays": [],
+    "lastRestartEndedAt": null,
+    "events": [
+      {
+        "at": "2025-01-14T05:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-14T22:00:00Z",
+        "status": "D"
+      }
+    ]
+  },
+  "expected": {
+    "driveUsedSec": 43200,
+    "violations": [
+      {
+        "type": "BREAK_30",
+        "logDate": "2025-01-15",
+        "occurredAt": "2025-01-15T06:00:00Z",
+        "exceededBySec": 14400
+      },
+      {
+        "type": "DRIVING_11",
+        "logDate": "2025-01-15",
+        "occurredAt": "2025-01-15T09:00:00Z",
+        "exceededBySec": 3600
+      }
+    ]
+  }
+}

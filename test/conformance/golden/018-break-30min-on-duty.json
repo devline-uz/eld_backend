@@ -1,0 +1,37 @@
+{
+  "name": "break-30min-on-duty",
+  "spec": "\u00a78.2 rule 3 \u2014 the break may be spent ON duty, not only OFF",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-01-14T23:30:00Z",
+    "ruleset": "US_70_8_PROPERTY",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true
+    },
+    "previousDays": [],
+    "lastRestartEndedAt": null,
+    "events": [
+      {
+        "at": "2025-01-14T05:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-14T15:00:00Z",
+        "status": "D"
+      },
+      {
+        "at": "2025-01-14T19:00:00Z",
+        "status": "ON"
+      },
+      {
+        "at": "2025-01-14T19:30:00Z",
+        "status": "D"
+      }
+    ]
+  },
+  "expected": {
+    "breakRemainingSec": 14400,
+    "violations": []
+  }
+}

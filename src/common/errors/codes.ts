@@ -51,6 +51,10 @@ export const ERROR_CODES = {
   VEHICLE_GROUP_NOT_FOUND: 'VEHICLE_GROUP_NOT_FOUND',
   DEVICE_NOT_FOUND: 'DEVICE_NOT_FOUND',
   DEVICE_ALREADY_PAIRED: 'DEVICE_ALREADY_PAIRED',
+  /** MG-BLE-1/2 — `POST /mobile/device/mac`: the device already has a different BLE MAC on record
+   * (or the reported MAC belongs to another device). 409; back office is alerted
+   * (`alert.device_mac_mismatch`) and the attempt is audited. Pairing stays back-office only. */
+  DEVICE_MAC_MISMATCH: 'DEVICE_MAC_MISMATCH',
   VEHICLE_OUT_OF_SERVICE: 'VEHICLE_OUT_OF_SERVICE',
   /** `POST /vehicles` / `PATCH /vehicles/:id` / import row — another live unit has this unit
    * number. `details: { unitNumber }` (backend_tasks.md B-97). */
@@ -93,6 +97,9 @@ export const ERROR_CODES = {
   UNRESOLVED_UNIDENTIFIED: 'UNRESOLVED_UNIDENTIFIED',
   UNIDENTIFIED_ALREADY_ASSIGNED: 'UNIDENTIFIED_ALREADY_ASSIGNED',
   HOS_ENGINE_VERSION_MISMATCH: 'HOS_ENGINE_VERSION_MISMATCH',
+  /** MR-23 — PC/YM (`specialCondition`) requested by a driver whose exceptions do not allow it
+   * (`Driver.allowPersonalConveyance` / `allowYardMove`, §395.1(e)). 422. */
+  SPECIAL_CONDITION_NOT_ALLOWED: 'SPECIAL_CONDITION_NOT_ALLOWED',
 
   // --- transfers / eRODS (TZ §10) -----------------------------------------
   INVALID_TRANSFER_RECIPIENT: 'INVALID_TRANSFER_RECIPIENT',
@@ -127,6 +134,9 @@ export const ERROR_CODES = {
   SYNC_BATCH_TOO_LARGE: 'SYNC_BATCH_TOO_LARGE',
   /** §13.4 — a change `type` the server does not recognise (client is ahead of the server). */
   SYNC_UNKNOWN_CHANGE_TYPE: 'SYNC_UNKNOWN_CHANGE_TYPE',
+  /** MR-25 — a sync change names another `driverId` that did not share a co-driver pairing
+   * (same unit) with the caller at `occurredAt`, or a change type that cannot be delegated. */
+  SYNC_DELEGATION_NOT_ALLOWED: 'SYNC_DELEGATION_NOT_ALLOWED',
 
   // --- reports (TZ §15) -----------------------------------------------------
   REPORT_NOT_FOUND: 'REPORT_NOT_FOUND',
@@ -147,6 +157,11 @@ export const ERROR_CODES = {
 
   // --- trips / dispatch (mobile/tz.md §21.1 MB-5) -------------------------
   TRIP_NOT_FOUND: 'TRIP_NOT_FOUND',
+  /** MR-2 — `POST /mobile/release-vehicle` while the driver holds no unit (409). */
+  NO_ASSIGNED_VEHICLE: 'NO_ASSIGNED_VEHICLE',
+  /** MR-22 — `POST /mobile/co-driver/switch` with a wrong co-driver password (422, never 401:
+   * the caller's own session is valid, so a 401 would make the app drop its token). */
+  CO_DRIVER_PASSWORD_INVALID: 'CO_DRIVER_PASSWORD_INVALID',
   /** `PATCH /mobile/trip { trailerNumber }` — no live `Trailer` row with that number exists.
    * Deliberately rejected rather than stored as free text (no schema change, TZ §5.3).
    * Also 422 on `POST /trips`, `POST /trips/:id/assign` and `POST /mobile/dvir` when `trailerId`

@@ -1,0 +1,64 @@
+{
+  "id": "R04-cycle70-over",
+  "rule": "CYCLE",
+  "title": "70:01 in 8 days, driving past the limit \u2014 CYCLE_70 by 60 s (\u00a7395.3(b), engine 1.0.3)",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-15T01:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-15T11:00:00.000Z",
+        "status": "D"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance"
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-15T18:01:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [
+      {
+        "date": "2026-01-08",
+        "onDutySec": 32400
+      },
+      {
+        "date": "2026-01-09",
+        "onDutySec": 32400
+      },
+      {
+        "date": "2026-01-10",
+        "onDutySec": 32400
+      },
+      {
+        "date": "2026-01-11",
+        "onDutySec": 32400
+      },
+      {
+        "date": "2026-01-12",
+        "onDutySec": 32400
+      },
+      {
+        "date": "2026-01-13",
+        "onDutySec": 32400
+      },
+      {
+        "date": "2026-01-14",
+        "onDutySec": 32400
+      }
+    ],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "cycleRemainingSec": 0,
+    "violations": [
+      {
+        "type": "CYCLE_70",
+        "logDate": "2026-01-15",
+        "exceededBySec": 60
+      }
+    ]
+  }
+}

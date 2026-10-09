@@ -9,9 +9,11 @@ function buildService(row: AttachmentOwnerRow | null) {
 }
 
 const dvirDriver = 'drv_1';
+const notUploaded = { uploadedById: null, uploadedByType: 'USER' as const, maintenanceInvoiceFor: [] };
 const dvirRow: AttachmentOwnerRow = {
   id: 'att_1',
   key: 'dvir/photo.jpg',
+  ...notUploaded,
   dvirId: 'dvir_1',
   defectId: null,
   ticketId: null,
@@ -22,6 +24,7 @@ const dvirRow: AttachmentOwnerRow = {
 const defectRow: AttachmentOwnerRow = {
   id: 'att_2',
   key: 'defect/photo.jpg',
+  ...notUploaded,
   dvirId: null,
   defectId: 'defect_1',
   ticketId: null,
@@ -32,6 +35,7 @@ const defectRow: AttachmentOwnerRow = {
 const ticketRow: AttachmentOwnerRow = {
   id: 'att_3',
   key: 'ticket/diagnostics.json',
+  ...notUploaded,
   dvirId: null,
   defectId: null,
   ticketId: 'tkt_1',
@@ -93,5 +97,48 @@ describe('AttachmentsService.presignAttachment (TZ §20 B-41)', () => {
     const expiresIn = new Date(result.expiresAt).getTime() - before;
     expect(expiresIn).toBeGreaterThan(14 * 60 * 1000);
     expect(expiresIn).toBeLessThanOrEqual(15 * 60 * 1000 + 1000);
+  });
+});
+
+describe('AttachmentsService.presignAttachment — M-39/M-41 maintenance invoice PDFs', () => {
+  const invoiceRow: AttachmentOwnerRow = {
+    id: 'att_inv',
+    key: 'invoices/drv_1/att_inv.pdf',
+    dvirId: null,
+    defectId: null,
+    ticketId: null,
+    uploadedById: 'drv_1',
+    uploadedByType: 'DRIVER' as const,
+    maintenanceInvoiceFor: [],
+    dvir: null,
+    defect: null,
+    ticket: null,
+  };
+
+  it('lets the uploading driver presign their own invoice PDF', async () => {
+    const { service, storage } = buildService(invoiceRow);
+    const result = await service.presignAttachment('att_inv', { id: 'drv_1', type: 'driver' });
+    expect(result.url).toContain('invoices/drv_1/att_inv.pdf');
+    expect(storage.presignGet).toHaveBeenCalledWith('invoices/drv_1/att_inv.pdf', 15 * 60);
+  });
+
+  it("404s another driver on someone else's invoice (IDOR)", async () => {
+    const { service, storage } = buildService(invoiceRow);
+    await expect(service.presignAttachment('att_inv', { id: 'drv_2', type: 'driver' })).rejects.toMatchObject({ code: 'ATTACHMENT_NOT_FOUND' });
+    expect(storage.presignGet).not.toHaveBeenCalled();
+  });
+
+  it('does not let a user-uploaded file pass the driver own-upload shortcut', async () => {
+    const { service } = buildService({ ...invoiceRow, uploadedByType: 'USER' as const });
+    await expect(service.presignAttachment('att_inv', { id: 'drv_1', type: 'driver' })).rejects.toMatchObject({ code: 'ATTACHMENT_NOT_FOUND' });
+  });
+
+  it('lets back office with maintenance READ+ presign a SUBMITTED invoice, not an unsubmitted upload', async () => {
+    const submitted = buildService({ ...invoiceRow, maintenanceInvoiceFor: [{ id: 'ms_1' }] });
+    await expect(submitted.service.presignAttachment('att_inv', { id: 'usr_1', type: 'user', permissions: { maintenance: 'READ' } })).resolves.toHaveProperty('url', expect.stringContaining('att_inv.pdf'));
+    await expect(submitted.service.presignAttachment('att_inv', { id: 'usr_2', type: 'user', permissions: { maintenance: 'NONE' } })).rejects.toMatchObject({ code: 'ATTACHMENT_NOT_FOUND' });
+
+    const unsubmitted = buildService(invoiceRow);
+    await expect(unsubmitted.service.presignAttachment('att_inv', { id: 'usr_1', type: 'user', permissions: { maintenance: 'FULL' } })).rejects.toMatchObject({ code: 'ATTACHMENT_NOT_FOUND' });
   });
 });

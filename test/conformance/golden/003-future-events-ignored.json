@@ -1,0 +1,35 @@
+{
+  "name": "future-events-ignored",
+  "spec": "\u00a78.3 step 1 \u2014 records after `now` describe no elapsed time",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-01-14T17:00:00Z",
+    "ruleset": "US_70_8_PROPERTY",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true
+    },
+    "previousDays": [],
+    "lastRestartEndedAt": null,
+    "events": [
+      {
+        "at": "2025-01-14T05:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-14T15:00:00Z",
+        "status": "D"
+      },
+      {
+        "at": "2025-01-14T19:00:00Z",
+        "status": "ON"
+      }
+    ]
+  },
+  "expected": {
+    "currentStatus": "D",
+    "driveUsedSec": 7200,
+    "driveRemainingSec": 32400,
+    "violations": []
+  }
+}

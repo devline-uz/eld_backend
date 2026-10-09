@@ -1,0 +1,43 @@
+{
+  "name": "split-pair-unclosed",
+  "spec": "\u00a78.2.1 \u2014 a lone 2 h rest never closes a pair on its own",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-01-15T04:00:00Z",
+    "ruleset": "US_70_8_PROPERTY",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true
+    },
+    "previousDays": [],
+    "lastRestartEndedAt": null,
+    "events": [
+      {
+        "at": "2025-01-14T05:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-14T15:00:00Z",
+        "status": "ON"
+      },
+      {
+        "at": "2025-01-14T16:00:00Z",
+        "status": "D"
+      },
+      {
+        "at": "2025-01-14T21:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-14T23:00:00Z",
+        "status": "D"
+      }
+    ]
+  },
+  "expected": {
+    "driveUsedSec": 36000,
+    "shiftStartedAt": "2025-01-14T15:00:00Z",
+    "shiftEndsAt": "2025-01-15T05:00:00Z",
+    "violations": []
+  }
+}

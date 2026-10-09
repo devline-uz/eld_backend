@@ -1,0 +1,63 @@
+{
+  "id": "R05-restart-from-input",
+  "rule": "RESTART_34",
+  "title": "lastRestartEndedAt from the server drops every earlier day",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-14T05:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-14T13:00:00.000Z",
+        "status": "ON"
+      },
+      {
+        "at": "2026-01-14T22:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-15T11:00:00.000Z",
+        "status": "ON"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance"
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-15T15:00:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [
+      {
+        "date": "2026-01-08",
+        "onDutySec": 36000
+      },
+      {
+        "date": "2026-01-09",
+        "onDutySec": 36000
+      },
+      {
+        "date": "2026-01-10",
+        "onDutySec": 36000
+      },
+      {
+        "date": "2026-01-11",
+        "onDutySec": 36000
+      },
+      {
+        "date": "2026-01-12",
+        "onDutySec": 36000
+      },
+      {
+        "date": "2026-01-13",
+        "onDutySec": 36000
+      }
+    ],
+    "lastRestartEndedAt": "2026-01-14T05:00:00.000Z"
+  },
+  "expect": {
+    "cycleRemainingSec": 205200,
+    "shiftStartedAt": "2026-01-15T11:00:00.000Z",
+    "violations": []
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "name": "dst-fall-back-25h-day",
+  "spec": "\u00a78.5 time \u2014 2025-11-02 is 25 hours long in America/New_York",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-11-02T16:00:00Z",
+    "ruleset": "US_70_8_PROPERTY",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true
+    },
+    "previousDays": [],
+    "lastRestartEndedAt": null,
+    "events": [
+      {
+        "at": "2025-11-01T18:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-11-02T04:00:00Z",
+        "status": "D"
+      }
+    ]
+  },
+  "expected": {
+    "driveUsedSec": 43200,
+    "driveRemainingSec": 0,
+    "dailyTotals": {
+      "off": 0,
+      "sb": 0,
+      "drive": 43200,
+      "on": 0
+    },
+    "violations": [
+      {
+        "type": "BREAK_30",
+        "logDate": "2025-11-02",
+        "exceededBySec": 14400
+      },
+      {
+        "type": "DRIVING_11",
+        "logDate": "2025-11-02",
+        "exceededBySec": 3600
+      }
+    ]
+  }
+}

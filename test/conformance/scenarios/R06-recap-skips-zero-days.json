@@ -1,0 +1,35 @@
+{
+  "id": "R06-recap-skips-zero-days",
+  "rule": "RECAP",
+  "title": "A zero-hour day recaps nothing \u2014 the next non-zero day sets the date",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-15T01:00:00.000Z",
+        "status": "OFF"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance"
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-15T17:00:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [
+      {
+        "date": "2026-01-08",
+        "onDutySec": 0
+      },
+      {
+        "date": "2026-01-09",
+        "onDutySec": 18000
+      }
+    ],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "cycleRemainingSec": 234000,
+    "cycleRecapAt": "2026-01-17T05:00:00.000Z",
+    "violations": []
+  }
+}

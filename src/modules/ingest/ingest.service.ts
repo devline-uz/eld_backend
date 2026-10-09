@@ -4,6 +4,7 @@ import type { Device, Prisma, Vehicle } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
+import { resolveLocationText } from '../../common/geo-location/location-description';
 import {
   applyOdometerOffsetMi,
   coarsenLocation,
@@ -255,7 +256,8 @@ export class IngestService {
             latitude: coords?.lat ?? null,
             longitude: coords?.lon ?? null,
             locationPrecisionMi: precisionMi,
-            locationName: event.locationName ?? null,
+            // §395 App. A 4.4.2 — app-supplied name wins; else offline geo-location of the coarsened fix.
+            locationName: resolveLocationText(event.locationName, coords?.lat, coords?.lon, { reducedPrecision: pcActive }),
             locationSource: event.locationSource ?? null,
             distanceSinceLastValidCoords: event.distanceSinceLastValidCoords ?? null,
             totalVehicleMiles,

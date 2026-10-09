@@ -1,0 +1,43 @@
+{
+  "name": "adverse-16h-window",
+  "spec": "\u00a78.2 rule 8 \u2014 adverse conditions raise 14 h to 16 h",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-01-15T05:36:00Z",
+    "ruleset": "US_70_8_PROPERTY",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true,
+      "adverseDrivingEnabled": true
+    },
+    "previousDays": [],
+    "lastRestartEndedAt": null,
+    "events": [
+      {
+        "at": "2025-01-14T05:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-14T15:00:00Z",
+        "status": "ON"
+      },
+      {
+        "at": "2025-01-14T19:00:00Z",
+        "status": "D"
+      },
+      {
+        "at": "2025-01-15T02:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-15T02:36:00Z",
+        "status": "D"
+      }
+    ]
+  },
+  "expected": {
+    "shiftEndsAt": "2025-01-15T07:00:00Z",
+    "shiftRemainingSec": 5040,
+    "violations": []
+  }
+}

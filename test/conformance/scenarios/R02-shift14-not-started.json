@@ -1,0 +1,28 @@
+{
+  "id": "R02-shift14-not-started",
+  "rule": "SHIFT_14",
+  "title": "Still off duty after the reset \u2014 the window has not opened",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-14T23:00:00.000Z",
+        "status": "OFF"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance"
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-15T13:00:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "shiftStartedAt": null,
+    "shiftEndsAt": null,
+    "shiftRemainingSec": 50400,
+    "driveRemainingSec": 39600,
+    "violations": []
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "name": "break-29min-insufficient",
+  "spec": "\u00a78.2 rule 3 \u2014 29 minutes does not reset the break clock",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-01-14T23:30:00Z",
+    "ruleset": "US_70_8_PROPERTY",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true
+    },
+    "previousDays": [],
+    "lastRestartEndedAt": null,
+    "events": [
+      {
+        "at": "2025-01-14T05:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-14T15:00:00Z",
+        "status": "D"
+      },
+      {
+        "at": "2025-01-14T19:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-14T19:29:00Z",
+        "status": "D"
+      }
+    ]
+  },
+  "expected": {
+    "violations": [
+      {
+        "type": "BREAK_30",
+        "logDate": "2025-01-14",
+        "exceededBySec": 60
+      }
+    ]
+  }
+}

@@ -48,7 +48,7 @@ export class DvirPdfBuilder {
       driverCdl: dvir.driver?.cdlNumber ?? '',
       vehicleUnit: dvir.vehicle?.unitNumber ?? dvir.vehicleId,
       vehicleVin: dvir.vehicle?.vin ?? '',
-      trailerUnit: dvir.trailer?.number ?? '—',
+      trailerUnit: dvir.trailer?.number ?? dvir.trailerNumber ?? '—',
       odometerMi: dvir.odometerMi,
       locationName: dvir.locationName ?? '',
       vehicleCondition: dvir.vehicleCondition,

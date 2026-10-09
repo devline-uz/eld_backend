@@ -1,0 +1,61 @@
+{
+  "name": "passenger-60-7-cycle-driving-past-limit",
+  "spec": "\u00a7395.5(b)(1) \u2014 passenger 60/7: 57 h behind, 4 h driving today: CYCLE_60 from 18:00Z, 1 h over",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-01-14T19:00:00Z",
+    "ruleset": "US_60_7_PASSENGER",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true
+    },
+    "previousDays": [
+      {
+        "date": "2025-01-08",
+        "onDutySec": 34200
+      },
+      {
+        "date": "2025-01-09",
+        "onDutySec": 34200
+      },
+      {
+        "date": "2025-01-10",
+        "onDutySec": 34200
+      },
+      {
+        "date": "2025-01-11",
+        "onDutySec": 34200
+      },
+      {
+        "date": "2025-01-12",
+        "onDutySec": 34200
+      },
+      {
+        "date": "2025-01-13",
+        "onDutySec": 34200
+      }
+    ],
+    "lastRestartEndedAt": null,
+    "events": [
+      {
+        "at": "2025-01-14T05:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-14T15:00:00Z",
+        "status": "D"
+      }
+    ]
+  },
+  "expected": {
+    "cycleRemainingSec": 0,
+    "violations": [
+      {
+        "type": "CYCLE_60",
+        "logDate": "2025-01-14",
+        "occurredAt": "2025-01-14T18:00:00Z",
+        "exceededBySec": 3600
+      }
+    ]
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "name": "passenger-7h59m-off-does-not-reset",
+  "spec": "\u00a7395.5(a) \u2014 passenger: 7:59 off is not 8 consecutive hours: driving keeps accumulating (10 h exceeded by 2:01)",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-01-15T11:00:00Z",
+    "ruleset": "US_70_8_PASSENGER",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true
+    },
+    "previousDays": [],
+    "lastRestartEndedAt": null,
+    "events": [
+      {
+        "at": "2025-01-14T05:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-14T15:00:00Z",
+        "status": "D"
+      },
+      {
+        "at": "2025-01-15T01:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-15T08:59:00Z",
+        "status": "D"
+      }
+    ]
+  },
+  "expected": {
+    "driveUsedSec": 43260,
+    "violations": [
+      {
+        "type": "DRIVING_11",
+        "logDate": "2025-01-15",
+        "occurredAt": "2025-01-15T08:59:00Z",
+        "exceededBySec": 7260
+      }
+    ]
+  }
+}

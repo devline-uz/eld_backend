@@ -1,0 +1,36 @@
+{
+  "id": "R13-edge-inactive-record-dropped",
+  "rule": "EDGE",
+  "title": "recordStatus != 1 is dropped",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-15T01:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-15T11:00:00.000Z",
+        "status": "D"
+      },
+      {
+        "at": "2026-01-15T13:00:00.000Z",
+        "status": "ON",
+        "recordStatus": 2
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance"
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-15T15:00:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "currentStatus": "D",
+    "statusSince": "2026-01-15T11:00:00.000Z",
+    "driveUsedSec": 14400,
+    "violations": []
+  }
+}

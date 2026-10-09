@@ -1,0 +1,36 @@
+{
+  "id": "R12-tz-midnight-rollover",
+  "rule": "TIMEZONE",
+  "title": "Driving across midnight splits between two RODS days",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-14T13:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-14T23:00:00.000Z",
+        "status": "D"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance"
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-15T07:00:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "driveUsedSec": 28800,
+    "dailyTotals": {
+      "off": 0,
+      "sb": 0,
+      "drive": 7200,
+      "on": 0
+    },
+    "cycleRemainingSec": 223200,
+    "violations": []
+  }
+}

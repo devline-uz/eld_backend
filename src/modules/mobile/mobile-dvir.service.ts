@@ -4,6 +4,8 @@ import { EditorType, Prisma } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
+import { resolveLocationText } from '../../common/geo-location/location-description';
+import { coarsenLocation } from '../../common/units';
 import type { ContextUser } from '../../core/context/request-context';
 import { RequestContext } from '../../core/context/request-context';
 import { EventBusService } from '../../core/events/event-bus.service';
@@ -11,6 +13,7 @@ import { QUEUES } from '../../core/queue/queue.constants';
 import { AuditRepository } from '../audit/audit.repository';
 import type { DvirSubmitDto, SignatureUploadDto } from './dto/mobile.dto';
 import { DvirPhotosRepository } from './dvir-photos.repository';
+import { MobileCatalogRepository } from './mobile-catalog.repository';
 import { MobileRepository } from './mobile.repository';
 import { SignatureService } from './signature.service';
 
@@ -34,11 +37,19 @@ export class MobileDvirService {
     private readonly audit: AuditRepository,
     private readonly events: EventBusService,
     @InjectQueue(QUEUES.ALERT) private readonly alertQueue: Queue,
+    private readonly catalog: MobileCatalogRepository,
   ) {}
 
   async uploadSignature(driverId: string, dto: SignatureUploadDto) {
-    const prefix = dto.purpose === 'DVIR_PHOTO' ? 'dvir-photos' : 'signatures';
+    const prefix = dto.purpose === 'DVIR_PHOTO' ? 'dvir-photos' : dto.purpose === 'INVOICE' ? 'invoices' : 'signatures';
     const stored = await this.signatures.store(prefix, driverId, dto.base64, dto.mimeType);
+    if (dto.purpose === 'INVOICE') {
+      // M-39 — the invoice file is an `Attachment` (kind INVOICE) owned by the uploader; the id is
+      // what `POST /mobile/maintenance/:id/submit` takes as `invoiceAttachmentId`, and the existing
+      // `GET /attachments/:id/presign` lets the uploading driver read it back.
+      await this.photos.createPhoto({ id: stored.id, key: stored.key, mimeType: dto.mimeType, sizeBytes: stored.sizeBytes, sha256: stored.sha256, driverId, kind: 'INVOICE' });
+      return { signatureImageId: stored.id, attachmentId: stored.id, key: stored.key, sha256: stored.sha256, sizeBytes: stored.sizeBytes };
+    }
     if (dto.purpose === 'DVIR_PHOTO') {
       // MB-6 — a DVIR photo must exist as an `Attachment` row so `POST /mobile/dvir`
       // (`defects[].photoAttachmentIds`) can link it to the defect. Signatures stay key-only
@@ -46,6 +57,25 @@ export class MobileDvirService {
       await this.photos.createPhoto({ id: stored.id, key: stored.key, mimeType: dto.mimeType, sizeBytes: stored.sizeBytes, sha256: stored.sha256, driverId });
     }
     return { signatureImageId: stored.id, attachmentId: dto.purpose === 'DVIR_PHOTO' ? stored.id : null, key: stored.key, sha256: stored.sha256, sizeBytes: stored.sizeBytes };
+  }
+
+  /**
+   * `POST /mobile/dvir` entry point. Idempotent on `dto.clientId` through the shared `SyncedChange`
+   * ledger (a replayed offline request returns the first answer); a `clientId` already spent on
+   * another operation type is a 409 (B-122). The `POST /mobile/sync` path calls `submit` directly —
+   * it has its own per-change ledger.
+   */
+  async submitIdempotent(driverId: string, dto: DvirSubmitDto, actor: ContextUser) {
+    if (!dto.clientId) return this.submit(driverId, dto, actor);
+    const prior = await this.repo.findSyncedByClientId(driverId, dto.clientId);
+    if (prior && prior.type !== 'dvir_submit') {
+      throw AppException.conflict('clientId already used by another operation.', { clientId: dto.clientId });
+    }
+    if (prior?.status === 'ACCEPTED' && prior.result) return prior.result as unknown as Awaited<ReturnType<MobileDvirService['submit']>>;
+
+    const result = await this.submit(driverId, dto, actor);
+    await this.repo.recordSyncedResult(driverId, dto.clientId, 'dvir_submit', new Date(), 'ACCEPTED', null, JSON.parse(JSON.stringify(result)) as Prisma.InputJsonValue);
+    return result;
   }
 
   async submit(driverId: string, dto: DvirSubmitDto, actor: ContextUser) {
@@ -66,6 +96,13 @@ export class MobileDvirService {
       }
     }
 
+    // D-129 — a trailer typed by number is free text; it is linked when it matches an ACTIVE
+    // carrier trailer and never rejected when it does not (an explicit `trailerId` still wins).
+    let trailerId = dto.trailerId ?? null;
+    if (!trailerId && dto.trailerNumber) {
+      trailerId = (await this.repo.findActiveTrailerByNumber(dto.trailerNumber))?.id ?? null;
+    }
+
     // MB-6 — every referenced photo must be the driver's own, not yet attached DVIR_PHOTO upload;
     // checked BEFORE the signature is stored so a bad id leaves no orphan object behind.
     const photoIds = [...new Set(dto.defects.flatMap((defect) => defect.photoAttachmentIds))];
@@ -82,7 +119,20 @@ export class MobileDvirService {
       }
     }
 
+    // MR-10 — a mechanic signature needs the mechanic's name (it is the §396.13 sign-off record).
+    const mechanicName = dto.mechanicName?.trim() || null;
+    if (dto.mechanicSignatureBase64 && !mechanicName) {
+      throw new AppException(ERROR_CODES.VALIDATION_FAILED, 'mechanicName is required with mechanicSignatureBase64.', 422, {
+        mechanicName: 'Required when a mechanic signature is sent.',
+      });
+    }
+
+    await this.warnUnknownCategories(dto);
+
     const signature = await this.signatures.store('signatures', driverId, dto.signatureBase64, dto.signatureMimeType);
+    const mechanicSignature = dto.mechanicSignatureBase64
+      ? await this.signatures.store('signatures', driverId, dto.mechanicSignatureBase64, dto.mechanicSignatureMimeType ?? 'image/png')
+      : null;
 
     const defects = dto.defects.map((defect) => ({
       vehicleId: dto.vehicleId,
@@ -94,20 +144,32 @@ export class MobileDvirService {
       photoAttachmentIds: defect.photoAttachmentIds,
     }));
 
+    const position =
+      typeof dto.location?.lat === 'number' && typeof dto.location?.lon === 'number'
+        ? coarsenLocation({ lat: dto.location.lat, lon: dto.location.lon }, 'ONE_MILE')
+        : null;
     const dvir = await this.repo.createDvir({
       driverId,
       vehicleId: dto.vehicleId,
-      trailerId: dto.trailerId ?? null,
+      trailerId,
+      trailerNumber: dto.trailerNumber ?? null,
       type: dto.type,
       submittedAt: dto.submittedAt,
-      odometerMi: dto.odometerMi,
-      latitude: dto.location?.lat ?? null,
-      longitude: dto.location?.lon ?? null,
-      locationName: dto.location?.name ?? null,
+      // MR-11 — optional: fall back to the unit's known odometer; NULL when neither is known.
+      odometerMi: dto.odometerMi ?? knownOdometerMi(vehicle),
+      // B-144 — coarsened to 1 mile BEFORE storage (raw coordinates are stored nowhere);
+      // §395 App. A 4.4.2 — no name from the app -> the offline geo-location text.
+      latitude: position?.lat ?? null,
+      longitude: position?.lon ?? null,
+      locationName: resolveLocationText(dto.location?.name, position?.lat, position?.lon),
       vehicleCondition: dto.vehicleCondition,
       notes: dto.notes ?? null,
       driverSignatureUrl: signature.key,
       driverSignatureHash: signature.sha256,
+      mechanicName,
+      mechanicSignedAt: mechanicSignature ? new Date() : null,
+      mechanicSignatureUrl: mechanicSignature?.key ?? null,
+      mechanicSignatureHash: mechanicSignature?.sha256 ?? null,
       defects,
     });
 
@@ -130,6 +192,9 @@ export class MobileDvirService {
       id: dvir.id,
       driverId,
       vehicleId: dto.vehicleId,
+      /** D-129 — the linked carrier trailer (null for a free-text number) and the typed number. */
+      trailerId,
+      trailerNumber: dto.trailerNumber ?? null,
       type: dto.type,
       submittedAt: dto.submittedAt,
       vehicleCondition: dto.vehicleCondition,
@@ -137,8 +202,28 @@ export class MobileDvirService {
       photoCount: photoIds.length,
       outOfService: hasOutOfService,
       signatureImageId: signature.id,
+      mechanicSignatureImageId: mechanicSignature?.id ?? null,
       applied: true,
     };
+  }
+
+  /**
+   * MR-9 — `defects[].category` should be a `DefectCatalogItem.code` (or, for older app builds, its
+   * English `name`). Validation is LENIENT on purpose (decisions.md D-122): an unknown value is
+   * stored as sent and only logged, so a catalog edit can never reject a safety-critical DVIR.
+   * One catalog query per submit, none per defect.
+   */
+  private async warnUnknownCategories(dto: DvirSubmitDto): Promise<void> {
+    if (!dto.defects.length) return;
+    try {
+      const parts = [...new Set(dto.defects.map((defect) => defect.part))];
+      const rows = await this.catalog.listCatalogLabels(parts);
+      const known = new Set(rows.flatMap((row) => [`${row.part}:${row.code}`, `${row.part}:${row.name}`]));
+      const unknown = dto.defects.filter((defect) => !known.has(`${defect.part}:${defect.category}`)).map((defect) => `${defect.part}:${defect.category}`);
+      if (unknown.length) this.logger.warn({ unknownCategories: unknown }, 'DVIR submitted with defect categories outside the catalog (accepted)');
+    } catch (err) {
+      this.logger.error({ err }, 'Defect catalog lookup failed; DVIR accepted without category validation');
+    }
   }
 
   private async raiseAlert(name: string, payload: Record<string, unknown>): Promise<void> {
@@ -173,4 +258,9 @@ export class MobileDvirService {
       this.logger.error({ err, action, objectId }, 'Failed to write the DVIR audit entry');
     }
   }
+}
+
+/** MR-11 — the unit's last known odometer, or null when it was never set/calibrated (`Vehicle.odometerMi` defaults to 0). */
+function knownOdometerMi(vehicle: { odometerMi: number; deviceOdometerMi: number | null; odometerCalibratedAt: Date | null }): number | null {
+  return vehicle.odometerMi > 0 || vehicle.deviceOdometerMi !== null || vehicle.odometerCalibratedAt !== null ? vehicle.odometerMi : null;
 }

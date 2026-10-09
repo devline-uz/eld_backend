@@ -133,8 +133,14 @@ describe('ingest/detectors — §7.8 automatic checks', () => {
       ).toBe(true);
     });
 
-    it('a device never seen counts as disconnected', () => {
-      expect(isBleDisconnectedTooLong('DISCONNECTED', null, now)).toBe(true);
+    it('MG-BLE-7 — a device never connected is not "disconnected" (no false alert)', () => {
+      expect(isBleDisconnectedTooLong('DISCONNECTED', null, now)).toBe(false);
+      expect(isBleDisconnectedTooLong('OUT_OF_RANGE', null, now)).toBe(false);
+    });
+
+    it('DISCONNECTED after a real connection alerts only past 30 minutes', () => {
+      expect(isBleDisconnectedTooLong('DISCONNECTED', new Date('2025-09-10T11:31:00Z'), now)).toBe(false);
+      expect(isBleDisconnectedTooLong('DISCONNECTED', new Date('2025-09-10T11:29:00Z'), now)).toBe(true);
     });
 
     it('backlog alert above 100 stored events', () => {

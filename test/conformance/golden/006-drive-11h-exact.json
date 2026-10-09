@@ -1,0 +1,38 @@
+{
+  "name": "drive-11h-exact",
+  "spec": "\u00a78.2 rule 1 \u2014 exactly 11 h is legal",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-01-15T02:30:00Z",
+    "ruleset": "US_70_8_PROPERTY",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true
+    },
+    "previousDays": [],
+    "lastRestartEndedAt": null,
+    "events": [
+      {
+        "at": "2025-01-14T05:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-14T15:00:00Z",
+        "status": "D"
+      },
+      {
+        "at": "2025-01-14T23:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-14T23:30:00Z",
+        "status": "D"
+      }
+    ]
+  },
+  "expected": {
+    "driveUsedSec": 39600,
+    "driveRemainingSec": 0,
+    "violations": []
+  }
+}

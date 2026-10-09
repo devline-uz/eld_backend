@@ -1,0 +1,44 @@
+{
+  "name": "adverse-13h-driving-exceeded",
+  "spec": "\u00a78.2 rule 8 \u2014 13 h exceeded by 1 minute",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-01-15T04:31:00Z",
+    "ruleset": "US_70_8_PROPERTY",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true,
+      "adverseDrivingEnabled": true
+    },
+    "previousDays": [],
+    "lastRestartEndedAt": null,
+    "events": [
+      {
+        "at": "2025-01-14T05:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-14T15:00:00Z",
+        "status": "D"
+      },
+      {
+        "at": "2025-01-14T23:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-14T23:30:00Z",
+        "status": "D"
+      }
+    ]
+  },
+  "expected": {
+    "driveRemainingSec": 0,
+    "violations": [
+      {
+        "type": "DRIVING_11",
+        "logDate": "2025-01-14",
+        "exceededBySec": 60
+      }
+    ]
+  }
+}

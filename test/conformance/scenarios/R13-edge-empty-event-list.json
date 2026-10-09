@@ -1,0 +1,34 @@
+{
+  "id": "R13-edge-empty-event-list",
+  "rule": "EDGE",
+  "title": "No events at all \u2014 every clock is full",
+  "input": {
+    "events": [],
+    "driver": {
+      "driverId": "drv-conformance"
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-15T17:00:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "currentStatus": "OFF",
+    "statusSince": "2026-01-15T17:00:00.000Z",
+    "driveUsedSec": 0,
+    "driveRemainingSec": 39600,
+    "shiftRemainingSec": 50400,
+    "breakRemainingSec": 28800,
+    "cycleRemainingSec": 252000,
+    "shiftStartedAt": null,
+    "shiftEndsAt": null,
+    "dailyTotals": {
+      "off": 0,
+      "sb": 0,
+      "drive": 0,
+      "on": 0
+    },
+    "violations": []
+  }
+}

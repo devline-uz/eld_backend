@@ -1,0 +1,51 @@
+{
+  "id": "R05-restart-3359-not-enough",
+  "rule": "RESTART_34",
+  "title": "33:59 off duty \u2014 one minute short of a restart",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-14T01:00:00.000Z",
+        "status": "OFF"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance"
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-15T10:59:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [
+      {
+        "date": "2026-01-08",
+        "onDutySec": 36000
+      },
+      {
+        "date": "2026-01-09",
+        "onDutySec": 36000
+      },
+      {
+        "date": "2026-01-10",
+        "onDutySec": 36000
+      },
+      {
+        "date": "2026-01-11",
+        "onDutySec": 36000
+      },
+      {
+        "date": "2026-01-12",
+        "onDutySec": 36000
+      },
+      {
+        "date": "2026-01-13",
+        "onDutySec": 36000
+      }
+    ],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "cycleRemainingSec": 36000,
+    "restartAvailableAt": "2026-01-15T11:00:00.000Z",
+    "violations": []
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "id": "R03-break30-on-duty-counts",
+  "rule": "BREAK_30",
+  "title": "30 minutes ON duty (not driving) satisfies the break",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-15T01:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-15T11:00:00.000Z",
+        "status": "D"
+      },
+      {
+        "at": "2026-01-15T19:00:00.000Z",
+        "status": "ON"
+      },
+      {
+        "at": "2026-01-15T19:30:00.000Z",
+        "status": "D"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance"
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-15T21:30:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "breakRemainingSec": 21600,
+    "lastBreakEndedAt": "2026-01-15T19:30:00.000Z",
+    "driveUsedSec": 36000,
+    "violations": []
+  }
+}

@@ -4,6 +4,7 @@ import { STORAGE_PORT, StoragePort } from '../../../core/storage/storage.port';
 import { PrismaService } from '../../../core/prisma/prisma.service';
 import { dayEnd, dayKey, dayStart } from '../../hos/engine/timezone';
 import { activeMalfunctionCodes, buildSnapshot, uncertifiedDayCount } from '../../transfers/snapshot';
+import { loadTripDetails } from '../../transfers/trip-details';
 import { buildOutputFile } from '../../transfers/output-file';
 import { validateOutputFile } from '../../transfers/validator';
 import { buildOutputFileName, inclusiveDayCount } from '../../transfers/filename';
@@ -166,6 +167,7 @@ export class FmcsaPackGenerator {
         continue;
       }
 
+      const tripDetails = await loadTripDetails(this.transfers, driver.id, timezone, params.from, params.to, generatedAt);
       const snapshot = buildSnapshot({
         driver,
         carrier,
@@ -179,6 +181,9 @@ export class FmcsaPackGenerator {
         eldIdentifier: carrier.eldIdentifier,
         eldRegistrationId: carrier.eldRegistrationId ?? '',
         eldAuthenticationValue: this.authenticationValue(carrier.eldIdentifier, carrier.eldRegistrationId ?? '', driver.id),
+        // D-129 — same header trailers / shipping documents as a single transfer.
+        currentTripDetails: tripDetails.current,
+        tripDetailsByDay: tripDetails.byDay,
       });
 
       const generated = buildOutputFile(snapshot);
@@ -193,7 +198,14 @@ export class FmcsaPackGenerator {
         continue;
       }
 
-      const fileName = buildOutputFileName({ lastName: driver.lastName, cdlNumber: driver.cdlNumber, sequence: 1, dayCount });
+      // Appendix A 4.8.2.2(d): creation date in home-terminal time = the header's Current Date.
+      const fileName = buildOutputFileName({
+        lastName: driver.lastName,
+        cdlNumber: driver.cdlNumber,
+        sequence: 1,
+        createdAt: generatedAt,
+        timezoneOffsetMin: snapshot.driver.timezoneOffsetMin,
+      });
       const fileKey = await this.storage.put(
         `reports/${reportId}/${driver.id}-${fileName}`,
         Buffer.from(generated.csv, 'utf8'),

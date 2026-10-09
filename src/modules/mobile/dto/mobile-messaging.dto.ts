@@ -17,3 +17,12 @@ export const MobileSendMessageDto = z.object({
   clientId: z.string().max(100).optional(),
 });
 export type MobileSendMessageDto = z.infer<typeof MobileSendMessageDto>;
+
+/** MR-3 — `POST /mobile/conversations`. `contactId` is a `GET /mobile/contacts` id (staff user
+ *  or co-driver uuid) or the literal `"support"`. */
+export const StartConversationDto = z.object({
+  contactId: z.union([z.literal('support'), z.string().uuid()]),
+  body: z.string().min(1).max(2000),
+  clientId: z.string().uuid(),
+});
+export type StartConversationDto = z.infer<typeof StartConversationDto>;

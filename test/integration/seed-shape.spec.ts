@@ -38,11 +38,11 @@ describe('seed shape matches tz.md §22.3.6 (Figma demo dataset)', () => {
     const carrier = await prisma.carrier.findUnique({ where: { id: 'carrier' } });
     expect(carrier?.name).toBe('Universal Logistics Inc.');
     expect(carrier?.dotNumber).toBe('1234567');
-    expect(carrier?.eldIdentifier).toHaveLength(4);
+    expect(carrier?.eldIdentifier).toBe('OBK001'); // Appendix A 7.15 — 6 chars (B-138)
   });
 
-  it('has 4 roles and 12 users, including admin Sarah Chen', async () => {
-    expect(await prisma.role.count({ where: NOT_LEAKED_ROLE })).toBe(4);
+  it('has 5 roles (incl. SUPER_ADMIN, D-109) and 12 users, including admin Sarah Chen', async () => {
+    expect(await prisma.role.count({ where: NOT_LEAKED_ROLE })).toBe(5);
     expect(await prisma.user.count()).toBe(12);
     const sarah = await prisma.user.findUnique({
       where: { email: 'sarah.chen@universal-logistics.example' },

@@ -1,0 +1,69 @@
+{
+  "name": "cycle-on-duty-past-limit-then-driving",
+  "spec": "\u00a7395.3(b) / 1.0.3 \u2014 70 h reached on duty at 17:00Z, driving 17:30Z\u201318:00Z: stamped at the start of driving, overrun = window total at its end (71 h) minus 70 h",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-01-14T18:00:00Z",
+    "ruleset": "US_70_8_PROPERTY",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true
+    },
+    "previousDays": [
+      {
+        "date": "2025-01-08",
+        "onDutySec": 39600
+      },
+      {
+        "date": "2025-01-09",
+        "onDutySec": 39600
+      },
+      {
+        "date": "2025-01-10",
+        "onDutySec": 39600
+      },
+      {
+        "date": "2025-01-11",
+        "onDutySec": 39600
+      },
+      {
+        "date": "2025-01-12",
+        "onDutySec": 39600
+      },
+      {
+        "date": "2025-01-13",
+        "onDutySec": 39600
+      },
+      {
+        "date": "2025-01-07",
+        "onDutySec": 7200
+      }
+    ],
+    "lastRestartEndedAt": null,
+    "events": [
+      {
+        "at": "2025-01-14T05:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-14T15:00:00Z",
+        "status": "ON"
+      },
+      {
+        "at": "2025-01-14T17:30:00Z",
+        "status": "D"
+      }
+    ]
+  },
+  "expected": {
+    "cycleRemainingSec": 0,
+    "violations": [
+      {
+        "type": "CYCLE_70",
+        "logDate": "2025-01-14",
+        "occurredAt": "2025-01-14T17:30:00Z",
+        "exceededBySec": 3600
+      }
+    ]
+  }
+}

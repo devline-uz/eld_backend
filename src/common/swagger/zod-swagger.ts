@@ -15,12 +15,29 @@ import type { ZodType } from 'zod';
  * in the Nest container, reads the route-arg metadata Nest itself stores for `@Body`/`@Query`
  * (the pipe instances are kept there), pulls the zod schema out of each `ZodValidationPipe`, and
  * applies `@ApiBody` / `@ApiQuery` programmatically. Anything a controller already declares by
- * hand (an explicit `@ApiBody`, or an `@ApiQuery` with the same name) wins and is not duplicated.
+ * hand (an explicit `@ApiBody`, or an `@ApiQuery` with the same name) wins and is not duplicated —
+ * except an example-only `@ApiBody`, which gets the zod schema and keeps its example (D-131).
  * `attachZodComponents(doc)` then adds the referenced DTOs to `components.schemas`.
  */
 
 type RouteArg = { index: number; data?: unknown; pipes?: unknown[] };
-type ExistingParam = { in?: string; name?: string; schema?: unknown; type?: unknown; enum?: unknown };
+type ExistingParam = {
+  in?: string;
+  name?: string;
+  schema?: unknown;
+  type?: unknown;
+  enum?: unknown;
+  required?: boolean;
+  examples?: Record<string, { value: unknown }>;
+};
+
+const TYPED_SCHEMA_KEYS = ['$ref', 'type', 'properties', 'allOf', 'oneOf', 'anyOf', 'items'];
+
+/** A declared schema that only holds an `example` (no `$ref`/`type`/`properties`/combinator). */
+function isExampleOnly(schema: unknown): boolean {
+  if (!schema || typeof schema !== 'object') return false;
+  return !TYPED_SCHEMA_KEYS.some((k) => k in (schema as Record<string, unknown>));
+}
 
 /** One registry per process: controller metadata is global, so names and $refs must be stable. */
 let registry: ZodSchemaRegistry | undefined;
@@ -87,7 +104,19 @@ function applyToMethod(target: object, prototype: object, key: string, reg: ZodS
     if (!schema) continue;
 
     if (paramtype === BODY_ARG) {
-      if (existing().some((p) => p.in === 'body')) continue;
+      const declaredBody = existing().find((p) => p.in === 'body');
+      if (declaredBody) {
+        // D-131 — a hand-written `@ApiBody({ schema: { example } })` carries no type: keep its
+        // example (as a media-type example) but document the zod DTO as the body schema.
+        // (`ApiBody` fills `type: String` by default, so that value still means "no type given".)
+        if (isExampleOnly(declaredBody.schema) && (declaredBody.type === undefined || declaredBody.type === String)) {
+          const { example } = declaredBody.schema as { example?: unknown };
+          declaredBody.schema = reg.toSchema(schema);
+          declaredBody.required = true;
+          if (example !== undefined) declaredBody.examples = { default: { value: example } };
+        }
+        continue;
+      }
       ApiBody({ required: true, schema: reg.toSchema(schema) })(prototype, key, descriptor);
     } else if (paramtype === QUERY_ARG) {
       for (const field of zodObjectFields(schema)) {
@@ -131,8 +160,23 @@ export function applyZodSwagger(app: INestApplication): void {
 
 /** Call after `SwaggerModule.createDocument`: adds every referenced DTO to `components.schemas`. */
 export function attachZodComponents(doc: OpenAPIObject): OpenAPIObject {
+  stripEnumComponentDescriptions(doc);
   const components = getRegistry().components;
   const sorted = Object.fromEntries(Object.keys(components).sort().map((k) => [k, components[k]]));
   doc.components = { ...doc.components, schemas: { ...doc.components?.schemas, ...sorted } };
   return doc;
+}
+
+/**
+ * D-131 — `@nestjs/swagger` copies the `description` of the FIRST `@ApiProperty({ enumName })` it
+ * meets onto the shared enum component (`DutyStatus` would read "Latest active duty status of the
+ * co-driver."). The property keeps its own description next to the `$ref`, so the component's copy
+ * is dropped. Only enum-only components produced by `@ApiProperty` are touched (zod components are
+ * merged in afterwards).
+ */
+function stripEnumComponentDescriptions(doc: OpenAPIObject): void {
+  for (const schema of Object.values(doc.components?.schemas ?? {})) {
+    const s = schema as { enum?: unknown; properties?: unknown; description?: unknown };
+    if (Array.isArray(s.enum) && s.properties === undefined && 'description' in s) delete s.description;
+  }
 }

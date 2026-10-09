@@ -6,7 +6,7 @@ function makeCarrier(overrides: Partial<Record<string, unknown>> = {}) {
     id: 'carrier',
     name: 'Acme Trucking',
     dotNumber: '1234567',
-    eldIdentifier: 'OBK1',
+    eldIdentifier: 'OBK001',
     eldRegistrationId: null,
     erodsMode: 'TEST',
     ...overrides,
@@ -55,13 +55,13 @@ describe('CarrierService', () => {
       expect(repo.update).toHaveBeenCalledWith({ name: 'New Name' });
     });
 
-    it('accepts a 4-char eldIdentifier without contradicting the Appendix A CHECK constraint', async () => {
+    it('accepts a 6-char eldIdentifier (Appendix A 7.15) without contradicting the CHECK constraint', async () => {
       repo.get.mockResolvedValue(makeCarrier() as never);
-      repo.update.mockResolvedValue(makeCarrier({ eldIdentifier: 'ABCD' }) as never);
+      repo.update.mockResolvedValue(makeCarrier({ eldIdentifier: '1001ZE' }) as never);
 
-      await service.update({ eldIdentifier: 'ABCD' });
+      await service.update({ eldIdentifier: '1001ZE' });
 
-      expect(repo.update).toHaveBeenCalledWith({ eldIdentifier: 'ABCD' });
+      expect(repo.update).toHaveBeenCalledWith({ eldIdentifier: '1001ZE' });
     });
 
     // §395 Appendix A header segment: PRODUCTION output carries the ELD Registration ID.
@@ -94,7 +94,7 @@ describe('CarrierService', () => {
       repo.get.mockResolvedValue(makeCarrier({ timezone: 'America/Chicago', eldRegistrationId: 'AB12', erodsMode: 'PRODUCTION' }) as never);
       await expect(service.getTransferConfig()).resolves.toEqual({
         timezone: 'America/Chicago',
-        eldIdentifier: 'OBK1',
+        eldIdentifier: 'OBK001',
         eldRegistrationId: 'AB12',
         erodsMode: 'PRODUCTION',
       });
@@ -103,7 +103,7 @@ describe('CarrierService', () => {
     it('reports TEST by default for a fresh carrier row', async () => {
       repo.get.mockResolvedValue(null);
       repo.ensure.mockResolvedValue(makeCarrier({ timezone: 'America/New_York' }) as never);
-      await expect(service.getTransferConfig()).resolves.toMatchObject({ erodsMode: 'TEST', eldIdentifier: 'OBK1' });
+      await expect(service.getTransferConfig()).resolves.toMatchObject({ erodsMode: 'TEST', eldIdentifier: 'OBK001' });
     });
   });
 });

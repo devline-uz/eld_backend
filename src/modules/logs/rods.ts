@@ -206,6 +206,17 @@ export function statusInEffectAt(events: RodsEvent[], at: Date): DutyStatus | nu
   return last.status;
 }
 
+/**
+ * MR-23 — the §395.1(e) category (PC/YM) in force immediately BEFORE `at`, from the active
+ * timeline; `NONE` when there is none or no record precedes `at`.
+ */
+export function specialInEffectAt(events: RodsEvent[], at: Date): SpecialDrivingCategory {
+  const normalized = normalizeEvents(mapEldEventsToNormalized(activeRecords(events)), at);
+  const before = normalized.filter((event) => event.at.getTime() < at.getTime());
+  if (!before.length) return 'NONE';
+  return before[before.length - 1].special ?? 'NONE';
+}
+
 /** Active DRIVING intervals (§395.30 — the time no edit may ever touch). */
 export function drivingIntervals(
   events: RodsEvent[],

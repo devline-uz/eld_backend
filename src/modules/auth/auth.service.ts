@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import type { Request } from 'express';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
@@ -10,11 +10,13 @@ import { AttachmentsService } from '../attachments/attachments.service';
 import { CarrierRepository } from '../carrier/carrier.repository';
 import { hashPassword, verifyPassword } from './lib/password.util';
 import { randomOpaqueToken, sha256 } from './lib/hash.util';
+import { TRANSACTIONAL_MAIL, TransactionalMailPort } from '../../core/mail/mail.port';
 import { TokenService } from './token.service';
 import { DriverAuthRepository } from './repositories/driver-auth.repository';
 import { DriverSessionRepository } from './repositories/driver-session.repository';
 import { SessionRepository } from './repositories/session.repository';
 import { UserAuthRepository, UserWithRole } from './repositories/user-auth.repository';
+import { RodsLoginRecorder } from '../logs/rods-login-recorder';
 
 /** How long a back-office invite stays acceptable after `invitedAt` (web §11.18 footer copy). */
 export const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -61,6 +63,8 @@ export class AuthService {
     private readonly config: AppConfigService,
     private readonly carrier: CarrierRepository,
     private readonly attachments: AttachmentsService,
+    @Inject(TRANSACTIONAL_MAIL) private readonly mail: TransactionalMailPort,
+    private readonly loginRecords: RodsLoginRecorder,
   ) {}
 
   // ---------------------------------------------------------------------
@@ -111,6 +115,11 @@ export class AuthService {
       ip: meta.ip,
       expiresAt: new Date(Date.now() + this.tokens.refreshTtlMs('driver')),
     });
+    // D-130 — §395 Appendix A 4.5.1.5: authenticating on an already-assigned unit is an ELD
+    // login (idempotent: no second record while one is open on that unit; never throws).
+    if (driver.assignedVehicleId) {
+      await this.loginRecords.login(driver.id, driver.assignedVehicleId, 'AUTH_LOGIN');
+    }
     return { accessToken, refreshToken, tokenType: 'Bearer', driverId: driver.id };
   }
 
@@ -269,7 +278,7 @@ export class AuthService {
     return { accessToken, refreshToken: newRefreshToken, tokenType: 'Bearer' };
   }
 
-  async logout(subjectType: 'user' | 'driver', refreshToken: string): Promise<void> {
+  async logout(subjectType: 'user' | 'driver', refreshToken: string, subjectId?: string): Promise<void> {
     const hash = sha256(refreshToken);
     if (subjectType === 'user') {
       const session = await this.sessions.findByRefreshHash(hash);
@@ -277,6 +286,9 @@ export class AuthService {
     } else {
       const session = await this.driverSessions.findByRefreshHash(hash);
       if (session && !session.revokedAt) await this.driverSessions.revoke(session.id);
+      // D-130 — §395 Appendix A 4.5.1.5 logout record for the open login (none open = no record).
+      const driverId = subjectId ?? session?.driverId;
+      if (driverId) await this.loginRecords.logout(driverId, 'AUTH_LOGOUT');
     }
   }
 
@@ -313,6 +325,43 @@ export class AuthService {
     // token is returned directly outside production so the flow is testable end-to-end;
     // production callers must wire an email provider before relying on this endpoint.
     return this.config.echoOneTimeSecrets ? { resetToken: token } : {};
+  }
+
+  /** MR-31 — `POST /auth/driver/password/forgot`. Always resolves (no enumeration oracle): an
+   * unknown identifier, a driver without email, or a mail failure all look identical. The
+   * token is emailed; it is only echoed in dev (`DEV_ECHO_SECRETS`). */
+  async forgotDriverPassword(identifier: string): Promise<{ resetToken?: string }> {
+    const driver = await this.drivers.findByUsernameOrEmail(identifier);
+    if (!driver || !driver.email) return {};
+    const token = this.tokens.signDriverPasswordResetToken(driver.id, sha256(driver.passwordHash ?? ''));
+    // Not awaited: waiting on the mail provider made a known identifier measurably slower than an
+    // unknown one — a timing oracle that undid the "always 200" enumeration guard.
+    void Promise.resolve()
+      .then(() =>
+        this.mail.send({
+          to: driver.email as string,
+          subject: 'Reset your OneBook ELD driver app password',
+          text:
+            `Use this code in the OneBook ELD app to choose a new password. It expires in 30 minutes.\n\n${token}\n\n` +
+            'If you did not request this, ignore this email.',
+        }),
+      )
+      .catch((err: unknown) => {
+        this.logger.warn({ driverId: driver.id, err: String(err) }, 'Driver password-reset email failed');
+      });
+    return this.config.echoOneTimeSecrets ? { resetToken: token } : {};
+  }
+
+  /** MR-31 — completes the reset; single-use (token is bound to the old password hash) and
+   * revokes every driver session (refresh tokens of a lost phone stop working). */
+  async resetDriverPassword(token: string, newPassword: string): Promise<void> {
+    const { driverId, passwordVersion } = this.tokens.verifyDriverPasswordResetToken(token);
+    const driver = await this.drivers.findById(driverId);
+    if (!driver || driver.deletedAt || sha256(driver.passwordHash ?? '') !== passwordVersion) {
+      throw new AppException(ERROR_CODES.TOKEN_INVALID, 'Reset token is no longer valid.', 401);
+    }
+    await this.drivers.updatePasswordHash(driverId, await hashPassword(newPassword));
+    await this.driverSessions.revokeAllForDriver(driverId);
   }
 
   /** Used by `modules/users` (`POST /users`, `POST /users/:id/resend-invite`, TZ §11.7). */
@@ -365,6 +414,19 @@ export class AuthService {
    * per-user home-terminal timezone column; the account's carrier timezone is used, same
    * value the topbar would otherwise fetch via a second `/me/profile` call. */
   async meProfile(user: ContextUser): Promise<ContextUser | (ContextUser & Record<string, unknown>)> {
+    if (user.type === 'driver') {
+      // Mobile wave 4 (M-31 / D-120) — the ELD username (Appendix A 7.38) for the Driver ID line
+      // and the phone-built eRODS file; claims stay as they were, the profile fields are additive.
+      const driver = await this.drivers.findById(user.id);
+      if (!driver) return user;
+      return {
+        ...user,
+        username: driver.username,
+        fullName: `${driver.firstName} ${driver.lastName}`.trim(),
+        email: driver.email ?? null,
+        homeTerminalTimezone: driver.homeTerminalTimezone,
+      };
+    }
     if (user.type !== 'user') return user;
     const account = await this.users.findByIdWithRole(user.id);
     if (!account) return user;

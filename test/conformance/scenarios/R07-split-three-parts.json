@@ -1,0 +1,62 @@
+{
+  "id": "R07-split-three-parts",
+  "rule": "SPLIT_SLEEPER",
+  "title": "Three parts \u2014 the nearest pair closes, the third opens the next one",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-13T19:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-14T05:00:00.000Z",
+        "status": "ON"
+      },
+      {
+        "at": "2026-01-14T07:00:00.000Z",
+        "status": "SB"
+      },
+      {
+        "at": "2026-01-14T15:00:00.000Z",
+        "status": "D"
+      },
+      {
+        "at": "2026-01-14T18:00:00.000Z",
+        "status": "SB"
+      },
+      {
+        "at": "2026-01-14T20:00:00.000Z",
+        "status": "D"
+      },
+      {
+        "at": "2026-01-15T00:00:00.000Z",
+        "status": "SB"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance"
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-15T07:00:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "driveUsedSec": 25200,
+    "driveRemainingSec": 14400,
+    "shiftStartedAt": "2026-01-14T15:00:00.000Z",
+    "shiftEndsAt": "2026-01-15T14:00:00.000Z",
+    "shiftRemainingSec": 25200,
+    "breakRemainingSec": 28800,
+    "currentStatus": "SB",
+    "statusSince": "2026-01-15T00:00:00.000Z",
+    "dailyTotals": {
+      "off": 0,
+      "sb": 7200,
+      "drive": 0,
+      "on": 0
+    },
+    "violations": []
+  }
+}

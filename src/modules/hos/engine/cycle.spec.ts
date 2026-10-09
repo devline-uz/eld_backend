@@ -206,8 +206,27 @@ describe('recapAt', () => {
     expect(recapAt(totals, TZ, now, 8)?.toISOString()).toBe('2025-01-15T05:00:00.000Z');
   });
 
-  it('returns null when the dropping day is empty', () => {
-    expect(recapAt(new Map([['2025-01-08', 6 * H]]), TZ, now, 8)).toBeNull();
+  it('skips an empty dropping day and reports the first later midnight that returns hours', () => {
+    // 2025-01-08 leaves the 8-day window at the end of 2025-01-15.
+    expect(recapAt(new Map([['2025-01-08', 6 * H]]), TZ, now, 8)?.toISOString()).toBe('2025-01-16T05:00:00.000Z');
+  });
+
+  it('treats a zero-hour day as nothing to recap', () => {
+    const totals = new Map([['2025-01-07', 0], ['2025-01-09', 5 * H]]);
+    expect(recapAt(totals, TZ, now, 8)?.toISOString()).toBe('2025-01-17T05:00:00.000Z');
+  });
+
+  it("reports today's hours leaving after the whole window", () => {
+    expect(recapAt(new Map([['2025-01-14', 1 * H]]), TZ, now, 8)?.toISOString()).toBe('2025-01-22T05:00:00.000Z');
+  });
+
+  it('ignores days before the restart day', () => {
+    const totals = new Map([['2025-01-07', 9 * H], ['2025-01-12', 2 * H]]);
+    expect(recapAt(totals, TZ, now, 8, '2025-01-10')?.toISOString()).toBe('2025-01-20T05:00:00.000Z');
+  });
+
+  it('returns null when every day of the window is empty', () => {
+    expect(recapAt(new Map([['2025-01-06', 9 * H], ['2025-01-10', 0]]), TZ, now, 8)).toBeNull();
   });
 
   it('uses the 7-day window for 60/7', () => {

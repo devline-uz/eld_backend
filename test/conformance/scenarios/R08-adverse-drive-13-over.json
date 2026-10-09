@@ -1,0 +1,44 @@
+{
+  "id": "R08-adverse-drive-13-over",
+  "rule": "ADVERSE",
+  "title": "13:01 of driving under adverse conditions is still DRIVING_11",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-15T01:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-15T11:00:00.000Z",
+        "status": "D"
+      },
+      {
+        "at": "2026-01-15T19:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-15T19:30:00.000Z",
+        "status": "D"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance",
+      "adverseDrivingEnabled": true
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-16T00:31:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "driveRemainingSec": 0,
+    "violations": [
+      {
+        "type": "DRIVING_11",
+        "logDate": "2026-01-15",
+        "exceededBySec": 60
+      }
+    ]
+  }
+}

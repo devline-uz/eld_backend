@@ -26,6 +26,14 @@ const PUBLIC_ROUTES = new Set([
   // B-84 — email re-verification token is self-authenticating (same convention as
   // password/reset above); no bearer token exists yet if the caller followed the link cold.
   'POST /auth/email/verify',
+  // MR-31 — driver password reset mirrors the user flow above: always-200 forgot (no
+  // enumeration), emailed single-use code on reset; the caller has no session by definition.
+  'POST /auth/driver/password/forgot',
+  'POST /auth/driver/password/reset',
+  // MR-7 / MR-30 — app update gate and legal URLs must work before login (docs/mobile-requests-2026-10-08.md);
+  // static config only, no tenant data, throttled 60/min.
+  'GET /mobile/app-config',
+  'GET /mobile/legal/:kind',
   'GET /health/live',
   'GET /health/ready',
   'GET /health/deep',
@@ -54,7 +62,7 @@ const SELF_SCOPED_ROUTES = new Map<string, string>([
   ['POST /notifications/:id/read', 'B-56 — repo update is filtered by the caller\'s own userId/driverId; a foreign id is 404.'],
   [
     'GET /attachments/:id/presign',
-    'B-41 — AttachmentsService.mayView walks the owning DVIR/defect/ticket: owning driver, dvir/support READ, or the ticket author; unknown owner chain and foreign ids are 404 (D-096).',
+    'B-41 — AttachmentsService.mayView walks the owning DVIR/defect/ticket: owning driver, dvir/support READ, or the ticket author; M-39 — a driver may presign only files THEY uploaded (invoice PDFs), back office maintenance READ+ only for a submitted invoice; unknown owner chain and foreign ids are 404 (D-096).',
   ],
   [
     'POST /logs/:driverId/certify',

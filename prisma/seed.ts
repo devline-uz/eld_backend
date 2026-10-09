@@ -162,7 +162,7 @@ async function main(): Promise<void> {
       zip: '43215',
       phone: '+1-614-555-0110',
       complianceEmail: 'compliance@universal-logistics.example',
-      eldIdentifier: 'OBK1',
+      eldIdentifier: 'OBK001', // §395 Appendix A 7.15 — 6 chars (B-138)
       erodsMode: 'TEST',
     },
     update: {

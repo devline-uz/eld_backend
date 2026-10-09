@@ -1,0 +1,40 @@
+{
+  "name": "split-8-2-then-driving",
+  "spec": "§395.1(g)(1) — driving after the pair closes adds to the driving already done between the halves",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-01-15T01:00:00Z",
+    "ruleset": "US_70_8_PROPERTY",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true
+    },
+    "previousDays": [],
+    "lastRestartEndedAt": null,
+    "events": [
+      {
+        "at": "2025-01-14T07:00:00Z",
+        "status": "SB"
+      },
+      {
+        "at": "2025-01-14T15:00:00Z",
+        "status": "D"
+      },
+      {
+        "at": "2025-01-14T19:00:00Z",
+        "status": "SB"
+      },
+      {
+        "at": "2025-01-14T21:00:00Z",
+        "status": "D"
+      }
+    ]
+  },
+  "expected": {
+    "driveRemainingSec": 10800,
+    "driveUsedSec": 28800,
+    "shiftStartedAt": "2025-01-14T15:00:00Z",
+    "shiftEndsAt": "2025-01-15T07:00:00Z",
+    "violations": []
+  }
+}

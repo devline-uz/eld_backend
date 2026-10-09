@@ -10,6 +10,8 @@ import { z } from 'zod';
 /** A week of seconds — well past any §395 counter, and a cheap guard against nonsense payloads. */
 const SEC_MAX = 7 * 24 * 3600;
 const seconds = z.number().int().min(0).max(SEC_MAX);
+/** MR-24 — optional engine timestamp the app may echo; stored with the snapshot, never compared. */
+const instant = z.string().datetime({ offset: true }).nullable().optional();
 
 export const MobileHosStateDto = z.object({
   currentStatus: z.enum(['OFF', 'SB', 'D', 'ON']),
@@ -27,6 +29,11 @@ export const MobileHosStateDto = z.object({
     )
     .max(50)
     .default([]),
+  statusSince: instant.describe('MR-24 — ISO-8601: when the current duty status started.'),
+  nextBreakDueAt: instant.describe('MR-24 — ISO-8601 or null: when the 30-minute break is due.'),
+  shiftEndsAt: instant.describe('MR-24 — ISO-8601 or null: when the 14-hour window ends.'),
+  cycleRecapAt: instant.describe('MR-24 — ISO-8601 or null: when recap hours drop off the cycle.'),
+  restartAvailableAt: instant.describe('MR-24 — ISO-8601 or null: when the current rest reaches a 34-hour restart.'),
 });
 
 export const HosStateDto = z.object({

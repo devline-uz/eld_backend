@@ -223,7 +223,7 @@ describe('Auth / Roles / Users / Audit / API keys (e2e)', () => {
       return login.body.data.accessToken as string;
     }
 
-    it('GET /roles lists all 4 seeded roles, ADMIN is isSystem', async () => {
+    it('GET /roles lists all 5 seeded roles (incl. SUPER_ADMIN), ADMIN is isSystem', async () => {
       const token = await adminToken();
       const res = await request(server()).get('/api/roles').set('Authorization', `Bearer ${token}`);
       expect(res.status).toBe(200);
@@ -232,12 +232,15 @@ describe('Auth / Roles / Users / Audit / API keys (e2e)', () => {
       // the assertion robust against pollution predating that fix without hiding a real count
       // regression for genuinely seeded roles).
       const seeded = res.body.data.filter((r: { key: string }) => !r.key.startsWith('E2E_AUDIT_ROLE_'));
-      expect(seeded).toHaveLength(4);
+      expect(seeded).toHaveLength(5);
       const admin = seeded.find((r: { key: string }) => r.key === 'ADMIN');
       expect(admin.isSystem).toBe(true);
     });
 
-    it('PATCH on the ADMIN role is rejected with 403 ROLE_IMMUTABLE', async () => {
+    // D-109 (2026-10-05): only a SUPER_ADMIN may manage administrators, and that check runs BEFORE
+    // the system-role immutability check, so a plain ADMIN editing the ADMIN role is FORBIDDEN
+    // (not ROLE_IMMUTABLE). ROLE_IMMUTABLE is what the SUPER_ADMIN role itself returns, to anyone.
+    it('PATCH on the ADMIN role by a plain ADMIN is rejected with 403 FORBIDDEN (D-109)', async () => {
       const token = await adminToken();
       const roles = await request(server()).get('/api/roles').set('Authorization', `Bearer ${token}`);
       const admin = roles.body.data.find((r: { key: string }) => r.key === 'ADMIN');
@@ -245,6 +248,18 @@ describe('Auth / Roles / Users / Audit / API keys (e2e)', () => {
         .patch(`/api/roles/${admin.id}`)
         .set('Authorization', `Bearer ${token}`)
         .send({ name: 'Renamed Admin' });
+      expect(res.status).toBe(403);
+      expect(res.body.code).toBe('FORBIDDEN');
+    });
+
+    it('PATCH on the SUPER_ADMIN system role is rejected with 403 ROLE_IMMUTABLE', async () => {
+      const token = await adminToken();
+      const roles = await request(server()).get('/api/roles').set('Authorization', `Bearer ${token}`);
+      const superAdmin = roles.body.data.find((r: { key: string }) => r.key === 'SUPER_ADMIN');
+      const res = await request(server())
+        .patch(`/api/roles/${superAdmin.id}`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ name: 'Renamed Super Admin' });
       expect(res.status).toBe(403);
       expect(res.body.code).toBe('ROLE_IMMUTABLE');
     });

@@ -1,0 +1,48 @@
+{
+  "name": "passenger-split-5h-3h-sleeper-pair",
+  "spec": "\u00a7395.1(g)(3) \u2014 passenger: 5 h SB + 3 h SB (each \u2265 2 h, \u2265 8 h together) pair; counters look back to the end of the first period: 3 + 6 = 9 h driving, legal",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-01-15T14:00:00Z",
+    "ruleset": "US_70_8_PASSENGER",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true
+    },
+    "previousDays": [],
+    "lastRestartEndedAt": null,
+    "events": [
+      {
+        "at": "2025-01-14T05:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-14T15:00:00Z",
+        "status": "D"
+      },
+      {
+        "at": "2025-01-14T21:00:00Z",
+        "status": "SB"
+      },
+      {
+        "at": "2025-01-15T02:00:00Z",
+        "status": "D"
+      },
+      {
+        "at": "2025-01-15T05:00:00Z",
+        "status": "SB"
+      },
+      {
+        "at": "2025-01-15T08:00:00Z",
+        "status": "D"
+      }
+    ]
+  },
+  "expected": {
+    "shiftStartedAt": "2025-01-15T02:00:00Z",
+    "driveUsedSec": 32400,
+    "driveRemainingSec": 3600,
+    "shiftRemainingSec": 21600,
+    "violations": []
+  }
+}

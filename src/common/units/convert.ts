@@ -26,6 +26,9 @@ function round(value: number, digits: number): number {
 /** Kilometres → whole miles (odometer, trip distance). TZ §4.2. */
 export const kmToMi = (km: number): number => Math.round(km * KM_TO_MI);
 
+/** Kilometres → UNROUNDED miles — geometry only (nearest-place search), never a stored value. */
+export const kmToMiUnrounded = (km: number): number => km * KM_TO_MI;
+
 /** km/h → whole mph (speed is never stored fractionally). TZ §4.2. */
 export const kmhToMph = (kmh: number): number => Math.round(kmh * KM_TO_MI);
 

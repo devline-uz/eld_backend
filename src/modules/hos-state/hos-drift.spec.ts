@@ -164,10 +164,24 @@ describe('compareHosState', () => {
     expect(result.fields[0]).toEqual({ field: 'cycleRemainingSec', serverSec: 36000, appSec: 35995, diffSec: 5 });
   });
 
-  it('toMobileShape drops internal timestamps and copies the counters', () => {
+  it('toMobileShape drops internal timestamps, keeps the MR-24 ones and copies the counters', () => {
     const shape = toMobileShape(serverState());
     expect(Object.keys(shape).sort()).toEqual(
-      ['breakRemainingSec', 'currentStatus', 'cycleRemainingSec', 'dailyTotals', 'driveRemainingSec', 'shiftRemainingSec', 'violations'].sort(),
+      [
+        'breakRemainingSec',
+        'currentStatus',
+        'cycleRemainingSec',
+        'dailyTotals',
+        'driveRemainingSec',
+        'shiftRemainingSec',
+        'violations',
+        // MR-24
+        'statusSince',
+        'nextBreakDueAt',
+        'shiftEndsAt',
+        'cycleRecapAt',
+        'restartAvailableAt',
+      ].sort(),
     );
     expect(shape.dailyTotals).not.toBe(serverState().dailyTotals);
   });

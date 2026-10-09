@@ -1,10 +1,12 @@
 import { Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { apiError, ApiStandardErrors, ERROR_CODES } from '../../common/errors';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { DriverGuard } from '../../common/guards/driver.guard';
 import { zodBody } from '../../common/pipes/zod-validation.pipe';
+import { ApiEnvelopeResponse } from '../../common/swagger/api-envelope';
 import { DvirHistoryQueryDto } from './dto/mobile-fleet-ops.dto';
+import { DvirDetailResponse, DvirSummaryResponse } from './dto/mobile.responses';
 import { MobileDvirHistoryService } from './mobile-dvir-history.service';
 
 /**
@@ -21,7 +23,10 @@ export class MobileDvirHistoryController {
 
   @Get()
   @ApiOperation({ summary: 'M-10 — own DVIR history: defect count, condition and repair-status summary per submission.' })
-  @ApiOkResponse({ schema: { example: [{ id: 'dvir_1', vehicleId: 'veh_1', type: 'PRE_TRIP', submittedAt: '2026-09-10T12:00:00.000Z', vehicleCondition: 'DEFECTS_FOUND', defectCount: 1, repairStatus: 'PENDING' }] } })
+  @ApiEnvelopeResponse(DvirSummaryResponse, {
+    isArray: true,
+    example: [{ id: 'dvir_1', vehicleId: 'veh_1', type: 'PRE_TRIP', submittedAt: '2026-09-10T12:00:00.000Z', vehicleCondition: 'DEFECTS_FOUND', defectCount: 1, repairStatus: 'PENDING', trailerNumber: 'X53-1188', odometerMi: 84213 }],
+  })
   @ApiStandardErrors()
   list(@Query(zodBody(DvirHistoryQueryDto)) query: DvirHistoryQueryDto, @CurrentUser('id') driverId: string) {
     return this.service.list(driverId, query.days);
@@ -29,7 +34,17 @@ export class MobileDvirHistoryController {
 
   @Get(':id')
   @ApiOperation({ summary: 'M-11/P-07 — full DVIR detail: defects, photos, driver + mechanic signatures.' })
-  @ApiOkResponse({ schema: { example: { id: 'dvir_1', vehicleId: 'veh_1', defects: [], photos: [] } } })
+  @ApiEnvelopeResponse(DvirDetailResponse, {
+    example: {
+      id: 'dvir_1', driverId: 'drv_1', vehicleId: 'veh_1', trailerId: null, type: 'PRE_TRIP', submittedAt: '2026-09-10T12:00:00.000Z', odometerMi: 84213,
+      location: { lat: 39.96, lon: -82.99, name: '2mi ESE OH Columbus' }, trailerNumber: 'X53-1188', vehicleCondition: 'DEFECTS_FOUND', notes: null, repairStatus: 'PENDING',
+      driverSignature: { key: 'signatures/drv_1/sig_9c2a.png', url: 'https://...', hash: 'a1b2...' },
+      mechanicSignature: null,
+      nextDriverReviewedAt: null,
+      defects: [{ id: 'def_1', part: 'TRUCK', category: 'BRAKES_SERVICE', severity: 'MAJOR', description: 'Air leak at the rear axle', status: 'OPEN', outOfService: false, resolvedAt: null, resolutionNote: null, photos: [{ id: 'att_1', url: 'https://...', mimeType: 'image/jpeg', sizeBytes: 120344 }] }],
+      photos: [],
+    },
+  })
   @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.DVIR_NOT_FOUND, 'DVIR not found.')] })
   get(@Param('id') id: string, @CurrentUser('id') driverId: string) {
     return this.service.get(id, driverId);

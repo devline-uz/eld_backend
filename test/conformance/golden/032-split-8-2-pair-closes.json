@@ -1,0 +1,41 @@
+{
+  "name": "split-8-2-pair-closes",
+  "spec": "§395.1(g)(1) look-back — 8 h SB → 4 h D → 2 h SB closes the pair: 7 h of driving left, not 11 h",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-01-14T21:00:00Z",
+    "ruleset": "US_70_8_PROPERTY",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true
+    },
+    "previousDays": [],
+    "lastRestartEndedAt": null,
+    "events": [
+      {
+        "at": "2025-01-14T07:00:00Z",
+        "status": "SB"
+      },
+      {
+        "at": "2025-01-14T15:00:00Z",
+        "status": "D"
+      },
+      {
+        "at": "2025-01-14T19:00:00Z",
+        "status": "SB"
+      },
+      {
+        "at": "2025-01-14T21:00:00Z",
+        "status": "D"
+      }
+    ]
+  },
+  "expected": {
+    "driveRemainingSec": 25200,
+    "driveUsedSec": 14400,
+    "shiftStartedAt": "2025-01-14T15:00:00Z",
+    "shiftEndsAt": "2025-01-15T07:00:00Z",
+    "shiftRemainingSec": 36000,
+    "violations": []
+  }
+}

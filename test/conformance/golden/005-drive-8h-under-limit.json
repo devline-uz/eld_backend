@@ -1,0 +1,34 @@
+{
+  "name": "drive-8h-under-limit",
+  "spec": "\u00a78.2 rule 1 \u2014 under the 11 h limit",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-01-14T23:00:00Z",
+    "ruleset": "US_70_8_PROPERTY",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true
+    },
+    "previousDays": [],
+    "lastRestartEndedAt": null,
+    "events": [
+      {
+        "at": "2025-01-14T05:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-14T15:00:00Z",
+        "status": "D"
+      }
+    ]
+  },
+  "expected": {
+    "driveUsedSec": 28800,
+    "driveRemainingSec": 10800,
+    "shiftStartedAt": "2025-01-14T15:00:00Z",
+    "shiftEndsAt": "2025-01-15T05:00:00Z",
+    "shiftRemainingSec": 21600,
+    "breakRemainingSec": 0,
+    "violations": []
+  }
+}

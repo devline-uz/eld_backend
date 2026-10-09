@@ -1,0 +1,39 @@
+{
+  "name": "adverse-13h-driving-legal",
+  "spec": "\u00a78.2 rule 8 \u2014 adverse conditions raise 11 h to 13 h",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-01-15T04:30:00Z",
+    "ruleset": "US_70_8_PROPERTY",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true,
+      "adverseDrivingEnabled": true
+    },
+    "previousDays": [],
+    "lastRestartEndedAt": null,
+    "events": [
+      {
+        "at": "2025-01-14T05:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-14T15:00:00Z",
+        "status": "D"
+      },
+      {
+        "at": "2025-01-14T23:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-14T23:30:00Z",
+        "status": "D"
+      }
+    ]
+  },
+  "expected": {
+    "driveUsedSec": 46800,
+    "driveRemainingSec": 0,
+    "violations": []
+  }
+}

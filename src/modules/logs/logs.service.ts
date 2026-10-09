@@ -1,8 +1,9 @@
 import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable, Logger } from '@nestjs/common';
-import { EditorType } from '@prisma/client';
+import { EditorType, type Prisma } from '@prisma/client';
 import { Queue } from 'bullmq';
 import type { EldEvent } from '@prisma/client';
+import { locationTextOf } from '../../common/geo-location/location-description';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
 import type { ContextUser } from '../../core/context/request-context';
@@ -14,10 +15,14 @@ import { addDays, dayEnd, dayKey, dayStart } from '../hos/engine/timezone';
 import type { DutyStatus } from '../hos/hos.types';
 import {
   CERTIFICATION_EVENT_TYPE,
+  CERTIFICATION_STATUS_DEFAULT_DAYS,
+  CERTIFICATION_STATUS_MAX_DAYS,
   UNCERTIFIED_LOGS_ALERT_DAYS,
   certificationEventCode,
+  recertificationRequired,
   uncertifiedAlertDue,
 } from './certification';
+import { annotateSegments, dayIndicators, mergeDayDetails, tripBlockForDay, type ExtrasEvent } from './day-extras';
 import {
   AppendRow,
   formatProposalMeta,
@@ -27,6 +32,7 @@ import {
   planEditRequest,
   planProposedEvent,
   planRejectEdit,
+  SPECIAL_BY_CODE,
   type SpecialCategory,
 } from './edit-plan';
 import {
@@ -46,12 +52,14 @@ import {
 import { LogsRepository } from './logs.repository';
 import { RodsEventWriter } from './rods-event-writer';
 import { affectedHeaderRange, buildDailyLogHeaders, RODS_HEADER_LOOKBACK_DAYS } from './daily-log-header';
-import { activeRecords, drivingIntervals, statusInEffectAt, type RodsEvent } from './rods';
+import { activeRecords, drivingIntervals, specialInEffectAt, statusInEffectAt, type RodsEvent } from './rods';
 
 /** History pulled in around an edited instant so the edit rules see the neighbouring records. */
 const LOOKBACK_DAYS = 2;
 /** A range query may never walk a year (§19 — bounded work per request). */
 const MAX_RANGE_DAYS = 62;
+/** MR-16 — how far before a day a still-open malfunction/diagnostic is looked for. */
+const MALFUNCTION_LOOKBACK_DAYS = 60;
 
 export interface EditRequestView {
   id: string;
@@ -86,6 +94,8 @@ const DUTY_STATUS_BY_CODE: Record<number, DutyStatus> = { 1: 'OFF', 2: 'SB', 3: 
 @Injectable()
 export class LogsService {
   private readonly logger = new Logger(LogsService.name);
+  /** MR-5 — certify calls in flight per `driverId:clientId` (same-process replay guard). */
+  private readonly certifyInFlight = new Map<string, Promise<{ driverId: string; days: unknown[] }>>();
 
   constructor(
     private readonly repo: LogsRepository,
@@ -103,7 +113,7 @@ export class LogsService {
   async getDay(driverId: string, date: string | undefined, now: Date = new Date()) {
     const driver = await this.requireDriver(driverId);
     const key = date ?? dayKey(driver.homeTerminalTimezone, now);
-    const days = await this.buildDays(driverId, key, key, now);
+    const days = await this.buildDays(driverId, key, key, now, true);
     return days[0];
   }
 
@@ -123,7 +133,7 @@ export class LogsService {
     const timezone = driver.homeTerminalTimezone;
     const todayKey = dayKey(timezone, now);
     const fromKey = addDays(todayKey, -7);
-    const days = await this.buildDays(driverId, fromKey, todayKey, now);
+    const days = await this.buildDays(driverId, fromKey, todayKey, now, true);
     return { driverId, timezone, generatedAt: now, days };
   }
 
@@ -149,7 +159,7 @@ export class LogsService {
    * Rebuilds every RODS day in the range and persists the `DailyLog` header. Certification
    * state is never written here — only `certify()` and `invalidate` touch it (§9.2).
    */
-  private async buildDays(driverId: string, fromKey: string, toKey: string, now: Date) {
+  private async buildDays(driverId: string, fromKey: string, toKey: string, now: Date, extras = false) {
     const driver = await this.requireDriver(driverId);
     const timezone = driver.homeTerminalTimezone;
     const keys = dayKeyRange(fromKey, toKey);
@@ -167,6 +177,21 @@ export class LogsService {
       utcDate(toKey),
     );
     const headers = await this.repo.findDailyLogs(driverId, utcDate(fromKey), utcDate(toKey));
+    // MR-12 / MR-16 — read-path extras only (the header rebuild paths never need them).
+    const trips = extras ? await this.repo.findTripsForDriver(driverId, windowStart, windowEnd) : [];
+    // D-129 — the driver's no-trip day details, merged into the same per-day `trip` block.
+    const dayDetails = extras ? await this.repo.findDayDetailsForDriver(driverId, utcDate(fromKey), utcDate(toKey)) : [];
+    const dayDetailsByKey = new Map(dayDetails.map((row) => [dayKey('UTC', row.logDate), row]));
+    const indicatorEvents: ExtrasEvent[] = extras
+      ? [
+          ...(await this.repo.findMalfunctionEvents(
+            driverId,
+            new Date(windowStart.getTime() - MALFUNCTION_LOOKBACK_DAYS * 86_400_000),
+            windowStart,
+          )),
+          ...events,
+        ]
+      : [];
 
     const built = buildDailyLogHeaders({
       events,
@@ -213,8 +238,16 @@ export class LogsService {
           hasUnassigned: header.hasUnassigned,
           hasEdits: header.hasEdits,
         },
-        graph: day.segments,
+        /** MR-13 — each segment carries the record that opened it (`eventId`, location, odometer…). */
+        graph: annotateSegments(day.segments, events),
         events: dayEvents.map((event) => this.toEventView(event)),
+        ...(extras && {
+          /** MR-12 — shipping documents / trailers of the trips overlapping this day, plus (D-129)
+           * the driver's day details for it (`dayDetails: true` when a row exists). */
+          trip: mergeDayDetails(tripBlockForDay(trips, day.startAt, day.endAt, now), dayDetailsByKey.get(key)),
+          /** MR-16 — Appendix A malfunction / data-diagnostic indicator, rolled up per day. */
+          ...dayIndicators(indicatorEvents, day.startAt, day.endAt),
+        }),
         violations: dayViolations,
         certification: {
           certified: header.certified,
@@ -223,8 +256,8 @@ export class LogsService {
           certifierType: header.certifierType,
           certificationCount: header.certificationCount,
           signatureUrl: header.signatureUrl,
-          /** §9.2 — a log that changed after certification must be certified again. */
-          recertificationRequired: header.hasEdits && !header.certified,
+          /** §9.2 / B-123 — a CERTIFIED log that changed afterwards must be certified again. */
+          recertificationRequired: recertificationRequired(header),
         },
       });
     }
@@ -595,6 +628,8 @@ export class LogsService {
     const driver = await this.requireDriver(driverId);
     const timezone = driver.homeTerminalTimezone;
     const now = new Date();
+    const special: SpecialCategory = dto.specialCondition ?? 'NONE';
+    this.assertSpecialAllowed(driver, special);
     const context = await this.loadEditContext(driverId, timezone, dto.startAt, now);
 
     let target:
@@ -640,9 +675,31 @@ export class LogsService {
         annotation: dto.annotation,
         statusBeforeTarget: target?.statusBefore ?? null,
         statusAfterInterval: dto.endAt ? statusInEffectAt(context.events, dto.endAt) : null,
+        special,
+        specialBefore: specialInEffectAt(context.events, dto.startAt),
+        specialAfterInterval: dto.endAt ? specialInEffectAt(context.events, dto.endAt) : 'NONE',
       },
       target,
     );
+
+    // MR-6 — a name-only location is accepted; `locationName` wins over `location.name`.
+    const locationName = dto.locationName ?? dto.location?.name ?? null;
+    const location = dto.location
+      ? { lat: dto.location.lat, lon: dto.location.lon, name: locationName }
+      : locationName
+        ? { name: locationName }
+        : null;
+    // MR-13 — Appendix A wants vehicle miles / engine hours on every duty record; when the app
+    // did not send them, the unit's last recorded reading at or before the entry is used.
+    let odometerMi = dto.odometerMi ?? null;
+    let engineHours = dto.engineHours ?? null;
+    if ((odometerMi === null || engineHours === null) && driver.assignedVehicleId) {
+      const reading = await this.repo.findLastVehicleReading(driver.assignedVehicleId, dto.startAt);
+      if (reading) {
+        odometerMi ??= reading.totalVehicleMiles;
+        engineHours ??= toNumberOrNull(reading.totalEngineHours);
+      }
+    }
 
     const ids = await this.repo.runInTransaction((tx) =>
       this.writer.append(
@@ -655,8 +712,11 @@ export class LogsService {
           editedById: actor.id,
           editorType: EditorType.DRIVER,
           editReason: dto.annotation,
-          location: dto.location ?? null,
-          totalVehicleMiles: dto.odometerMi ?? null,
+          location,
+          // §23 — a PC position is coarsened to 10 miles BEFORE it is ever written.
+          personalConveyance: special === 'PC',
+          totalVehicleMiles: odometerMi,
+          totalEngineHours: engineHours,
         },
         rows,
       ),
@@ -672,6 +732,8 @@ export class LogsService {
         startAt: dto.startAt.toISOString(),
         endAt: dto.endAt?.toISOString() ?? null,
         annotation: dto.annotation,
+        specialCondition: special,
+        locationName,
         recordOrigin: 2,
         recordStatus: 1,
       },
@@ -682,6 +744,8 @@ export class LogsService {
       id: String(newId),
       driverId,
       status: dto.status,
+      specialCondition: special,
+      locationName,
       startAt: dto.startAt,
       endAt: dto.endAt ?? null,
       recordOrigin: 2,
@@ -716,6 +780,51 @@ export class LogsService {
       );
     }
 
+    if (!dto.clientId) return this.certifyDays(driverId, onBehalf, dto, actor);
+
+    // MR-5 — idempotent on `clientId` through the `SyncedChange` ledger shared with
+    // `/mobile/sync` (type `certify`): a replay returns the first response and appends no second
+    // eventType 4 record. Concurrent replays inside this process share one in-flight promise.
+    const key = `${driverId}:${dto.clientId}`;
+    const inFlight = this.certifyInFlight.get(key);
+    if (inFlight) return inFlight;
+    const run = (async () => {
+      const prior = await this.repo.findSyncedChange(driverId, dto.clientId as string);
+      if (prior) {
+        // The key was already spent: never certify a second time under it (§13.6 first outcome wins).
+        if (prior.type !== 'certify') {
+          throw AppException.conflict('clientId already used by another queued change.', { clientId: dto.clientId, type: prior.type });
+        }
+        if (prior.status !== 'ACCEPTED') {
+          throw AppException.conflict('This certification clientId was already processed and rejected.', {
+            clientId: dto.clientId,
+            errorCode: prior.errorCode,
+          });
+        }
+        if (prior.result && typeof prior.result === 'object') {
+          return prior.result as unknown as Awaited<ReturnType<LogsService['certifyDays']>>;
+        }
+        return { driverId, days: [] };
+      }
+      const result = await this.certifyDays(driverId, onBehalf, dto, actor);
+      await this.repo.recordSyncedChange(
+        driverId,
+        dto.clientId as string,
+        'certify',
+        new Date(),
+        JSON.parse(JSON.stringify(result)) as Prisma.InputJsonValue,
+      );
+      return result;
+    })();
+    this.certifyInFlight.set(key, run);
+    try {
+      return await run;
+    } finally {
+      this.certifyInFlight.delete(key);
+    }
+  }
+
+  private async certifyDays(driverId: string, onBehalf: boolean, dto: CertifyDto, actor: ContextUser) {
     const driver = await this.requireDriver(driverId);
     const timezone = driver.homeTerminalTimezone;
     const now = new Date();
@@ -803,6 +912,30 @@ export class LogsService {
 
     await this.checkUncertifiedAlert(driverId, timezone, now);
     return { driverId, days: results };
+  }
+
+  /**
+   * MR-26 — `GET /mobile/certification-status`: the last `days` RODS days (today included,
+   * home-terminal zone, oldest first) read from the `DailyLog` headers. A day without a header
+   * has no records yet: uncertified, nothing to re-certify.
+   */
+  async getCertificationStatus(driverId: string, days: number = CERTIFICATION_STATUS_DEFAULT_DAYS, now: Date = new Date()) {
+    const driver = await this.requireDriver(driverId);
+    const count = Math.min(Math.max(1, Math.floor(days)), CERTIFICATION_STATUS_MAX_DAYS);
+    const todayKey = dayKey(driver.homeTerminalTimezone, now);
+    const fromKey = addDays(todayKey, -(count - 1));
+    const headers = await this.repo.findDailyLogs(driverId, utcDate(fromKey), utcDate(todayKey));
+    const byKey = new Map(headers.map((header) => [dayKey('UTC', header.logDate), header]));
+    return dayKeyRange(fromKey, todayKey).map((date) => {
+      const header = byKey.get(date);
+      return {
+        date,
+        certified: header?.certified ?? false,
+        certifiedAt: header?.certifiedAt ?? null,
+        certificationCount: header?.certificationCount ?? 0,
+        recertificationRequired: recertificationRequired(header),
+      };
+    });
   }
 
   /** §9.2 / §14 — `alert.uncertified_logs`, threshold 8 days, everywhere. */
@@ -1059,6 +1192,26 @@ export class LogsService {
     return { request, original, driver };
   }
 
+  /** MR-23 — §395.1(e) PC/YM only when the driver's exceptions allow it (carrier-set). */
+  private assertSpecialAllowed(
+    driver: { allowPersonalConveyance: boolean; allowYardMove: boolean },
+    special: SpecialCategory,
+  ): void {
+    const allowed =
+      special === 'NONE' ||
+      (special === 'PC' && driver.allowPersonalConveyance) ||
+      (special === 'YM' && driver.allowYardMove);
+    if (allowed) return;
+    throw new AppException(
+      ERROR_CODES.SPECIAL_CONDITION_NOT_ALLOWED,
+      special === 'PC'
+        ? 'Personal conveyance is not enabled for this driver.'
+        : 'Yard move is not enabled for this driver.',
+      422,
+      { specialCondition: special, exception: special === 'PC' ? 'allowPersonalConveyance' : 'allowYardMove' },
+    );
+  }
+
   private assertDrivingImmutable(reason: DrivingImmutabilityReason | null): void {
     if (!reason) return;
     throw new AppException(
@@ -1112,6 +1265,15 @@ export class LogsService {
       editorType: event.editorType,
       editReason: event.editReason,
       vehicleId: event.vehicleId,
+      // MR-13 — mobile-facing aliases of the Appendix A fields above (additive).
+      eventId: String(event.id),
+      locationDescription: locationTextOf(event),
+      odometerMi: event.totalVehicleMiles,
+      engineHours: toNumberOrNull(event.totalEngineHours),
+      /** MR-23 — eventType 3 records: PC (1) / YM (2) / NONE (0, cleared). */
+      specialCondition: event.eventType === 3 ? (SPECIAL_BY_CODE[event.eventCode] ?? null) : null,
+      malfunctionCode: event.malfunctionCode,
+      diagnosticCode: event.diagnosticCode,
     };
   }
 }

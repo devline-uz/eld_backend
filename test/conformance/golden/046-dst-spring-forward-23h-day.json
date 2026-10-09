@@ -1,0 +1,42 @@
+{
+  "name": "dst-spring-forward-23h-day",
+  "spec": "\u00a78.5 time \u2014 2025-03-09 is 23 hours long in America/New_York",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-03-09T16:00:00Z",
+    "ruleset": "US_70_8_PROPERTY",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true
+    },
+    "previousDays": [],
+    "lastRestartEndedAt": null,
+    "events": [
+      {
+        "at": "2025-03-08T19:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-03-09T05:00:00Z",
+        "status": "D"
+      }
+    ]
+  },
+  "expected": {
+    "driveUsedSec": 39600,
+    "driveRemainingSec": 0,
+    "dailyTotals": {
+      "off": 0,
+      "sb": 0,
+      "drive": 39600,
+      "on": 0
+    },
+    "violations": [
+      {
+        "type": "BREAK_30",
+        "logDate": "2025-03-09",
+        "exceededBySec": 10800
+      }
+    ]
+  }
+}

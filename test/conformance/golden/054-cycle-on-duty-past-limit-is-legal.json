@@ -1,0 +1,59 @@
+{
+  "name": "cycle-on-duty-past-limit-is-legal",
+  "spec": "\u00a7395.3(b) / 1.0.3 \u2014 71 h ON DUTY (not driving) in the 8-day window is legal: the cycle prohibits driving",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-01-14T18:00:00Z",
+    "ruleset": "US_70_8_PROPERTY",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true
+    },
+    "previousDays": [
+      {
+        "date": "2025-01-08",
+        "onDutySec": 39600
+      },
+      {
+        "date": "2025-01-09",
+        "onDutySec": 39600
+      },
+      {
+        "date": "2025-01-10",
+        "onDutySec": 39600
+      },
+      {
+        "date": "2025-01-11",
+        "onDutySec": 39600
+      },
+      {
+        "date": "2025-01-12",
+        "onDutySec": 39600
+      },
+      {
+        "date": "2025-01-13",
+        "onDutySec": 39600
+      },
+      {
+        "date": "2025-01-07",
+        "onDutySec": 7200
+      }
+    ],
+    "lastRestartEndedAt": null,
+    "events": [
+      {
+        "at": "2025-01-14T05:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-14T15:00:00Z",
+        "status": "ON"
+      }
+    ]
+  },
+  "expected": {
+    "cycleRemainingSec": 0,
+    "driveRemainingSec": 0,
+    "violations": []
+  }
+}

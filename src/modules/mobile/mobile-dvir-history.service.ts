@@ -2,6 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import type { Attachment, Dvir } from '@prisma/client';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
+import { locationTextOf } from '../../common/geo-location/location-description';
 import { STORAGE_PORT, StoragePort } from '../../core/storage/storage.port';
 import { DvirWithDetail, MobileFleetOpsRepository } from './mobile-fleet-ops.repository';
 
@@ -66,13 +67,26 @@ export class MobileDvirHistoryService {
       type: dvir.type,
       submittedAt: dvir.submittedAt,
       odometerMi: dvir.odometerMi,
-      location: dvir.latitude && dvir.longitude ? { lat: dvir.latitude, lon: dvir.longitude, name: dvir.locationName } : null,
+      // MR-14 — also returned when only a place name was captured (no GPS fix); lat/lon are then null.
+      location:
+        dvir.latitude !== null || dvir.longitude !== null || dvir.locationName
+          ? { lat: dvir.latitude === null ? null : Number(dvir.latitude), lon: dvir.longitude === null ? null : Number(dvir.longitude), name: locationTextOf(dvir) }
+          : null,
+      trailerNumber: dvir.trailer?.number ?? dvir.trailerNumber ?? null,
       vehicleCondition: dvir.vehicleCondition,
       notes: dvir.notes,
       repairStatus: dvir.repairStatus,
       driverSignature: { key: dvir.driverSignatureUrl, url: driverSignatureUrl, hash: dvir.driverSignatureHash },
       mechanicSignature: dvir.mechanicSignedAt
-        ? { name: dvir.mechanicName, signedAt: dvir.mechanicSignedAt, note: dvir.mechanicNote }
+        ? {
+            name: dvir.mechanicName,
+            signedAt: dvir.mechanicSignedAt,
+            note: dvir.mechanicNote,
+            // MR-10 — the signature image captured in the app (null for back-office sign-offs without one).
+            key: dvir.mechanicSignatureUrl,
+            url: dvir.mechanicSignatureUrl ? await this.storage.presignGet(dvir.mechanicSignatureUrl, PRESIGN_TTL_SEC) : null,
+            hash: dvir.mechanicSignatureHash,
+          }
         : null,
       nextDriverReviewedAt: dvir.nextDriverReviewedAt,
       defects,
@@ -85,7 +99,7 @@ export class MobileDvirHistoryService {
   }
 }
 
-function toSummaryShape(dvir: Dvir & { _count: { defects: number } }) {
+function toSummaryShape(dvir: Dvir & { _count: { defects: number }; trailer: { number: string } | null }) {
   return {
     id: dvir.id,
     vehicleId: dvir.vehicleId,
@@ -94,5 +108,8 @@ function toSummaryShape(dvir: Dvir & { _count: { defects: number } }) {
     vehicleCondition: dvir.vehicleCondition,
     defectCount: dvir._count.defects,
     repairStatus: dvir.repairStatus,
+    // MR-14 (additive)
+    trailerNumber: dvir.trailer?.number ?? dvir.trailerNumber ?? null,
+    odometerMi: dvir.odometerMi,
   };
 }

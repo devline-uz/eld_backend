@@ -4,7 +4,10 @@ import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
 import { STORAGE_PORT, StoragePort } from '../../core/storage/storage.port';
 
-const MAX_SIGNATURE_BYTES = 2 * 1024 * 1024; // 2 MB — a signature/photo is a small PNG/JPEG.
+export const MAX_SIGNATURE_BYTES = 2 * 1024 * 1024; // 2 MB — a signature/photo is a small PNG/JPEG.
+/** M-39 — a maintenance invoice PDF (`purpose: INVOICE`). */
+export const MAX_INVOICE_PDF_BYTES = 10 * 1024 * 1024;
+const PDF_MAGIC = '%PDF-';
 
 export interface StoredSignature {
   id: string;
@@ -23,7 +26,7 @@ export class SignatureService {
   constructor(@Inject(STORAGE_PORT) private readonly storage: StoragePort) {}
 
   async store(
-    prefix: 'signatures' | 'dvir-photos',
+    prefix: 'signatures' | 'dvir-photos' | 'invoices',
     driverId: string,
     base64: string,
     mimeType: string,
@@ -32,13 +35,24 @@ export class SignatureService {
     if (buffer.length === 0) {
       throw new AppException(ERROR_CODES.VALIDATION_FAILED, 'Signature payload decoded to zero bytes.', 422);
     }
-    if (buffer.length > MAX_SIGNATURE_BYTES) {
-      throw new AppException(ERROR_CODES.FILE_TOO_LARGE, 'Signature/photo exceeds the 2 MB limit.', 413, {
-        maxBytes: MAX_SIGNATURE_BYTES,
+    const isPdf = mimeType === 'application/pdf';
+    const maxBytes = isPdf ? MAX_INVOICE_PDF_BYTES : MAX_SIGNATURE_BYTES;
+    if (buffer.length > maxBytes) {
+      throw new AppException(
+        ERROR_CODES.FILE_TOO_LARGE,
+        isPdf ? 'Invoice PDF exceeds the 10 MB limit.' : 'Signature/photo exceeds the 2 MB limit.',
+        413,
+        { maxBytes },
+      );
+    }
+    // The declared mime type is client-supplied: a PDF must really start with `%PDF-`.
+    if (isPdf && buffer.subarray(0, PDF_MAGIC.length).toString('latin1') !== PDF_MAGIC) {
+      throw new AppException(ERROR_CODES.VALIDATION_FAILED, 'The file is not a PDF (missing %PDF- header).', 422, {
+        mimeType: 'Declared application/pdf but the bytes are not a PDF.',
       });
     }
     const sha256 = createHash('sha256').update(buffer).digest('hex');
-    const ext = mimeType === 'image/jpeg' ? 'jpg' : 'png';
+    const ext = isPdf ? 'pdf' : mimeType === 'image/jpeg' ? 'jpg' : 'png';
     const id = randomUUID();
     const key = `${prefix}/${driverId}/${id}.${ext}`;
     await this.storage.put(key, buffer, { contentType: mimeType, contentLength: buffer.length });

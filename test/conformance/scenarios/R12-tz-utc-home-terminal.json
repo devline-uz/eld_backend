@@ -1,0 +1,35 @@
+{
+  "id": "R12-tz-utc-home-terminal",
+  "rule": "TIMEZONE",
+  "title": "A UTC home terminal splits the day at 00:00Z",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-14T20:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-15T06:00:00.000Z",
+        "status": "D"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance"
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-15T12:00:00.000Z",
+    "timezone": "UTC",
+    "previousDays": [],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "driveUsedSec": 21600,
+    "dailyTotals": {
+      "off": 21600,
+      "sb": 0,
+      "drive": 21600,
+      "on": 0
+    },
+    "violations": []
+  }
+}

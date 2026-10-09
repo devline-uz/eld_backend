@@ -1,0 +1,34 @@
+{
+  "id": "R02-shift14-exact",
+  "rule": "SHIFT_14",
+  "title": "Exactly 14:00 into the window \u2014 at the limit, still legal",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-15T01:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-15T11:00:00.000Z",
+        "status": "ON"
+      },
+      {
+        "at": "2026-01-15T17:00:00.000Z",
+        "status": "D"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance"
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-16T01:00:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "shiftRemainingSec": 0,
+    "driveUsedSec": 28800,
+    "violations": []
+  }
+}

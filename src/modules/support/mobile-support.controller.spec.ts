@@ -7,8 +7,9 @@ import { MobileSupportController } from './mobile-support.controller';
 
 describe('MobileSupportController', () => {
   const support = {
-    createFeedback: jest.fn(),
-    create: jest.fn(),
+    createFeedbackForDriver: jest.fn(),
+    createForDriver: jest.fn(),
+    getForDriver: jest.fn(),
   };
   const repo = {
     findMany: jest.fn(),
@@ -40,17 +41,17 @@ describe('MobileSupportController', () => {
   });
 
   it('createFeedback delegates with a driver requester context', async () => {
-    support.createFeedback.mockResolvedValue({ id: 'fbk_1' });
+    support.createFeedbackForDriver.mockResolvedValue({ id: 'fbk_1' });
     const dto = { answers: { q1: 'yes' } } as never;
     await controller.createFeedback(dto, { id: 'drv_1', type: 'driver' } as never);
-    expect(support.createFeedback).toHaveBeenCalledWith(dto, { id: 'drv_1', type: 'driver' });
+    expect(support.createFeedbackForDriver).toHaveBeenCalledWith(dto, 'drv_1');
   });
 
   it('createTicket delegates with a driver requester context', async () => {
-    support.create.mockResolvedValue({ id: 'tck_1' });
+    support.createForDriver.mockResolvedValue({ id: 'tck_1' });
     const dto = { subject: 'Diagnostics', body: 'App logs', category: 'diagnostics', priority: 'NORMAL' } as never;
     await controller.createTicket(dto, { id: 'drv_1', type: 'driver' } as never);
-    expect(support.create).toHaveBeenCalledWith(dto, { id: 'drv_1', type: 'driver' });
+    expect(support.createForDriver).toHaveBeenCalledWith(dto, 'drv_1');
   });
 
   it('listOwnTickets scopes by createdByDriverId and shapes the response', async () => {
@@ -73,6 +74,9 @@ describe('MobileSupportController', () => {
       items: [
         {
           id: 'tck_1',
+          number: 'TCK-000001',
+          body: 'irrelevant',
+          contactMethod: null,
           subject: 'App crashes',
           category: 'diagnostics',
           priority: 'NORMAL',
@@ -82,5 +86,17 @@ describe('MobileSupportController', () => {
         },
       ],
     });
+  });
+
+  it('getOwnTicket returns the driver-scoped ticket shape (MR-20)', async () => {
+    support.getForDriver.mockResolvedValue({ id: 'tck_1', number: 'TCK-000001', subject: 's', body: 'b', category: null, priority: 'NORMAL', status: 'OPEN', createdAt: 1, updatedAt: 2 });
+    const result = await controller.getOwnTicket('tck_1', 'drv_1');
+    expect(support.getForDriver).toHaveBeenCalledWith('tck_1', 'drv_1');
+    expect(result).toMatchObject({ id: 'tck_1', number: 'TCK-000001', body: 'b', contactMethod: null });
+  });
+
+  it('getOwnTicket returns the stored contactMethod (MR-20)', async () => {
+    support.getForDriver.mockResolvedValue({ id: 'tck_2', number: 'TCK-000002', subject: 's', body: 'b', category: null, priority: 'NORMAL', status: 'OPEN', contactMethod: 'EMAIL', createdAt: 1, updatedAt: 2 });
+    expect(await controller.getOwnTicket('tck_2', 'drv_1')).toMatchObject({ contactMethod: 'EMAIL' });
   });
 });

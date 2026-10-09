@@ -1,0 +1,45 @@
+{
+  "id": "R07-split-drive-between-parts-retained",
+  "rule": "SPLIT_SLEEPER",
+  "title": "395.1(g)(1) look-back \u2014 the 6 h driven between the parts stays on the 11-hour clock",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-14T19:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-15T05:00:00.000Z",
+        "status": "ON"
+      },
+      {
+        "at": "2026-01-15T07:00:00.000Z",
+        "status": "SB"
+      },
+      {
+        "at": "2026-01-15T14:00:00.000Z",
+        "status": "D"
+      },
+      {
+        "at": "2026-01-15T20:00:00.000Z",
+        "status": "SB"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance"
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-15T23:00:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "driveUsedSec": 21600,
+    "driveRemainingSec": 18000,
+    "shiftStartedAt": "2026-01-15T14:00:00.000Z",
+    "shiftEndsAt": "2026-01-16T07:00:00.000Z",
+    "shiftRemainingSec": 28800,
+    "violations": []
+  }
+}

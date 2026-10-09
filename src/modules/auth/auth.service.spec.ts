@@ -23,6 +23,8 @@ describe('AuthService', () => {
   let config: MockRepo & { isProduction: boolean };
   let carrier: MockRepo;
   let attachments: MockRepo;
+  let mail: MockRepo;
+  let loginRecords: MockRepo;
 
   const activeUser = {
     id: 'u1',
@@ -46,6 +48,8 @@ describe('AuthService', () => {
     drivers = {
       findByUsername: jest.fn(),
       findById: jest.fn(),
+      findByUsernameOrEmail: jest.fn(),
+      updatePasswordHash: jest.fn(),
     };
     sessions = {
       create: jest.fn(),
@@ -81,6 +85,8 @@ describe('AuthService', () => {
     (passwordUtil.hashPassword as jest.Mock).mockResolvedValue('newhash');
     (hashUtil.randomOpaqueToken as jest.Mock).mockReturnValue('opaque-refresh');
 
+    mail = { send: jest.fn().mockResolvedValue({ delivered: true, reference: 'm1' }) };
+    loginRecords = { login: jest.fn().mockResolvedValue(1), logout: jest.fn().mockResolvedValue(1) };
     service = new AuthService(
       users as never,
       drivers as never,
@@ -91,6 +97,8 @@ describe('AuthService', () => {
       config as never,
       carrier as never,
       attachments as never,
+      mail as never,
+      loginRecords as never,
     );
   });
 
@@ -169,6 +177,18 @@ describe('AuthService', () => {
         tokenType: 'Bearer',
         driverId: 'd1',
       });
+    });
+
+    it('D-130: writes the §395 login record only when the driver already holds a unit', async () => {
+      drivers.findByUsername.mockResolvedValueOnce({ ...driver, assignedVehicleId: 'veh_1' });
+      driverSessions.create.mockResolvedValue({});
+      await service.loginDriver('john', 'pw', {});
+      expect(loginRecords.login).toHaveBeenCalledWith('d1', 'veh_1', 'AUTH_LOGIN');
+
+      loginRecords.login.mockClear();
+      drivers.findByUsername.mockResolvedValueOnce({ ...driver, assignedVehicleId: null });
+      await service.loginDriver('john', 'pw', {});
+      expect(loginRecords.login).not.toHaveBeenCalled();
     });
 
     it('uses TokenService.refreshTtlMs(driver) for the session expiry (MB-21)', async () => {
@@ -435,6 +455,19 @@ describe('AuthService', () => {
       await service.logout('driver', 'rt');
       expect(driverSessions.revoke).not.toHaveBeenCalled();
     });
+
+    it('D-130: a driver logout writes the §395 logout record for the caller; a user logout never does', async () => {
+      driverSessions.findByRefreshHash.mockResolvedValue({ id: 's1', driverId: 'd9', revokedAt: null });
+      await service.logout('driver', 'rt', 'd1');
+      expect(loginRecords.logout).toHaveBeenCalledWith('d1', 'AUTH_LOGOUT');
+      loginRecords.logout.mockClear();
+      await service.logout('driver', 'rt');
+      expect(loginRecords.logout).toHaveBeenCalledWith('d9', 'AUTH_LOGOUT');
+      loginRecords.logout.mockClear();
+      sessions.findByRefreshHash.mockResolvedValue(null);
+      await service.logout('user', 'rt', 'u1');
+      expect(loginRecords.logout).not.toHaveBeenCalled();
+    });
   });
 
   describe('sessions', () => {
@@ -471,6 +504,59 @@ describe('AuthService', () => {
       const revoked = await service.revokeAllUserSessions('u1', 's1');
       expect(sessions.revokeAllForUserExcept).toHaveBeenCalledWith('u1', 's1');
       expect(revoked).toBe(3);
+    });
+  });
+
+  describe('MR-31 driver forgotPassword / resetPassword', () => {
+    const drv = { id: 'd1', email: 'd@x.com', passwordHash: 'h', deletedAt: null };
+
+    it('unknown identifier -> {} and no email (no enumeration)', async () => {
+      drivers.findByUsernameOrEmail.mockResolvedValue(null);
+      expect(await service.forgotDriverPassword('nobody')).toEqual({});
+      expect(mail.send).not.toHaveBeenCalled();
+    });
+
+    it('driver without email -> {} and no email', async () => {
+      drivers.findByUsernameOrEmail.mockResolvedValue({ ...drv, email: null });
+      expect(await service.forgotDriverPassword('john')).toEqual({});
+      expect(mail.send).not.toHaveBeenCalled();
+    });
+
+    it('emails the code; a mail failure is swallowed (same 200)', async () => {
+      tokens.signDriverPasswordResetToken = jest.fn().mockReturnValue('drv-reset');
+      drivers.findByUsernameOrEmail.mockResolvedValue(drv);
+      (config as unknown as { echoOneTimeSecrets: boolean }).echoOneTimeSecrets = false;
+      mail.send.mockRejectedValueOnce(new Error('smtp down'));
+      expect(await service.forgotDriverPassword('john')).toEqual({});
+      expect(mail.send).toHaveBeenCalledWith(expect.objectContaining({ to: 'd@x.com' }));
+    });
+
+    it('does not wait for the mail provider (no timing oracle for known identifiers)', async () => {
+      tokens.signDriverPasswordResetToken = jest.fn().mockReturnValue('drv-reset');
+      drivers.findByUsernameOrEmail.mockResolvedValue(drv);
+      (config as unknown as { echoOneTimeSecrets: boolean }).echoOneTimeSecrets = false;
+      let delivered = false;
+      let release: () => void = () => undefined;
+      mail.send.mockImplementationOnce(() => new Promise<void>((r) => { release = () => { delivered = true; r(); }; }));
+      expect(await service.forgotDriverPassword('john')).toEqual({});
+      expect(delivered).toBe(false);
+      release();
+    });
+
+    it('reset rotates the hash and revokes all driver sessions', async () => {
+      tokens.verifyDriverPasswordResetToken = jest.fn().mockReturnValue({ driverId: 'd1', passwordVersion: sha256('h') });
+      drivers.findById.mockResolvedValue(drv);
+      (passwordUtil.hashPassword as jest.Mock).mockResolvedValue('new-hash');
+      await service.resetDriverPassword('tok', 'newpassword');
+      expect(drivers.updatePasswordHash).toHaveBeenCalledWith('d1', 'new-hash');
+      expect(driverSessions.revokeAllForDriver).toHaveBeenCalledWith('d1');
+    });
+
+    it('reset with a used (stale) token -> TOKEN_INVALID', async () => {
+      tokens.verifyDriverPasswordResetToken = jest.fn().mockReturnValue({ driverId: 'd1', passwordVersion: sha256('old') });
+      drivers.findById.mockResolvedValue(drv);
+      await expect(service.resetDriverPassword('tok', 'newpassword')).rejects.toThrow(AppException);
+      expect(drivers.updatePasswordHash).not.toHaveBeenCalled();
     });
   });
 
@@ -566,11 +652,18 @@ describe('AuthService', () => {
       expect(attachments.presignKey).not.toHaveBeenCalled();
     });
 
-    it('passes through a driver subject unchanged (B-34 is user-only)', async () => {
+    it('adds the ELD username (and name/email/timezone) for a driver subject (M-31 / D-120)', async () => {
       const driver = { id: 'drv_1', type: 'driver' as const };
+      drivers.findById.mockResolvedValue({ id: 'drv_1', username: 'johnsmith', firstName: 'John', lastName: 'Smith', email: null, homeTerminalTimezone: 'America/Chicago' });
       const result = await service.meProfile(driver);
-      expect(result).toEqual(driver);
+      expect(result).toEqual({ ...driver, username: 'johnsmith', fullName: 'John Smith', email: null, homeTerminalTimezone: 'America/Chicago' });
       expect(users.findByIdWithRole).not.toHaveBeenCalled();
+    });
+
+    it('passes a driver subject through unchanged when the row is gone', async () => {
+      const driver = { id: 'drv_x', type: 'driver' as const };
+      drivers.findById.mockResolvedValue(null);
+      expect(await service.meProfile(driver)).toEqual(driver);
     });
   });
 });

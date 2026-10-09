@@ -18,8 +18,12 @@
  * pairs them. Before a pair closes, the first part is excluded from the window (the window
  * stretches by its length) while driving time keeps accumulating. Each part belongs to
  * exactly one pair.
+ *
+ * Passenger-carrying rulesets use §395.1(g)(3) instead (`PASSENGER_SPLIT`): two SLEEPER-BERTH
+ * periods, each ≥ 2 h, together ≥ 8 h; off-duty time never qualifies. Every passenger part is
+ * classified LONG (each is a sleeper period), so the same greedy pairing applies.
  */
-import { SPLIT_PAIR_MIN } from './limits';
+import { PROPERTY_SPLIT, type SplitRule } from './limits';
 import { qualifiesAsLongPart, qualifiesAsShortPart, type RestRun } from './normalize';
 
 export type SplitPartKind = 'LONG' | 'SHORT';
@@ -59,22 +63,25 @@ export interface SplitAnalysis {
 }
 
 /** Classifies one rest run as a split-sleeper part, or `null` if it does not qualify. */
-export function classifyPart(run: RestRun): SplitPart | null {
-  // A ≥ 10 h continuous rest is a full reset in its own right and is never a split part.
+export function classifyPart(run: RestRun, rule: SplitRule = PROPERTY_SPLIT): SplitPart | null {
+  // A full-reset rest (10 h property, 8 h passenger) is a reset in its own right, never a split part.
   if (run.isFullReset) return null;
-  if (qualifiesAsLongPart(run) && run.longestSbStart && run.longestSbEnd) {
+  if (qualifiesAsLongPart(run, rule) && run.longestSbStart && run.longestSbEnd) {
     return { kind: 'LONG', start: run.longestSbStart, end: run.longestSbEnd, partSec: run.longestSbSec, endIndex: run.endIndex };
   }
-  if (qualifiesAsShortPart(run)) {
+  if (qualifiesAsShortPart(run, rule)) {
     return { kind: 'SHORT', start: run.start, end: run.end, partSec: run.durationSec, endIndex: run.endIndex };
   }
   return null;
 }
 
-/** A pair needs one ≥ 7 h SB part and ≥ 10 h in total; order of the halves does not matter. */
-export function partsPair(a: SplitPart, b: SplitPart): boolean {
+/**
+ * A pair needs one LONG part (≥ 7 h SB property, ≥ 2 h SB passenger) and ≥ 10 h (property) /
+ * ≥ 8 h (passenger) in total; order of the halves does not matter.
+ */
+export function partsPair(a: SplitPart, b: SplitPart, rule: SplitRule = PROPERTY_SPLIT): boolean {
   const hasLong = a.kind === 'LONG' || b.kind === 'LONG';
-  return hasLong && a.partSec + b.partSec >= SPLIT_PAIR_MIN;
+  return hasLong && a.partSec + b.partSec >= rule.pairMinSec;
 }
 
 /**
@@ -82,7 +89,7 @@ export function partsPair(a: SplitPart, b: SplitPart): boolean {
  * with three consecutive qualifying parts the first two pair up and the third is carried
  * forward as the opening half of the next pair.
  */
-export function analyzeSplits(runs: RestRun[], enabled: boolean): SplitAnalysis {
+export function analyzeSplits(runs: RestRun[], enabled: boolean, rule: SplitRule = PROPERTY_SPLIT): SplitAnalysis {
   const analysis: SplitAnalysis = {
     pairs: [],
     pendingPart: null,
@@ -99,13 +106,13 @@ export function analyzeSplits(runs: RestRun[], enabled: boolean): SplitAnalysis 
       pending = null;
       continue;
     }
-    const part = classifyPart(run);
+    const part = classifyPart(run, rule);
     if (!part) continue;
     analysis.partsByEndIndex.set(part.endIndex, part);
     // A ≥ 7 h sleeper period is excluded from the window on its own, whether or not it ever
     // finds a partner; a shorter rest is excluded only once its pair actually closes.
     if (part.kind === 'LONG') analysis.excludedWhilePendingByEndIndex.set(part.endIndex, part);
-    if (pending && partsPair(pending, part)) {
+    if (pending && partsPair(pending, part, rule)) {
       const pair: SplitPair = { first: pending, second: part };
       analysis.pairs.push(pair);
       analysis.pairCloseByEndIndex.set(part.endIndex, pair);

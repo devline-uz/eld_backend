@@ -152,4 +152,25 @@ describe('RodsEventWriter', () => {
 
     expect([...ids.keys()].sort()).toEqual(['INACTIVE_MARKER:1', 'NEW_ACTIVE:0']);
   });
+
+  it('§395 App. A 4.4.2 — a position without a name gets the offline geo-location text', async () => {
+    const repo = new FakeIngestRepo();
+    const writer = new RodsEventWriter(repo as unknown as IngestRepository);
+    await writer.append(tx(repo) as never, { ...ctx, location: { lat: 39.961, lon: -83.063 } }, [rows[0]]);
+    expect(repo.inserted[0].locationName).toMatch(/^\d{1,2}mi [NSEW]{1,3} OH \S/);
+  });
+
+  it('a supplied location name wins over the computed one', async () => {
+    const repo = new FakeIngestRepo();
+    const writer = new RodsEventWriter(repo as unknown as IngestRepository);
+    await writer.append(tx(repo) as never, { ...ctx, location: { lat: 39.961, lon: -83.063, name: 'Shipper #4821' } }, [rows[0]]);
+    expect(repo.inserted[0].locationName).toBe('Shipper #4821');
+  });
+
+  it('personal conveyance describes the 10-mile position in 10-mile distance steps', async () => {
+    const repo = new FakeIngestRepo();
+    const writer = new RodsEventWriter(repo as unknown as IngestRepository);
+    await writer.append(tx(repo) as never, { ...ctx, personalConveyance: true, location: { lat: 39.961, lon: -83.063 } }, [rows[0]]);
+    expect(repo.inserted[0].locationName).toMatch(/^((\d)?0mi [NSEW]{1,3} )?OH \S/);
+  });
 });

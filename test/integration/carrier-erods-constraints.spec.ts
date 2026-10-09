@@ -21,13 +21,13 @@ describe('Carrier eRODS identifier constraints', () => {
     await prisma.$disconnect();
   });
 
-  it('defaults erodsMode to TEST and eldIdentifier to the 4-char OBK1', async () => {
+  it('defaults erodsMode to TEST and eldIdentifier to a 6-char value (Appendix A 7.15, B-138)', async () => {
     const carrier = await prisma.carrier.findUniqueOrThrow({ where: { id: 'carrier' } });
-    expect(carrier.eldIdentifier).toMatch(/^[A-Z0-9]{4}$/);
+    expect(carrier.eldIdentifier).toMatch(/^[A-Z0-9]{6}$/);
     expect(['TEST', 'PRODUCTION']).toContain(carrier.erodsMode);
   });
 
-  it.each(['OBK', 'TEST01', 'OB#1', 'ob,1'])(
+  it.each(['OBK1', 'OBK01', 'OBK0001', 'OB#001', 'ob,001'])(
     'rejects eldIdentifier %s at the DB level',
     async (value) => {
       await expect(
@@ -51,17 +51,18 @@ describe('Carrier eRODS identifier constraints', () => {
     },
   );
 
-  it('still accepts a legal 4-char registration id and restores the TEST defaults', async () => {
+  it('still accepts a legal 6-char identifier + 4-char registration id and restores the TEST defaults', async () => {
     await prisma.carrier.update({
       where: { id: 'carrier' },
-      data: { eldRegistrationId: 'AB12' },
+      data: { eldRegistrationId: 'AB12', eldIdentifier: '1001ZE' },
     });
     const updated = await prisma.carrier.findUniqueOrThrow({ where: { id: 'carrier' } });
     expect(updated.eldRegistrationId).toBe('AB12');
+    expect(updated.eldIdentifier).toBe('1001ZE');
 
     await prisma.carrier.update({
       where: { id: 'carrier' },
-      data: { eldRegistrationId: null, eldIdentifier: 'OBK1', erodsMode: 'TEST' },
+      data: { eldRegistrationId: null, eldIdentifier: 'OBK001', erodsMode: 'TEST' },
     });
   });
 });

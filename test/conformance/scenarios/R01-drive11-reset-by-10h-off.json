@@ -1,0 +1,45 @@
+{
+  "id": "R01-drive11-reset-by-10h-off",
+  "rule": "DRIVING_11",
+  "title": "A 10-hour off-duty period clears yesterday's driving",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-14T05:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-14T11:00:00.000Z",
+        "status": "D"
+      },
+      {
+        "at": "2026-01-14T19:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-15T11:00:00.000Z",
+        "status": "D"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance"
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-15T13:00:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "driveUsedSec": 7200,
+    "driveRemainingSec": 32400,
+    "shiftStartedAt": "2026-01-15T11:00:00.000Z",
+    "dailyTotals": {
+      "off": 21600,
+      "sb": 0,
+      "drive": 7200,
+      "on": 0
+    },
+    "violations": []
+  }
+}

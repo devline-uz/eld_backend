@@ -1,0 +1,65 @@
+{
+  "name": "cycle-violation-never-stamped-after-now",
+  "spec": "\u00a78.2 rule 4 / B-054 / 1.0.3 \u2014 previousDays reports 5 h for today but the segments show 1 h: the 4 h of unknown timing count first (start of day), so the driving that follows is past the limit; occurredAt is the start of that driving, never after now",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-01-14T16:00:00Z",
+    "ruleset": "US_70_8_PROPERTY",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true
+    },
+    "lastRestartEndedAt": null,
+    "events": [
+      {
+        "at": "2025-01-14T05:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-14T15:00:00Z",
+        "status": "D"
+      }
+    ],
+    "previousDays": [
+      {
+        "date": "2025-01-08",
+        "onDutySec": 39600
+      },
+      {
+        "date": "2025-01-09",
+        "onDutySec": 39600
+      },
+      {
+        "date": "2025-01-10",
+        "onDutySec": 39600
+      },
+      {
+        "date": "2025-01-11",
+        "onDutySec": 39600
+      },
+      {
+        "date": "2025-01-12",
+        "onDutySec": 39600
+      },
+      {
+        "date": "2025-01-13",
+        "onDutySec": 39600
+      },
+      {
+        "date": "2025-01-14",
+        "onDutySec": 18000
+      }
+    ]
+  },
+  "expected": {
+    "cycleRemainingSec": 0,
+    "violations": [
+      {
+        "type": "CYCLE_70",
+        "logDate": "2025-01-14",
+        "occurredAt": "2025-01-14T15:00:00Z",
+        "exceededBySec": 3600
+      }
+    ]
+  }
+}

@@ -23,6 +23,7 @@ export interface DriverTokenSubject {
 }
 
 const PASSWORD_RESET_TYP = 'password_reset';
+const DRIVER_PASSWORD_RESET_TYP = 'driver_password_reset';
 /** §20 B-29/B-30/B-31 — `POST /drivers/:id/send-verification` / `verify-email`. */
 const DRIVER_EMAIL_VERIFY_TYP = 'driver_email_verify';
 /** B-84 — `PATCH /users/:id { email }` re-verification. Same shape as the driver one above,
@@ -41,7 +42,7 @@ interface AccessTokenClaims {
 
 interface PasswordResetClaims {
   sub: string;
-  typ: typeof PASSWORD_RESET_TYP;
+  typ: typeof PASSWORD_RESET_TYP | typeof DRIVER_PASSWORD_RESET_TYP;
   /** Bound to the current passwordHash so a used/rotated hash invalidates outstanding tokens. */
   pwv: string;
 }
@@ -86,6 +87,21 @@ export class TokenService extends TokenVerifier {
     return jwt.sign(claims, this.secret, {
       expiresIn: this.config.get('JWT_DRIVER_ACCESS_TTL'),
     } as jwt.SignOptions);
+  }
+
+  /** MR-31 — driver self-service reset. Own `typ` so a back-office reset token can never be
+   * replayed against a driver (and vice versa); bound to the driver's current passwordHash. */
+  signDriverPasswordResetToken(driverId: string, passwordVersion: string): string {
+    const claims: PasswordResetClaims = { sub: driverId, typ: DRIVER_PASSWORD_RESET_TYP, pwv: passwordVersion };
+    return jwt.sign(claims, this.secret, { expiresIn: this.config.get('JWT_PASSWORD_RESET_TTL') } as jwt.SignOptions);
+  }
+
+  verifyDriverPasswordResetToken(token: string): { driverId: string; passwordVersion: string } {
+    const claims = this.verifyRaw<PasswordResetClaims>(token);
+    if (claims.typ !== DRIVER_PASSWORD_RESET_TYP) {
+      throw new AppException(ERROR_CODES.TOKEN_INVALID, 'Not a driver password-reset token.', 401);
+    }
+    return { driverId: claims.sub, passwordVersion: claims.pwv };
   }
 
   signPasswordResetToken(userId: string, passwordVersion: string): string {

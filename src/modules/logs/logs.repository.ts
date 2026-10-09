@@ -1,7 +1,9 @@
 import { Injectable } from '@nestjs/common';
-import type { DailyLog, Driver, EldEvent, HosViolation, Prisma, UnidentifiedSegment } from '@prisma/client';
+import type { DailyLog, Driver, DriverDayDetails, EldEvent, HosViolation, Prisma, SyncedChange, UnidentifiedSegment } from '@prisma/client';
 import { BaseRepository, ModelDelegate } from '../../core/prisma/base.repository';
 import { PrismaService } from '../../core/prisma/prisma.service';
+import { syncLedgerKey as ledgerKey } from '../mobile/mobile.repository';
+import type { DayTrip } from './day-extras';
 
 /** Opaque transaction handle. */
 export type LogsTx = Prisma.TransactionClient;
@@ -188,4 +190,123 @@ export class LogsRepository extends BaseRepository<
     });
     return rows.map((row) => row.vehicleId).filter((id): id is string => Boolean(id));
   }
+
+  // ---------------------------------------------------------------------
+  // MR-5 — the `SyncedChange` idempotency ledger, shared with `/mobile/sync` (type `certify`)
+  // ---------------------------------------------------------------------
+
+  findSyncedChange(driverId: string, clientId: string): Promise<SyncedChange | null> {
+    return this.prisma.syncedChange.findFirst({
+      where: { OR: [{ clientId: ledgerKey(driverId, clientId) }, { clientId, driverId }] },
+    });
+  }
+
+  /** Records an ACCEPTED outcome; a concurrent duplicate (P2002) is ignored — first one wins. */
+  async recordSyncedChange(
+    driverId: string,
+    clientId: string,
+    type: string,
+    occurredAt: Date,
+    result: Prisma.InputJsonValue,
+  ): Promise<void> {
+    try {
+      await this.prisma.syncedChange.create({
+        data: { driverId, clientId: ledgerKey(driverId, clientId), type, status: 'ACCEPTED', occurredAt, result },
+      });
+    } catch (err) {
+      if ((err as { code?: string })?.code === 'P2002') return;
+      throw err;
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // MR-13 / MR-16 / MR-12 — day extras
+  // ---------------------------------------------------------------------
+
+  /**
+   * MR-13 — the unit's latest odometer / engine-hours reading at or before `at` (any driver,
+   * any origin, active records only), looked up at most `lookbackDays` back.
+   */
+  findLastVehicleReading(
+    vehicleId: string,
+    at: Date,
+    lookbackDays = 7,
+  ): Promise<{ totalVehicleMiles: number | null; totalEngineHours: Prisma.Decimal | null } | null> {
+    return this.prisma.eldEvent.findFirst({
+      where: {
+        vehicleId,
+        recordStatus: 1,
+        totalVehicleMiles: { not: null },
+        eventDateTime: { gte: new Date(at.getTime() - lookbackDays * 86_400_000), lte: at },
+      },
+      orderBy: [{ eventDateTime: 'desc' }, { eventSequenceId: 'desc' }],
+      select: { totalVehicleMiles: true, totalEngineHours: true },
+    });
+  }
+
+  /** MR-16 — the driver's malfunction / diagnostic records (eventType 7) in a window. */
+  findMalfunctionEvents(driverId: string, from: Date, to: Date): Promise<EldEvent[]> {
+    return this.prisma.eldEvent.findMany({
+      where: { driverId, eventType: 7, eventDateTime: { gte: from, lt: to } },
+      orderBy: [{ eventDateTime: 'asc' }, { eventSequenceId: 'asc' }],
+      take: 2000,
+    });
+  }
+
+  /** D-129 — the driver's per-RODS-day details (no-trip header data) for `[fromDate, toDate]` (`@db.Date`). */
+  findDayDetailsForDriver(driverId: string, fromDate: Date, toDate: Date): Promise<DriverDayDetails[]> {
+    return this.prisma.driverDayDetails.findMany({ where: { driverId, logDate: { gte: fromDate, lte: toDate } } });
+  }
+
+  /** MR-12 — the driver's non-draft, non-cancelled trips that can overlap `[from, to]`. */
+  findTripsForDriver(driverId: string, from: Date, to: Date): Promise<DayTrip[]> {
+    return findDayTrips(this.prisma, driverId, from, to);
+  }
+}
+
+/**
+ * MR-12 / D-129 — shared by `GET /mobile/logs` and the eRODS header (`TransfersService`) so both
+ * read the trips of a RODS day the same way. Exported as a function, not a provider, so the
+ * transfers module needs no `LogsModule` import.
+ */
+export async function findDayTrips(prisma: PrismaService, driverId: string, from: Date, to: Date): Promise<DayTrip[]> {
+  const trips = await prisma.trip.findMany({
+    where: {
+      driverId,
+      status: { notIn: ['DRAFT', 'CANCELLED'] },
+      AND: [
+        { OR: [{ completedAt: null }, { completedAt: { gte: from } }] },
+        {
+          OR: [
+            { startedAt: { lte: to } },
+            { startedAt: null, plannedStartAt: { lte: to } },
+            { startedAt: null, plannedStartAt: null, createdAt: { lte: to } },
+          ],
+        },
+      ],
+    },
+    orderBy: { createdAt: 'asc' },
+    take: 100,
+  });
+  const trailerIds = [...new Set(trips.map((trip) => trip.trailerId).filter((id): id is string => Boolean(id)))];
+  const trailers = trailerIds.length
+    ? await prisma.trailer.findMany({ where: { id: { in: trailerIds } }, select: { id: true, number: true } })
+    : [];
+  const numberById = new Map(trailers.map((trailer) => [trailer.id, trailer.number]));
+  return trips.map((trip) => ({
+    id: trip.id,
+    number: trip.number,
+    status: trip.status,
+    shippingDocument: trip.shippingDocument,
+    shippingDocuments: trip.shippingDocuments ?? [],
+    trailerNumbers: trip.trailerNumbers ?? [],
+    trailerNumber: trip.trailerId ? (numberById.get(trip.trailerId) ?? null) : null,
+    bobtail: trip.bobtail,
+    notes: trip.notes,
+    plannedStartAt: trip.plannedStartAt,
+    plannedEndAt: trip.plannedEndAt,
+    startedAt: trip.startedAt,
+    completedAt: trip.completedAt,
+    createdAt: trip.createdAt,
+  }));
 }

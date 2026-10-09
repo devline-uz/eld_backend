@@ -1,0 +1,42 @@
+{
+  "name": "restart-interrupted-by-on-duty",
+  "spec": "\u00a78.2 rule 5 \u2014 an on-duty record breaks the 34 h run",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-01-16T00:00:00Z",
+    "ruleset": "US_70_8_PROPERTY",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true
+    },
+    "previousDays": [
+      {
+        "date": "2025-01-13",
+        "onDutySec": 216000
+      }
+    ],
+    "lastRestartEndedAt": null,
+    "events": [
+      {
+        "at": "2025-01-14T05:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-15T01:00:00Z",
+        "status": "ON"
+      },
+      {
+        "at": "2025-01-15T02:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-15T22:00:00Z",
+        "status": "D"
+      }
+    ]
+  },
+  "expected": {
+    "cycleRemainingSec": 25200,
+    "violations": []
+  }
+}

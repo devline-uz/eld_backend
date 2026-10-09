@@ -1,0 +1,39 @@
+{
+  "id": "R09-shorthaul-still-bound-by-14",
+  "rule": "SHORT_HAUL",
+  "title": "Short haul does not lift the 14-hour window",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-15T01:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-15T11:00:00.000Z",
+        "status": "ON"
+      },
+      {
+        "at": "2026-01-15T19:00:00.000Z",
+        "status": "D"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance",
+      "shortHaulException": true
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-16T01:01:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "violations": [
+      {
+        "type": "SHIFT_14",
+        "logDate": "2026-01-15",
+        "exceededBySec": 60
+      }
+    ]
+  }
+}

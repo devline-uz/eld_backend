@@ -204,3 +204,48 @@ describe('B-39 / B-72 — special category and proposed new records', () => {
     expect(parseProposalMeta(`proposedEnd=${end.toISOString()}`)).toEqual({ proposedEnd: end, special: 'NONE' });
   });
 });
+
+describe('MR-23 — planDriverSelfEdit with a §395.1(e) category', () => {
+  const at = (iso: string) => new Date(iso);
+
+  it('a PC interval: OFF + PC at the start, PC cleared then the following status restored at the end', () => {
+    const rows = planDriverSelfEdit({
+      status: 'OFF',
+      special: 'PC',
+      startAt: at('2026-06-01T18:00:00Z'),
+      endAt: at('2026-06-01T18:30:00Z'),
+      annotation: 'To the motel',
+      statusAfterInterval: 'ON',
+    });
+    expect(rows.map((row) => [row.kind, row.eventType, row.eventCode, row.at.toISOString()])).toEqual([
+      ['NEW_ACTIVE', 1, 1, '2026-06-01T18:00:00.000Z'],
+      ['SPECIAL', 3, 1, '2026-06-01T18:00:00.000Z'],
+      ['SPECIAL_CLEAR', 3, 0, '2026-06-01T18:30:00.000Z'],
+      ['RESTORE', 1, 4, '2026-06-01T18:30:00.000Z'],
+    ]);
+    expect(rows.every((row) => row.recordOrigin === 2 && row.recordStatus === 1)).toBe(true);
+  });
+
+  it('a plain interval inside a YM period clears YM and re-asserts it after the RESTORE', () => {
+    const rows = planDriverSelfEdit({
+      status: 'SB',
+      startAt: at('2026-06-01T18:00:00Z'),
+      endAt: at('2026-06-01T19:00:00Z'),
+      annotation: 'Short nap',
+      statusAfterInterval: 'ON',
+      specialBefore: 'YM',
+      specialAfterInterval: 'YM',
+    });
+    expect(rows.map((row) => [row.kind, row.eventType, row.eventCode])).toEqual([
+      ['SPECIAL_CLEAR', 3, 0],
+      ['NEW_ACTIVE', 1, 2],
+      ['RESTORE', 1, 4],
+      ['SPECIAL', 3, 2],
+    ]);
+  });
+
+  it('no category anywhere → no eventType 3 rows (unchanged behaviour)', () => {
+    const rows = planDriverSelfEdit({ status: 'ON', startAt: at('2026-06-01T18:00:00Z'), annotation: 'Fuel stop' });
+    expect(rows.filter((row) => row.eventType === 3)).toHaveLength(0);
+  });
+});

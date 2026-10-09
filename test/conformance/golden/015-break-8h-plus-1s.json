@@ -1,0 +1,35 @@
+{
+  "name": "break-8h-plus-1s",
+  "spec": "\u00a78.2 rule 3 \u2014 one second past 8 h without a break",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-01-14T23:00:01Z",
+    "ruleset": "US_70_8_PROPERTY",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true
+    },
+    "previousDays": [],
+    "lastRestartEndedAt": null,
+    "events": [
+      {
+        "at": "2025-01-14T05:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-14T15:00:00Z",
+        "status": "D"
+      }
+    ]
+  },
+  "expected": {
+    "breakRemainingSec": 0,
+    "violations": [
+      {
+        "type": "BREAK_30",
+        "logDate": "2025-01-14",
+        "exceededBySec": 1
+      }
+    ]
+  }
+}

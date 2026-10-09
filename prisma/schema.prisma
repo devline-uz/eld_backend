@@ -53,10 +53,10 @@ model Carrier {
   complianceEmail         String?
   logoUrl                 String?
 
-  // eRODS — §395 Appendix A: ELD Identifier / Registration ID, exactly 4 chars from [A-Z0-9].
-  // Enforced by CHECK eld_identifier_format / eld_registration_id_format (migration
-  // 20260911150000_erods_identifier_charset) — VarChar(4) alone allows shorter/illegal values.
-  eldIdentifier     String    @default("OBK1") @db.VarChar(4)
+  // eRODS — §395 Appendix A: ELD Identifier 6 chars (7.15), Registration ID 4 chars (7.17), [A-Z0-9].
+  // Enforced by CHECK eld_identifier_format (^[A-Z0-9]{6}$, migration 20261008130000_eld_identifier_six_chars)
+  // / eld_registration_id_format (20260911150000_erods_identifier_charset) — VarChar alone allows shorter/illegal values.
+  eldIdentifier     String    @default("OBK001") @db.VarChar(6)
   eldRegistrationId String?   @db.VarChar(4)
   erodsMode         ErodsMode @default(TEST)
 
@@ -72,36 +72,37 @@ model Carrier {
 // ---------------------------------------------------------------------------
 
 model User {
-  id               String       @id @default(uuid())
-  email            String       @unique
-  passwordHash     String?
-  googleUid        String?      @unique
-  authProvider     AuthProvider @default(PASSWORD)
-  firstName        String
-  lastName         String
-  jobTitle         String?
-  phone            String?
-  roleId           String
-  status           UserStatus   @default(INVITED)
-  lastActiveAt     DateTime?
-  invitedById      String?
-  invitedAt        DateTime?
-  createdAt        DateTime     @default(now())
+  id           String       @id @default(uuid())
+  email        String       @unique
+  passwordHash String?
+  googleUid    String?      @unique
+  authProvider AuthProvider @default(PASSWORD)
+  firstName    String
+  lastName     String
+  jobTitle     String?
+  phone        String?
+  roleId       String
+  status       UserStatus   @default(INVITED)
+  lastActiveAt DateTime?
+  invitedById  String?
+  invitedAt    DateTime?
+  createdAt    DateTime     @default(now())
 
   /// §20 B-51 — profile avatar (S3/MinIO object key, presigned on read).
-  avatarKey String?
+  avatarKey        String?
   /// §20 B-85 — decision D-0xx: no dedicated Terminal table yet (product question open).
   /// Mirrors `Driver.homeTerminalName` / a lightweight scope list of terminal names.
   homeTerminalName String?
   terminalScope    String[] @default([])
   /// §20 B-11 — `{ language, timezone, dateFormat, distanceUnit, savedViews, tableColumns }`.
-  preferences Json?
+  preferences      Json?
 
-  role           Role       @relation(fields: [roleId], references: [id])
-  sessions       Session[]
-  managedDrivers Driver[]   @relation("DriverFleetManager")
-  apiKeys        ApiKey[]
-  reports        Report[]
+  role                Role                  @relation(fields: [roleId], references: [id])
+  sessions            Session[]
+  managedDrivers      Driver[]              @relation("DriverFleetManager")
+  reviewedMaintenance MaintenanceSchedule[] @relation("MaintenanceReviewedBy")
+  apiKeys             ApiKey[]
+  reports             Report[]
 
   @@index([status])
 }
@@ -156,22 +157,22 @@ model DriverSession {
 // ---------------------------------------------------------------------------
 
 model Driver {
-  id           String       @id @default(uuid())
+  id              String       @id @default(uuid())
   /// Unique among LIVE rows only (`deletedAt IS NULL`) — enforced by the partial unique index
   /// `Driver_username_live_key` in migration 20260927090000_soft_delete_partial_uniques.
-  username     String
-  passwordHash String
-  firstName    String
-  lastName     String
+  username        String
+  passwordHash    String
+  firstName       String
+  lastName        String
   /// §20 B-29/B-30/B-31 — unique among LIVE rows so a driver's Google-auth email can't collide;
   /// enforced by the partial unique index `Driver_email_live_key` (WHERE "deletedAt" IS NULL) in
   /// migration 20260927090000_soft_delete_partial_uniques. NULLs stay distinct.
-  email          String?
+  email           String?
   emailVerifiedAt DateTime?
-  phone        String?
-  cdlNumber    String
-  cdlState     String
-  status       DriverStatus @default(ACTIVE)
+  phone           String?
+  cdlNumber       String
+  cdlState        String
+  status          DriverStatus @default(ACTIVE)
 
   // RODS day boundary follows THIS timezone, never Carrier.timezone.
   homeTerminalName     String
@@ -199,19 +200,22 @@ model Driver {
   /// free their username/email for reuse.
   deletedAt    DateTime?
 
-  fleetManager      User?              @relation("DriverFleetManager", fields: [fleetManagerId], references: [id])
-  assignedVehicle   Vehicle?           @relation("VehicleDriver", fields: [assignedVehicleId], references: [id])
-  dailyLogs         DailyLog[]
-  violations        HosViolation[]
-  pushTokens        PushToken[]
-  dvirs             Dvir[]
-  trips             Trip[]
-  hosSnapshot       DriverHosSnapshot?
-  pairingsAsPrimary CoDriverPairing[]  @relation("PairingPrimary")
-  pairingsAsCo      CoDriverPairing[]  @relation("PairingCo")
-  sessions          DriverSession[]
-  syncedChanges     SyncedChange[]
-  documents         DriverDocument[]
+  fleetManager           User?                 @relation("DriverFleetManager", fields: [fleetManagerId], references: [id])
+  assignedVehicle        Vehicle?              @relation("VehicleDriver", fields: [assignedVehicleId], references: [id])
+  dailyLogs              DailyLog[]
+  violations             HosViolation[]
+  pushTokens             PushToken[]
+  dvirs                  Dvir[]
+  maintenanceSubmissions MaintenanceSchedule[] @relation("MaintenanceSubmittedBy")
+  trips                  Trip[]
+  hosSnapshot            DriverHosSnapshot?
+  pairingsAsPrimary      CoDriverPairing[]     @relation("PairingPrimary")
+  pairingsAsCo           CoDriverPairing[]     @relation("PairingCo")
+  sessions               DriverSession[]
+  syncedChanges          SyncedChange[]
+  documents              DriverDocument[]
+  savedSignature         DriverSavedSignature?
+  dayDetails             DriverDayDetails[]
 
   @@index([status])
   // Partial unique indexes (WHERE "deletedAt" IS NULL) live in the migration SQL only; whitelisted
@@ -340,13 +344,13 @@ model VehicleGroup {
 }
 
 model Trailer {
-  id     String        @id @default(uuid())
+  id        String        @id @default(uuid())
   /// Unique among LIVE rows only (`deletedAt IS NULL`) — enforced by the partial unique index
   /// `Trailer_number_live_key` in migration 20261007110000_trailer_soft_delete (Prisma can't
   /// express partial indexes), so a soft-deleted trailer's number can be reused.
-  number String
-  vin    String?
-  status VehicleStatus @default(ACTIVE)
+  number    String
+  vin       String?
+  status    VehicleStatus @default(ACTIVE)
   /// Soft-delete marker (`DELETE /trailers/:id`). Non-null rows are hidden from list / lookup /
   /// export and cannot be put on new trips or DVIRs, but stay in the table so historical DVIRs and
   /// trips that reference them still resolve.
@@ -385,7 +389,7 @@ model Device {
   pairedAt  DateTime?
   createdAt DateTime  @default(now())
 
-  vehicle Vehicle?   @relation(fields: [vehicleId], references: [id])
+  vehicle Vehicle? @relation(fields: [vehicleId], references: [id])
 
   @@unique([vehicleId])
   @@index([status])
@@ -587,6 +591,29 @@ model DailyLog {
   @@index([certified, logDate])
 }
 
+/// M-09/M-12 (mobile wave 4, D-129) — §395.8(d) daily-log header data the driver enters when
+/// there is NO active trip: shipping document number(s) and trailer number(s) for one RODS day
+/// (home-terminal day, same `logDate` key as `DailyLog`). `PATCH /mobile/trip` writes here when the
+/// driver has no IN_PROGRESS/ASSIGNED trip; `GET /mobile/logs` and the eRODS header merge it with
+/// the trips overlapping the day. Trailer numbers are free text (Appendix A 7.42); `trailerId`
+/// links the first one that matches an ACTIVE carrier trailer.
+model DriverDayDetails {
+  id                String   @id @default(uuid())
+  driverId          String
+  logDate           DateTime @db.Date
+  shippingDocuments String[] @default([])
+  trailerNumbers    String[] @default([])
+  trailerId         String?
+  bobtail           Boolean  @default(false)
+  notes             String?  @db.VarChar(60)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  driver Driver @relation(fields: [driverId], references: [id], onDelete: Cascade)
+
+  @@unique([driverId, logDate])
+}
+
 model HosViolation {
   id             String          @id @default(uuid())
   driverId       String
@@ -615,24 +642,24 @@ model HosViolation {
 // ---------------------------------------------------------------------------
 
 model UnidentifiedSegment {
-  id               String             @id @default(uuid())
-  vehicleId        String
-  startAt          DateTime
-  endAt            DateTime
-  durationSec      Int
-  distanceMi       Int
-  startLocation    String?
-  endLocation      String?
-  status           UnidentifiedStatus @default(PENDING)
-  assignedDriverId String?
-  assignedById     String?
-  assignedAt       DateTime?
+  id                      String             @id @default(uuid())
+  vehicleId               String
+  startAt                 DateTime
+  endAt                   DateTime
+  durationSec             Int
+  distanceMi              Int
+  startLocation           String?
+  endLocation             String?
+  status                  UnidentifiedStatus @default(PENDING)
+  assignedDriverId        String?
+  assignedById            String?
+  assignedAt              DateTime?
   /// §20 B-83 — set when a carrier assignment required driver confirmation (status goes to
   /// PENDING_CONFIRMATION instead of ASSIGNED until the driver acts in the app).
   confirmationRequestedAt DateTime?
-  annotation       String?            @db.VarChar(60)
-  eventIds         BigInt[]
-  fromStoredEvents Boolean            @default(false)
+  annotation              String?            @db.VarChar(60)
+  eventIds                BigInt[]
+  fromStoredEvents        Boolean            @default(false)
 
   @@index([status, startAt])
   @@index([vehicleId, startAt])
@@ -643,27 +670,36 @@ model UnidentifiedSegment {
 // ---------------------------------------------------------------------------
 
 model Dvir {
-  id                 String        @id @default(uuid())
-  driverId           String
-  vehicleId          String
-  trailerId          String?
-  type               DvirType
-  submittedAt        DateTime
-  odometerMi         Int
-  latitude           Decimal?      @db.Decimal(9, 6)
-  longitude          Decimal?      @db.Decimal(9, 6)
-  locationName       String?
-  vehicleCondition   DvirCondition
-  driverSignatureUrl String
+  id                  String        @id @default(uuid())
+  driverId            String
+  vehicleId           String
+  trailerId           String?
+  /// D-129 — the trailer number as the driver typed it (free text, Appendix A 7.42 format); set
+  /// whenever the DVIR names a trailer by number. `trailerId` links it when it matches an ACTIVE
+  /// carrier trailer.
+  trailerNumber       String?
+  type                DvirType
+  submittedAt         DateTime
+  /// MR-11 — optional on the driver's DVIR (nullable: older rows keep their value; an app that omits it and a
+  /// vehicle with no known odometer leaves it NULL rather than inventing 0).
+  odometerMi          Int?
+  latitude            Decimal?      @db.Decimal(9, 6)
+  longitude           Decimal?      @db.Decimal(9, 6)
+  locationName        String?
+  vehicleCondition    DvirCondition
+  driverSignatureUrl  String
   /// §13 — sha256 of the signature bytes at `driverSignatureUrl` (§6 "signature capture and storage").
   driverSignatureHash String?
-  notes              String?       @db.VarChar(500)
+  notes               String?       @db.VarChar(500)
 
-  mechanicName         String?
-  mechanicSignedAt     DateTime?
-  mechanicNote         String?
-  repairStatus         RepairStatus @default(NOT_REQUIRED)
-  nextDriverReviewedAt DateTime?
+  mechanicName          String?
+  mechanicSignedAt      DateTime?
+  /// MR-10 — object-storage key + sha256 of the mechanic's signature captured in the app at submit time.
+  mechanicSignatureUrl  String?
+  mechanicSignatureHash String?
+  mechanicNote          String?
+  repairStatus          RepairStatus @default(NOT_REQUIRED)
+  nextDriverReviewedAt  DateTime?
 
   createdAt DateTime @default(now())
 
@@ -679,18 +715,53 @@ model Dvir {
   @@index([submittedAt])
 }
 
+/// MR-9 — server-side DVIR defect catalog (FMCSA §396.11 truck / trailer inspection items).
+/// `code` is what the app sends back in `defects[].category`; unique per `part` (TRUCK and TRAILER
+/// both have e.g. TIRES). Seeded by migration 20261008120000_mobile_dvir_catalog_signatures.
+model DefectCatalogItem {
+  id        String     @id @default(uuid())
+  code      String
+  name      String
+  part      DefectPart
+  /// Optional grouping label for the picker (e.g. "Brakes", "Lights").
+  category  String?
+  /// Hint: a defect on this item is typically out-of-service class (§396.9 / CVSA OOS criteria).
+  critical  Boolean    @default(false)
+  /// M-29 — a photo-capture row ("Accident Photo"), not an inspection item.
+  isPhoto   Boolean    @default(false)
+  sortOrder Int        @default(0)
+  active    Boolean    @default(true)
+
+  @@unique([part, code])
+  @@index([part, active, sortOrder])
+}
+
+/// MR-27 — the driver's saved (reusable) signature; one row per driver. Bytes live in object
+/// storage, only the key + sha256 are persisted (same rule as every other signature, §6).
+model DriverSavedSignature {
+  driverId  String   @id
+  key       String
+  sha256    String
+  mimeType  String
+  sizeBytes Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  driver Driver @relation(fields: [driverId], references: [id], onDelete: Cascade)
+}
+
 /// Out-of-service rule: an OPEN CRITICAL defect flips Vehicle.status to OUT_OF_SERVICE
 /// (enforced in the DVIR service, not the DB) and blocks driver assignment.
 model Defect {
-  id             String         @id @default(uuid())
+  id             String                @id @default(uuid())
   dvirId         String
   vehicleId      String
   category       String
   part           DefectPart
   severity       DefectSeverity
-  description    String         @db.VarChar(500)
-  status         DefectStatus   @default(OPEN)
-  outOfService   Boolean        @default(false)
+  description    String                @db.VarChar(500)
+  status         DefectStatus          @default(OPEN)
+  outOfService   Boolean               @default(false)
   workOrderId    String?
   resolvedAt     DateTime?
   resolvedById   String?
@@ -699,10 +770,10 @@ model Defect {
   resolutionType DefectResolutionType?
   correctedBy    String?
   completedAt    DateTime?
-  laborHours     Decimal?       @db.Decimal(6, 2)
-  partsCostUsd   Decimal?       @db.Decimal(10, 2)
+  laborHours     Decimal?              @db.Decimal(6, 2)
+  partsCostUsd   Decimal?              @db.Decimal(10, 2)
   assigneeId     String?
-  createdAt      DateTime       @default(now())
+  createdAt      DateTime              @default(now())
 
   dvir      Dvir         @relation(fields: [dvirId], references: [id], onDelete: Cascade)
   vehicle   Vehicle      @relation(fields: [vehicleId], references: [id])
@@ -754,37 +825,63 @@ model MaintenanceSchedule {
   nextDueAt     DateTime?
   enabled       Boolean   @default(true)
 
-  vehicle Vehicle @relation(fields: [vehicleId], references: [id])
+  /// M-38..M-42 — driver-facing maintenance task. `scheduleType` is an UPPER_SNAKE label
+  /// ("OIL_CHANGE", "DOT_ANNUAL", ...); `status` is the lifecycle of the current service cycle.
+  scheduleType        String                    @default("SERVICE") @db.VarChar(40)
+  status              MaintenanceScheduleStatus @default(OPEN)
+  /// Driver-submitted invoice (`POST /mobile/maintenance/:id/submit`); reviewed from the back office.
+  invoiceNumber       String?                   @db.VarChar(60)
+  vendorName          String?                   @db.VarChar(120)
+  cost                Decimal?                  @db.Decimal(10, 2)
+  invoiceNotes        String?                   @db.VarChar(1000)
+  invoiceAttachmentId String?
+  submittedById       String?
+  submittedAt         DateTime?
+  reviewNote          String?                   @db.VarChar(500)
+  reviewedAt          DateTime?
+  reviewedById        String?
 
+  vehicle           Vehicle     @relation(fields: [vehicleId], references: [id])
+  invoiceAttachment Attachment? @relation("MaintenanceInvoice", fields: [invoiceAttachmentId], references: [id], onDelete: SetNull)
+  submittedBy       Driver?     @relation("MaintenanceSubmittedBy", fields: [submittedById], references: [id], onDelete: SetNull)
+  reviewedBy        User?       @relation("MaintenanceReviewedBy", fields: [reviewedById], references: [id], onDelete: SetNull)
+
+  @@index([vehicleId, status])
   @@index([vehicleId, enabled])
   @@index([nextDueAt])
 }
 
 model Trip {
-  id               String     @id @default(uuid())
-  number           String     @unique
-  driverId         String?
-  vehicleId        String?
-  trailerId        String?
-  status           TripStatus @default(PLANNED)
-  shippingDocument String?
-  commodity        String?
-  weightLbs        Int?
-  pieces           Int?
-  plannedStartAt   DateTime?
-  plannedEndAt     DateTime?
-  startedAt        DateTime?
-  completedAt      DateTime?
-  etaAt            DateTime?
-  onTime           Boolean?
-  notes            String?    @db.VarChar(500)
+  id                String     @id @default(uuid())
+  number            String     @unique
+  driverId          String?
+  vehicleId         String?
+  trailerId         String?
+  status            TripStatus @default(PLANNED)
+  shippingDocument  String?
+  /// MR-4 — multi-value variants of `shippingDocument` / the trailer (driver-editable via
+  /// `PATCH /mobile/trip`). The single fields stay the first element for old clients.
+  shippingDocuments String[]   @default([])
+  trailerNumbers    String[]   @default([])
+  /// MR-4 — driver declared "bobtail" (no trailer). Mutually exclusive with a trailer.
+  bobtail           Boolean    @default(false)
+  commodity         String?
+  weightLbs         Int?
+  pieces            Int?
+  plannedStartAt    DateTime?
+  plannedEndAt      DateTime?
+  startedAt         DateTime?
+  completedAt       DateTime?
+  etaAt             DateTime?
+  onTime            Boolean?
+  notes             String?    @db.VarChar(500)
   /// §20 B-73 / B-92.
   distanceMi        Decimal?   @db.Decimal(8, 2)
   rateUsd           Decimal?   @db.Decimal(10, 2)
   customer          String?
   estimatedDriveSec Int?
-  createdById      String
-  createdAt        DateTime   @default(now())
+  createdById       String
+  createdAt         DateTime   @default(now())
 
   driver  Driver?    @relation(fields: [driverId], references: [id])
   vehicle Vehicle?   @relation(fields: [vehicleId], references: [id])
@@ -815,27 +912,27 @@ model TripStop {
 }
 
 model Geofence {
-  id           String       @id @default(uuid())
-  name         String
-  type         GeofenceType @default(CIRCLE)
-  centerLat    Decimal?     @db.Decimal(9, 6)
-  centerLon    Decimal?     @db.Decimal(9, 6)
-  radiusMi     Decimal?     @db.Decimal(6, 2)
-  polygon      Json?
-  category     String?
-  alertOnEnter Boolean      @default(false)
-  alertOnExit  Boolean      @default(false)
+  id              String         @id @default(uuid())
+  name            String
+  type            GeofenceType   @default(CIRCLE)
+  centerLat       Decimal?       @db.Decimal(9, 6)
+  centerLon       Decimal?       @db.Decimal(9, 6)
+  radiusMi        Decimal?       @db.Decimal(6, 2)
+  polygon         Json?
+  category        String?
+  alertOnEnter    Boolean        @default(false)
+  alertOnExit     Boolean        @default(false)
   /// §20 B-15.
-  dwellMinutes   Int?
-  afterHoursOnly Boolean @default(false)
+  dwellMinutes    Int?
+  afterHoursOnly  Boolean        @default(false)
   /// §20 B-93 — raw input for `type: ADDRESS`; server geocodes into centerLat/centerLon/radiusMi.
-  address      String?
+  address         String?
   /// Map colour picked in the web "Create a geofence" modal (overlay 11.1).
   colour          GeofenceColour @default(BLUE)
   /// Time a unit spends inside counts as on-duty yard move (web overlay 11.1 footer checkbox).
   countAsYardMove Boolean        @default(false)
-  enabled      Boolean      @default(true)
-  createdAt    DateTime     @default(now())
+  enabled         Boolean        @default(true)
+  createdAt       DateTime       @default(now())
 }
 
 model SafetyEvent {
@@ -1129,8 +1226,8 @@ model WebhookDelivery {
 }
 
 model Attachment {
-  id        String @id @default(uuid())
-  key       String @unique
+  id        String  @id @default(uuid())
+  key       String  @unique
   mimeType  String
   sizeBytes Int
   width     Int?
@@ -1152,9 +1249,11 @@ model Attachment {
   uploadedByType EditorType
   createdAt      DateTime   @default(now())
 
-  dvir   Dvir?          @relation(fields: [dvirId], references: [id], onDelete: Cascade)
-  defect Defect?        @relation(fields: [defectId], references: [id], onDelete: Cascade)
-  ticket SupportTicket? @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  dvir                  Dvir?                 @relation(fields: [dvirId], references: [id], onDelete: Cascade)
+  defect                Defect?               @relation(fields: [defectId], references: [id], onDelete: Cascade)
+  ticket                SupportTicket?        @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  /// M-39 — maintenance schedules this file is the submitted invoice of.
+  maintenanceInvoiceFor MaintenanceSchedule[] @relation("MaintenanceInvoice")
 
   @@index([dvirId])
   @@index([defectId])
@@ -1162,18 +1261,20 @@ model Attachment {
 }
 
 model SupportTicket {
-  id                String         @id @default(uuid())
-  number            String         @unique
+  id                String                @id @default(uuid())
+  number            String                @unique
   subject           String
   body              String
   category          String?
-  priority          TicketPriority @default(NORMAL)
-  status            TicketStatus   @default(OPEN)
+  priority          TicketPriority        @default(NORMAL)
+  status            TicketStatus          @default(OPEN)
   createdByUserId   String?
   createdByDriverId String?
   assignedToId      String?
-  createdAt         DateTime       @default(now())
-  updatedAt         DateTime       @default(now()) @updatedAt
+  /// MR-20 — how the driver wants to be contacted about the ticket (driver app only; null = not said).
+  contactMethod     SupportContactMethod?
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @default(now()) @updatedAt
   resolvedAt        DateTime?
 
   attachments Attachment[]
@@ -1389,6 +1490,14 @@ enum RepairStatus {
   DEFERRED
 }
 
+/// M-38..M-42 — driver-visible lifecycle of a maintenance task.
+enum MaintenanceScheduleStatus {
+  OPEN
+  COMPLETED
+  CANCELLED
+  REJECTED
+}
+
 enum DefectPart {
   TRUCK
   TRAILER
@@ -1571,4 +1680,10 @@ enum TicketStatus {
   IN_PROGRESS
   RESOLVED
   CLOSED
+}
+
+/// MR-20 — `SupportTicket.contactMethod`.
+enum SupportContactMethod {
+  EMAIL
+  PHONE
 }

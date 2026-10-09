@@ -1,5 +1,12 @@
 import { z } from 'zod';
-import { annotationSchema, CreateLogEntryDto, LocationDto } from '../../logs/dto/logs.dto';
+import {
+  annotationSchema,
+  CreateLogEntryBaseDto,
+  CreateLogEntryDto,
+  LocationDto,
+  refineSpecialCondition,
+} from '../../logs/dto/logs.dto';
+import { TRAILER_NUMBER_PATTERN } from './mobile-fleet-ops.dto';
 
 /** §13.4 — hard batch ceilings, same numbers `IngestEventsDto` uses (§7.3 rule 2). */
 export const MAX_SYNC_CHANGES = 500;
@@ -22,9 +29,9 @@ const dayKeySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-D
  * Annotation is optional here (a plain status tap is not a "correction"); a neutral default is
  * substituted so the Appendix A 4-60 char comment rule is still satisfied on the stored record.
  */
-export const DutyStatusDto = CreateLogEntryDto.extend({
+export const DutyStatusDto = CreateLogEntryBaseDto.extend({
   annotation: annotationSchema.optional(),
-});
+}).superRefine(refineSpecialCondition);
 export type DutyStatusDto = z.infer<typeof DutyStatusDto>;
 
 export const DEFAULT_DUTY_STATUS_ANNOTATION = 'Driver-reported status change';
@@ -59,9 +66,20 @@ export type DvirDefectDto = z.infer<typeof DvirDefectDto>;
 export const DvirSubmitDto = z.object({
   vehicleId: z.string().uuid(),
   trailerId: z.string().uuid().optional(),
+  /** D-129 — the trailer by NUMBER, free text (Appendix A 7.42 format: trimmed, upper-cased, 1-10 chars
+   * `[A-Z0-9-]`). Linked to an ACTIVE carrier trailer when the number matches; never 422 when it doesn't. */
+  trailerNumber: z
+    .string()
+    .trim()
+    .transform((value) => value.toUpperCase())
+    .refine((value) => TRAILER_NUMBER_PATTERN.test(value), {
+      message: 'A trailer number is 1-10 characters A-Z, 0-9 or "-" (49 CFR 395 Appendix A 7.42).',
+    })
+    .optional(),
   type: z.enum(['PRE_TRIP', 'POST_TRIP', 'INTERMEDIATE']),
   submittedAt: isoDateTime,
-  odometerMi: z.number().int().min(0).max(9_999_999),
+  /** MR-11 — optional. Absent/null: the vehicle's current odometer is used when known, else it stays empty. */
+  odometerMi: z.number().int().min(0).max(9_999_999).nullish(),
   location: LocationDto.optional(),
   vehicleCondition: z.enum(['SATISFACTORY', 'DEFECTS_FOUND']),
   notes: z.string().max(500).optional(),
@@ -69,23 +87,44 @@ export const DvirSubmitDto = z.object({
   /** Base64 PNG/JPEG signature bytes, captured on-device (§6 "signature capture"). */
   signatureBase64: z.string().min(16),
   signatureMimeType: z.enum(['image/png', 'image/jpeg']).default('image/png'),
+  /** MR-10 — mechanic who reviewed the unit at inspection time. A signature requires the name. */
+  mechanicName: z.string().trim().min(1).max(120).nullish(),
+  /** MR-10 — base64 PNG/JPEG of the mechanic's signature (same 2 MB / mime limits as the driver's). */
+  mechanicSignatureBase64: z.string().min(16).nullish(),
+  mechanicSignatureMimeType: z.enum(['image/png', 'image/jpeg']).nullish(),
+  /** MR-9..11 — idempotency key for a DIRECT `POST /mobile/dvir` replay (the sync path has its own `clientId`). */
+  clientId: clientId.nullish(),
 });
 export type DvirSubmitDto = z.infer<typeof DvirSubmitDto>;
 
 /** `POST /mobile/signature` — standalone signature capture, reusable by certify and DVIR. */
-export const SignatureUploadDto = z.object({
-  purpose: z.enum(['CERTIFICATION', 'DVIR', 'DVIR_PHOTO']),
-  base64: z.string().min(16),
-  mimeType: z.enum(['image/png', 'image/jpeg']).default('image/png'),
-});
+export const SignatureUploadDto = z
+  .object({
+    purpose: z.enum(['CERTIFICATION', 'DVIR', 'DVIR_PHOTO', 'INVOICE']),
+    base64: z.string().min(16),
+    mimeType: z.enum(['image/png', 'image/jpeg', 'application/pdf']).default('image/png'),
+  })
+  .refine((v) => v.mimeType !== 'application/pdf' || v.purpose === 'INVOICE', {
+    path: ['mimeType'],
+    message: 'application/pdf is only accepted for purpose INVOICE.',
+  });
 export type SignatureUploadDto = z.infer<typeof SignatureUploadDto>;
+
+/**
+ * MR-25 — shared tablet: the driver the change belongs to when it is NOT the token's driver.
+ * Accepted only for `duty_status` / `log_entry`, and only when that driver shared the unit with
+ * the caller at `occurredAt` (a co-driver pairing on it, or both logged in to it per their §395
+ * eventType 5 login records); otherwise the change alone is rejected with
+ * `SYNC_DELEGATION_NOT_ALLOWED` (decisions.md D-117). Absent/`null` = the caller.
+ */
+const delegatedDriverId = z.string().uuid().nullish();
 
 /** §13.4 — one queued mutation. `clientId` is the idempotency key (§13.6). */
 export const SyncChangeDto = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('duty_status'), clientId, occurredAt: isoDateTime, payload: DutyStatusDto }),
-  z.object({ type: z.literal('log_entry'), clientId, occurredAt: isoDateTime, payload: CreateLogEntryDto }),
-  z.object({ type: z.literal('certify'), clientId, occurredAt: isoDateTime, payload: SyncCertifyPayloadDto }),
-  z.object({ type: z.literal('dvir'), clientId, occurredAt: isoDateTime, payload: DvirSubmitDto }),
+  z.object({ type: z.literal('duty_status'), clientId, occurredAt: isoDateTime, driverId: delegatedDriverId, payload: DutyStatusDto }),
+  z.object({ type: z.literal('log_entry'), clientId, occurredAt: isoDateTime, driverId: delegatedDriverId, payload: CreateLogEntryDto }),
+  z.object({ type: z.literal('certify'), clientId, occurredAt: isoDateTime, driverId: delegatedDriverId, payload: SyncCertifyPayloadDto }),
+  z.object({ type: z.literal('dvir'), clientId, occurredAt: isoDateTime, driverId: delegatedDriverId, payload: DvirSubmitDto }),
 ]);
 export type SyncChangeDto = z.infer<typeof SyncChangeDto>;
 
@@ -104,3 +143,23 @@ export const SyncRequestDto = z.object({
   backlog: SyncBacklogDto.optional(),
 });
 export type SyncRequestDto = z.infer<typeof SyncRequestDto>;
+
+/** MR-27 — `PUT /mobile/saved-signature`: either fresh bytes or an id minted by `POST /mobile/signature`. */
+export const SavedSignatureDto = z
+  .object({
+    signatureBase64: z.string().min(16).nullish(),
+    mimeType: z.enum(['image/png', 'image/jpeg']).nullish(),
+    signatureImageId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/, 'Invalid signatureImageId').nullish(),
+    clientId: clientId.nullish(),
+  })
+  .refine((v) => Boolean(v.signatureBase64) !== Boolean(v.signatureImageId), {
+    message: 'Provide exactly one of signatureBase64 or signatureImageId.',
+    path: ['signatureBase64'],
+  });
+export type SavedSignatureDto = z.infer<typeof SavedSignatureDto>;
+
+/** MR-9 — `GET /mobile/defect-catalog?part=`. Absent = both parts. */
+export const DefectCatalogQueryDto = z.object({
+  part: z.enum(['TRUCK', 'TRAILER']).optional(),
+});
+export type DefectCatalogQueryDto = z.infer<typeof DefectCatalogQueryDto>;

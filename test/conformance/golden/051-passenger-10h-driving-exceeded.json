@@ -1,0 +1,35 @@
+{
+  "name": "passenger-10h-driving-exceeded",
+  "spec": "\u00a78.2 \u2014 passenger: 10 h exceeded by 1 minute",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-01-15T01:01:00Z",
+    "ruleset": "US_70_8_PASSENGER",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true
+    },
+    "previousDays": [],
+    "lastRestartEndedAt": null,
+    "events": [
+      {
+        "at": "2025-01-14T05:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-14T15:00:00Z",
+        "status": "D"
+      }
+    ]
+  },
+  "expected": {
+    "driveRemainingSec": 0,
+    "violations": [
+      {
+        "type": "DRIVING_11",
+        "logDate": "2025-01-14",
+        "exceededBySec": 60
+      }
+    ]
+  }
+}

@@ -95,7 +95,8 @@ export class TripsController {
   @Audit({ object: 'Trip', action: 'DELETE' })
   @HttpCode(204)
   @ApiOperation({ summary: 'Hard-deletes a trip and its stops (the trip number becomes reusable). IN_PROGRESS trips cannot be deleted.' })
-  @ApiResponse({ status: 204, description: 'Deleted.' })
+  // 204 has no body; the explicit `example: null` marks "empty on purpose" for the OpenAPI example gate (B-141).
+  @ApiResponse({ status: 204, description: 'Deleted.', content: { 'application/json': { example: null } } })
   @ApiStandardErrors({
     errors: [
       apiError.notFound(ERROR_CODES.NOT_FOUND, 'Trip not found.'),

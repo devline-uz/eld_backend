@@ -7,7 +7,8 @@
     "deleteOutDir": true,
     "tsConfigPath": "tsconfig.build.json",
     "assets": [
-      { "include": "modules/reports/templates/**/*.html", "outDir": "dist" }
+      { "include": "modules/reports/templates/**/*.html", "outDir": "dist" },
+      { "include": "common/geo-location/data/*.tsv", "outDir": "dist" }
     ]
   }
 }

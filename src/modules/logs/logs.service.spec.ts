@@ -88,6 +88,20 @@ class FakeRepo {
   findDailyLog = jest.fn(async (_id: string, date: Date) => this.dailyLogs.get(date.toISOString()) ?? null);
   findDailyLogs = jest.fn(async () => [...this.dailyLogs.values()]);
   findUncertifiedDates = jest.fn(async (): Promise<Date[]> => []);
+  // MR-5 / MR-12 / MR-13 / MR-16
+  ledger = new Map<string, { type: string; status: 'ACCEPTED'; result: unknown }>();
+  reading: { totalVehicleMiles: number | null; totalEngineHours: number | null } | null = null;
+  trips: unknown[] = [];
+  malfunctionEvents: FakeEvent[] = [];
+  findSyncedChange = jest.fn(async (driverId: string, clientId: string) => this.ledger.get(`${driverId}:${clientId}`) ?? null);
+  recordSyncedChange = jest.fn(async (driverId: string, clientId: string, type: string, _at: Date, result: unknown) => {
+    this.ledger.set(`${driverId}:${clientId}`, { type, status: 'ACCEPTED', result });
+  });
+  findLastVehicleReading = jest.fn(async () => this.reading);
+  findTripsForDriver = jest.fn(async () => this.trips);
+  dayDetails: unknown[] = [];
+  findDayDetailsForDriver = jest.fn(async () => this.dayDetails);
+  findMalfunctionEvents = jest.fn(async () => this.malfunctionEvents);
 
   upsertDailyLog = jest.fn(async (args: Record<string, unknown>) => {
     const key = (args.logDate as Date).toISOString();
@@ -943,5 +957,202 @@ describe('B-38 — totalEngineHours in GET /logs/:driverId/events', () => {
     ];
     const result = await service.getEvents(DRIVER, '2026-06-01');
     expect(result.events.map((e) => e.totalEngineHours)).toEqual([4321.4, null]);
+  });
+});
+
+describe('MR-5 — POST /mobile/certify is idempotent on clientId', () => {
+  const CLIENT = '6f1d2a9e-1b6c-4f1e-9a51-0c2d7d0e4a11';
+
+  it('a replay with the same clientId returns the first response and certifies once', async () => {
+    const { service, repo, writer } = build();
+    repo.events = [evt({ id: 1n, at: '2026-06-01T12:00:00Z', code: 1 })];
+
+    const first = await service.certify({ dates: ['2026-06-01'], clientId: CLIENT }, driver);
+    const replay = await service.certify({ dates: ['2026-06-01'], clientId: CLIENT }, driver);
+
+    expect(writer.rows.filter((row) => row.eventType === 4)).toHaveLength(1);
+    expect(repo.certify).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(JSON.stringify(replay))).toEqual(JSON.parse(JSON.stringify(first)));
+    expect(first.days[0]).toMatchObject({ certificationCount: 1 });
+    expect(repo.recordSyncedChange).toHaveBeenCalledWith(DRIVER, CLIENT, 'certify', expect.any(Date), expect.anything());
+  });
+
+  it('two concurrent replays in one process still certify once', async () => {
+    const { service, repo, writer } = build();
+    repo.events = [evt({ id: 1n, at: '2026-06-01T12:00:00Z', code: 1 })];
+    await Promise.all([
+      service.certify({ dates: ['2026-06-01'], clientId: CLIENT }, driver),
+      service.certify({ dates: ['2026-06-01'], clientId: CLIENT }, driver),
+    ]);
+    expect(writer.rows.filter((row) => row.eventType === 4)).toHaveLength(1);
+  });
+
+  it('a clientId already spent by another change type, or by a rejected certify, is a 409 and certifies nothing', async () => {
+    const { service, repo, writer } = build();
+    repo.events = [evt({ id: 1n, at: '2026-06-01T12:00:00Z', code: 1 })];
+    repo.findSyncedChange.mockResolvedValueOnce({ type: 'duty_status', status: 'ACCEPTED', errorCode: null, result: {} } as never);
+    await expect(service.certify({ dates: ['2026-06-01'], clientId: CLIENT }, driver)).rejects.toMatchObject({ code: 'CONFLICT', status: 409 });
+    repo.findSyncedChange.mockResolvedValueOnce({ type: 'certify', status: 'REJECTED', errorCode: 'VALIDATION_FAILED', result: null } as never);
+    await expect(service.certify({ dates: ['2026-06-01'], clientId: CLIENT }, driver)).rejects.toMatchObject({ code: 'CONFLICT', status: 409 });
+    expect(writer.rows.filter((row) => row.eventType === 4)).toHaveLength(0);
+  });
+
+  it('a different clientId is a real re-certification (event code 2)', async () => {
+    const { service, repo } = build();
+    repo.events = [evt({ id: 1n, at: '2026-06-01T12:00:00Z', code: 1 })];
+    await service.certify({ dates: ['2026-06-01'], clientId: CLIENT }, driver);
+    const again = await service.certify({ dates: ['2026-06-01'], clientId: '0a5a8d6c-3b7e-4f3a-8c1e-6a9f0b2c3d44' }, driver);
+    expect(again.days[0]).toMatchObject({ eventCode: 2, certificationCount: 2 });
+  });
+});
+
+describe('MR-26 — certification status of the last N days', () => {
+  it('lists N days ending today, oldest first, with recertificationRequired only for a voided certification', async () => {
+    const { service, repo } = build();
+    repo.dailyLogs.set('2026-06-08T00:00:00.000Z', {
+      logDate: new Date('2026-06-08T00:00:00.000Z'), certified: true, certifiedAt: new Date('2026-06-09T01:00:00Z'), certificationCount: 1,
+    });
+    repo.dailyLogs.set('2026-06-09T00:00:00.000Z', {
+      logDate: new Date('2026-06-09T00:00:00.000Z'), certified: false, certifiedAt: null, certificationCount: 2,
+    });
+    repo.dailyLogs.set('2026-06-07T00:00:00.000Z', {
+      logDate: new Date('2026-06-07T00:00:00.000Z'), certified: false, certifiedAt: null, certificationCount: 0, hasEdits: true,
+    });
+
+    const rows = await service.getCertificationStatus(DRIVER, 8, new Date('2026-06-10T15:00:00Z'));
+
+    expect(rows.map((row) => row.date)).toEqual([
+      '2026-06-03', '2026-06-04', '2026-06-05', '2026-06-06', '2026-06-07', '2026-06-08', '2026-06-09', '2026-06-10',
+    ]);
+    expect(rows[4]).toMatchObject({ date: '2026-06-07', certified: false, recertificationRequired: false });
+    expect(rows[5]).toMatchObject({ date: '2026-06-08', certified: true, recertificationRequired: false });
+    expect(rows[6]).toMatchObject({ date: '2026-06-09', certified: false, recertificationRequired: true });
+    expect(rows[7]).toMatchObject({ date: '2026-06-10', certified: false, certifiedAt: null, recertificationRequired: false });
+  });
+
+  it('caps the window at 14 days', async () => {
+    const { service } = build();
+    const rows = await service.getCertificationStatus(DRIVER, 40, new Date('2026-06-10T15:00:00Z'));
+    expect(rows).toHaveLength(14);
+  });
+});
+
+describe('MR-6 / MR-13 / MR-23 — driver entry: name-only location, readings, PC/YM', () => {
+  it('stores a name-only location and fills odometer / engine hours from the last unit reading', async () => {
+    const { service, repo, writer } = build();
+    repo.events = [evt({ id: 1n, at: '2026-06-01T12:00:00Z', code: 1 })];
+    repo.reading = { totalVehicleMiles: 120345, totalEngineHours: 5321.4 };
+
+    const result = await service.createLogEntry(
+      DRIVER,
+      { status: 'ON', startAt: new Date('2026-06-01T18:00:00Z'), annotation: 'Driver-reported status change', locationName: 'Columbus, OH' },
+      driver,
+    );
+
+    expect(result).toMatchObject({ locationName: 'Columbus, OH', specialCondition: 'NONE' });
+    expect(writer.calls[0].ctx).toMatchObject({
+      location: { name: 'Columbus, OH' },
+      totalVehicleMiles: 120345,
+      totalEngineHours: 5321.4,
+      personalConveyance: false,
+    });
+  });
+
+  it('records PC as an eventType 3 code 1 record next to the OFF record, with 10-mile precision', async () => {
+    const { service, repo, writer } = build();
+    repo.driver = { ...repo.driver, allowPersonalConveyance: true, allowYardMove: false };
+    repo.events = [evt({ id: 1n, at: '2026-06-01T12:00:00Z', code: 4 })];
+
+    await service.createLogEntry(
+      DRIVER,
+      { status: 'OFF', specialCondition: 'PC', startAt: new Date('2026-06-01T18:00:00Z'), annotation: 'Going to the motel' },
+      driver,
+    );
+
+    const rows = writer.rows;
+    expect(rows.map((row) => [row.kind, row.eventType, row.eventCode])).toEqual([
+      ['NEW_ACTIVE', 1, 1],
+      ['SPECIAL', 3, 1],
+    ]);
+    expect(rows.every((row) => row.recordOrigin === 2)).toBe(true);
+    expect(writer.calls[0].ctx).toMatchObject({ personalConveyance: true });
+  });
+
+  it('refuses YM when the driver exception is off (422 SPECIAL_CONDITION_NOT_ALLOWED), writing nothing', async () => {
+    const { service, repo, writer } = build();
+    repo.driver = { ...repo.driver, allowPersonalConveyance: true, allowYardMove: false };
+    repo.events = [evt({ id: 1n, at: '2026-06-01T12:00:00Z', code: 1 })];
+
+    await expect(
+      service.createLogEntry(
+        DRIVER,
+        { status: 'ON', specialCondition: 'YM', startAt: new Date('2026-06-01T18:00:00Z'), annotation: 'Moving in the yard' },
+        driver,
+      ),
+    ).rejects.toMatchObject({ code: 'SPECIAL_CONDITION_NOT_ALLOWED', status: 422 });
+    expect(writer.rows).toHaveLength(0);
+  });
+
+  it('a plain status while PC is in force clears it (eventType 3 code 0) before the new record', async () => {
+    const { service, repo, writer } = build();
+    repo.events = [
+      evt({ id: 1n, at: '2026-06-01T12:00:00Z', code: 1 }),
+      evt({ id: 2n, at: '2026-06-01T12:00:00Z', code: 1, eventType: 3 }),
+    ];
+
+    await service.createLogEntry(
+      DRIVER,
+      { status: 'OFF', startAt: new Date('2026-06-01T13:00:00Z'), annotation: 'Parked at the motel' },
+      driver,
+    );
+
+    expect(writer.rows.map((row) => [row.kind, row.eventType, row.eventCode])).toEqual([
+      ['SPECIAL_CLEAR', 3, 0],
+      ['NEW_ACTIVE', 1, 1],
+    ]);
+  });
+});
+
+describe('MR-12 / MR-13 / MR-16 — GET /mobile/logs day extras', () => {
+  it('adds the trip block, per-day indicators and annotated segments', async () => {
+    const { service, repo } = build();
+    repo.events = [
+      { ...evt({ id: 1n, at: '2026-06-01T12:00:00Z', code: 4, totalVehicleMiles: 1000, annotation: 'Pre-trip' }), locationName: '3.40 mi W of Columbus, OH' },
+      evt({ id: 2n, at: '2026-06-01T16:00:00Z', code: 1 }),
+    ];
+    repo.malfunctionEvents = [
+      { ...evt({ id: 9n, at: '2026-05-20T10:00:00Z', code: 1, eventType: 7 }), malfunctionCode: 'P' } as FakeEvent,
+    ];
+    repo.trips = [
+      {
+        id: 't1', number: 'T-1', status: 'IN_PROGRESS', shippingDocument: null, shippingDocuments: ['BOL-1'], trailerNumbers: ['TR-9'],
+        trailerNumber: null, bobtail: false, notes: 'Fragile', plannedStartAt: null, plannedEndAt: null,
+        startedAt: new Date('2026-06-01T11:00:00Z'), completedAt: null, createdAt: new Date('2026-05-30T00:00:00Z'),
+      },
+    ];
+
+    const day = await service.getDay(DRIVER, '2026-06-01', new Date('2026-06-02T12:00:00Z'));
+
+    expect(day).toMatchObject({
+      trip: { shippingDocuments: ['BOL-1'], trailerNumbers: ['TR-9'], notes: 'Fragile', tripNumbers: ['T-1'] },
+      malfunctionIndicator: true,
+      diagnosticIndicator: false,
+    });
+    const on = day.graph.find((segment) => segment.status === 'ON');
+    expect(on).toMatchObject({ eventId: '1', locationDescription: '3.40 mi W of Columbus, OH', odometerMi: 1000, annotation: 'Pre-trip', carriedOver: false });
+    expect(day.events[0]).toMatchObject({ eventId: '1', locationDescription: '3.40 mi W of Columbus, OH', odometerMi: 1000 });
+  });
+
+  it('D-129: merges the no-trip day details of that RODS day into the trip block', async () => {
+    const { service, repo } = build();
+    repo.events = [evt({ id: 1n, at: '2026-06-01T12:00:00Z', code: 4 })];
+    repo.dayDetails = [
+      { logDate: new Date('2026-06-01T00:00:00.000Z'), shippingDocuments: ['BOL-DAY'], trailerNumbers: ['X53-1'], bobtail: false, notes: 'yard' },
+      { logDate: new Date('2026-05-31T00:00:00.000Z'), shippingDocuments: ['OTHER'], trailerNumbers: [], bobtail: false, notes: null },
+    ];
+
+    const day = await service.getDay(DRIVER, '2026-06-01', new Date('2026-06-02T12:00:00Z'));
+
+    expect(day.trip).toMatchObject({ shippingDocuments: ['BOL-DAY'], trailerNumbers: ['X53-1'], notes: 'yard', dayDetails: true, tripIds: [] });
   });
 });

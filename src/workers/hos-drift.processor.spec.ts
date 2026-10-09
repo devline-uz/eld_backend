@@ -9,6 +9,7 @@ const sweep = (over: Partial<DriftSweepResult> = {}): DriftSweepResult => ({
   scanned: 2,
   compared: 2,
   skippedVersion: 0,
+  skippedStale: 0,
   drifted: 0,
   failed: 0,
   hosEngineVersion: '1.0.0',

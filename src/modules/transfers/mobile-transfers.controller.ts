@@ -1,11 +1,13 @@
 import { Body, Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiCreatedResponse, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { apiError, ApiStandardErrors, ERROR_CODES } from '../../common/errors';
 import { DriverGuard } from '../../common/guards/driver.guard';
 import { zodBody } from '../../common/pipes/zod-validation.pipe';
+import { ApiEnvelopeResponse } from '../../common/swagger/api-envelope';
 import type { ContextUser } from '../../core/context/request-context';
 import { MobileCreateTransferDto, MobileTransferListQueryDto } from './dto/mobile-transfers.dto';
+import { MobileTransferCreatedResponse, MobileTransferListResponse } from './dto/mobile-transfers.responses';
 import { MobileTransfersService } from './mobile-transfers.service';
 
 /**
@@ -27,23 +29,22 @@ export class MobileTransfersController {
     description:
       'The row is returned as it stands right after generation (`status = QUEUED`); the worker moves it to TEST_ONLY / SENT / ACCEPTED / REJECTED / FAILED and fills `referenceId` + `sentAt`. Poll `GET /mobile/transfers` for the receipt (S-10).',
   })
-  @ApiCreatedResponse({
-    schema: {
-      example: {
-        id: 'trf_1',
-        method: 'WEB_SERVICES',
-        status: 'QUEUED',
-        erodsMode: 'TEST',
-        referenceId: null,
-        sentAt: null,
-        createdAt: '2026-09-10T15:44:02.000Z',
-        fileName: 'SMITH38018.csv',
-        outputFileComment: 'ROADSIDE INSPECTION 2026-09-10',
-        rangeStart: '2026-09-03',
-        rangeEnd: '2026-09-10',
-        warnings: ['ERODS_TEST_MODE'],
-        counts: { header: 9, events: 42 },
-      },
+  @ApiEnvelopeResponse(MobileTransferCreatedResponse, {
+    status: 201,
+    example: {
+      id: 'trf_1',
+      method: 'WEB_SERVICES',
+      status: 'QUEUED',
+      erodsMode: 'TEST',
+      referenceId: null,
+      sentAt: null,
+      createdAt: '2026-09-10T15:44:02.000Z',
+      fileName: 'SMITH38018.csv',
+      outputFileComment: 'ROADSIDE INSPECTION 2026-09-10',
+      rangeStart: '2026-09-03T00:00:00.000Z',
+      rangeEnd: '2026-09-10T00:00:00.000Z',
+      warnings: ['ERODS_TEST_MODE'],
+      counts: { header: 9, events: 42 },
     },
   })
   @ApiStandardErrors({
@@ -61,15 +62,13 @@ export class MobileTransfersController {
 
   @Get()
   @ApiOperation({ summary: "The driver's own most recent transfers (receipts for S-10 / M-27 `Last transfer`)." })
-  @ApiOkResponse({
-    schema: {
-      example: {
-        items: [
-          { id: 'trf_1', method: 'WEB_SERVICES', status: 'TEST_ONLY', erodsMode: 'TEST', referenceId: 'ERODS-TEST-26-0910-4821', sentAt: '2026-09-10T15:44:02.000Z', createdAt: '2026-09-10T15:44:00.000Z', fileName: 'SMITH38018.csv', outputFileComment: 'ROADSIDE INSPECTION 2026-09-10', rangeStart: '2026-09-03', rangeEnd: '2026-09-10' },
-        ],
-        total: 1,
-        limit: 5,
-      },
+  @ApiEnvelopeResponse(MobileTransferListResponse, {
+    example: {
+      items: [
+        { id: 'trf_1', method: 'WEB_SERVICES', status: 'TEST_ONLY', erodsMode: 'TEST', referenceId: 'ERODS-TEST-26-0910-4821', sentAt: '2026-09-10T15:44:02.000Z', createdAt: '2026-09-10T15:44:00.000Z', fileName: 'SMITH38018.csv', outputFileComment: 'ROADSIDE INSPECTION 2026-09-10', rangeStart: '2026-09-03T00:00:00.000Z', rangeEnd: '2026-09-10T00:00:00.000Z' },
+      ],
+      total: 1,
+      limit: 5,
     },
   })
   @ApiStandardErrors({ errors: [apiError.forbidden('Driver token required (DRIVER_CONTEXT_REQUIRED).')] })

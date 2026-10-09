@@ -1,7 +1,12 @@
+import { AppException } from '../../common/errors/app.exception';
+import { ERROR_CODES } from '../../common/errors/codes';
 import type { AuditRepository } from '../audit/audit.repository';
 import type { AuthService } from '../auth/auth.service';
+import { MobileCoDriverController } from './mobile-codriver.controller';
 import { MobileCoDriverService } from './mobile-codriver.service';
 import { MobileFleetOpsRepository } from './mobile-fleet-ops.repository';
+import type { RodsLoginRecorder } from '../logs/rods-login-recorder';
+import type { MobileTripService } from './mobile-trip.service';
 import { MobileRepository } from './mobile.repository';
 
 const ACTOR = { id: 'drv_1', type: 'driver' as const };
@@ -12,13 +17,17 @@ function build() {
   const mobileRepo = { findActivePairing: jest.fn(), findDriver: jest.fn() };
   const auth = { loginDriver: jest.fn() };
   const audit = { insert: jest.fn().mockResolvedValue(undefined) };
+  const trips = { activeTripLists: jest.fn().mockResolvedValue(null) };
+  const loginRecords = { login: jest.fn().mockResolvedValue(1), logout: jest.fn().mockResolvedValue(1) };
   const service = new MobileCoDriverService(
     repo as unknown as MobileFleetOpsRepository,
     mobileRepo as unknown as MobileRepository,
     auth as unknown as AuthService,
     audit as unknown as AuditRepository,
+    trips as unknown as MobileTripService,
+    loginRecords as unknown as RodsLoginRecorder,
   );
-  return { service, repo, mobileRepo, auth, audit };
+  return { service, repo, mobileRepo, auth, audit, trips, loginRecords };
 }
 
 const PAIRING = { id: 'pair_1', primaryDriverId: 'drv_1', coDriverId: 'drv_2', vehicleId: 'veh_1', startedAt: new Date('2026-01-01') };
@@ -47,6 +56,16 @@ describe('MobileCoDriverService (MB-3)', () => {
     expect(audit.insert).toHaveBeenCalledWith(expect.objectContaining({ action: 'CO_DRIVER_SWITCHED' }));
   });
 
+  it('D-130: switch writes the §395 login of the co-driver taking the seat on the pairing unit', async () => {
+    const { service, mobileRepo, auth, loginRecords } = build();
+    mobileRepo.findActivePairing.mockResolvedValue(PAIRING);
+    mobileRepo.findDriver.mockResolvedValue({ id: 'drv_2', username: 'jdoe' });
+    auth.loginDriver.mockResolvedValue({ accessToken: 'a', refreshToken: 'b', tokenType: 'Bearer' });
+    await service.switch('drv_1', { coDriverPassword: 'secret' }, ACTOR, META);
+    expect(loginRecords.login).toHaveBeenCalledWith('drv_2', 'veh_1', 'CO_DRIVER_SWITCH');
+    expect(loginRecords.logout).not.toHaveBeenCalled();
+  });
+
   it('propagates AuthService.loginDriver rejection (wrong password) without swapping the pairing', async () => {
     const { service, mobileRepo, auth, repo } = build();
     mobileRepo.findActivePairing.mockResolvedValue(PAIRING);
@@ -69,11 +88,58 @@ describe('MobileCoDriverService (MB-3)', () => {
     expect(audit.insert).toHaveBeenCalledWith(expect.objectContaining({ action: 'CO_DRIVER_LEFT' }));
   });
 
+  it('D-130: leave() writes the leaving driver\'s §395 logout for the pairing unit', async () => {
+    const { service, mobileRepo, loginRecords } = build();
+    mobileRepo.findActivePairing.mockResolvedValue(PAIRING);
+    await service.leave('drv_1', ACTOR);
+    expect(loginRecords.logout).toHaveBeenCalledWith('drv_1', 'CO_DRIVER_LEAVE', { onlyVehicleId: 'veh_1' });
+  });
+
   it('leave() is a no-op when there is no active pairing', async () => {
     const { service, mobileRepo, repo } = build();
     mobileRepo.findActivePairing.mockResolvedValue(null);
     const result = await service.leave('drv_1', ACTOR);
     expect(result).toEqual({ ended: false });
     expect(repo.endPairing).not.toHaveBeenCalled();
+  });
+
+  it('MR-22: maps a wrong co-driver password to 422 CO_DRIVER_PASSWORD_INVALID and changes nothing', async () => {
+    const { service, mobileRepo, auth, repo } = build();
+    mobileRepo.findActivePairing.mockResolvedValue(PAIRING);
+    mobileRepo.findDriver.mockResolvedValue({ id: 'drv_2', username: 'jdoe' });
+    auth.loginDriver.mockRejectedValue(new AppException(ERROR_CODES.INVALID_CREDENTIALS, 'bad', 401));
+    await expect(service.switch('drv_1', { coDriverPassword: 'nope' }, ACTOR, META)).rejects.toMatchObject({
+      code: 'CO_DRIVER_PASSWORD_INVALID',
+      status: 422,
+    });
+    expect(repo.endPairing).not.toHaveBeenCalled();
+  });
+
+  it('MR-15: current() returns null without a pairing, else the other seat + trip lists', async () => {
+    const { service, mobileRepo, trips } = build();
+    mobileRepo.findActivePairing.mockResolvedValueOnce(null);
+    expect(await service.current('drv_1')).toBeNull();
+
+    mobileRepo.findActivePairing.mockResolvedValue(PAIRING);
+    mobileRepo.findDriver.mockResolvedValue({ id: 'drv_2', firstName: 'Jane', lastName: 'Doe', username: 'jdoe', passwordHash: 'x' });
+    trips.activeTripLists.mockResolvedValue({ shippingDocuments: ['B1'], trailerNumbers: ['TR-1'] });
+    expect(await service.current('drv_1')).toEqual({
+      pairingId: 'pair_1',
+      startedAt: PAIRING.startedAt,
+      coDriver: { id: 'drv_2', firstName: 'Jane', lastName: 'Doe', username: 'jdoe' },
+      trip: { shippingDocuments: ['B1'], trailerNumbers: ['TR-1'] },
+    });
+    // seen from the other seat the co-driver is the primary
+    mobileRepo.findActivePairing.mockResolvedValue({ ...PAIRING, primaryDriverId: 'drv_2', coDriverId: 'drv_1' });
+    await service.current('drv_1');
+    expect(mobileRepo.findDriver).toHaveBeenLastCalledWith('drv_2');
+  });
+});
+
+describe('MobileCoDriverController — switch is a password login (§6.5)', () => {
+  it('POST /mobile/co-driver/switch is limited to 5 requests / 60s like /auth/driver/login', () => {
+    const handler = MobileCoDriverController.prototype.switch;
+    expect(Reflect.getMetadata('THROTTLER:LIMITdefault', handler)).toBe(5);
+    expect(Reflect.getMetadata('THROTTLER:TTLdefault', handler)).toBe(60_000);
   });
 });

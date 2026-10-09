@@ -74,6 +74,10 @@ export interface ProposalInput {
    * the driver's next duty-status change clears it, exactly as a device-entered PC/YM does.
    */
   specialClearAt?: Date | null;
+  /** MR-23 — §395.1(e) category in force immediately before `startAt` (driver self-entry). */
+  specialBefore?: SpecialCategory;
+  /** MR-23 — category in force at `endAt` on the old timeline, re-asserted after the RESTORE. */
+  specialAfterInterval?: SpecialCategory;
 }
 
 export type SpecialCategory = 'NONE' | 'PC' | 'YM';
@@ -318,6 +322,15 @@ export function planDriverSelfEdit(proposal: ProposalInput, target?: EditTarget)
     }
   }
 
+  // MR-23 — a plain status entered while PC/YM is in force ENDS that category: Appendix A
+  // records it as eventType 3 code 0 ("cleared"). Without it an OFF after PC (or ON after YM)
+  // would keep counting as PC/YM (`hos-event-mapper` carries the category forward).
+  const special = proposal.special ?? 'NONE';
+  const specialBefore = proposal.specialBefore ?? 'NONE';
+  if (special === 'NONE' && specialBefore !== 'NONE') {
+    rows.push(selfSpecialRow('SPECIAL_CLEAR', 'NONE', proposal.startAt, proposal.annotation));
+  }
+
   rows.push({
     kind: 'NEW_ACTIVE',
     eventType: DUTY,
@@ -328,6 +341,16 @@ export function planDriverSelfEdit(proposal: ProposalInput, target?: EditTarget)
     supersedesId: target ? target.id : null,
     annotation: proposal.annotation,
   });
+
+  // MR-23 — the §395.1(e) category is its own Appendix A record (eventType 3, code 1 PC /
+  // 2 YM), right after the duty-status record at the same instant (later sequence wins).
+  if (special !== 'NONE') {
+    rows.push(selfSpecialRow('SPECIAL', special, proposal.startAt, proposal.annotation));
+  }
+
+  if (proposal.endAt && special !== 'NONE') {
+    rows.push(selfSpecialRow('SPECIAL_CLEAR', 'NONE', proposal.endAt, proposal.annotation));
+  }
 
   if (proposal.endAt && proposal.statusAfterInterval) {
     rows.push({
@@ -340,7 +363,25 @@ export function planDriverSelfEdit(proposal: ProposalInput, target?: EditTarget)
       supersedesId: null,
       annotation: proposal.annotation,
     });
+    // MR-23 — an inserted interval must not end a PC/YM that was in force after it.
+    const after = proposal.specialAfterInterval ?? 'NONE';
+    if (after !== 'NONE') {
+      rows.push(selfSpecialRow('SPECIAL', after, proposal.endAt, proposal.annotation));
+    }
   }
 
   return rows;
+}
+
+function selfSpecialRow(kind: 'SPECIAL' | 'SPECIAL_CLEAR', special: SpecialCategory, at: Date, annotation: string): AppendRow {
+  return {
+    kind,
+    eventType: SPECIAL_EVENT_TYPE,
+    eventCode: SPECIAL_CODE[special],
+    at,
+    recordStatus: 1,
+    recordOrigin: 2,
+    supersedesId: null,
+    annotation,
+  };
 }

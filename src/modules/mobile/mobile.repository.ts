@@ -18,9 +18,11 @@ export interface DvirCreateInput {
   driverId: string;
   vehicleId: string;
   trailerId?: string | null;
+  /** D-129 — the free-text trailer number the driver typed (null when only `trailerId` was sent). */
+  trailerNumber?: string | null;
   type: 'PRE_TRIP' | 'POST_TRIP' | 'INTERMEDIATE';
   submittedAt: Date;
-  odometerMi: number;
+  odometerMi: number | null;
   latitude?: number | null;
   longitude?: number | null;
   locationName?: string | null;
@@ -28,6 +30,11 @@ export interface DvirCreateInput {
   notes?: string | null;
   driverSignatureUrl: string;
   driverSignatureHash: string;
+  /** MR-10 */
+  mechanicName?: string | null;
+  mechanicSignedAt?: Date | null;
+  mechanicSignatureUrl?: string | null;
+  mechanicSignatureHash?: string | null;
   defects: Array<{
     vehicleId: string;
     part: 'TRUCK' | 'TRAILER';
@@ -143,6 +150,14 @@ export class MobileRepository extends BaseRepository<
     return this.prisma.vehicle.findUnique({ where: { id: vehicleId } });
   }
 
+  /** D-129 — the live ACTIVE carrier trailer with this number (case-insensitive), to link a typed DVIR trailer. */
+  findActiveTrailerByNumber(number: string): Promise<{ id: string; number: string } | null> {
+    return this.prisma.trailer.findFirst({
+      where: { number: { equals: number, mode: 'insensitive' }, deletedAt: null, status: 'ACTIVE' },
+      select: { id: true, number: true },
+    });
+  }
+
   /** Any trailer row, live or soft-deleted — `MobileDvirService.submit` decides. */
   findTrailer(trailerId: string): Promise<{ id: string; deletedAt: Date | null } | null> {
     return this.prisma.trailer.findUnique({ where: { id: trailerId }, select: { id: true, deletedAt: true } });
@@ -160,6 +175,43 @@ export class MobileRepository extends BaseRepository<
       },
       orderBy: { startedAt: 'desc' },
     });
+  }
+
+  /**
+   * MR-25 — a co-driver pairing (either seat order) of these two drivers on ONE unit that was in
+   * force at `at`. Pairings are time-bounded history rows, so a past instant is answerable.
+   */
+  findPairingCovering(driverA: string, driverB: string, at: Date): Promise<CoDriverPairing | null> {
+    return this.prisma.coDriverPairing.findFirst({
+      where: {
+        OR: [
+          { primaryDriverId: driverA, coDriverId: driverB },
+          { primaryDriverId: driverB, coDriverId: driverA },
+        ],
+        startedAt: { lte: at },
+        AND: [{ OR: [{ endedAt: null }, { endedAt: { gte: at } }] }],
+      },
+      orderBy: { startedAt: 'desc' },
+    });
+  }
+
+  /**
+   * MR-25 — the unit the driver was logged in to at `at` per the §395 Appendix A login/logout
+   * records (eventType 5: code 1 login, code 2 logout; active records only, 14-day lookback).
+   * `null` when the latest such record before `at` is a logout, has no unit, or none exists.
+   */
+  async findLoginVehicleAt(driverId: string, at: Date): Promise<string | null> {
+    const last = await this.prisma.eldEvent.findFirst({
+      where: {
+        driverId,
+        eventType: 5,
+        recordStatus: 1,
+        eventDateTime: { gte: new Date(at.getTime() - 14 * 86_400_000), lte: at },
+      },
+      orderBy: [{ eventDateTime: 'desc' }, { eventSequenceId: 'desc' }],
+      select: { eventCode: true, vehicleId: true },
+    });
+    return last && last.eventCode === 1 ? last.vehicleId : null;
   }
 
   findPushTokens(driverId: string): Promise<PushToken[]> {
@@ -193,6 +245,7 @@ export class MobileRepository extends BaseRepository<
         driverId: input.driverId,
         vehicleId: input.vehicleId,
         trailerId: input.trailerId ?? null,
+        trailerNumber: input.trailerNumber ?? null,
         type: input.type,
         submittedAt: input.submittedAt,
         odometerMi: input.odometerMi,
@@ -203,6 +256,10 @@ export class MobileRepository extends BaseRepository<
         notes: input.notes ?? null,
         driverSignatureUrl: input.driverSignatureUrl,
         driverSignatureHash: input.driverSignatureHash,
+        mechanicName: input.mechanicName ?? null,
+        mechanicSignedAt: input.mechanicSignedAt ?? null,
+        mechanicSignatureUrl: input.mechanicSignatureUrl ?? null,
+        mechanicSignatureHash: input.mechanicSignatureHash ?? null,
         // MB-6 — nested `create` (not `createMany`) so each defect can `connect` its photos;
         // the whole DVIR + defects + photo links land in ONE transaction.
         defects: input.defects.length

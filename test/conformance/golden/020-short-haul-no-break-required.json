@@ -1,0 +1,28 @@
+{
+  "name": "short-haul-no-break-required",
+  "spec": "\u00a78.2 rule 9 / \u00a7395.1(e) \u2014 short-haul drivers owe no 30-min break",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-01-15T00:00:00Z",
+    "ruleset": "US_70_8_PROPERTY",
+    "driver": {
+      "driverId": "driver-1",
+      "shortHaulException": true
+    },
+    "previousDays": [],
+    "lastRestartEndedAt": null,
+    "events": [
+      {
+        "at": "2025-01-14T05:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-14T15:00:00Z",
+        "status": "D"
+      }
+    ]
+  },
+  "expected": {
+    "violations": []
+  }
+}

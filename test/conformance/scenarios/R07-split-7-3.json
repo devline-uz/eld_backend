@@ -1,0 +1,45 @@
+{
+  "id": "R07-split-7-3",
+  "rule": "SPLIT_SLEEPER",
+  "title": "7 h SB + 3 h OFF is a valid pair",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-14T19:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-15T05:00:00.000Z",
+        "status": "ON"
+      },
+      {
+        "at": "2026-01-15T06:00:00.000Z",
+        "status": "SB"
+      },
+      {
+        "at": "2026-01-15T13:00:00.000Z",
+        "status": "D"
+      },
+      {
+        "at": "2026-01-15T17:00:00.000Z",
+        "status": "OFF"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance"
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-15T20:00:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "driveUsedSec": 14400,
+    "driveRemainingSec": 25200,
+    "shiftStartedAt": "2026-01-15T13:00:00.000Z",
+    "shiftEndsAt": "2026-01-16T06:00:00.000Z",
+    "shiftRemainingSec": 36000,
+    "violations": []
+  }
+}

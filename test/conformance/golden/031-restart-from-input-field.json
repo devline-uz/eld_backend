@@ -1,0 +1,34 @@
+{
+  "name": "restart-from-input-field",
+  "spec": "\u00a78.1 \u2014 `lastRestartEndedAt` supplied by the caller",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-01-14T18:00:00Z",
+    "ruleset": "US_70_8_PROPERTY",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true
+    },
+    "previousDays": [
+      {
+        "date": "2025-01-13",
+        "onDutySec": 216000
+      }
+    ],
+    "lastRestartEndedAt": "2025-01-14T14:00:00Z",
+    "events": [
+      {
+        "at": "2025-01-14T15:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-14T15:30:00Z",
+        "status": "D"
+      }
+    ]
+  },
+  "expected": {
+    "cycleRemainingSec": 243000.0,
+    "violations": []
+  }
+}

@@ -19,6 +19,21 @@ export function certificationEventCode(priorCount: number): number {
 }
 
 /**
+ * §395.30(b)-(c) / bugs.md B-123 — a day needs RE-certification only when it WAS certified and a
+ * later change voided that (`certificationCount` keeps the true count across invalidations).
+ * A never-certified day that was edited simply needs its first certification. Same rule as
+ * the driver app (`log_models.dart`), so the two can never disagree.
+ */
+export function recertificationRequired(header: { certified: boolean; certificationCount: number } | null | undefined): boolean {
+  if (!header) return false;
+  return !header.certified && header.certificationCount > 0;
+}
+
+/** MR-26 — `GET /mobile/certification-status?days=` default and ceiling. */
+export const CERTIFICATION_STATUS_DEFAULT_DAYS = 8;
+export const CERTIFICATION_STATUS_MAX_DAYS = 14;
+
+/**
  * TZ §9.2 / §14 — `alert.uncertified_logs` fires at 8 days, everywhere. The §14 seed table
  * said 3 days in an earlier revision; that was corrected to 8 in both places.
  */

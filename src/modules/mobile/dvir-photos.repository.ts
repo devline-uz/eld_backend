@@ -12,7 +12,7 @@ import { PrismaService } from '../../core/prisma/prisma.service';
 export class DvirPhotosRepository {
   constructor(private readonly prisma: PrismaService) {}
 
-  createPhoto(input: { id: string; key: string; mimeType: string; sizeBytes: number; sha256: string; driverId: string }): Promise<Attachment> {
+  createPhoto(input: { id: string; key: string; mimeType: string; sizeBytes: number; sha256: string; driverId: string; kind?: string }): Promise<Attachment> {
     return this.prisma.attachment.create({
       data: {
         id: input.id,
@@ -20,6 +20,7 @@ export class DvirPhotosRepository {
         mimeType: input.mimeType,
         sizeBytes: input.sizeBytes,
         sha256: input.sha256,
+        kind: input.kind ?? null,
         uploadedById: input.driverId,
         uploadedByType: 'DRIVER',
       },
@@ -30,7 +31,8 @@ export class DvirPhotosRepository {
   findLinkable(ids: string[], driverId: string): Promise<{ id: string }[]> {
     if (!ids.length) return Promise.resolve([]);
     return this.prisma.attachment.findMany({
-      where: { id: { in: ids }, uploadedById: driverId, uploadedByType: 'DRIVER', defectId: null },
+      // `kind: null` — an INVOICE upload (M-39) is the same driver's attachment but never a DVIR photo.
+      where: { id: { in: ids }, uploadedById: driverId, uploadedByType: 'DRIVER', defectId: null, kind: null },
       select: { id: true },
     });
   }

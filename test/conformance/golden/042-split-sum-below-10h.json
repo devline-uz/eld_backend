@@ -1,0 +1,62 @@
+{
+  "name": "split-sum-below-10h",
+  "spec": "\u00a78.2.1 \u2014 7 h + 2 h is only 9 h and does not qualify",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-01-15T12:30:00Z",
+    "ruleset": "US_70_8_PROPERTY",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true
+    },
+    "previousDays": [],
+    "lastRestartEndedAt": null,
+    "events": [
+      {
+        "at": "2025-01-14T05:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-14T15:00:00Z",
+        "status": "ON"
+      },
+      {
+        "at": "2025-01-14T16:00:00Z",
+        "status": "D"
+      },
+      {
+        "at": "2025-01-14T21:00:00Z",
+        "status": "SB"
+      },
+      {
+        "at": "2025-01-15T04:00:00Z",
+        "status": "D"
+      },
+      {
+        "at": "2025-01-15T06:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-15T08:00:00Z",
+        "status": "D"
+      }
+    ]
+  },
+  "expected": {
+    "driveUsedSec": 41400,
+    "driveRemainingSec": 0,
+    "shiftEndsAt": "2025-01-15T12:00:00Z",
+    "violations": [
+      {
+        "type": "DRIVING_11",
+        "logDate": "2025-01-15",
+        "exceededBySec": 1800
+      },
+      {
+        "type": "SHIFT_14",
+        "logDate": "2025-01-15",
+        "exceededBySec": 1800
+      }
+    ]
+  }
+}

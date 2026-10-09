@@ -1,0 +1,30 @@
+{
+  "name": "cycle-empty-previous-days",
+  "spec": "\u00a78.5 recap \u2014 an empty history leaves the full cycle",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-01-14T20:00:00Z",
+    "ruleset": "US_70_8_PROPERTY",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true
+    },
+    "previousDays": [],
+    "lastRestartEndedAt": null,
+    "events": [
+      {
+        "at": "2025-01-14T05:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-14T15:00:00Z",
+        "status": "D"
+      }
+    ]
+  },
+  "expected": {
+    "cycleRemainingSec": 234000,
+    "cycleRecapAt": "2025-01-22T05:00:00Z",
+    "violations": []
+  }
+}

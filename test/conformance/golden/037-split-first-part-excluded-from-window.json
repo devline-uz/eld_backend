@@ -1,0 +1,44 @@
+{
+  "name": "split-first-part-excluded-from-window",
+  "spec": "\u00a78.2.1 step 2 \u2014 the unpaired first part stretches the window",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-01-15T09:00:00Z",
+    "ruleset": "US_70_8_PROPERTY",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true
+    },
+    "previousDays": [],
+    "lastRestartEndedAt": null,
+    "events": [
+      {
+        "at": "2025-01-14T05:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-14T15:00:00Z",
+        "status": "ON"
+      },
+      {
+        "at": "2025-01-14T16:00:00Z",
+        "status": "D"
+      },
+      {
+        "at": "2025-01-14T21:00:00Z",
+        "status": "SB"
+      },
+      {
+        "at": "2025-01-15T04:00:00Z",
+        "status": "D"
+      }
+    ]
+  },
+  "expected": {
+    "driveUsedSec": 36000,
+    "shiftStartedAt": "2025-01-14T15:00:00Z",
+    "shiftEndsAt": "2025-01-15T12:00:00Z",
+    "shiftRemainingSec": 10800,
+    "violations": []
+  }
+}

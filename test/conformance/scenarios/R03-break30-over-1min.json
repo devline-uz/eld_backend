@@ -1,0 +1,35 @@
+{
+  "id": "R03-break30-over-1min",
+  "rule": "BREAK_30",
+  "title": "8:01 of driving without a break \u2014 BREAK_30 by 60 s",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-15T01:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-15T11:00:00.000Z",
+        "status": "D"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance"
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-15T19:01:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "breakRemainingSec": 0,
+    "violations": [
+      {
+        "type": "BREAK_30",
+        "logDate": "2026-01-15",
+        "exceededBySec": 60
+      }
+    ]
+  }
+}

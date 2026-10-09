@@ -44,3 +44,9 @@ export const VerifyEmailChangeDto = z.object({
   token: z.string().min(1),
 });
 export type VerifyEmailChangeDto = z.infer<typeof VerifyEmailChangeDto>;
+
+/** MR-31 — driver self-service reset; `username` or `email` (at least one). */
+export const DriverForgotPasswordDto = z
+  .object({ username: z.string().min(1).max(120).optional(), email: z.string().email().optional() })
+  .refine((v) => Boolean(v.username || v.email), { message: 'username or email is required' });
+export type DriverForgotPasswordDto = z.infer<typeof DriverForgotPasswordDto>;

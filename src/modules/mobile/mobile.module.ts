@@ -2,30 +2,42 @@ import { Module } from '@nestjs/common';
 import { AuditModule } from '../audit/audit.module';
 import { AuthModule } from '../auth/auth.module';
 import { MessagingModule } from '../messaging/messaging.module';
+import { RodsLoginModule } from '../logs/rods-login-recorder';
 import { DeviceHealthController } from './device-health.controller';
 import { DeviceHealthRepository } from './device-health.repository';
 import { DeviceHealthService } from './device-health.service';
 import { DvirPhotosRepository } from './dvir-photos.repository';
 import { HosRecalcModule } from '../hos-recalc/hos-recalc.module';
 import { LogsModule } from '../logs/logs.module';
+import { MobileAppConfigController } from './mobile-app-config.controller';
+import { MobileAppConfigService } from './mobile-app-config.service';
 import { MobileBootstrapController } from './mobile-bootstrap.controller';
 import { MobileBootstrapService } from './mobile-bootstrap.service';
 import { MobileCoDriverController } from './mobile-codriver.controller';
 import { MobileCoDriverService } from './mobile-codriver.service';
+import { MobileCatalogController } from './mobile-catalog.controller';
+import { MobileCatalogRepository } from './mobile-catalog.repository';
+import { MobileSavedSignatureService } from './mobile-saved-signature.service';
 import { MobileContactsController } from './mobile-contacts.controller';
 import { MobileContactsService } from './mobile-contacts.service';
+import { MobileDeviceController } from './mobile-device.controller';
+import { MobileDeviceRepository } from './mobile-device.repository';
+import { MobileDeviceService } from './mobile-device.service';
 import { MobileDutyStatusController } from './mobile-duty-status.controller';
 import { MobileDvirController } from './mobile-dvir.controller';
 import { MobileDvirHistoryController } from './mobile-dvir-history.controller';
 import { MobileDvirHistoryService } from './mobile-dvir-history.service';
 import { MobileDvirService } from './mobile-dvir.service';
 import { MobileFleetOpsRepository } from './mobile-fleet-ops.repository';
+import { MobileMaintenanceController } from './mobile-maintenance.controller';
+import { MobileMaintenanceRepository } from './mobile-maintenance.repository';
+import { MobileMaintenanceService } from './mobile-maintenance.service';
 import { MobileMessagingController } from './mobile-messaging.controller';
 import { MobileMessagingRepository } from './mobile-messaging.repository';
 import { MobileMessagingService } from './mobile-messaging.service';
 import { MobileSyncController } from './mobile-sync.controller';
 import { MobileSyncService } from './mobile-sync.service';
-import { MobileTripController } from './mobile-trip.controller';
+import { MobileTrailersController, MobileTripController } from './mobile-trip.controller';
 import { MobileTripService } from './mobile-trip.service';
 import { MobileVehicleController } from './mobile-vehicle.controller';
 import { MobileVehicleService } from './mobile-vehicle.service';
@@ -45,8 +57,9 @@ import { SignatureService } from './signature.service';
  * is their shared DB-access point, kept separate from `MobileRepository` on purpose.
  */
 @Module({
-  imports: [HosRecalcModule, LogsModule, AuditModule, AuthModule, MessagingModule],
+  imports: [HosRecalcModule, LogsModule, AuditModule, AuthModule, MessagingModule, RodsLoginModule],
   controllers: [
+    MobileAppConfigController,
     MobileBootstrapController,
     MobileSyncController,
     MobileDutyStatusController,
@@ -54,19 +67,26 @@ import { SignatureService } from './signature.service';
     MobileVehicleController,
     MobileCoDriverController,
     MobileTripController,
+    MobileTrailersController,
     MobileDvirHistoryController,
+    MobileCatalogController,
     MobileContactsController,
     PushTokensController,
     DeviceHealthController,
     MobileMessagingController,
+    MobileMaintenanceController,
+    MobileDeviceController,
   ],
   providers: [
     MobileRepository,
+    MobileAppConfigService,
     MobileBootstrapService,
     MobileSyncService,
     MobileDvirService,
     SignatureService,
     DvirPhotosRepository,
+    MobileCatalogRepository,
+    MobileSavedSignatureService,
     MobileFleetOpsRepository,
     MobileVehicleService,
     MobileCoDriverService,
@@ -80,6 +100,12 @@ import { SignatureService } from './signature.service';
     DeviceHealthService,
     MobileMessagingRepository,
     MobileMessagingService,
+    // M-38..M-42 (wave 4) — driver maintenance tasks + invoice submission.
+    MobileMaintenanceRepository,
+    MobileMaintenanceService,
+    // MG-BLE-1/2 (wave 4) — driver reports the observed PT30 BLE MAC.
+    MobileDeviceRepository,
+    MobileDeviceService,
   ],
   exports: [MobileRepository, SignatureService, MobileFleetOpsRepository],
 })

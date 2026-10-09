@@ -5,7 +5,7 @@ import { HOS_ENGINE_VERSION } from '../hos/hos.constants';
 import type { HosState } from '../hos/hos.types';
 import type { HosStateDto } from './dto/hos-state.dto';
 import type { HosStateRepository } from './hos-state.repository';
-import { HosStateService, HOS_ENGINE_DRIFT_ALERT } from './hos-state.service';
+import { compareEngineVersions, HosStateService, HOS_ENGINE_DRIFT_ALERT } from './hos-state.service';
 import type { HosRecalcService } from '../hos-recalc/hos-recalc.service';
 import type { EventBusService } from '../../core/events/event-bus.service';
 import type { SentryCapture, SentryService } from '../../core/observability/sentry.service';
@@ -227,9 +227,129 @@ describe('HosStateService.submit', () => {
 
   it('defaults `now` to the current clock', async () => {
     const { service, repo } = build();
-    await service.submit('driver-1', dto());
+    // MR-1 — a fresh computedAt, otherwise the real clock makes the fixture snapshot STALE.
+    await service.submit('driver-1', dto({ computedAt: new Date() }));
     const recorded = repo.recordComparison.mock.calls[0][1] as { lastComparedAt: Date };
     expect(recorded.lastComparedAt.getTime()).toBeGreaterThan(Date.now() - 10_000);
+  });
+
+  // MR-1 — compare at snapshot.computedAt, not at request time; stale > 1 h is never compared.
+  describe('MR-1 computedAt + staleness', () => {
+    const minutesBefore = (min: number): Date => new Date(NOW.getTime() - min * 60_000);
+
+    it('computes the server state at computedAt, not at request time', async () => {
+      const { service, recalc, repo } = build();
+      await service.submit('driver-1', dto({ computedAt: minutesBefore(30) }), NOW);
+      expect(recalc.computeCurrentState).toHaveBeenCalledWith('driver-1', minutesBefore(30));
+      // `now` is still what is stamped as lastComparedAt.
+      expect(repo.recordComparison.mock.calls[0][1]).toMatchObject({ lastComparedAt: NOW });
+    });
+
+    it('a snapshot computed 30 min ago that matches the server at that instant raises no alert', async () => {
+      const { service, events, alertQueue, sentry } = build();
+      const result = await service.submit('driver-1', dto({ computedAt: minutesBefore(30) }), NOW);
+      expect(result).toMatchObject({ compared: true, drift: false, maxDriftSec: 0 });
+      expect(result.reason).toBeUndefined();
+      expect(events.publish).not.toHaveBeenCalled();
+      expect(alertQueue.add).not.toHaveBeenCalled();
+      expect(sentry.capture).not.toHaveBeenCalled();
+    });
+
+    it('compares a snapshot exactly 3600 s old', async () => {
+      const { service, recalc } = build();
+      const result = await service.submit('driver-1', dto({ computedAt: minutesBefore(60) }), NOW);
+      expect(result.compared).toBe(true);
+      expect(recalc.computeCurrentState).toHaveBeenCalledTimes(1);
+    });
+
+    it('answers STALE for a snapshot 3601 s old — stored, not compared, no alert', async () => {
+      const { service, recalc, repo, events, alertQueue, sentry } = build(hosState({ driveRemainingSec: 0 }));
+      const computedAt = new Date(NOW.getTime() - 3601_000);
+      const result = await service.submit('driver-1', dto({ computedAt }), NOW);
+      expect(result).toMatchObject({
+        accepted: true,
+        versionMismatch: false,
+        compared: false,
+        reason: 'STALE',
+        staleSec: 3601,
+        drift: false,
+        maxDriftSec: null,
+        fields: [],
+        serverState: null,
+      });
+      expect(repo.upsertSnapshot).toHaveBeenCalledTimes(1);
+      expect(recalc.computeCurrentState).not.toHaveBeenCalled();
+      expect(repo.recordComparison).not.toHaveBeenCalled();
+      expect(events.publish).not.toHaveBeenCalled();
+      expect(alertQueue.add).not.toHaveBeenCalled();
+      expect(sentry.capture).not.toHaveBeenCalled();
+    });
+
+    it('1.0.3: an app still on engine 1.0.2 gets updateRequired, no comparison and no drift alert', async () => {
+      const { service, recalc, alertQueue, sentry, events } = build();
+      const result = await service.submit('driver-1', dto({ hosEngineVersion: '1.0.2' }), NOW);
+      expect(result).toMatchObject({ compared: false, reason: 'VERSION_MISMATCH', versionMismatch: true, updateRequired: true, drift: false });
+      expect(result.message).toContain('Update the app');
+      expect(recalc.computeCurrentState).not.toHaveBeenCalled();
+      expect(alertQueue.add).not.toHaveBeenCalled();
+      expect(sentry.capture).not.toHaveBeenCalled();
+      expect(events.publish).not.toHaveBeenCalled();
+    });
+
+    it('an app NEWER than the server is not compared but not told to update', async () => {
+      const { service, alertQueue } = build();
+      const result = await service.submit('driver-1', dto({ hosEngineVersion: '1.0.10' }), NOW);
+      expect(result).toMatchObject({ compared: false, reason: 'VERSION_MISMATCH', versionMismatch: true, updateRequired: false });
+      expect(result.message).not.toContain('Update the app');
+      expect(alertQueue.add).not.toHaveBeenCalled();
+    });
+
+    it('a matching engine version never asks for an update', async () => {
+      const { service } = build();
+      const result = await service.submit('driver-1', dto(), NOW);
+      expect(result).toMatchObject({ compared: true, versionMismatch: false, updateRequired: false });
+    });
+
+    it('tags a version mismatch with reason VERSION_MISMATCH', async () => {
+      const { service } = build();
+      const result = await service.submit('driver-1', dto({ hosEngineVersion: '0.9.0' }), NOW);
+      expect(result.reason).toBe('VERSION_MISMATCH');
+      expect(result.staleSec).toBeUndefined();
+    });
+
+    it('clamps a future computedAt (device clock ahead) to now', async () => {
+      const { service, recalc } = build();
+      const result = await service.submit('driver-1', dto({ computedAt: new Date(NOW.getTime() + 120_000) }), NOW);
+      expect(result.compared).toBe(true);
+      expect(recalc.computeCurrentState).toHaveBeenCalledWith('driver-1', NOW);
+    });
+
+    it('serverState carries the MR-24 timestamps as ISO strings', async () => {
+      const { service } = build(
+        hosState({
+          statusSince: new Date('2026-03-10T13:00:00.000Z'),
+          nextBreakDueAt: new Date('2026-03-10T16:00:00.000Z'),
+          shiftEndsAt: new Date('2026-03-10T17:00:00.000Z'),
+        }),
+      );
+      const result = await service.submit('driver-1', dto(), NOW);
+      expect(result.serverState).toMatchObject({
+        statusSince: '2026-03-10T13:00:00.000Z',
+        nextBreakDueAt: '2026-03-10T16:00:00.000Z',
+        shiftEndsAt: '2026-03-10T17:00:00.000Z',
+        cycleRecapAt: null,
+        restartAvailableAt: null,
+      });
+    });
+
+    it('stores app-posted MR-24 timestamps without comparing them', async () => {
+      const { service, repo } = build();
+      const state = { ...dto().state, statusSince: '2020-01-01T00:00:00.000Z', shiftEndsAt: null };
+      const result = await service.submit('driver-1', dto({ state }), NOW);
+      expect(repo.upsertSnapshot.mock.calls[0][0]).toMatchObject({ state: { statusSince: '2020-01-01T00:00:00.000Z' } });
+      expect(result.drift).toBe(false);
+      expect(result.maxDriftSec).toBe(0);
+    });
   });
 
   it('404s when the driver row disappeared mid-request', async () => {
@@ -300,6 +420,23 @@ describe('HosStateService.compareSnapshot', () => {
     expect(result.serverState).toMatchObject({ currentStatus: 'D' });
   });
 
+  it('MR-1: the nightly default bound (36 h) compares a 30-hour-old snapshot at its computedAt', async () => {
+    const { service, recalc } = build();
+    const computedAt = new Date(NOW.getTime() - 30 * 3600_000);
+    const result = await service.compareSnapshot(snapshot({ computedAt }), NOW);
+    expect(result.compared).toBe(true);
+    expect(recalc.computeCurrentState).toHaveBeenCalledWith('driver-1', computedAt);
+  });
+
+  it('MR-1: skips a snapshot older than the bound as stale', async () => {
+    const { service, recalc, repo } = build();
+    const computedAt = new Date(NOW.getTime() - 36 * 3600_000 - 1000);
+    const result = await service.compareSnapshot(snapshot({ computedAt }), NOW);
+    expect(result).toMatchObject({ compared: false, skippedVersion: false, skippedStale: true, staleSec: 36 * 3600 + 1 });
+    expect(recalc.computeCurrentState).not.toHaveBeenCalled();
+    expect(repo.recordComparison).not.toHaveBeenCalled();
+  });
+
   it('carries the app platform into the alert payload', async () => {
     const { service, events } = build();
     await service.compareSnapshot(
@@ -310,5 +447,18 @@ describe('HosStateService.compareSnapshot', () => {
       HOS_ENGINE_DRIFT_ALERT,
       expect.objectContaining({ appPlatform: 'IOS', appStatus: 'OFF', serverStatus: 'D' }),
     );
+  });
+});
+
+describe('compareEngineVersions', () => {
+  it.each([
+    ['1.0.2', '1.0.3', -1],
+    ['1.0.3', '1.0.3', 0],
+    ['1.0.10', '1.0.3', 1],
+    ['1.1', '1.0.3', 1],
+    ['1.0', '1.0.0', 0],
+    ['garbage', '1.0.3', -1],
+  ])('%s vs %s', (a, b, sign) => {
+    expect(Math.sign(compareEngineVersions(a, b))).toBe(sign);
   });
 });

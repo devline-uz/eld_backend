@@ -7,6 +7,8 @@ import { Logger } from 'nestjs-pino';
 import { AppModule } from './app.module';
 import { AppConfigService } from './core/config/config.service';
 import { applyZodSwagger, attachZodComponents } from './common/swagger/zod-swagger';
+import { type AccessTokenVerifier, driverOnlyLargeJson } from './common/middleware/driver-large-json.middleware';
+import { TokenService } from './modules/auth/token.service';
 
 /**
  * Shared app wiring (prefix, pipes, CORS, helmet) between the real entrypoint and e2e
@@ -20,6 +22,12 @@ export function configureApp(app: INestApplication): AppConfigService {
   // TZ §7.3 rule 2 — an ingest batch may be up to 1 MB (500 §395 events). Express's default
   // JSON limit is 100 KB, which rejected legitimate batches with a body-parser error before
   // validation could ever see them.
+  // M-39 — `POST /mobile/signature` may carry an invoice PDF (10 MiB -> ~14 MB of base64 JSON); only
+  // this one route gets the larger parser (it runs first and marks the body parsed). The service
+  // still enforces 2 MiB for images and 10 MiB for PDFs on the DECODED bytes.
+  // B-148 — parsing runs before the guards, so the 14 MB parser is gated on a verified DRIVER token;
+  // anyone else falls through to the 1 MB parser below.
+  app.use(`/${config.get('API_PREFIX')}/mobile/signature`, driverOnlyLargeJson(resolveTokenVerifier(app), '14mb'));
   app.use(json({ limit: '1mb' }));
   app.enableCors({
     origin: config.corsOrigins,
@@ -33,6 +41,15 @@ export function configureApp(app: INestApplication): AppConfigService {
   // primitive route/query params (`:id` → number etc.).
   app.useGlobalPipes(new ValidationPipe({ transform: true, whitelist: true }));
   return config;
+}
+
+/** `TokenService` (AuthModule) when the app has it; `null` (large parser never used) otherwise. */
+function resolveTokenVerifier(app: INestApplication): AccessTokenVerifier | null {
+  try {
+    return app.get(TokenService, { strict: false });
+  } catch {
+    return null;
+  }
 }
 
 /**

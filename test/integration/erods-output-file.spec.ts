@@ -24,6 +24,7 @@ import { TransfersRepository } from '../../src/modules/transfers/transfers.repos
 import { TransfersService } from '../../src/modules/transfers/transfers.service';
 import { validateOutputFile } from '../../src/modules/transfers/validator';
 import { SEGMENT_TITLES } from '../../src/modules/transfers/segments';
+import { licenseDigitSum, licenseLastTwoDigits } from '../../src/modules/transfers/filename';
 
 const prisma = new PrismaClient();
 const prismaService = prisma as unknown as PrismaService;
@@ -71,6 +72,7 @@ let driverId: string;
 let vehicleId: string;
 let userId: string;
 let sequence = 1;
+let cdlNumber: string;
 
 async function seedEvent(at: string, fields: Record<string, unknown>): Promise<void> {
   const base = {
@@ -109,7 +111,7 @@ beforeAll(async () => {
     update: {},
   });
   // §10.1 — the file must be generated fully and correctly in TEST mode.
-  await prisma.carrier.update({ where: { id: 'carrier' }, data: { erodsMode: 'TEST', eldIdentifier: 'OBK1' } });
+  await prisma.carrier.update({ where: { id: 'carrier' }, data: { erodsMode: 'TEST', eldIdentifier: 'OBK001' } });
 
   const vehicle = await prisma.vehicle.create({
     data: { unitNumber: `ERODS-${tag}`, vin: `VIN${tag}${tag}`.slice(0, 17), odometerMi: 120_000 },
@@ -129,6 +131,7 @@ beforeAll(async () => {
     },
   });
   driverId = driver.id;
+  cdlNumber = driver.cdlNumber;
 
   // An existing back-office user (seeded): it plays the fleet manager who made the §395.30
   // edit. Reused rather than created so the cleanup below cannot fight other FK owners.
@@ -189,8 +192,12 @@ describe('eRODS output file from real RODS data (TEST mode)', () => {
 
     expect(view.transfer.erodsMode).toBe('TEST');
     expect(view.transfer.status).toBe('QUEUED');
-    // Appendix A 4.8.2.2: OBRIE (apostrophe and hyphen dropped) + last 2 CDL chars + 01 + 8.
-    expect(view.transfer.fileName).toMatch(/^OBRIE[A-Z0-9]{0,2}018\.csv$/);
+    // Appendix A 4.8.2.2: OBRIE (letters only) + last 2 licence digits + licence digit sum
+    // + creation MMDDYY (home terminal) + '-' + 9-digit per-day sequence - 1. 25 chars + .csv.
+    const fileName = view.transfer.fileName;
+    expect(fileName).toMatch(/^OBRIE[0-9]{4}[0-9]{6}-[0-9]{9}\.csv$/);
+    expect(fileName.slice(5, 9)).toBe(licenseLastTwoDigits(cdlNumber) + licenseDigitSum(cdlNumber));
+    expect(fileName).toHaveLength(29);
     expect(view.warnings.map((w) => w.code)).toContain('ERODS_TEST_MODE');
 
     const stored = objects.get(view.transfer.fileKey)!;
@@ -199,7 +206,8 @@ describe('eRODS output file from real RODS data (TEST mode)', () => {
     expect(result.valid).toBe(true);
 
     // Every segment carries the records we seeded.
-    expect(result.counts.header).toBe(9);
+    // 4.8.2.1.1: the header is 7 fixed lines.
+    expect(result.counts.header).toBe(7);
     expect(result.counts.events).toBeGreaterThanOrEqual(7);
     expect(result.counts.certifications).toBe(1);
     expect(result.counts.malfunctions).toBe(1);
@@ -209,8 +217,23 @@ describe('eRODS output file from real RODS data (TEST mode)', () => {
     expect(result.counts.unidentified).toBeGreaterThanOrEqual(1);
     expect(result.counts.annotations).toBeGreaterThanOrEqual(2);
     expect(result.counts.cmvs).toBeGreaterThanOrEqual(1);
-    // Driver + the fleet manager who made the §395.30 edit.
-    expect(result.counts.users).toBe(2);
+    // 4.8.2.1.2: driver + the fleet manager who made the §395.30 edit + the always-listed
+    // unidentified driver profile (7.13).
+    expect(result.counts.users).toBe(3);
+    // 4.8.2.1.4: the event list holds event types 1, 2, 3 only (certification / malfunction
+    // records live in their own segments).
+    const csvText = stored.toString('utf8');
+    const listLines = (from: string, to: string) =>
+      csvText.split(from + '\r\n')[1].split(to)[0].split('\r\n').filter(Boolean);
+    expect(
+      listLines(SEGMENT_TITLES.events, SEGMENT_TITLES.annotations).every((l) => ['1', '2', '3'].includes(l.split(',')[3])),
+    ).toBe(true);
+    // Header line 7: Registration ID, ELD Identifier (7.15 — 6 chars), Authentication, Comment.
+    const headerLines = listLines(SEGMENT_TITLES.header, SEGMENT_TITLES.users);
+    expect(headerLines).toHaveLength(7);
+    expect(headerLines[6].split(',')[1]).toBe('OBK001');
+    // 4.8.2.1.11 / 7.27: the file data check value is 4 hex characters.
+    expect(csvText.split(SEGMENT_TITLES.endOfFile + '\r\n')[1].trim()).toMatch(/^[0-9A-F]{4}$/);
 
     const unidentifiedLines = stored
       .toString('utf8')
@@ -242,7 +265,7 @@ describe('eRODS output file from real RODS data (TEST mode)', () => {
     expect(eventLines.some((l) => l.split(',')[2] === '2')).toBe(true);
   });
 
-  it('increments the Appendix A file sequence for the next file of the same day', async () => {
+  it('increments the Appendix A 4.8.2.2(f) file sequence for the next file of the same day', async () => {
     const before = await transfersRepo.listTransfers({ driverId }, 1, 50);
     const view = await service.create(
       {
@@ -254,8 +277,10 @@ describe('eRODS output file from real RODS data (TEST mode)', () => {
       } as never,
       ACTOR,
     );
-    const sequenceDigits = view.transfer.fileName.slice(-7, -5);
-    expect(Number(sequenceDigits)).toBe(before.total + 1);
+    // 9-digit suffix = per-driver per-day sequence - 1 (first file 000000000, D-120).
+    const suffix = view.transfer.fileName.slice(-13, -4);
+    expect(suffix).toMatch(/^[0-9]{9}$/);
+    expect(Number(suffix)).toBe(before.total);
   });
 
   it('re-validates and serves the stored bytes through the download path', async () => {

@@ -1,0 +1,60 @@
+{
+  "id": "R04-cycle60-over",
+  "rule": "CYCLE",
+  "title": "60:30 in 7 days, driving past the limit \u2014 CYCLE_60 by 30 minutes (\u00a7395.3(b), engine 1.0.3)",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-15T01:00:00.000Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2026-01-15T11:00:00.000Z",
+        "status": "D"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance"
+    },
+    "ruleset": "US_60_7_PROPERTY",
+    "now": "2026-01-15T17:30:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [
+      {
+        "date": "2026-01-09",
+        "onDutySec": 32400
+      },
+      {
+        "date": "2026-01-10",
+        "onDutySec": 32400
+      },
+      {
+        "date": "2026-01-11",
+        "onDutySec": 32400
+      },
+      {
+        "date": "2026-01-12",
+        "onDutySec": 32400
+      },
+      {
+        "date": "2026-01-13",
+        "onDutySec": 32400
+      },
+      {
+        "date": "2026-01-14",
+        "onDutySec": 32400
+      }
+    ],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "cycleRemainingSec": 0,
+    "violations": [
+      {
+        "type": "CYCLE_60",
+        "logDate": "2026-01-15",
+        "exceededBySec": 1800
+      }
+    ]
+  }
+}

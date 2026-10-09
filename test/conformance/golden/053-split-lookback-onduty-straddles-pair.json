@@ -1,0 +1,30 @@
+{
+  "name": "split-lookback-onduty-straddles-pair",
+  "spec": "§395.1(g)(1) — the 14 h window restarts at the end of the FIRST half, so on-duty time between the halves can still overrun it",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-01-15T06:00:00Z",
+    "ruleset": "US_70_8_PROPERTY",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true
+    },
+    "previousDays": [],
+    "lastRestartEndedAt": null,
+    "events": [
+      { "at": "2025-01-14T05:00:00Z", "status": "SB" },
+      { "at": "2025-01-14T13:00:00Z", "status": "D" },
+      { "at": "2025-01-14T14:00:00Z", "status": "ON" },
+      { "at": "2025-01-15T01:00:00Z", "status": "SB" },
+      { "at": "2025-01-15T03:00:00Z", "status": "D" }
+    ]
+  },
+  "expected": {
+    "driveUsedSec": 14400,
+    "shiftStartedAt": "2025-01-14T13:00:00Z",
+    "shiftEndsAt": "2025-01-15T05:00:00Z",
+    "violations": [
+      { "type": "SHIFT_14", "logDate": "2025-01-15", "occurredAt": "2025-01-15T05:00:00Z", "exceededBySec": 3600 }
+    ]
+  }
+}

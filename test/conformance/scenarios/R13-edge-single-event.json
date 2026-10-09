@@ -1,0 +1,35 @@
+{
+  "id": "R13-edge-single-event",
+  "rule": "EDGE",
+  "title": "A single OFF event \u2014 the status holds until now",
+  "input": {
+    "events": [
+      {
+        "at": "2026-01-15T05:00:00.000Z",
+        "status": "OFF"
+      }
+    ],
+    "driver": {
+      "driverId": "drv-conformance"
+    },
+    "ruleset": "US_70_8_PROPERTY",
+    "now": "2026-01-15T17:00:00.000Z",
+    "timezone": "America/New_York",
+    "previousDays": [],
+    "lastRestartEndedAt": null
+  },
+  "expect": {
+    "currentStatus": "OFF",
+    "statusSince": "2026-01-15T05:00:00.000Z",
+    "shiftStartedAt": null,
+    "shiftRemainingSec": 50400,
+    "restartAvailableAt": "2026-01-16T15:00:00.000Z",
+    "dailyTotals": {
+      "off": 43200,
+      "sb": 0,
+      "drive": 0,
+      "on": 0
+    },
+    "violations": []
+  }
+}

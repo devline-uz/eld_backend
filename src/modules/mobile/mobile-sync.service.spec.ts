@@ -217,4 +217,155 @@ describe('MobileSyncService', () => {
     await service.sync('drv_1', { changes: [], backlog: { days: 32, bytes: 0 } }, actor, NOW);
     expect(events.publish.mock.calls.filter((c) => c[0] === 'alert.sync_backlog')).toHaveLength(1);
   });
+
+  describe('MR-25 — shared tablet: driverId on a change', () => {
+    const CO = '2b7f5c1e-8d4a-4c3b-9e2f-1a0b9c8d7e6f';
+    let fullRepo: Record<string, jest.Mock>;
+    let audit: { insert: jest.Mock };
+
+    beforeEach(() => {
+      fullRepo = repo as unknown as Record<string, jest.Mock>;
+      fullRepo.findDriver = jest.fn().mockResolvedValue({ id: CO, status: 'ACTIVE', deletedAt: null });
+      fullRepo.findPairingCovering = jest.fn().mockResolvedValue({ id: 'pair_1', vehicleId: 'veh_1' });
+      fullRepo.findLoginVehicleAt = jest.fn().mockResolvedValue(null);
+      audit = { insert: jest.fn().mockResolvedValue(undefined) };
+      service = new MobileSyncService(
+        repo as unknown as MobileRepository,
+        logs as unknown as LogsService,
+        dvir as unknown as MobileDvirService,
+        signatures as unknown as SignatureService,
+        events as unknown as EventBusService,
+        alertQueue as never,
+        audit as never,
+      );
+    });
+
+    it('applies the change to the co-driver paired on the same unit at occurredAt, and audits it', async () => {
+      const result = await service.sync('drv_1', { changes: [change({ driverId: CO })] }, actor, NOW);
+      expect(result.accepted).toEqual(['client-1']);
+      expect(fullRepo.findPairingCovering).toHaveBeenCalledWith('drv_1', CO, NOW);
+      expect(logs.createLogEntry).toHaveBeenCalledWith(CO, expect.anything(), actor);
+      expect(audit.insert).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'SYNC_DELEGATED_CHANGE', actorId: 'drv_1', objectId: CO }),
+      );
+    });
+
+    it('rejects only that change when there was no shared pairing at that time', async () => {
+      fullRepo.findPairingCovering.mockResolvedValue(null);
+      const result = await service.sync(
+        'drv_1',
+        { changes: [change({ driverId: CO }), change({ clientId: 'client-2', occurredAt: new Date(NOW.getTime() + 1000) })] },
+        actor,
+        NOW,
+      );
+      expect(result.rejected).toEqual([expect.objectContaining({ clientId: 'client-1', code: ERROR_CODES.SYNC_DELEGATION_NOT_ALLOWED })]);
+      expect(result.accepted).toEqual(['client-2']);
+      expect(logs.createLogEntry).toHaveBeenCalledTimes(1);
+      expect(logs.createLogEntry).toHaveBeenCalledWith('drv_1', expect.anything(), actor);
+    });
+
+    it('rejects an unknown / inactive driver and never delegates certification', async () => {
+      fullRepo.findDriver.mockResolvedValue(null);
+      const unknown = await service.sync('drv_1', { changes: [change({ driverId: CO })] }, actor, NOW);
+      expect(unknown.rejected[0]).toMatchObject({ code: ERROR_CODES.SYNC_DELEGATION_NOT_ALLOWED });
+
+      fullRepo.findDriver.mockResolvedValue({ id: CO, status: 'ACTIVE', deletedAt: null });
+      const certify = await service.sync(
+        'drv_1',
+        { changes: [change({ type: 'certify', clientId: 'client-9', driverId: CO, payload: { dates: ['2026-09-10'], signatureMimeType: 'image/png' } })] },
+        actor,
+        NOW,
+      );
+      expect(certify.rejected[0]).toMatchObject({ clientId: 'client-9', code: ERROR_CODES.SYNC_DELEGATION_NOT_ALLOWED });
+      expect(logs.certify).not.toHaveBeenCalled();
+    });
+
+    it('without a pairing, accepts when both drivers were logged in (eventType 5) to the same unit at occurredAt', async () => {
+      fullRepo.findPairingCovering.mockResolvedValue(null);
+      fullRepo.findLoginVehicleAt.mockImplementation(async () => 'veh_7');
+      const result = await service.sync('drv_1', { changes: [change({ driverId: CO })] }, actor, NOW);
+      expect(result.accepted).toEqual(['client-1']);
+      expect(fullRepo.findLoginVehicleAt).toHaveBeenCalledWith('drv_1', NOW);
+      expect(fullRepo.findLoginVehicleAt).toHaveBeenCalledWith(CO, NOW);
+      const [[auditRow]] = audit.insert.mock.calls as Array<[{ after: Record<string, unknown> }]>;
+      expect(auditRow.after).toMatchObject({ vehicleId: 'veh_7', evidence: 'ELD_LOGIN_SESSION', pairingId: null });
+    });
+
+    it('rejects when the two drivers were logged in to different units', async () => {
+      fullRepo.findPairingCovering.mockResolvedValue(null);
+      fullRepo.findLoginVehicleAt.mockImplementation(async (id: string) => (id === CO ? 'veh_8' : 'veh_7'));
+      const result = await service.sync('drv_1', { changes: [change({ driverId: CO })] }, actor, NOW);
+      expect(result.rejected[0]).toMatchObject({ clientId: 'client-1', code: ERROR_CODES.SYNC_DELEGATION_NOT_ALLOWED });
+      expect(logs.createLogEntry).not.toHaveBeenCalled();
+    });
+
+    it('B-118 — occurredAt inside an ENDED pairing does not authorise a record whose startAt lies outside it', async () => {
+      const hours = (h: number) => new Date(NOW.getTime() + h * 3_600_000);
+      const pairing = { id: 'pair_old', vehicleId: 'veh_1', startedAt: hours(-10), endedAt: hours(-5) };
+      fullRepo.findPairingCovering.mockImplementation(async (_a: string, _b: string, at: Date) =>
+        at >= pairing.startedAt && at <= pairing.endedAt ? pairing : null,
+      );
+      const result = await service.sync(
+        'drv_1',
+        { changes: [change({ driverId: CO, occurredAt: hours(-6), payload: { status: 'ON', startAt: hours(-1), annotation: 'Fuel stop' } } as never)] },
+        actor,
+        NOW,
+      );
+      expect(fullRepo.findPairingCovering).toHaveBeenCalledWith('drv_1', CO, hours(-1));
+      expect(result.rejected[0]).toMatchObject({ clientId: 'client-1', code: ERROR_CODES.SYNC_DELEGATION_NOT_ALLOWED });
+      expect(logs.createLogEntry).not.toHaveBeenCalled();
+      expect(audit.insert).not.toHaveBeenCalled();
+    });
+
+    it('B-118 — the pairing must cover endAt too, not just startAt', async () => {
+      const hours = (h: number) => new Date(NOW.getTime() + h * 3_600_000);
+      fullRepo.findPairingCovering.mockResolvedValue({ id: 'pair_1', vehicleId: 'veh_1', startedAt: hours(-10), endedAt: hours(-5) });
+      const result = await service.sync(
+        'drv_1',
+        { changes: [change({ driverId: CO, occurredAt: hours(-6), payload: { status: 'SB', startAt: hours(-6), endAt: hours(-2), annotation: 'Sleeper' } } as never)] },
+        actor,
+        NOW,
+      );
+      expect(result.rejected[0]).toMatchObject({ code: ERROR_CODES.SYNC_DELEGATION_NOT_ALLOWED });
+      expect(logs.createLogEntry).not.toHaveBeenCalled();
+    });
+
+    it("B-118 — never corrects another driver's existing record (originalEventId) and bounds the timestamps", async () => {
+      const corrected = await service.sync(
+        'drv_1',
+        { changes: [change({ driverId: CO, payload: { status: 'OFF', startAt: NOW, annotation: 'Correction', originalEventId: '42' } } as never)] },
+        actor,
+        NOW,
+      );
+      expect(corrected.rejected[0]).toMatchObject({ code: ERROR_CODES.SYNC_DELEGATION_NOT_ALLOWED });
+
+      const future = new Date(NOW.getTime() + 10 * 60_000);
+      const tooNew = await service.sync('drv_1', { changes: [change({ clientId: 'c-f', driverId: CO, occurredAt: future })] }, actor, NOW);
+      expect(tooNew.rejected[0]).toMatchObject({ clientId: 'c-f', code: ERROR_CODES.SYNC_DELEGATION_NOT_ALLOWED });
+
+      const old = new Date(NOW.getTime() - 31 * 86_400_000);
+      const tooOld = await service.sync(
+        'drv_1',
+        { changes: [change({ clientId: 'c-o', driverId: CO, occurredAt: NOW, payload: { status: 'OFF', startAt: old, annotation: 'Old entry' } } as never)] },
+        actor,
+        NOW,
+      );
+      expect(tooOld.rejected[0]).toMatchObject({ clientId: 'c-o', code: ERROR_CODES.SYNC_DELEGATION_NOT_ALLOWED });
+      expect(logs.createLogEntry).not.toHaveBeenCalled();
+      expect(fullRepo.findPairingCovering).not.toHaveBeenCalled();
+    });
+
+    it('writes the delegation AuditLog only after the change was applied', async () => {
+      (logs.createLogEntry as jest.Mock).mockRejectedValueOnce(new Error('boom'));
+      const result = await service.sync('drv_1', { changes: [change({ driverId: CO })] }, actor, NOW);
+      expect(result.rejected[0]).toMatchObject({ clientId: 'client-1' });
+      expect(audit.insert).not.toHaveBeenCalled();
+    });
+
+    it('driverId equal to the caller is the ordinary path (no pairing lookup)', async () => {
+      await service.sync('drv_1', { changes: [change({ driverId: 'drv_1' })] }, actor, NOW);
+      expect(fullRepo.findPairingCovering).not.toHaveBeenCalled();
+      expect(logs.createLogEntry).toHaveBeenCalledWith('drv_1', expect.anything(), actor);
+    });
+  });
 });

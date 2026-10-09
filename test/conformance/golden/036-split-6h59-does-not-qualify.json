@@ -1,0 +1,46 @@
+{
+  "name": "split-6h59-does-not-qualify",
+  "spec": "\u00a78.2.1 \u2014 6:59 of sleeper berth is not a qualifying long part",
+  "input": {
+    "timezone": "America/New_York",
+    "now": "2025-01-15T08:00:00Z",
+    "ruleset": "US_70_8_PROPERTY",
+    "driver": {
+      "driverId": "driver-1",
+      "splitSleeperEnabled": true
+    },
+    "previousDays": [],
+    "lastRestartEndedAt": null,
+    "events": [
+      {
+        "at": "2025-01-14T05:00:00Z",
+        "status": "OFF"
+      },
+      {
+        "at": "2025-01-14T15:00:00Z",
+        "status": "ON"
+      },
+      {
+        "at": "2025-01-14T16:00:00Z",
+        "status": "D"
+      },
+      {
+        "at": "2025-01-14T21:00:00Z",
+        "status": "SB"
+      },
+      {
+        "at": "2025-01-15T03:59:00Z",
+        "status": "D"
+      }
+    ]
+  },
+  "expected": {
+    "violations": [
+      {
+        "type": "SHIFT_14",
+        "logDate": "2025-01-15",
+        "exceededBySec": 10800
+      }
+    ]
+  }
+}

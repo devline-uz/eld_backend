@@ -10,6 +10,7 @@ import type {
   DutyStatus,
   HosInput,
   HosRuleset,
+  HosState,
   NormalizedEvent,
   SpecialDrivingCategory,
 } from '../../src/modules/hos/hos.types';
@@ -69,7 +70,7 @@ export function timeline(startIso: string, steps: Array<[number, DutyStatus, Spe
 // Conformance fixtures (TZ §8.6) — the SAME files are read by the Dart engine.
 // ---------------------------------------------------------------------------
 
-export const CONFORMANCE_DIR = join(__dirname, '..', '..', '..', 'eld.docs', 'hos-conformance');
+export const CONFORMANCE_DIR = join(__dirname, '..', 'conformance', 'golden');
 
 export interface ConformanceFixture {
   name: string;
@@ -86,11 +87,49 @@ export interface ConformanceFixture {
   expected: Record<string, unknown>;
 }
 
-export function loadFixtures(): ConformanceFixture[] {
-  return readdirSync(CONFORMANCE_DIR)
+export function loadFixtures(dir: string = CONFORMANCE_DIR): ConformanceFixture[] {
+  return readdirSync(dir)
     .filter((f) => f.endsWith('.json'))
     .sort()
-    .map((f) => JSON.parse(readFileSync(join(CONFORMANCE_DIR, f), 'utf8')) as ConformanceFixture);
+    .map((f) => {
+      const fixture = JSON.parse(readFileSync(join(dir, f), 'utf8')) as ConformanceFixture;
+      // A fixture without `name` is reported by its file name (MR-33: the mobile scenario files).
+      return { ...fixture, name: fixture.name ?? f };
+    });
+}
+
+/**
+ * Asserts a fixture's `expected` block against the engine output. Matching is partial: only the
+ * named fields are checked, except `violations`, which is always asserted in full (count, order,
+ * and every named field). Instants compare by value (`...00.000Z` equals `...00Z`).
+ */
+export function expectFixture(state: HosState, fixture: ConformanceFixture): void {
+  const iso = (value: Date): string => value.toISOString().replace('.000Z', 'Z');
+  const normalize = (value: unknown): unknown =>
+    typeof value === 'string' && /\d{4}-\d{2}-\d{2}T/.test(value) ? iso(new Date(value)) : value;
+  const actual = (key: string): unknown => {
+    const value = (state as unknown as Record<string, unknown>)[key];
+    return value instanceof Date ? iso(value) : value;
+  };
+
+  for (const [key, expected] of Object.entries(fixture.expected)) {
+    if (key === 'violations') {
+      const want = expected as Array<Record<string, unknown>>;
+      expect({ key, count: state.violations.length }).toEqual({ key, count: want.length });
+      want.forEach((fields, index) => {
+        const got = state.violations[index] as unknown as Record<string, unknown>;
+        for (const [field, value] of Object.entries(fields)) {
+          const gotValue = got[field] instanceof Date ? iso(got[field]) : got[field];
+          expect({ field: `violations[${index}].${field}`, value: gotValue }).toEqual({
+            field: `violations[${index}].${field}`,
+            value: normalize(value),
+          });
+        }
+      });
+      continue;
+    }
+    expect({ key, value: actual(key) }).toEqual({ key, value: normalize(expected) });
+  }
 }
 
 export function fixtureToInput(fixture: ConformanceFixture): HosInput {

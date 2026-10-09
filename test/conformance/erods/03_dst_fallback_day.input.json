@@ -1,0 +1,282 @@
+{
+  "driver": {
+    "lastName": "Ng",
+    "firstName": "Li",
+    "username": "ling",
+    "licenseState": "OH",
+    "licenseNumber": "7",
+    "multidayBasis": 8,
+    "exempt": false,
+    "timezoneOffsetMin": -300
+  },
+  "coDriver": null,
+  "currentCmv": {
+    "powerUnitNumber": "101",
+    "vin": "1FUJGLDR9CSBK1234",
+    "trailerNumbers": "TR-88"
+  },
+  "current": {
+    "latitude": 41.25,
+    "longitude": -81.75,
+    "locationPrecisionMi": 1,
+    "totalVehicleMiles": 120400,
+    "totalEngineHours": 4330.25
+  },
+  "shippingDocumentNumber": "BOL-55120",
+  "carrier": {
+    "usdotNumber": "3355123",
+    "name": "OneBook Logistics, LLC"
+  },
+  "eldIdentifier": "OBK001",
+  "eldRegistrationId": "OBK1",
+  "eldAuthenticationValue": "A1B2C3D4",
+  "outputFileComment": "ROADSIDE INSPECTION 2025-11-02",
+  "generatedAt": "2025-11-02T23:30:00.000Z",
+  "users": [
+    {
+      "orderNumber": 1,
+      "username": "ling",
+      "lastName": "Ng",
+      "firstName": "Li",
+      "accountType": "D"
+    },
+    {
+      "orderNumber": 2,
+      "username": "unidentified",
+      "lastName": "Unidentified",
+      "firstName": "Driver",
+      "accountType": "D"
+    }
+  ],
+  "cmvs": [
+    {
+      "orderNumber": 1,
+      "powerUnitNumber": "101",
+      "vin": "1FUJGLDR9CSBK1234"
+    }
+  ],
+  "malfunctions": [
+    {
+      "sequenceId": 70,
+      "recordStatus": 1,
+      "recordOrigin": 1,
+      "eventType": 7,
+      "eventCode": 3,
+      "dateTime": "2025-11-02T05:59:59.000Z",
+      "timezoneOffsetMin": -240,
+      "totalVehicleMiles": 120345,
+      "totalEngineHours": 0.05,
+      "accumulatedVehicleMiles": 45,
+      "elapsedEngineHours": 1.5,
+      "latitude": 41.318511,
+      "longitude": -72.928932,
+      "locationPrecisionMi": 1,
+      "distanceSinceLastValidCoords": 0,
+      "cmvOrderNumber": 1,
+      "userOrderNumber": 1,
+      "malfunctionIndicator": false,
+      "diagnosticIndicator": false,
+      "diagnosticCode": "1"
+    }
+  ],
+  "events": [
+    {
+      "sequenceId": 1,
+      "recordStatus": 1,
+      "recordOrigin": 1,
+      "eventType": 1,
+      "eventCode": 1,
+      "dateTime": "2025-11-02T04:00:00.000Z",
+      "timezoneOffsetMin": -240,
+      "totalVehicleMiles": 120345,
+      "totalEngineHours": 4321.45,
+      "accumulatedVehicleMiles": 45,
+      "elapsedEngineHours": 1.5,
+      "latitude": 0.125,
+      "longitude": -72.125,
+      "locationPrecisionMi": 1,
+      "distanceSinceLastValidCoords": 0,
+      "cmvOrderNumber": 1,
+      "userOrderNumber": 1,
+      "malfunctionIndicator": false,
+      "diagnosticIndicator": false
+    },
+    {
+      "sequenceId": 2,
+      "recordStatus": 1,
+      "recordOrigin": 1,
+      "eventType": 1,
+      "eventCode": 4,
+      "dateTime": "2025-11-02T05:30:00.000Z",
+      "timezoneOffsetMin": -240,
+      "totalVehicleMiles": 120345.9,
+      "totalEngineHours": 4321.4,
+      "accumulatedVehicleMiles": 45,
+      "elapsedEngineHours": 1.5,
+      "latitude": 39.995,
+      "longitude": -83.005,
+      "locationPrecisionMi": 1,
+      "distanceSinceLastValidCoords": 0,
+      "cmvOrderNumber": 1,
+      "userOrderNumber": 1,
+      "malfunctionIndicator": false,
+      "diagnosticIndicator": false
+    },
+    {
+      "sequenceId": 3,
+      "recordStatus": 1,
+      "recordOrigin": 1,
+      "eventType": 1,
+      "eventCode": 3,
+      "dateTime": "2025-11-02T06:30:00.000Z",
+      "timezoneOffsetMin": -300,
+      "totalVehicleMiles": 120345,
+      "totalEngineHours": 4321.4,
+      "accumulatedVehicleMiles": 45,
+      "elapsedEngineHours": 1.5,
+      "latitude": -0.001,
+      "longitude": 179.999,
+      "locationPrecisionMi": 1,
+      "distanceSinceLastValidCoords": 0,
+      "cmvOrderNumber": 1,
+      "userOrderNumber": 1,
+      "malfunctionIndicator": false,
+      "diagnosticIndicator": false
+    },
+    {
+      "sequenceId": 4,
+      "recordStatus": 1,
+      "recordOrigin": 1,
+      "eventType": 3,
+      "eventCode": 1,
+      "dateTime": "2025-11-02T12:00:00.000Z",
+      "timezoneOffsetMin": -300,
+      "totalVehicleMiles": 120345,
+      "totalEngineHours": 4321.4,
+      "accumulatedVehicleMiles": 45,
+      "elapsedEngineHours": 1.5,
+      "latitude": 41.25,
+      "longitude": -81.75,
+      "locationPrecisionMi": 10,
+      "distanceSinceLastValidCoords": 0,
+      "cmvOrderNumber": 1,
+      "userOrderNumber": 1,
+      "malfunctionIndicator": false,
+      "diagnosticIndicator": false
+    },
+    {
+      "sequenceId": 65536,
+      "recordStatus": 1,
+      "recordOrigin": 1,
+      "eventType": 2,
+      "eventCode": 1,
+      "dateTime": "2025-11-02T18:00:00.000Z",
+      "timezoneOffsetMin": -300,
+      "totalVehicleMiles": null,
+      "totalEngineHours": null,
+      "accumulatedVehicleMiles": null,
+      "elapsedEngineHours": null,
+      "latitude": null,
+      "longitude": null,
+      "locationPrecisionMi": 1,
+      "distanceSinceLastValidCoords": null,
+      "cmvOrderNumber": null,
+      "userOrderNumber": null,
+      "malfunctionIndicator": false,
+      "diagnosticIndicator": false
+    },
+    {
+      "sequenceId": 0,
+      "recordStatus": 1,
+      "recordOrigin": 1,
+      "eventType": 1,
+      "eventCode": 1,
+      "dateTime": "2025-11-03T04:59:59.000Z",
+      "timezoneOffsetMin": -300,
+      "totalVehicleMiles": 120345,
+      "totalEngineHours": 4321.4,
+      "accumulatedVehicleMiles": 45,
+      "elapsedEngineHours": 1.5,
+      "latitude": 41.318511,
+      "longitude": -72.928932,
+      "locationPrecisionMi": 1,
+      "distanceSinceLastValidCoords": 0,
+      "cmvOrderNumber": 1,
+      "userOrderNumber": 1,
+      "malfunctionIndicator": true,
+      "diagnosticIndicator": true
+    }
+  ],
+  "loginLogout": [
+    {
+      "sequenceId": 91,
+      "recordStatus": 1,
+      "recordOrigin": 1,
+      "eventType": 5,
+      "eventCode": 1,
+      "dateTime": "2025-11-02T04:30:00.000Z",
+      "timezoneOffsetMin": -240,
+      "totalVehicleMiles": 120345,
+      "totalEngineHours": 4321.4,
+      "accumulatedVehicleMiles": 45,
+      "elapsedEngineHours": 1.5,
+      "latitude": 41.318511,
+      "longitude": -72.928932,
+      "locationPrecisionMi": 1,
+      "distanceSinceLastValidCoords": 0,
+      "cmvOrderNumber": 1,
+      "userOrderNumber": 1,
+      "malfunctionIndicator": false,
+      "diagnosticIndicator": false,
+      "username": "ling"
+    }
+  ],
+  "enginePower": [
+    {
+      "sequenceId": 92,
+      "recordStatus": 1,
+      "recordOrigin": 1,
+      "eventType": 6,
+      "eventCode": 2,
+      "dateTime": "2025-11-02T04:20:00.000Z",
+      "timezoneOffsetMin": -240,
+      "totalVehicleMiles": 120345,
+      "totalEngineHours": 4321.4,
+      "accumulatedVehicleMiles": 45,
+      "elapsedEngineHours": 1.5,
+      "latitude": 0.125,
+      "longitude": -72.125,
+      "locationPrecisionMi": 10,
+      "distanceSinceLastValidCoords": 0,
+      "cmvOrderNumber": 1,
+      "userOrderNumber": 1,
+      "malfunctionIndicator": false,
+      "diagnosticIndicator": false
+    }
+  ],
+  "annotations": [
+    {
+      "sequenceId": 2,
+      "username": "ling",
+      "text": "  Pre-trip,   fuel\tstop  ",
+      "dateTime": "2025-11-02T05:31:00.000Z",
+      "timezoneOffsetMin": -240
+    }
+  ],
+  "certifications": [
+    {
+      "sequenceId": 90,
+      "eventCode": 1,
+      "dateTime": "2025-11-03T04:30:00.000Z",
+      "timezoneOffsetMin": -300,
+      "certifiedDate": "2025-11-02T00:00:00.000Z",
+      "cmvOrderNumber": 1
+    }
+  ],
+  "unidentified": [],
+  "fileNameInput": {
+    "rangeStart": "2025-11-02",
+    "rangeEnd": "2025-11-02",
+    "sequence": 100
+  }
+}
