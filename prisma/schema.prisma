@@ -340,7 +340,8 @@ model VehicleGroup {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  vehicles Vehicle[]
+  vehicles  Vehicle[]
+  geofences Geofence[]
 }
 
 model Trailer {
@@ -932,7 +933,13 @@ model Geofence {
   /// Time a unit spends inside counts as on-duty yard move (web overlay 11.1 footer checkbox).
   countAsYardMove Boolean        @default(false)
   enabled         Boolean        @default(true)
+  /// §20 B-104 — "Applies to" select in web overlay 11.1. Null = every vehicle group; deleting
+  /// the group makes the fence apply to all groups again (SetNull).
+  vehicleGroupId  String?
+  vehicleGroup    VehicleGroup?  @relation(fields: [vehicleGroupId], references: [id], onDelete: SetNull)
   createdAt       DateTime       @default(now())
+
+  @@index([vehicleGroupId])
 }
 
 model SafetyEvent {

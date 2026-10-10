@@ -1,9 +1,12 @@
 import { CreateGeofenceDto, UpdateGeofenceDto } from './dto/geofences.dto';
 import { GeofencesService } from './geofences.service';
 
-function buildService(geocoderUrl: string | undefined = undefined) {
+const GROUP_ID = '11111111-1111-4111-8111-111111111111';
+
+function buildService(geocoderUrl: string | undefined = undefined, knownGroups: string[] = [GROUP_ID]) {
   const repo = {
-    findById: jest.fn(async () => ({ id: 'gf_1', type: 'ADDRESS' })),
+    findWithGroup: jest.fn(async () => ({ id: 'gf_1', type: 'ADDRESS', vehicleGroupId: null, vehicleGroup: null })),
+    groupExists: jest.fn(async (id: string) => knownGroups.includes(id)),
     create: jest.fn(async (data: unknown) => ({ id: 'gf_new', ...(data as object) })),
     update: jest.fn(async (_where: unknown, data: unknown) => ({ id: 'gf_1', ...(data as object) })),
   };
@@ -84,5 +87,67 @@ describe('GeofencesService — colour + count as yard move (overlay 11.1)', () =
     const dto = UpdateGeofenceDto.parse({ name: 'Renamed' });
     expect(dto).not.toHaveProperty('colour');
     expect(dto).not.toHaveProperty('countAsYardMove');
+  });
+});
+
+describe('GeofencesService — §20 B-104 "Applies to" vehicle group', () => {
+  const base = { name: 'Yard A', type: 'CIRCLE', centerLat: 40, centerLon: -83, radiusMi: 0.5 };
+
+  it('connects the vehicle group on create', async () => {
+    const { service, repo } = buildService(undefined);
+    await service.create(CreateGeofenceDto.parse({ ...base, vehicleGroupId: GROUP_ID }));
+    const data = repo.create.mock.calls[0][0] as Record<string, unknown>;
+    expect(data.vehicleGroup).toEqual({ connect: { id: GROUP_ID } });
+    expect(data).not.toHaveProperty('vehicleGroupId');
+  });
+
+  it('treats null / absent vehicleGroupId as "all groups" (no relation written)', async () => {
+    const { service, repo } = buildService(undefined);
+    await service.create(CreateGeofenceDto.parse({ ...base, vehicleGroupId: null }));
+    await service.create(CreateGeofenceDto.parse(base));
+    expect(repo.create.mock.calls[0][0]).not.toHaveProperty('vehicleGroup');
+    expect(repo.create.mock.calls[1][0]).not.toHaveProperty('vehicleGroup');
+    expect(repo.groupExists).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unknown (e.g. other-carrier) group with 404 VEHICLE_GROUP_NOT_FOUND', async () => {
+    const { service, repo } = buildService(undefined, []);
+    await expect(service.create(CreateGeofenceDto.parse({ ...base, vehicleGroupId: GROUP_ID }))).rejects.toMatchObject({
+      code: 'VEHICLE_GROUP_NOT_FOUND',
+    });
+    await expect(service.update('gf_1', UpdateGeofenceDto.parse({ vehicleGroupId: GROUP_ID }))).rejects.toMatchObject({
+      code: 'VEHICLE_GROUP_NOT_FOUND',
+    });
+    expect(repo.create).not.toHaveBeenCalled();
+    expect(repo.update).not.toHaveBeenCalled();
+  });
+
+  it('rejects a non-uuid vehicleGroupId at validation', () => {
+    expect(CreateGeofenceDto.safeParse({ ...base, vehicleGroupId: 'grp_1' }).success).toBe(false);
+    expect(UpdateGeofenceDto.safeParse({ vehicleGroupId: 'grp_1' }).success).toBe(false);
+  });
+
+  it('disconnects on update with null and leaves the group untouched when omitted', async () => {
+    const { service, repo } = buildService(undefined);
+    await service.update('gf_1', UpdateGeofenceDto.parse({ vehicleGroupId: null }));
+    await service.update('gf_1', UpdateGeofenceDto.parse({ name: 'Renamed' }));
+    expect(repo.update.mock.calls[0][1]).toMatchObject({ vehicleGroup: { disconnect: true } });
+    expect(repo.update.mock.calls[1][1]).not.toHaveProperty('vehicleGroup');
+  });
+
+  it('returns vehicleGroupId + vehicleGroupName on detail, and null after the group was deleted (SetNull)', async () => {
+    const { service, repo } = buildService(undefined);
+    repo.findWithGroup.mockResolvedValueOnce({ id: 'gf_1', type: 'CIRCLE', vehicleGroupId: GROUP_ID, vehicleGroup: { name: 'Northeast' } } as never);
+    await expect(service.get('gf_1')).resolves.toEqual({ id: 'gf_1', type: 'CIRCLE', vehicleGroupId: GROUP_ID, vehicleGroupName: 'Northeast' });
+    // After `DELETE /vehicle-groups/:id` the FK's ON DELETE SET NULL leaves the fence with no group.
+    await expect(service.get('gf_1')).resolves.toMatchObject({ vehicleGroupId: null, vehicleGroupName: null });
+  });
+
+  it('flattens the group name into every list row', async () => {
+    const repo = {
+      listAll: jest.fn(async () => [{ id: 'gf_1', vehicleGroupId: GROUP_ID, vehicleGroup: { name: 'Northeast' } }]),
+    };
+    const service = new GeofencesService(repo as never, { get: jest.fn() } as never);
+    await expect(service.list()).resolves.toEqual({ items: [{ id: 'gf_1', vehicleGroupId: GROUP_ID, vehicleGroupName: 'Northeast' }] });
   });
 });

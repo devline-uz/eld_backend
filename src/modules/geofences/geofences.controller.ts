@@ -23,7 +23,7 @@ export class GeofencesController {
   @Get()
   @Perm('liveFleet', 'READ')
   @ApiOperation({ summary: 'Lists all geofences drawn on the Live Fleet map.' })
-  @ApiOkResponse({ schema: { example: { items: [{ id: 'gf_1', name: 'Columbus Terminal', type: 'CIRCLE', radiusMi: 1, alertOnEnter: true, colour: 'BLUE', countAsYardMove: false }] } } })
+  @ApiOkResponse({ schema: { example: { items: [{ id: 'gf_1', name: 'Columbus Terminal', type: 'CIRCLE', radiusMi: 1, alertOnEnter: true, colour: 'BLUE', countAsYardMove: false, vehicleGroupId: null, vehicleGroupName: null }] } } })
   @ApiStandardErrors()
   list() {
     return this.geofences.list();
@@ -32,7 +32,7 @@ export class GeofencesController {
   @Get(':id')
   @Perm('liveFleet', 'READ')
   @ApiOperation({ summary: 'One geofence.' })
-  @ApiOkResponse({ schema: { example: { id: 'gf_1', name: 'Columbus Terminal', type: 'CIRCLE', colour: 'BLUE', countAsYardMove: false } } })
+  @ApiOkResponse({ schema: { example: { id: 'gf_1', name: 'Columbus Terminal', type: 'CIRCLE', colour: 'BLUE', countAsYardMove: false, vehicleGroupId: 'b1c2d3e4-0000-4000-8000-000000000001', vehicleGroupName: 'Northeast' } } })
   @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.NOT_FOUND, 'Geofence not found.')] })
   get(@Param('id') id: string) {
     return this.geofences.get(id);
@@ -42,8 +42,13 @@ export class GeofencesController {
   @Perm('liveFleet', 'FULL')
   @Audit({ object: 'Geofence', action: 'CREATE' })
   @ApiOperation({ summary: 'Draws a new terminal/customer geofence (circle or polygon).' })
-  @ApiCreatedResponse({ schema: { example: { id: 'gf_2', name: 'Cust. dock 4', type: 'CIRCLE', radiusMi: 0.5, colour: 'GREEN', countAsYardMove: true } } })
-  @ApiStandardErrors({ errors: [apiError.validation('CIRCLE requires centerLat/centerLon/radiusMi; POLYGON requires polygon points.')] })
+  @ApiCreatedResponse({ schema: { example: { id: 'gf_2', name: 'Cust. dock 4', type: 'CIRCLE', radiusMi: 0.5, colour: 'GREEN', countAsYardMove: true, vehicleGroupId: 'b1c2d3e4-0000-4000-8000-000000000001' } } })
+  @ApiStandardErrors({
+    errors: [
+      apiError.validation('CIRCLE requires centerLat/centerLon/radiusMi; POLYGON requires polygon points.'),
+      apiError.notFound(ERROR_CODES.VEHICLE_GROUP_NOT_FOUND, 'Vehicle group not found.'),
+    ],
+  })
   create(@Body(zodBody(CreateGeofenceDto)) dto: CreateGeofenceDto) {
     return this.geofences.create(dto);
   }
@@ -52,7 +57,9 @@ export class GeofencesController {
   @Perm('liveFleet', 'FULL')
   @Audit({ object: 'Geofence', action: 'UPDATE' })
   @ApiOperation({ summary: 'Updates a geofence.' })
-  @ApiOkResponse({ schema: { example: { id: 'gf_1', enabled: false } } })
+  @ApiOkResponse({ schema: { example: { id: 'gf_1', enabled: false, vehicleGroupId: null } } })
+  // One spec per status (ApiStandardErrors de-dupes on status); an unknown `vehicleGroupId`
+  // is also a 404, with code VEHICLE_GROUP_NOT_FOUND (§20 B-104).
   @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.NOT_FOUND, 'Geofence not found.')] })
   update(@Param('id') id: string, @Body(zodBody(UpdateGeofenceDto)) dto: UpdateGeofenceDto) {
     return this.geofences.update(id, dto);

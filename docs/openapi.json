@@ -58705,7 +58705,9 @@
                         "radiusMi": 1,
                         "alertOnEnter": true,
                         "colour": "BLUE",
-                        "countAsYardMove": false
+                        "countAsYardMove": false,
+                        "vehicleGroupId": null,
+                        "vehicleGroupName": null
                       }
                     ]
                   }
@@ -58906,7 +58908,8 @@
                     "type": "CIRCLE",
                     "radiusMi": 0.5,
                     "colour": "GREEN",
-                    "countAsYardMove": true
+                    "countAsYardMove": true,
+                    "vehicleGroupId": "b1c2d3e4-0000-4000-8000-000000000001"
                   }
                 }
               }
@@ -58999,6 +59002,53 @@
                     "statusCode": 403,
                     "code": "FORBIDDEN",
                     "message": "Insufficient permissions for this action.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "VEHICLE_GROUP_NOT_FOUND — Vehicle group not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 404,
+                    "code": "VEHICLE_GROUP_NOT_FOUND",
+                    "message": "Vehicle group not found.",
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
                   }
@@ -59105,7 +59155,9 @@
                     "name": "Columbus Terminal",
                     "type": "CIRCLE",
                     "colour": "BLUE",
-                    "countAsYardMove": false
+                    "countAsYardMove": false,
+                    "vehicleGroupId": "b1c2d3e4-0000-4000-8000-000000000001",
+                    "vehicleGroupName": "Northeast"
                   }
                 }
               }
@@ -59356,7 +59408,8 @@
                 "schema": {
                   "example": {
                     "id": "gf_1",
-                    "enabled": false
+                    "enabled": false,
+                    "vehicleGroupId": null
                   }
                 }
               }
@@ -69780,6 +69833,11 @@
           "countAsYardMove": {
             "type": "boolean",
             "default": false
+          },
+          "vehicleGroupId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
           }
         },
         "required": [
@@ -73499,6 +73557,11 @@
           },
           "enabled": {
             "type": "boolean"
+          },
+          "vehicleGroupId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
           }
         }
       },
