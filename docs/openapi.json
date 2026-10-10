@@ -22620,8 +22620,8 @@
                       "items": [
                         {
                           "id": "ntf_1",
-                          "userId": null,
-                          "driverId": "drv_1",
+                          "userId": "usr_1",
+                          "driverId": null,
                           "type": "hos_violation",
                           "kind": "VIOLATION",
                           "title": "HOS violation",

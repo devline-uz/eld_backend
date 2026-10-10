@@ -33,7 +33,7 @@ export class NotificationsController {
   })
   @ApiEnvelopeResponse(NotificationListResponse, {
     example: {
-      items: [{ id: 'ntf_1', userId: null, driverId: 'drv_1', type: 'hos_violation', kind: 'VIOLATION', title: 'HOS violation', body: 'An HOS violation was detected.', objectType: 'Driver', objectId: 'drv_1', category: 'VIOLATIONS', severity: 'CRITICAL', readAt: null, createdAt: '2026-10-08T15:41:00.000Z' }],
+      items: [{ id: 'ntf_1', userId: 'usr_1', driverId: null, type: 'hos_violation', kind: 'VIOLATION', title: 'HOS violation', body: 'An HOS violation was detected.', objectType: 'Driver', objectId: 'drv_1', category: 'VIOLATIONS', severity: 'CRITICAL', readAt: null, createdAt: '2026-10-08T15:41:00.000Z' }],
       page: 1, limit: 25, total: 1, totalPages: 1, counts: { all: 12, violations: 5, maintenance: 3 }, unreadCount: 4,
     },
   })
