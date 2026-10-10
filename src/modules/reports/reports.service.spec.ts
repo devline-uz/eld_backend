@@ -22,6 +22,7 @@ describe('ReportsService (TZ §15)', () => {
     };
     const storage = {
       presignGet: jest.fn(async () => 'https://minio.local/signed'),
+      get: jest.fn(async () => Buffer.from('a,b\n1,2\n')),
     };
     const queue = { add: jest.fn(async () => undefined) };
     const iftaReportGenerator = {
@@ -128,6 +129,24 @@ describe('ReportsService (TZ §15)', () => {
     expect(result.downloadUrl).toBe('https://minio.local/signed');
     expect(storage.presignGet).toHaveBeenCalledWith('reports/rpt_1.csv', 7 * 24 * 60 * 60);
     expect(result.fileName).toBe('rpt_1.csv');
+  });
+
+  it('file() 409s with REPORT_NOT_READY and never reads storage before READY', async () => {
+    const { service, repo, storage } = build();
+    repo.findByIdWithRequestedBy.mockResolvedValueOnce({ id: 'rpt_1', status: 'RUNNING', fileKey: null, requestedBy: null });
+    await expect(service.file('rpt_1')).rejects.toMatchObject({ code: ERROR_CODES.REPORT_NOT_READY });
+    expect(storage.get).not.toHaveBeenCalled();
+  });
+
+  it('file() returns the stored bytes with the file name and content type (web download through the API)', async () => {
+    const { service, repo, storage } = build();
+    repo.findByIdWithRequestedBy.mockResolvedValueOnce({ id: 'rpt_1', status: 'READY', fileKey: 'reports/rpt_1.csv', requestedBy: null });
+    const csv = await service.file('rpt_1');
+    expect(storage.get).toHaveBeenCalledWith('reports/rpt_1.csv');
+    expect(csv).toEqual({ fileName: 'rpt_1.csv', contentType: 'text/csv; charset=utf-8', body: Buffer.from('a,b\n1,2\n') });
+
+    repo.findByIdWithRequestedBy.mockResolvedValueOnce({ id: 'rpt_2', status: 'READY', fileKey: 'reports/rpt_2.pdf', requestedBy: null });
+    await expect(service.file('rpt_2')).resolves.toMatchObject({ fileName: 'rpt_2.pdf', contentType: 'application/pdf' });
   });
 
   it('get() 404s for an unknown report id', async () => {

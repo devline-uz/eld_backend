@@ -13,6 +13,7 @@ import { IftaSegmentsService } from './ifta/ifta-segments.service';
 import { ReportsController } from './reports.controller';
 import { ReportSchedulesRepository, ReportsRepository } from './reports.repository';
 import { ReportsService } from './reports.service';
+import { ScheduledReportMailer } from './scheduled-report-mailer';
 
 /**
  * TZ §15 — Phase 8 reports. Imported by both `app.module.ts` (controller + `generate()`
@@ -37,6 +38,7 @@ import { ReportsService } from './reports.service';
     IdleFuelReportGenerator,
     IftaSegmentsService,
     IftaSegmentsRepository,
+    ScheduledReportMailer,
   ],
   exports: [
     ReportsService,
@@ -51,6 +53,7 @@ import { ReportsService } from './reports.service';
     IdleFuelReportGenerator,
     IftaSegmentsService,
     IftaSegmentsRepository,
+    ScheduledReportMailer,
   ],
 })
 export class ReportsModule {}
