@@ -16,6 +16,7 @@ function input(overrides: Partial<LiveFleetInput> = {}): LiveFleetInput {
     device: { serial: 'PT30_A86E', bleState: 'CONNECTED', lastSeenAt: minsAgo(1) },
     telemetry: {
       time: minsAgo(2),
+      fixTime: minsAgo(2),
       latitude: 38.99,
       longitude: -84.63,
       speedMph: 61,
@@ -32,6 +33,33 @@ function input(overrides: Partial<LiveFleetInput> = {}): LiveFleetInput {
 }
 
 describe('toLiveFleetUnit (GET /live/fleet, web/tz.md §20 B-3)', () => {
+  it('PT SDK 6.11 — a newest point without a GPS fix keeps the last located pin and fresh speed', () => {
+    const unit = toLiveFleetUnit(
+      input({
+        telemetry: {
+          time: minsAgo(1), fixTime: minsAgo(20), latitude: 38.5, longitude: -84.1,
+          speedMph: 55, headingDeg: 90, odometerMi: 50_130, engineOn: true,
+        },
+      }),
+    );
+    expect(unit.lat).toBe(38.5);
+    expect(unit.lon).toBe(-84.1);
+    expect(unit.speedMph).toBe(55);
+  });
+
+  it('PT SDK 6.11 — no located point at all yields a null position, never 0/0', () => {
+    const unit = toLiveFleetUnit(
+      input({
+        telemetry: {
+          time: minsAgo(1), fixTime: null, latitude: null, longitude: null,
+          speedMph: 0, headingDeg: null, odometerMi: null, engineOn: true,
+        },
+      }),
+    );
+    expect(unit.lat).toBeNull();
+    expect(unit.lon).toBeNull();
+  });
+
   it('emits exactly the fields web/src/shared/api/liveFleet.ts reads', () => {
     const unit = toLiveFleetUnit(input());
     expect(Object.keys(unit).sort()).toEqual(
@@ -110,7 +138,7 @@ describe('toLiveFleetUnit (GET /live/fleet, web/tz.md §20 B-3)', () => {
   });
 
   it('drops a stale speed, keeps the vehicle odometer when there is no telemetry, and has no position without any fix', () => {
-    const stale = toLiveFleetUnit(input({ telemetry: { ...input().telemetry!, time: minsAgo(31) } }));
+    const stale = toLiveFleetUnit(input({ telemetry: { ...input().telemetry!, time: minsAgo(31), fixTime: minsAgo(31) } }));
     expect(stale.speedMph).toBeNull();
     expect(stale.lat).toBe(38.99);
     const none = toLiveFleetUnit(input({ telemetry: null }));
@@ -120,7 +148,7 @@ describe('toLiveFleetUnit (GET /live/fleet, web/tz.md §20 B-3)', () => {
   it('takes the position (and its place name) from a located RODS record newer than the last telemetry fix', () => {
     const unit = toLiveFleetUnit(
       input({
-        telemetry: { ...input().telemetry!, time: minsAgo(90) },
+        telemetry: { ...input().telemetry!, time: minsAgo(90), fixTime: minsAgo(90) },
         located: { eventDateTime: minsAgo(5), latitude: 39.1, longitude: -84.5, locationName: '0.64 mi N of Florence, KY' },
         device: { serial: 's', bleState: 'CONNECTED', lastSeenAt: minsAgo(120) },
       }),

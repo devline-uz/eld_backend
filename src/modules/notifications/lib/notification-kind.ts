@@ -128,6 +128,8 @@ export function deriveNotificationBody(eventName: string, payload: Record<string
       return 'A device has a data sync backlog.';
     case eventName === 'alert.device_mac_mismatch':
       return 'A driver app saw an ELD whose BLE MAC does not match the device record.';
+    case eventName === 'alert.device_vin_mismatch':
+      return 'An ELD reported a VIN that does not match its paired vehicle.';
     case eventName === 'alert.sync_backlog':
       return 'The mobile app has an offline sync backlog.';
     case eventName === 'alert.odometer_anomaly':

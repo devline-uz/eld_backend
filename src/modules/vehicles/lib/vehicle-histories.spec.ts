@@ -66,4 +66,19 @@ describe('buildVehicleHistories', () => {
     expect(result.maxSpeedMph).toBe(72);
     expect(result.maxSpeedAt).toBe('2026-09-24T09:05:00.000Z');
   });
+
+  it('PT SDK 6.11 — fix-less points take the last known fix; a day with no fix yields null + Unknown location', () => {
+    const filled = buildVehicleHistories(
+      '2026-09-24',
+      [
+        point({ time: new Date('2026-09-24T11:00:00.000Z'), lat: 41, lon: -84 }),
+        point({ time: new Date('2026-09-24T12:00:00.000Z'), speedMph: 50, engineOn: true, lat: null, lon: null }),
+      ],
+      new Map(),
+    );
+    expect(filled.segments[1]).toMatchObject({ type: 'DRIVE', lat: 41, lon: -84, location: '41.0000, -84.0000' });
+
+    const none = buildVehicleHistories('2026-09-24', [point({ lat: null, lon: null })], new Map());
+    expect(none.segments[0]).toMatchObject({ lat: null, lon: null, location: 'Unknown location' });
+  });
 });

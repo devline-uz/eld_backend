@@ -25,7 +25,7 @@ function setup() {
       },
     ]),
     latestTelemetry: jest.fn().mockResolvedValue(
-      new Map([['veh_101', { time: minsAgo(2), latitude: 38.99, longitude: -84.63, speedMph: 0, headingDeg: 90, odometerMi: 50_100, engineOn: false }]]),
+      new Map([['veh_101', { time: minsAgo(2), fixTime: minsAgo(2), latitude: 38.99, longitude: -84.63, speedMph: 0, headingDeg: 90, odometerMi: 50_100, engineOn: false }]]),
     ),
     latestLocatedEvents: jest.fn().mockResolvedValue(new Map()),
     activeSpecialDriving: jest.fn().mockResolvedValue(new Map([['drv_1', 'PC']])),

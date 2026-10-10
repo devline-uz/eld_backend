@@ -381,7 +381,24 @@ model Device {
   storedEventsCount Int       @default(0)
 
   periodicConnectedSec    Int @default(30)
+  /// LEGACY (minutes) — superseded by `periodicNoBleSec`; kept for backwards compatibility.
   periodicDisconnectedMin Int @default(30)
+  /// SDK `PERIODIC_EVENT_GAP_NOBLE`, seconds 10–480.
+  periodicNoBleSec        Int @default(30)
+
+  /// PT SDK 6.11 device info / system-variable targets (0 = off for the harsh thresholds, mG 0–8192).
+  productName    String?
+  bleFirmware    String?
+  imei           String?
+  reportedVin    String?
+  sdkVersion     String?
+  appPlatform    AppPlatform?
+  connectionType DeviceConnectionType?
+  busType        BusType?
+  lastInfoAt     DateTime?
+  harshAccelMg   Int                   @default(0)
+  harshBrakeMg   Int                   @default(0)
+  harshCornerMg  Int                   @default(0)
 
   /// §20 B-88.
   autoFirmware     Boolean @default(true)
@@ -390,11 +407,49 @@ model Device {
   pairedAt  DateTime?
   createdAt DateTime  @default(now())
 
-  vehicle Vehicle? @relation(fields: [vehicleId], references: [id])
+  vehicle   Vehicle?         @relation(fields: [vehicleId], references: [id])
+  rawEvents DeviceRawEvent[]
 
   @@unique([vehicleId])
   @@index([status])
   @@index([bleState, lastSeenAt])
+}
+
+/// Raw PT SDK TelemetryEvent log — NOT a §395 record. Unique key = SDK ACK key (seq + date).
+model DeviceRawEvent {
+  id        BigInt  @id @default(autoincrement())
+  deviceId  String
+  vehicleId String?
+  driverId  String?
+
+  type       DeviceRawEventType
+  seq        Int
+  hsi        Int?
+  occurredAt DateTime
+  live       Boolean
+
+  latitude      Decimal? @db.Decimal(9, 6)
+  longitude     Decimal? @db.Decimal(9, 6)
+  headingDeg    Int?
+  gpsLocked     Boolean?
+  gpsSatellites Int?
+  gpsDop        Decimal? @db.Decimal(4, 1)
+  gpsAgeSec     Int?
+
+  odometerKm   Decimal? @db.Decimal(12, 1)
+  speedKmh     Int?
+  engineHours  Decimal? @db.Decimal(10, 2)
+  rpm          Int?
+  obd2         Boolean?
+  engineAgeSec Int?
+
+  receivedAt DateTime @default(now())
+
+  device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@unique([deviceId, occurredAt, seq])
+  @@index([vehicleId, occurredAt])
+  @@index([deviceId, occurredAt])
 }
 
 // ---------------------------------------------------------------------------
@@ -490,8 +545,9 @@ model TelemetryPoint {
   vehicleId String
   driverId  String?
 
-  latitude   Decimal @db.Decimal(9, 6)
-  longitude  Decimal @db.Decimal(9, 6)
+  /// Nullable since PT SDK 6.11 (VDB snapshots without a GPS lock).
+  latitude   Decimal? @db.Decimal(9, 6)
+  longitude  Decimal? @db.Decimal(9, 6)
   speedMph   Int?
   headingDeg Int?
 
@@ -527,6 +583,21 @@ model TelemetryPoint {
   busType  BusType?
   voltage  Decimal? @db.Decimal(4, 1)
 
+  /// PT SDK 6.11 Virtual Dashboard additions.
+  intakePressureKpa   Decimal? @db.Decimal(6, 1)
+  barometerKpa        Decimal? @db.Decimal(5, 1)
+  fuelTempC           Int?
+  intercoolerTempC    Int?
+  turboOilTempC       Int?
+  retarderPct         Int?
+  brakePedal          Int?
+  odometerComputed    Boolean?
+  engineHoursComputed Boolean?
+  gpsLocked           Boolean?
+  gpsSatellites       Int?
+  gpsDop              Decimal? @db.Decimal(4, 1)
+  gpsAgeSec           Int?
+
   @@id([time, vehicleId])
   @@index([vehicleId, time])
 }
@@ -547,7 +618,15 @@ model DiagnosticTroubleCode {
   lastSeenAt  DateTime
   clearedAt   DateTime?
 
+  /// PT SDK 6.11: OBD-II code (`P0301`) or J1708 `SID 254` / `PID 84`.
+  code             String?
+  bus              BusType?
+  milOn            Boolean?
+  conversionMethod Int?
+  active           Boolean?
+
   @@index([vehicleId, clearedAt])
+  @@index([vehicleId, spn, fmi, code])
 }
 
 // ---------------------------------------------------------------------------
@@ -1436,6 +1515,32 @@ enum FuelType {
   CNG
   LNG
   ELECTRIC
+}
+
+enum DeviceConnectionType {
+  BLE
+  USB
+}
+
+enum DeviceRawEventType {
+  POWER_ON
+  POWER_OFF
+  IGNITION_ON
+  IGNITION_OFF
+  ENGINE_ON
+  ENGINE_OFF
+  TRIP_START
+  TRIP_END
+  PERIODIC
+  BLE_ON
+  BLE_OFF
+  BUS_ON
+  BUS_OFF
+  HARSH_ACCEL
+  HARSH_BRAKE
+  HARSH_CORNER
+  INTERMEDIATE
+  UNKNOWN
 }
 
 enum AppPlatform {

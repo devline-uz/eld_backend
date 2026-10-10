@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { Device, EldEvent, Prisma, Vehicle } from '@prisma/client';
+import type { Device, DeviceRawEvent, EldEvent, Prisma, Vehicle } from '@prisma/client';
 import { BaseRepository, ModelDelegate } from '../../core/prisma/base.repository';
 import { PrismaService } from '../../core/prisma/prisma.service';
 import { AUTO_CHECK_WINDOW_SEC } from './detectors';
@@ -188,6 +188,30 @@ export class IngestRepository extends BaseRepository<
     return this.prisma.device.update({ where: { id }, data });
   }
 
+  // --- raw SDK device events (POST /ingest/device-events) -------------------
+
+  /**
+   * Idempotent on the SDK ACK key `(deviceId, occurredAt, seq)`: `ON CONFLICT DO NOTHING`, and
+   * only the rows actually inserted come back — those (and only those) may create SafetyEvents.
+   */
+  insertDeviceRawEvents(
+    tx: IngestTx,
+    rows: Prisma.DeviceRawEventCreateManyInput[],
+  ): Promise<Array<{ id: bigint; type: DeviceRawEvent['type']; seq: number; occurredAt: Date }>> {
+    if (!rows.length) return Promise.resolve([]);
+    return tx.deviceRawEvent.createManyAndReturn({
+      data: rows,
+      skipDuplicates: true,
+      select: { id: true, type: true, seq: true, occurredAt: true },
+    });
+  }
+
+  async insertSafetyEvents(tx: IngestTx, rows: Prisma.SafetyEventCreateManyInput[]): Promise<number> {
+    if (!rows.length) return 0;
+    const result = await tx.safetyEvent.createMany({ data: rows });
+    return result.count;
+  }
+
   // --- state needed by the ingest rules ------------------------------------
 
   /** §7.3 rule 9 — is Personal Conveyance active for this driver at `at`? */
@@ -282,8 +306,9 @@ export class IngestRepository extends BaseRepository<
         orderBy: { time: 'asc' },
         select: { time: true },
       }),
+      // §7.8 `L` — only a point WITH a fix is positioning data (SDK 6.11 points may have none).
       this.prisma.telemetryPoint.findMany({
-        where: { vehicleId, time: { gte: since } },
+        where: { vehicleId, time: { gte: since }, latitude: { not: null }, longitude: { not: null } },
         orderBy: { time: 'asc' },
         select: { time: true },
       }),

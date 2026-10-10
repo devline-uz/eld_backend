@@ -31,3 +31,9 @@ export const ReportDeviceMacDto = z.object({
     }),
 });
 export type ReportDeviceMacDto = z.infer<typeof ReportDeviceMacDto>;
+
+/** PT SDK 6.11 — `GET /mobile/device-config?serial=`. */
+export const DeviceConfigQueryDto = z.object({
+  serial: z.string().trim().min(1).max(60),
+});
+export type DeviceConfigQueryDto = z.infer<typeof DeviceConfigQueryDto>;

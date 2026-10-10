@@ -452,8 +452,9 @@ export class VehiclesService {
       odometerMi: p.odometerMi,
       totalFuelIdleGal: p.totalFuelIdleGal ? Number(p.totalFuelIdleGal) : null,
       driverId: p.driverId,
-      lat: Number(p.latitude),
-      lon: Number(p.longitude),
+      // PT SDK 6.11 — a point without a fix stays null (Number(null) would read as 0,0).
+      lat: p.latitude === null ? null : Number(p.latitude),
+      lon: p.longitude === null ? null : Number(p.longitude),
     }));
 
     const driverIds = [...new Set(historyPoints.map((p) => p.driverId).filter((id): id is string => Boolean(id)))];

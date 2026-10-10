@@ -6,14 +6,32 @@ import { PrismaService } from '../core/prisma/prisma.service';
 import { EventBusService } from '../core/events/event-bus.service';
 import { CircleGeofence, detectGeofenceTransitions, isDwellExceeded, isInsideGeofence, Point } from '../modules/geofences/lib/geofence-detect';
 import { GeofencesRepository } from '../modules/geofences/geofences.repository';
+import { coarsenLocation } from '../common/units';
 import { detectHarshEvents, toSample } from '../modules/safety/lib/harsh-detect';
 import { SafetyRepository } from '../modules/safety/safety.repository';
 
 export interface SafetyDetectJobData {
   vehicleId: string;
   driverId: string | null;
-  points: Array<{ time: string; latitude: number; longitude: number; speedKmh?: number | null; headingDeg?: number | null }>;
+  /** §7.3 rule 9 — PC active at the batch start: persisted positions coarsen to 10 mi, else 1 mi. */
+  pcActive?: boolean;
+  /** D-135 — harsh types the device itself detects (threshold > 0); the proxy skips those. */
+  deviceHarsh?: { accel: boolean; brake: boolean; corner: boolean };
+  /** Lat/lon are `null` for a point without a GPS fix (PT SDK 6.11). */
+  points: Array<{
+    time: string;
+    latitude: number | null;
+    longitude: number | null;
+    speedKmh?: number | null;
+    headingDeg?: number | null;
+  }>;
 }
+
+const PROXY_TYPE_COVERED_BY_DEVICE: Record<'HARSH_ACCEL' | 'HARSH_BRAKING' | 'HARSH_TURN', 'accel' | 'brake' | 'corner'> = {
+  HARSH_ACCEL: 'accel',
+  HARSH_BRAKING: 'brake',
+  HARSH_TURN: 'corner',
+};
 
 /**
  * TZ §11.5 (`GET /safety/events`) + Live Fleet "Geofences" chip — consumes the telemetry
@@ -40,7 +58,7 @@ export class SafetyDetectProcessor extends WorkerHost {
     const { vehicleId, driverId, points } = job.data;
     if (!points.length) return;
 
-    await this.detectHarsh(vehicleId, driverId, points);
+    await this.detectHarsh(vehicleId, driverId, points, job.data.pcActive ?? false, job.data.deviceHarsh);
     await this.detectGeofences(vehicleId, points);
   }
 
@@ -48,11 +66,21 @@ export class SafetyDetectProcessor extends WorkerHost {
     vehicleId: string,
     driverId: string | null,
     points: SafetyDetectJobData['points'],
+    pcActive: boolean,
+    deviceHarsh: SafetyDetectJobData['deviceHarsh'],
   ): Promise<void> {
     const samples = points.map((p) =>
       toSample({ time: new Date(p.time), speedKmh: p.speedKmh, headingDeg: p.headingDeg, latitude: p.latitude, longitude: p.longitude }),
     );
-    const detected = detectHarshEvents(samples);
+    const detected = detectHarshEvents(samples)
+      .filter((e) => !deviceHarsh?.[PROXY_TYPE_COVERED_BY_DEVICE[e.type]])
+      .map((e) => {
+        // B-155 — §7.3 rule 9: the persisted SafetyEvent position is coarsened like every other
+        // stored coordinate; the raw fix was only ever needed for detection.
+        if (e.latitude === null || e.longitude === null) return e;
+        const c = coarsenLocation({ lat: e.latitude, lon: e.longitude }, pcActive ? 'TEN_MILE' : 'ONE_MILE');
+        return { ...e, latitude: c.lat, longitude: c.lon };
+      });
     if (!detected.length) return;
 
     await this.safety.createMany(
@@ -83,9 +111,12 @@ export class SafetyDetectProcessor extends WorkerHost {
     const fences = await this.applicableFences(vehicleId);
     if (!fences.length) return;
 
+    // Points without a GPS fix (PT SDK 6.11) say nothing about a fence.
     const orderedPoints: Array<Point & { time: string }> = points
+      .filter((p): p is typeof p & { latitude: number; longitude: number } => p.latitude !== null && p.longitude !== null)
       .map((p) => ({ lat: p.latitude, lon: p.longitude, time: p.time }))
       .sort((a, b) => a.time.localeCompare(b.time));
+    if (!orderedPoints.length) return;
     const earliest = new Date(orderedPoints[0].time);
     const zone = await this.resolveZone();
 
@@ -100,7 +131,7 @@ export class SafetyDetectProcessor extends WorkerHost {
         afterHoursOnly: fence.afterHoursOnly,
       };
       const priorPoint = await this.prisma.telemetryPoint.findFirst({
-        where: { vehicleId, time: { lt: earliest } },
+        where: { vehicleId, time: { lt: earliest }, latitude: { not: null }, longitude: { not: null } },
         orderBy: { time: 'desc' },
         select: { latitude: true, longitude: true },
       });
@@ -152,7 +183,7 @@ export class SafetyDetectProcessor extends WorkerHost {
     if (!isInsideGeofence(last, circle)) return;
 
     const history = await this.prisma.telemetryPoint.findMany({
-      where: { vehicleId, time: { lte: new Date(last.time) } },
+      where: { vehicleId, time: { lte: new Date(last.time) }, latitude: { not: null }, longitude: { not: null } },
       orderBy: { time: 'desc' },
       take: 300,
       select: { time: true, latitude: true, longitude: true },

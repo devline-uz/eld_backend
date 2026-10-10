@@ -12,7 +12,15 @@ export const CreateDeviceDto = z.object({
   model: DeviceModelEnum.default('PT30'),
   firmware: z.string().max(20).optional(),
   periodicConnectedSec: z.number().int().min(2).max(7200).default(30),
+  /** LEGACY (minutes) — superseded by `periodicNoBleSec`; kept for backwards compatibility. */
   periodicDisconnectedMin: z.number().int().min(1).max(480).default(30),
+  /** PT SDK `PERIODIC_EVENT_GAP_NOBLE`, seconds 10–480. */
+  periodicNoBleSec: z.number().int().min(10).max(480).default(30),
+  /** PT SDK `DRIVING_ACCL` / `DRIVING_BRAKING` / `DRIVING_CORNERING` thresholds, mG 0–8192
+   * (0 = device harsh detection off). Pushed to the device by the app (D-135). */
+  harshAccelMg: z.number().int().min(0).max(8192).default(0),
+  harshBrakeMg: z.number().int().min(0).max(8192).default(0),
+  harshCornerMg: z.number().int().min(0).max(8192).default(0),
   /** §20 B-88. */
   autoFirmware: z.boolean().default(true),
   shareDiagnostics: z.boolean().default(true),

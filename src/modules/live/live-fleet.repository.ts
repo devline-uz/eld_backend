@@ -31,20 +31,32 @@ export class LiveFleetRepository {
     });
   }
 
-  /** Latest telemetry fix per vehicle, ignoring anything dated after `until` (device clock ahead). */
+  /**
+   * Latest telemetry point per vehicle (speed / engine state), plus the latest point that carried
+   * a GPS fix — PT SDK 6.11 points may have none, and a fix-less newest point must not blank the
+   * map pin. Both probes ignore anything dated after `until` (device clock ahead).
+   */
   async latestTelemetry(vehicleIds: string[], until: Date): Promise<Map<string, LatestTelemetry>> {
     if (!vehicleIds.length) return new Map();
     const rows = await this.prisma.$queryRaw<Array<LatestTelemetry & { vehicleId: string }>>(Prisma.sql`
-      SELECT v.id AS "vehicleId", t."time", t.latitude::float8 AS latitude, t.longitude::float8 AS longitude,
+      SELECT v.id AS "vehicleId", t."time", p."time" AS "fixTime",
+             p.latitude::float8 AS latitude, p.longitude::float8 AS longitude,
              t."speedMph", t."headingDeg", t."odometerMi", t."engineOn"
       FROM unnest(${vehicleIds}::text[]) AS v(id)
       CROSS JOIN LATERAL (
-        SELECT "time", latitude, longitude, "speedMph", "headingDeg", "odometerMi", "engineOn"
+        SELECT "time", "speedMph", "headingDeg", "odometerMi", "engineOn"
         FROM "TelemetryPoint"
         WHERE "vehicleId" = v.id AND "time" <= ${until}
         ORDER BY "time" DESC
         LIMIT 1
-      ) t`);
+      ) t
+      LEFT JOIN LATERAL (
+        SELECT "time", latitude, longitude
+        FROM "TelemetryPoint"
+        WHERE "vehicleId" = v.id AND "time" <= ${until} AND latitude IS NOT NULL AND longitude IS NOT NULL
+        ORDER BY "time" DESC
+        LIMIT 1
+      ) p ON true`);
     return new Map(rows.map(({ vehicleId, ...row }) => [vehicleId, row]));
   }
 

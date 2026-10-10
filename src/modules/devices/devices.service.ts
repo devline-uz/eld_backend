@@ -16,10 +16,15 @@ import {
 import { DevicesRepository } from './devices.repository';
 import { deriveDeviceDiagnostics, DeviceDiagnostics } from './diagnostics.util';
 import { isFirmwareOutdated } from './firmware.util';
+import { buildSystemVars, DeviceSystemVars } from './system-vars.util';
 
 const SORTABLE_FIELDS = ['serial', 'model', 'status', 'bleState', 'lastSeenAt', 'createdAt'] as const;
 
-export type DeviceView = Device & { firmwareOutdated: boolean };
+export type DeviceView = Device & {
+  firmwareOutdated: boolean;
+  /** PT SDK 6.11 system variables the app applies to this device (D-135). */
+  systemVars: DeviceSystemVars;
+};
 
 export interface ImportSummary {
   imported: number;
@@ -28,7 +33,11 @@ export interface ImportSummary {
 }
 
 function toView(device: Device): DeviceView {
-  return { ...device, firmwareOutdated: isFirmwareOutdated(device.firmware) };
+  return {
+    ...device,
+    firmwareOutdated: isFirmwareOutdated(device.firmware),
+    systemVars: buildSystemVars(device),
+  };
 }
 
 /** TZ §5.4 — PT30/PT40 registry, pairing, firmware, and BLE status. */
@@ -70,6 +79,10 @@ export class DevicesService {
       firmware: dto.firmware,
       periodicConnectedSec: dto.periodicConnectedSec,
       periodicDisconnectedMin: dto.periodicDisconnectedMin,
+      periodicNoBleSec: dto.periodicNoBleSec,
+      harshAccelMg: dto.harshAccelMg,
+      harshBrakeMg: dto.harshBrakeMg,
+      harshCornerMg: dto.harshCornerMg,
       autoFirmware: dto.autoFirmware,
       shareDiagnostics: dto.shareDiagnostics,
     });
@@ -151,6 +164,10 @@ export class DevicesService {
       firmware: d.firmware ?? undefined,
       periodicConnectedSec: d.periodicConnectedSec,
       periodicDisconnectedMin: d.periodicDisconnectedMin,
+      periodicNoBleSec: d.periodicNoBleSec,
+      harshAccelMg: d.harshAccelMg,
+      harshBrakeMg: d.harshBrakeMg,
+      harshCornerMg: d.harshCornerMg,
       autoFirmware: d.autoFirmware,
       shareDiagnostics: d.shareDiagnostics,
     }));
@@ -174,6 +191,12 @@ export class DevicesService {
             firmware: row.firmware,
             periodicConnectedSec: row.periodicConnectedSec,
             periodicDisconnectedMin: row.periodicDisconnectedMin,
+            periodicNoBleSec: row.periodicNoBleSec,
+            harshAccelMg: row.harshAccelMg,
+            harshBrakeMg: row.harshBrakeMg,
+            harshCornerMg: row.harshCornerMg,
+            autoFirmware: row.autoFirmware,
+            shareDiagnostics: row.shareDiagnostics,
           });
           summary.imported += 1;
         }
@@ -191,6 +214,10 @@ export class DevicesService {
       ...(dto.firmware !== undefined && { firmware: dto.firmware }),
       ...(dto.periodicConnectedSec !== undefined && { periodicConnectedSec: dto.periodicConnectedSec }),
       ...(dto.periodicDisconnectedMin !== undefined && { periodicDisconnectedMin: dto.periodicDisconnectedMin }),
+      ...(dto.periodicNoBleSec !== undefined && { periodicNoBleSec: dto.periodicNoBleSec }),
+      ...(dto.harshAccelMg !== undefined && { harshAccelMg: dto.harshAccelMg }),
+      ...(dto.harshBrakeMg !== undefined && { harshBrakeMg: dto.harshBrakeMg }),
+      ...(dto.harshCornerMg !== undefined && { harshCornerMg: dto.harshCornerMg }),
       ...(dto.status !== undefined && { status: dto.status }),
       ...(dto.autoFirmware !== undefined && { autoFirmware: dto.autoFirmware }),
       ...(dto.shareDiagnostics !== undefined && { shareDiagnostics: dto.shareDiagnostics }),

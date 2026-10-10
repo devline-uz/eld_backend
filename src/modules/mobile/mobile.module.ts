@@ -3,6 +3,7 @@ import { AuditModule } from '../audit/audit.module';
 import { AuthModule } from '../auth/auth.module';
 import { MessagingModule } from '../messaging/messaging.module';
 import { RodsLoginModule } from '../logs/rods-login-recorder';
+import { IngestModule } from '../ingest/ingest.module';
 import { DeviceHealthController } from './device-health.controller';
 import { DeviceHealthRepository } from './device-health.repository';
 import { DeviceHealthService } from './device-health.service';
@@ -20,7 +21,7 @@ import { MobileCatalogRepository } from './mobile-catalog.repository';
 import { MobileSavedSignatureService } from './mobile-saved-signature.service';
 import { MobileContactsController } from './mobile-contacts.controller';
 import { MobileContactsService } from './mobile-contacts.service';
-import { MobileDeviceController } from './mobile-device.controller';
+import { MobileDeviceConfigController, MobileDeviceController } from './mobile-device.controller';
 import { MobileDeviceRepository } from './mobile-device.repository';
 import { MobileDeviceService } from './mobile-device.service';
 import { MobileDutyStatusController } from './mobile-duty-status.controller';
@@ -57,7 +58,7 @@ import { SignatureService } from './signature.service';
  * is their shared DB-access point, kept separate from `MobileRepository` on purpose.
  */
 @Module({
-  imports: [HosRecalcModule, LogsModule, AuditModule, AuthModule, MessagingModule, RodsLoginModule],
+  imports: [HosRecalcModule, LogsModule, IngestModule, AuditModule, AuthModule, MessagingModule, RodsLoginModule],
   controllers: [
     MobileAppConfigController,
     MobileBootstrapController,
@@ -76,6 +77,7 @@ import { SignatureService } from './signature.service';
     MobileMessagingController,
     MobileMaintenanceController,
     MobileDeviceController,
+    MobileDeviceConfigController,
   ],
   providers: [
     MobileRepository,

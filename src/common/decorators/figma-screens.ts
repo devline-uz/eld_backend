@@ -97,6 +97,7 @@ export const FIGMA_UNMAPPED_ROUTES: Record<string, string> = {
   // App→server sync, no designed screen (the mobile/tablet Figma exports are missing).
   'POST /api/ingest/events': 'Driver app → server §395 event upload (TZ §7.1). Background sync, no screen of its own.',
   'POST /api/ingest/telemetry': 'Driver app → server Virtual Dashboard points (TZ §7.5). Background sync, no screen.',
+  'POST /api/ingest/device-events': 'Driver app → server raw PT SDK 6.11 TelemetryEvents (D-135). Background sync, no screen.',
   // Driver-app screens live in eld.docs/planshet + eld.docs/mobile, which are empty here.
   'POST /api/mobile/log-entries': 'Driver app "Logs → Add entry" — tablet/mobile Figma export missing from eld.docs.',
   'POST /api/mobile/certify': 'Driver app "Logs → Certify" — tablet/mobile Figma export missing from eld.docs.',
@@ -149,6 +150,7 @@ export const FIGMA_UNMAPPED_ROUTES: Record<string, string> = {
   'GET /api/mobile/certification-status': 'Driver app Logs certification banner (MR-26) — mobile Figma export missing.',
   'GET /api/mobile/support/tickets/{id}': 'Driver app M-30 ticket detail (MR-20) — mobile Figma export missing.',
   'POST /api/mobile/device/mac': 'Driver app BLE connect to the unit\'s PT30 — reports the observed MAC (MG-BLE-1/2, no screen of its own); mobile Figma export missing.',
+  'GET /api/mobile/device-config': 'Driver app reads PT SDK system variables to apply to the PT30/PT40 on connect (D-135). Background, no screen of its own.',
   // In-app notification inbox — a bell icon shown on every screen, not a screen of its own;
   // the role-guide exports do not capture it separately from the pages it overlays.
   'GET /api/notifications': 'In-app notification bell (TZ §14) — not a distinct screen in the role-guide export.',

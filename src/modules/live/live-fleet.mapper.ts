@@ -52,8 +52,10 @@ export const SPEED_FRESH_MS = 30 * 60 * 1000;
 
 export interface LatestTelemetry {
   time: Date;
-  latitude: number;
-  longitude: number;
+  /** Time of the latest point WITH a GPS fix (may be older than `time`); null = never located. */
+  fixTime: Date | null;
+  latitude: number | null;
+  longitude: number | null;
   speedMph: number | null;
   headingDeg: number | null;
   odometerMi: number | null;
@@ -117,17 +119,22 @@ export function toLiveFleetUnit(input: LiveFleetInput): LiveFleetUnit {
   const { vehicle, driver, device, telemetry, located, hos, now } = input;
   const telemetryFresh = !!telemetry && now.getTime() - telemetry.time.getTime() <= SPEED_FRESH_MS;
 
-  // Position: whichever source is newer — a telemetry fix or a located RODS record.
-  const useEvent = !!located && (!telemetry || located.eventDateTime.getTime() > telemetry.time.getTime());
+  // Position: whichever source is newer — a telemetry fix or a located RODS record. A telemetry
+  // point without a GPS fix (PT SDK 6.11) is not a position; its latest located point is.
+  const fix =
+    telemetry && telemetry.fixTime && telemetry.latitude !== null && telemetry.longitude !== null
+      ? { at: telemetry.fixTime, lat: telemetry.latitude, lon: telemetry.longitude }
+      : null;
+  const useEvent = !!located && (!fix || located.eventDateTime.getTime() > fix.at.getTime());
   const position = useEvent
     ? { lat: located.latitude, lon: located.longitude }
-    : telemetry
-      ? { lat: telemetry.latitude, lon: telemetry.longitude }
+    : fix
+      ? { lat: fix.lat, lon: fix.lon }
       : { lat: null, lon: null };
   // A place name only describes the fix when it is the fix, or within the freshness window of it.
   const labelMatches =
     !!located &&
-    (useEvent || (telemetry !== null && Math.abs(telemetry.time.getTime() - located.eventDateTime.getTime()) <= SPEED_FRESH_MS));
+    (useEvent || (fix !== null && Math.abs(fix.at.getTime() - located.eventDateTime.getTime()) <= SPEED_FRESH_MS));
 
   const offline = isEldOffline(device, now);
   const lastSeen = latest([device?.lastSeenAt, telemetry?.time, located?.eventDateTime]);

@@ -448,3 +448,112 @@ describe('IngestService — BLE state and device status (§7.6, §7.7)', () => {
     );
   });
 });
+
+describe('IngestService — PT SDK 6.11 (D-135)', () => {
+  const sdkDevice = {
+    ...device,
+    model: 'PT30',
+    reportedVin: null,
+    periodicConnectedSec: 30,
+    periodicNoBleSec: 60,
+    harshAccelMg: 0,
+    harshBrakeMg: 450,
+    harshCornerMg: 0,
+    autoFirmware: true,
+    shareDiagnostics: true,
+    connectionType: null,
+  } as unknown as Device;
+  const vinVehicle: Vehicle = { ...vehicle, vin: '1FUJGLDR7CLBP8834' };
+
+  function sdkService() {
+    return makeService({
+      findDeviceBySerial: jest.fn(async () => sdkDevice),
+      findVehicle: jest.fn(async () => vinVehicle),
+      updateDeviceOutsideTx: jest.fn(async (_id: string, data: Record<string, unknown>) => ({ ...sdkDevice, ...data })),
+    });
+  }
+
+  it('device-status: PT40-C normalises the model, stores TrackerInfo and answers systemVars', async () => {
+    const { service, repo } = sdkService();
+    const result = await service.recordDeviceStatus(
+      {
+        deviceSerial: 'PT30_A86E',
+        storedEventsCount: 0,
+        recordsLost: false,
+        consecutiveTransferFailures: 0,
+        productName: 'PT40-C',
+        mainFirmware: 'L110',
+        bleFirmware: '1.4.2',
+        imei: '356938035643809',
+        connectionType: 'USB',
+        busType: 'J1939',
+        appPlatform: 'ANDROID',
+        sdkVersion: '6.11.1',
+      },
+      DRIVER_ID,
+    );
+    expect(repo.updateDeviceOutsideTx).toHaveBeenCalledWith(
+      'dev_1',
+      expect.objectContaining({
+        model: 'PT40', productName: 'PT40-C', firmware: 'L110', bleFirmware: '1.4.2', imei: '356938035643809',
+        connectionType: 'USB', busType: 'J1939', appPlatform: 'ANDROID', sdkVersion: '6.11.1',
+      }),
+    );
+    const written = repo.updateDeviceOutsideTx.mock.calls[0] as [string, { lastInfoAt?: unknown }];
+    expect(written[1].lastInfoAt).toBeInstanceOf(Date);
+    expect(result.model).toBe('PT40');
+    expect(result.vinMismatch).toBe(false);
+    expect(result.systemVars).toEqual({
+      PERIODIC_EVENT_GAP: 30, PERIODIC_EVENT_GAP_NOBLE: 60, EVENTS_STORED: 1,
+      DRIVING_ACCL: 0, DRIVING_BRAKING: 450, DRIVING_CORNERING: 0, HSI_MODE: 1,
+    });
+    expect(result.configVersion).toMatch(/^[0-9a-f]{12}$/);
+  });
+
+  it('device-status: a different reported VIN flags vinMismatch and alerts once, never blocks', async () => {
+    const { service, alerts } = sdkService();
+    const result = await service.recordDeviceStatus(
+      { deviceSerial: 'PT30_A86E', storedEventsCount: 0, recordsLost: false, consecutiveTransferFailures: 0, reportedVin: '1FUJGLDR7CLBP9999' },
+      DRIVER_ID,
+    );
+    expect(result.vinMismatch).toBe(true);
+    expect(alerts).toContain('alert.device_vin_mismatch');
+  });
+
+  it('device-status: the same mismatching VIN already on record does not re-alert', async () => {
+    const { service, alerts } = makeService({
+      findDeviceBySerial: jest.fn(async () => ({ ...sdkDevice, reportedVin: '1FUJGLDR7CLBP9999' })),
+      findVehicle: jest.fn(async () => vinVehicle),
+    });
+    const result = await service.recordDeviceStatus(
+      { deviceSerial: 'PT30_A86E', storedEventsCount: 0, recordsLost: false, consecutiveTransferFailures: 0, reportedVin: '1FUJGLDR7CLBP9999' },
+      DRIVER_ID,
+    );
+    expect(result.vinMismatch).toBe(true);
+    expect(alerts).not.toContain('alert.device_vin_mismatch');
+  });
+
+  it('ble-state stores connectionType', async () => {
+    const { service, repo } = sdkService();
+    const result = await service.recordBleState({ deviceSerial: 'PT30_A86E', state: 'CONNECTED', connectionType: 'USB' }, DRIVER_ID);
+    expect(result.connectionType).toBe('USB');
+    expect(repo.updateDeviceOutsideTx).toHaveBeenCalledWith('dev_1', expect.objectContaining({ connectionType: 'USB' }));
+  });
+
+  it('telemetry: fix-less points reach safety.detect with null coordinates; the point VIN lands on the device', async () => {
+    const { service, repo } = sdkService();
+    const queue = (service as unknown as { safetyDetectQueue: { add: jest.Mock<Promise<void>, [string, unknown]> } }).safetyDetectQueue;
+    await service.ingestTelemetry(
+      {
+        deviceSerial: 'PT30_A86E',
+        vehicleId: VEHICLE_ID,
+        points: [{ time: new Date('2026-10-10T12:00:00Z'), isTransition: false, rpm: 900, vin: '1fujgldr7clbp8834' }],
+      },
+      DRIVER_ID,
+    );
+    const job = queue.add.mock.calls[0][1] as { points: Array<{ latitude: unknown }>; deviceHarsh: unknown };
+    expect(job.points[0].latitude).toBeNull();
+    expect(job.deviceHarsh).toEqual({ accel: false, brake: true, corner: false });
+    expect(repo.updateDeviceOutsideTx).toHaveBeenCalledWith('dev_1', expect.objectContaining({ reportedVin: '1FUJGLDR7CLBP8834' }));
+  });
+});

@@ -240,6 +240,73 @@ describe('Ingest (e2e, TZ §7)', () => {
     expect(device!.storedEventsCount).toBe(142);
   });
 
+  it('PT SDK 6.11 — telemetry without a GPS fix is stored with null coordinates; bus DTCs dedupe (D-135)', async () => {
+    const time = new Date(Date.now() - 5_000);
+    const res = await request(server())
+      .post('/api/ingest/telemetry')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        deviceSerial,
+        vehicleId,
+        points: [
+          {
+            time: time.toISOString(), latitude: null, longitude: null, gpsLocked: false, rpm: 900, gear: 7,
+            loadPct: 180, busType: 1, barometerKpa: 99.4, milOn: true, dtcCount: 1,
+            dtcCodes: [{ code: 'p0301' }], isTransition: true,
+          },
+        ],
+      });
+    expect(res.status).toBe(200);
+    const point = await prisma.telemetryPoint.findFirst({ where: { vehicleId, time } });
+    expect(point!.latitude).toBeNull();
+    expect(point!.gear).toBe('7');
+    expect(point!.busType).toBe('OBD_II');
+    const dtc = await prisma.diagnosticTroubleCode.findFirst({ where: { vehicleId, code: 'P0301', clearedAt: null } });
+    expect(dtc).toMatchObject({ bus: 'OBD_II', milOn: true, spn: null, fmi: null });
+  });
+
+  it('PT SDK 6.11 — POST /ingest/device-events is idempotent and turns a MEMS brake into a SafetyEvent (D-135)', async () => {
+    const occurredAt = new Date(Date.now() - 60_000).toISOString();
+    const seq = Math.floor(Math.random() * 1_000_000);
+    const body = {
+      deviceSerial,
+      vehicleId,
+      events: [
+        { type: 'EV_MEMS_BRK', seq, occurredAt, live: true, latitude: 39.961176, longitude: -82.998794, speedKmh: 72, odometerKm: '8140.5' },
+        { type: 'EV_ENGINE_ON', seq: seq + 1, occurredAt, live: true, engineHours: '1070.7' },
+      ],
+    };
+    const first = await request(server()).post('/api/ingest/device-events').set('Authorization', `Bearer ${token}`).send(body);
+    expect(first.status).toBe(200);
+    expect(first.body.data).toEqual({ received: 2, stored: 2, duplicates: 0, safetyEvents: 1 });
+
+    const replay = await request(server()).post('/api/ingest/device-events').set('Authorization', `Bearer ${token}`).send(body);
+    expect(replay.body.data).toEqual({ received: 2, stored: 0, duplicates: 2, safetyEvents: 0 });
+
+    const raw = await prisma.deviceRawEvent.findFirst({ where: { seq, occurredAt: new Date(occurredAt) } });
+    expect(raw!.type).toBe('HARSH_BRAKE');
+    expect(Number(raw!.latitude)).not.toBe(39.961176);
+    const safety = await prisma.safetyEvent.findFirst({ where: { vehicleId, occurredAt: new Date(occurredAt), type: 'HARSH_BRAKING' } });
+    expect(safety).not.toBeNull();
+    expect(safety!.driverId).toBe(driverId);
+  });
+
+  it('PT SDK 6.11 — device-status stores TrackerInfo, flags a VIN mismatch, answers systemVars (D-135)', async () => {
+    const res = await request(server())
+      .post('/api/ingest/device-status')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ deviceSerial, storedEventsCount: 0, mainFirmware: 'L113', productName: 'PT30', bleFirmware: '1.4.2', reportedVin: '1ftest0000000mism', connectionType: 'BLE', busType: 'OBD2', appPlatform: 'ANDROID' });
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({ model: 'PT30', vinMismatch: true, systemVars: { EVENTS_STORED: 1, HSI_MODE: 1 } });
+    const device = await prisma.device.findUnique({ where: { serial: deviceSerial } });
+    expect(device).toMatchObject({ reportedVin: '1FTEST0000000MISM', bleFirmware: '1.4.2', busType: 'OBD_II', appPlatform: 'ANDROID' });
+
+    const config = await request(server()).get(`/api/mobile/device-config?serial=${deviceSerial}`).set('Authorization', `Bearer ${token}`);
+    expect(config.status).toBe(200);
+    expect(config.body.data.systemVars.PERIODIC_EVENT_GAP_NOBLE).toBe(device!.periodicNoBleSec);
+    expect(config.body.data.configVersion).toBe(res.body.data.configVersion);
+  });
+
   it('every stored event for this driver has a checksum and a sequence id', async () => {
     const rows = await prisma.eldEvent.findMany({ where: { driverId }, take: 50 });
     expect(rows.length).toBeGreaterThan(0);

@@ -195,6 +195,25 @@ export class DeviceMacReportResponse {
   @ApiProperty({ enum: ['STORED', 'UNCHANGED'], enumName: 'DeviceMacOutcome' }) outcome!: 'STORED' | 'UNCHANGED';
 }
 
+export class DeviceSystemVarsView {
+  @ApiProperty({ type: Number, minimum: 2, maximum: 7200, description: 'Seconds (Device.periodicConnectedSec).' }) PERIODIC_EVENT_GAP!: number;
+  @ApiProperty({ type: Number, minimum: 10, maximum: 480, description: 'Seconds (Device.periodicNoBleSec).' }) PERIODIC_EVENT_GAP_NOBLE!: number;
+  @ApiProperty({ type: Number, enum: [1], description: 'Always 1 — the device must buffer events while BLE is down.' }) EVENTS_STORED!: 1;
+  @ApiProperty({ type: Number, minimum: 0, maximum: 8192, description: 'mG, 0 = off.' }) DRIVING_ACCL!: number;
+  @ApiProperty({ type: Number, minimum: 0, maximum: 8192, description: 'mG, 0 = off.' }) DRIVING_BRAKING!: number;
+  @ApiProperty({ type: Number, minimum: 0, maximum: 8192, description: 'mG, 0 = off.' }) DRIVING_CORNERING!: number;
+  @ApiProperty({ type: Number, enum: [1] }) HSI_MODE!: 1;
+}
+
+export class DeviceConfigResponse {
+  @ApiProperty({ type: String, example: 'PT30_A86E' }) serial!: string;
+  @ApiProperty({ enum: DeviceModel, enumName: 'DeviceModel' }) model!: DeviceModel;
+  @ApiProperty({ type: DeviceSystemVarsView }) systemVars!: DeviceSystemVarsView;
+  @ApiProperty({ type: Boolean }) autoFirmware!: boolean;
+  @ApiProperty({ type: Boolean }) shareDiagnostics!: boolean;
+  @ApiProperty({ type: String, example: '3f9a1c0b7d2e', description: 'Changes whenever systemVars/autoFirmware/shareDiagnostics change.' }) configVersion!: string;
+}
+
 // ---------------------------------------------------------------- co-driver (MobileCoDriverService)
 
 export class CoDriverIdentityView {

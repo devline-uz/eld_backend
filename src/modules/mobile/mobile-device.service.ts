@@ -9,6 +9,8 @@ import { RequestContext } from '../../core/context/request-context';
 import { EventBusService } from '../../core/events/event-bus.service';
 import { QUEUES } from '../../core/queue/queue.constants';
 import { AuditRepository } from '../audit/audit.repository';
+import { buildSystemVars, configVersion, DeviceSystemVars } from '../devices/system-vars.util';
+import { IngestService } from '../ingest/ingest.service';
 import { normalizeMac, type ReportDeviceMacDto } from './dto/mobile-device.dto';
 import { MobileDeviceRepository } from './mobile-device.repository';
 import { MobileRepository } from './mobile.repository';
@@ -17,6 +19,16 @@ export type DeviceMacOutcome = 'STORED' | 'UNCHANGED';
 
 /** B-151 — a repeated mismatch from the same driver on the same device within this window is not re-alerted. */
 export const MISMATCH_ALERT_WINDOW_MS = 15 * 60 * 1000;
+
+export interface DeviceConfigResult {
+  serial: string;
+  model: 'PT30' | 'PT40';
+  systemVars: DeviceSystemVars;
+  autoFirmware: boolean;
+  shareDiagnostics: boolean;
+  /** Fingerprint of systemVars + flags; re-apply when it changes (Device has no updatedAt). */
+  configVersion: string;
+}
 
 export interface DeviceMacResult {
   deviceId: string;
@@ -44,7 +56,24 @@ export class MobileDeviceService {
     private readonly audit: AuditRepository,
     private readonly events: EventBusService,
     @InjectQueue(QUEUES.ALERT) private readonly alertQueue: Queue,
+    private readonly ingest: IngestService,
   ) {}
+
+  /**
+   * PT SDK 6.11 — `GET /mobile/device-config?serial=`. Same ownership rule as ingest: the device
+   * must be paired with a unit the driver is assigned to or logged in on (D-135).
+   */
+  async deviceConfig(driverId: string, serial: string): Promise<DeviceConfigResult> {
+    const { device } = await this.ingest.resolveOwnedDevice(serial, driverId);
+    return {
+      serial: device.serial,
+      model: device.model,
+      systemVars: buildSystemVars(device),
+      autoFirmware: device.autoFirmware,
+      shareDiagnostics: device.shareDiagnostics,
+      configVersion: configVersion(device),
+    };
+  }
 
   async reportMac(actor: ContextUser, dto: ReportDeviceMacDto): Promise<DeviceMacResult> {
     const driver = await this.mobile.findDriver(actor.id);

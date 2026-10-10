@@ -20,8 +20,9 @@ export interface TelemetrySample {
   time: Date;
   speedMph: number | null;
   headingDeg: number | null;
-  latitude: number;
-  longitude: number;
+  /** `null` when the telemetry point had no GPS fix (PT SDK 6.11). */
+  latitude: number | null;
+  longitude: number | null;
 }
 
 export type HarshEventType = 'HARSH_BRAKING' | 'HARSH_ACCEL' | 'HARSH_TURN';
@@ -30,8 +31,8 @@ export interface DetectedHarshEvent {
   type: HarshEventType;
   occurredAt: Date;
   speedMph: number | null;
-  latitude: number;
-  longitude: number;
+  latitude: number | null;
+  longitude: number | null;
   /** Proxy severity 1-5, derived from how far past the threshold the delta went. */
   severity: number;
 }
@@ -105,15 +106,16 @@ export function toSample(point: {
   time: Date;
   speedKmh?: number | null;
   headingDeg?: number | null;
-  latitude: number;
-  longitude: number;
+  latitude?: number | null;
+  longitude?: number | null;
 }): TelemetrySample {
+  const located = point.latitude != null && point.longitude != null;
   return {
     time: point.time,
     speedMph: point.speedKmh != null ? kmhToMph(point.speedKmh) : null,
     headingDeg: point.headingDeg ?? null,
-    latitude: point.latitude,
-    longitude: point.longitude,
+    latitude: located ? point.latitude! : null,
+    longitude: located ? point.longitude! : null,
   };
 }
 

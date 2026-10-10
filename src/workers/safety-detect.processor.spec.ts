@@ -224,3 +224,41 @@ describe('SafetyDetectProcessor — geofences', () => {
     });
   });
 });
+
+describe('SafetyDetectProcessor — PT SDK 6.11 (D-135, B-155)', () => {
+  const brake = [
+    { time: '2026-09-11T00:00:00.000Z', latitude: 40.123456, longitude: -83.123456, speedKmh: 80 },
+    { time: '2026-09-11T00:00:01.000Z', latitude: 40.123456, longitude: -83.123456, speedKmh: 40 },
+  ];
+
+  it('stores a coarsened SafetyEvent position, never the raw fix', async () => {
+    const { processor, createManyCalls } = buildProcessor();
+    await processor.process({ data: { vehicleId: 'veh_1', driverId: 'drv_1', points: brake } } as never);
+    const row = createManyCalls[0] as { latitude: number; longitude: number };
+    expect(row.latitude).not.toBe(40.123456);
+    expect(row.longitude).not.toBe(-83.123456);
+  });
+
+  it('skips the speed-delta proxy for a type the device detects itself', async () => {
+    const { processor, createManyCalls } = buildProcessor();
+    await processor.process({
+      data: { vehicleId: 'veh_1', driverId: 'drv_1', deviceHarsh: { accel: false, brake: true, corner: false }, points: brake },
+    } as never);
+    expect(createManyCalls).toHaveLength(0);
+  });
+
+  it('detects harsh events on fix-less points and leaves the position null; geofences skip them', async () => {
+    const fence = { id: 'g1', centerLat: 40, centerLon: -83, radiusMi: 1, alertOnEnter: true, alertOnExit: true, afterHoursOnly: false, dwellMinutes: null };
+    const { processor, createManyCalls, prisma } = buildProcessor([fence]);
+    await processor.process({
+      data: {
+        vehicleId: 'veh_1',
+        driverId: 'drv_1',
+        points: brake.map((p) => ({ ...p, latitude: null, longitude: null })),
+      },
+    } as never);
+    expect(createManyCalls[0]).toMatchObject({ type: 'HARSH_BRAKING', latitude: null, longitude: null });
+    expect(prisma.telemetryPoint.findFirst).not.toHaveBeenCalled();
+  });
+});
+

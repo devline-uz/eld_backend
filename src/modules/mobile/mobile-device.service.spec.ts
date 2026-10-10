@@ -26,8 +26,16 @@ function setup(opts: { device?: Partial<Device> | null; assignedVehicleId?: stri
   const audit = { insert: jest.fn(async () => ({})) };
   const events = { publish: jest.fn(async () => undefined) };
   const alertQueue = { add: jest.fn(async () => undefined) };
-  const service = new MobileDeviceService(mobile as never, devices as never, audit as never, events as never, alertQueue as never);
-  return { service, mobile, devices, audit, events, alertQueue };
+  const ingest = {
+    resolveOwnedDevice: jest.fn(async () => ({
+      device: {
+        serial: 'PT30_A86E', model: 'PT30', periodicConnectedSec: 30, periodicNoBleSec: 60,
+        harshAccelMg: 0, harshBrakeMg: 450, harshCornerMg: 300, autoFirmware: true, shareDiagnostics: false,
+      },
+    })),
+  };
+  const service = new MobileDeviceService(mobile as never, devices as never, audit as never, events as never, alertQueue as never, ingest as never);
+  return { service, mobile, devices, audit, events, alertQueue, ingest };
 }
 
 async function codeOf(promise: Promise<unknown>): Promise<{ code: string; status: number }> {
@@ -154,5 +162,30 @@ describe('MobileDeviceService.reportMac', () => {
     alertQueue.add.mockRejectedValueOnce(new Error('redis down'));
     audit.insert.mockRejectedValueOnce(new Error('db down'));
     await expect(codeOf(service.reportMac(actor, dto))).resolves.toEqual({ code: 'DEVICE_MAC_MISMATCH', status: 409 });
+  });
+});
+
+describe('MobileDeviceService.deviceConfig (PT SDK 6.11, D-135)', () => {
+  it('answers the system variables of a device the driver owns, via the ingest ownership check', async () => {
+    const { service, ingest } = setup();
+    const config = await service.deviceConfig('drv-1', 'PT30_A86E');
+    expect(ingest.resolveOwnedDevice).toHaveBeenCalledWith('PT30_A86E', 'drv-1');
+    expect(config).toMatchObject({
+      serial: 'PT30_A86E',
+      model: 'PT30',
+      autoFirmware: true,
+      shareDiagnostics: false,
+      systemVars: {
+        PERIODIC_EVENT_GAP: 30, PERIODIC_EVENT_GAP_NOBLE: 60, EVENTS_STORED: 1,
+        DRIVING_ACCL: 0, DRIVING_BRAKING: 450, DRIVING_CORNERING: 300, HSI_MODE: 1,
+      },
+    });
+    expect(config.configVersion).toMatch(/^[0-9a-f]{12}$/);
+  });
+
+  it('propagates the ownership refusal (403/404) unchanged', async () => {
+    const { service, ingest } = setup();
+    ingest.resolveOwnedDevice.mockRejectedValueOnce(AppException.forbidden('Driver is not associated with this unit.'));
+    expect((await codeOf(service.deviceConfig('drv-1', 'PT30_X'))).status).toBe(403);
   });
 });

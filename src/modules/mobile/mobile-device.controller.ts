@@ -1,13 +1,13 @@
-import { Body, Controller, HttpCode, Post, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiBody, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Body, Controller, Get, HttpCode, Post, Query, UseGuards } from '@nestjs/common';
+import { ApiBearerAuth, ApiBody, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { apiError, ApiStandardErrors, ERROR_CODES } from '../../common/errors';
 import { DriverGuard } from '../../common/guards/driver.guard';
 import { zodBody } from '../../common/pipes/zod-validation.pipe';
 import { ApiEnvelopeResponse } from '../../common/swagger/api-envelope';
 import type { ContextUser } from '../../core/context/request-context';
-import { ReportDeviceMacDto } from './dto/mobile-device.dto';
-import { DeviceMacReportResponse } from './dto/mobile.responses';
+import { DeviceConfigQueryDto, ReportDeviceMacDto } from './dto/mobile-device.dto';
+import { DeviceConfigResponse, DeviceMacReportResponse } from './dto/mobile.responses';
 import { MobileDeviceService } from './mobile-device.service';
 
 /**
@@ -48,5 +48,46 @@ export class MobileDeviceController {
   })
   reportMac(@Body(zodBody(ReportDeviceMacDto)) dto: ReportDeviceMacDto, @CurrentUser() actor: ContextUser) {
     return this.service.reportMac(actor, dto);
+  }
+}
+
+/**
+ * PT SDK 6.11 (D-135) — system variables the app writes to the PT30/PT40 (`SetSystemVar`).
+ * Also returned by every `POST /ingest/device-status`, so the app can re-apply on a heartbeat.
+ */
+@ApiTags('mobile')
+@ApiBearerAuth()
+@UseGuards(DriverGuard)
+@Controller('mobile')
+export class MobileDeviceConfigController {
+  constructor(private readonly service: MobileDeviceService) {}
+
+  @Get('device-config')
+  @ApiOperation({
+    summary: 'PT SDK 6.11 — device config (system variables) for the ELD the driver is connected to.',
+    description:
+      'The device must be paired with a unit the driver is assigned to or has an open login session on (same rule as /ingest/*). ' +
+      'Apply every `systemVars` entry that differs from the device; re-apply when `configVersion` changes.',
+  })
+  @ApiQuery({ name: 'serial', required: true, example: 'PT30_A86E' })
+  @ApiEnvelopeResponse(DeviceConfigResponse, {
+    example: {
+      serial: 'PT30_A86E',
+      model: 'PT30',
+      systemVars: { PERIODIC_EVENT_GAP: 30, PERIODIC_EVENT_GAP_NOBLE: 30, EVENTS_STORED: 1, DRIVING_ACCL: 0, DRIVING_BRAKING: 450, DRIVING_CORNERING: 0, HSI_MODE: 1 },
+      autoFirmware: true,
+      shareDiagnostics: true,
+      configVersion: '3f9a1c0b7d2e',
+    },
+  })
+  @ApiStandardErrors({
+    errors: [
+      apiError.notFound(ERROR_CODES.UNKNOWN_DEVICE, 'Unknown device serial.'),
+      apiError.forbidden('Device is not paired with any unit, or the driver is not associated with its unit.'),
+      apiError.validation('serial is required.'),
+    ],
+  })
+  config(@Query(zodBody(DeviceConfigQueryDto)) query: DeviceConfigQueryDto, @CurrentUser('id') driverId: string) {
+    return this.service.deviceConfig(driverId, query.serial);
   }
 }

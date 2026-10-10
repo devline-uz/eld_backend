@@ -20,8 +20,9 @@ export interface TelemetryRow {
   time: Date;
   vehicleId: string;
   driverId: string | null;
-  latitude: number;
-  longitude: number;
+  /** `null` when the point carried no GPS fix (SDK 6.11 VDB snapshot without lock). */
+  latitude: number | null;
+  longitude: number | null;
   speedMph: number | null;
   headingDeg: number | null;
   odometerMi: number | null;
@@ -51,6 +52,19 @@ export interface TelemetryRow {
   dtcCount: number | null;
   busType: 'J1939' | 'J1708' | 'OBD_II' | null;
   voltage: number | null;
+  intakePressureKpa: number | null;
+  barometerKpa: number | null;
+  fuelTempC: number | null;
+  intercoolerTempC: number | null;
+  turboOilTempC: number | null;
+  retarderPct: number | null;
+  brakePedal: number | null;
+  odometerComputed: boolean | null;
+  engineHoursComputed: boolean | null;
+  gpsLocked: boolean | null;
+  gpsSatellites: number | null;
+  gpsDop: number | null;
+  gpsAgeSec: number | null;
 }
 
 export interface TelemetryContext {
@@ -67,17 +81,17 @@ const opt = <T>(value: T | null | undefined, map: (v: T) => number): number | nu
 
 /** "Absent parameter is `null`, not an error" (§5.6 note) — every optional field passes through. */
 export function toTelemetryRow(point: TelemetryPointDto, ctx: TelemetryContext): TelemetryRow {
-  const coords = coarsenLocation(
-    { lat: point.latitude, lon: point.longitude },
-    ctx.pcActive ? 'TEN_MILE' : 'ONE_MILE',
-  );
+  // A half pair is not a position: both coordinates or neither (SDK 6.11 points without a fix).
+  const coords = hasPosition(point)
+    ? coarsenLocation({ lat: point.latitude, lon: point.longitude }, ctx.pcActive ? 'TEN_MILE' : 'ONE_MILE')
+    : null;
 
   return {
     time: point.time,
     vehicleId: ctx.vehicleId,
     driverId: ctx.driverId,
-    latitude: coords.lat,
-    longitude: coords.lon,
+    latitude: coords?.lat ?? null,
+    longitude: coords?.lon ?? null,
     speedMph: opt(point.speedKmh, kmhToMph),
     headingDeg: point.headingDeg ?? null,
     odometerMi: opt(point.odometerKm, (km) => applyOdometerOffsetMi(kmToMi(km), ctx.odometerOffsetMi)),
@@ -107,7 +121,30 @@ export function toTelemetryRow(point: TelemetryPointDto, ctx: TelemetryContext):
     dtcCount: point.dtcCount ?? null,
     busType: point.busType ?? null,
     voltage: point.voltage ?? null,
+    // SDK 6.11 additions — the columns are metric (kPa / °C), stored exactly as reported.
+    intakePressureKpa: point.intakePressureKpa ?? null,
+    barometerKpa: point.barometerKpa ?? null,
+    fuelTempC: point.fuelTempC ?? null,
+    intercoolerTempC: point.intercoolerTempC ?? null,
+    turboOilTempC: point.turboOilTempC ?? null,
+    retarderPct: point.retarderPct ?? null,
+    brakePedal: point.brakePedal ?? null,
+    odometerComputed: point.odometerComputed ?? null,
+    engineHoursComputed: point.engineHoursComputed ?? null,
+    gpsLocked: point.gpsLocked ?? null,
+    gpsSatellites: point.gpsSatellites ?? null,
+    gpsDop: point.gpsDop ?? null,
+    gpsAgeSec: point.gpsAgeSec ?? null,
   };
+}
+
+/** Narrowing guard: the point carries a full coordinate pair. */
+export function hasPosition<T extends { latitude?: number | null; longitude?: number | null }>(
+  point: T,
+): point is T & { latitude: number; longitude: number } {
+  return (
+    point.latitude !== null && point.latitude !== undefined && point.longitude !== null && point.longitude !== undefined
+  );
 }
 
 /** §7.5 — the app downsamples to 1 point/60 s but NEVER drops a transition. */

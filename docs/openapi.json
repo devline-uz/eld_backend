@@ -34218,6 +34218,280 @@
         ]
       }
     },
+    "/api/mobile/device-config": {
+      "get": {
+        "description": "The device must be paired with a unit the driver is assigned to or has an open login session on (same rule as /ingest/*). Apply every `systemVars` entry that differs from the device; re-apply when `configVersion` changes.",
+        "operationId": "MobileDeviceConfigController_config",
+        "parameters": [
+          {
+            "name": "serial",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 60
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "data",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/DeviceConfigResponse"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "Request trace id (same as the §20 error envelope)."
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "data": {
+                      "serial": "PT30_A86E",
+                      "model": "PT30",
+                      "systemVars": {
+                        "PERIODIC_EVENT_GAP": 30,
+                        "PERIODIC_EVENT_GAP_NOBLE": 30,
+                        "EVENTS_STORED": 1,
+                        "DRIVING_ACCL": 0,
+                        "DRIVING_BRAKING": 450,
+                        "DRIVING_CORNERING": 0,
+                        "HSI_MODE": 1
+                      },
+                      "autoFirmware": true,
+                      "shareDiagnostics": true,
+                      "configVersion": "3f9a1c0b7d2e"
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-10-08T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHORIZED — Authentication required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 401,
+                    "code": "UNAUTHORIZED",
+                    "message": "Authentication required.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN — Device is not paired with any unit, or the driver is not associated with its unit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 403,
+                    "code": "FORBIDDEN",
+                    "message": "Device is not paired with any unit, or the driver is not associated with its unit.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "UNKNOWN_DEVICE — Unknown device serial.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 404,
+                    "code": "UNKNOWN_DEVICE",
+                    "message": "Unknown device serial.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "VALIDATION_FAILED — serial is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 422,
+                    "code": "VALIDATION_FAILED",
+                    "message": "serial is required.",
+                    "details": {
+                      "issues": [
+                        {
+                          "path": "field",
+                          "code": "invalid_type",
+                          "message": "Required"
+                        }
+                      ]
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "PT SDK 6.11 — device config (system variables) for the ELD the driver is connected to.",
+        "tags": [
+          "mobile"
+        ]
+      }
+    },
     "/api/logs/edit-requests/{id}/accept": {
       "post": {
         "operationId": "LogsController_accept",
@@ -38204,13 +38478,19 @@
               "application/json": {
                 "schema": {
                   "example": {
-                    "received": 120,
-                    "stored": 118,
+                    "accepted": 118,
                     "duplicates": 2,
-                    "unidentified": 0,
+                    "sequenceIds": {
+                      "drv_1": [
+                        1042,
+                        1043
+                      ]
+                    },
                     "warnings": [],
-                    "firstEventSequenceId": 1042,
-                    "lastEventSequenceId": 1159
+                    "malfunctions": [],
+                    "diagnostics": [],
+                    "unidentifiedSegmentIds": [],
+                    "confirmationRequests": []
                   }
                 }
               }
@@ -38222,17 +38502,26 @@
               "application/json": {
                 "schema": {
                   "example": {
-                    "received": 120,
-                    "stored": 120,
+                    "accepted": 120,
                     "duplicates": 0,
-                    "unidentified": 3,
+                    "sequenceIds": {
+                      "drv_1": [
+                        1042
+                      ]
+                    },
                     "warnings": [
                       {
                         "uuid": "8f14e45f-ceea-467a-9575-8b1d6b1c9f11",
                         "code": "CHECKSUM_MISMATCH",
-                        "message": "Stored as-is and flagged — a §395 record is never dropped."
+                        "detail": "Checksum mismatch (expected 3A, got 1F)."
                       }
-                    ]
+                    ],
+                    "malfunctions": [],
+                    "diagnostics": [
+                      "3"
+                    ],
+                    "unidentifiedSegmentIds": [],
+                    "confirmationRequests": []
                   }
                 }
               }
@@ -38444,6 +38733,7 @@
     },
     "/api/ingest/telemetry": {
       "post": {
+        "description": "PT SDK 6.11: `latitude`/`longitude` optional (no GPS lock — stored without a position); `loadPct` 0–250; `gear` int or string (stored as text); `busType` accepts `J1939|J1708|OBD_II`, `OBDII|OBD2|OBD-II` or bits 1/2/4 (unknown -> null); `dtcCodes[]` (max 50) carry J1939 `spn/fmi/occurrence/conversionMethod`, J1708 `code` or `spn`+`isSid`, `fmi`, `active`, OBD-II `code`; point `milOn` applies to them; `vin` updates `Device.reportedVin`.",
         "operationId": "IngestController_telemetry",
         "parameters": [],
         "requestBody": {
@@ -38452,6 +38742,54 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/IngestTelemetryDto"
+              },
+              "examples": {
+                "default": {
+                  "value": {
+                    "deviceSerial": "PT30_A86E",
+                    "vehicleId": "0b6f1c2e-0000-4000-8000-000000000201",
+                    "points": [
+                      {
+                        "time": "2026-10-10T12:00:00Z",
+                        "latitude": 41.8781,
+                        "longitude": -87.6298,
+                        "speedKmh": 88,
+                        "headingDeg": 270,
+                        "odometerKm": 182345.6,
+                        "engineHours": 5123.4,
+                        "rpm": 1350,
+                        "gear": 10,
+                        "loadPct": 145,
+                        "busType": "J1939",
+                        "intakePressureKpa": 180,
+                        "barometerKpa": 99.1,
+                        "gpsLocked": true,
+                        "gpsSatellites": 9,
+                        "gpsDop": 1.1,
+                        "gpsAgeSec": 0,
+                        "milOn": true,
+                        "dtcCount": 1,
+                        "dtcCodes": [
+                          {
+                            "spn": 100,
+                            "fmi": 1,
+                            "occurrence": 3,
+                            "conversionMethod": 0
+                          }
+                        ],
+                        "isTransition": false
+                      },
+                      {
+                        "time": "2026-10-10T12:01:00Z",
+                        "latitude": null,
+                        "longitude": null,
+                        "gpsLocked": false,
+                        "rpm": 1300,
+                        "busType": 4
+                      }
+                    ]
+                  }
+                }
               }
             }
           }
@@ -38463,9 +38801,9 @@
               "application/json": {
                 "schema": {
                   "example": {
-                    "received": 60,
-                    "stored": 60,
-                    "duplicates": 0
+                    "accepted": 60,
+                    "duplicates": 0,
+                    "denserThanContract": 0
                   }
                 }
               }
@@ -38633,6 +38971,285 @@
         ]
       }
     },
+    "/api/ingest/device-events": {
+      "post": {
+        "description": "Not §395 records (those still go to /ingest/events). `type` = SDK name (`EV_MEMS_BRK`) or enum (`HARSH_BRAKE`); unknown -> `UNKNOWN`. Idempotent on (device, occurredAt, seq) — the SDK ACK key. Newly stored `HARSH_ACCEL/BRAKE/CORNER` create a SafetyEvent (HARSH_ACCEL / HARSH_BRAKING / HARSH_TURN) and raise `alert.harsh_event`. Coordinates are coarsened before storage.",
+        "operationId": "IngestController_deviceEventsUpload",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IngestDeviceEventsDto"
+              },
+              "examples": {
+                "default": {
+                  "value": {
+                    "deviceSerial": "PT30_A86E",
+                    "vehicleId": "0b6f1c2e-0000-4000-8000-000000000201",
+                    "events": [
+                      {
+                        "type": "EV_ENGINE_ON",
+                        "seq": 41,
+                        "hsi": 1203,
+                        "occurredAt": "2026-10-10T11:58:02Z",
+                        "live": true,
+                        "latitude": 41.8781,
+                        "longitude": -87.6298,
+                        "gpsLocked": true,
+                        "gpsSatellites": 9,
+                        "odometerKm": "182345.6",
+                        "engineHours": "5123.4",
+                        "rpm": 650
+                      },
+                      {
+                        "type": "EV_MEMS_BRK",
+                        "seq": 42,
+                        "occurredAt": "2026-10-10T12:03:10Z",
+                        "live": true,
+                        "latitude": 41.88,
+                        "longitude": -87.63,
+                        "headingDeg": 270,
+                        "speedKmh": 72,
+                        "rpm": 1400
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Duplicates (same device + occurredAt + seq) are counted, not re-inserted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "received": 2,
+                    "stored": 2,
+                    "duplicates": 0,
+                    "safetyEvents": 1
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHORIZED — Authentication required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 401,
+                    "code": "UNAUTHORIZED",
+                    "message": "Authentication required.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN — DRIVER_CONTEXT_REQUIRED — ingest accepts a driver token only; or the device/unit is not yours.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 403,
+                    "code": "FORBIDDEN",
+                    "message": "DRIVER_CONTEXT_REQUIRED — ingest accepts a driver token only; or the device/unit is not yours.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "PAYLOAD_TOO_LARGE — Ingest batch exceeds the 1 MB limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 413,
+                    "code": "PAYLOAD_TOO_LARGE",
+                    "message": "Ingest batch exceeds the 1 MB limit.",
+                    "details": {
+                      "bytes": 1400000,
+                      "limit": 1048576
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "VALIDATION_FAILED — Request validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 422,
+                    "code": "VALIDATION_FAILED",
+                    "message": "Request validation failed.",
+                    "details": {
+                      "issues": [
+                        {
+                          "path": "field",
+                          "code": "invalid_type",
+                          "message": "Required"
+                        }
+                      ]
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Uploads raw PT SDK TelemetryEvents (live + stored; max 500 / 1 MB, one transaction).",
+        "tags": [
+          "ingest"
+        ]
+      }
+    },
     "/api/ingest/ble-state": {
       "post": {
         "operationId": "IngestController_bleState",
@@ -38643,21 +39260,30 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/IngestBleStateDto"
+              },
+              "examples": {
+                "default": {
+                  "value": {
+                    "deviceSerial": "PT30_A86E",
+                    "state": "CONNECTED",
+                    "at": "2026-10-10T12:00:00Z",
+                    "connectionType": "USB"
+                  }
+                }
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "BLE transition recorded; a long OUT_OF_RANGE raises the §4.6 diagnostic.",
+            "description": "BLE transition recorded; > 30 min unconnected raises alert.eld_disconnected.",
             "content": {
               "application/json": {
                 "schema": {
                   "example": {
-                    "deviceId": "dev_1",
-                    "bleState": "OUT_OF_RANGE",
-                    "recordedAt": "2026-09-11T15:41:00.000Z",
-                    "diagnosticRaised": false
+                    "bleState": "CONNECTED",
+                    "connectionType": "USB",
+                    "disconnectedAlert": false
                   }
                 }
               }
@@ -38819,7 +39445,7 @@
             "bearer": []
           }
         ],
-        "summary": "Reports a BLE state transition (§7.6): CONNECTED / OUT_OF_RANGE / DISCONNECTED.",
+        "summary": "Reports a BLE state transition (§7.6): CONNECTED / OUT_OF_RANGE / DISCONNECTED; optional `connectionType` BLE|USB (SDK 6.11).",
         "tags": [
           "ingest"
         ],
@@ -38834,6 +39460,7 @@
     },
     "/api/ingest/device-status": {
       "post": {
+        "description": "`productName` `PT40*` -> model PT40, `PT30*` -> PT30. `reportedVin` differing from the paired unit VIN -> `vinMismatch: true` (never blocks; `alert.device_vin_mismatch` once per new VIN). `systemVars` are the PT SDK SetSystemVar targets.",
         "operationId": "IngestController_deviceStatus",
         "parameters": [],
         "requestBody": {
@@ -38842,22 +39469,51 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/IngestDeviceStatusDto"
+              },
+              "examples": {
+                "default": {
+                  "value": {
+                    "deviceSerial": "PT30_A86E",
+                    "storedEventsCount": 12,
+                    "mainFirmware": "L108",
+                    "bleFirmware": "1.4.2",
+                    "sdkVersion": "6.11.1",
+                    "productName": "PT40-C",
+                    "imei": "356938035643809",
+                    "reportedVin": "1FUJGLDR7CLBP8834",
+                    "connectionType": "BLE",
+                    "busType": "J1939",
+                    "appPlatform": "ANDROID",
+                    "recordsLost": false,
+                    "consecutiveTransferFailures": 0
+                  }
+                }
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Stored-event backlog and firmware version (§7.7).",
+            "description": "Backlog recorded; > 100 stored events raises alert.device_backlog.",
             "content": {
               "application/json": {
                 "schema": {
                   "example": {
-                    "deviceId": "dev_1",
-                    "storedEventCount": 12,
-                    "firmwareVersion": "L108",
-                    "firmwareOutdated": false,
-                    "lastHeartbeatAt": "2026-09-11T15:41:00.000Z"
+                    "storedEventsCount": 12,
+                    "backlogAlert": false,
+                    "codes": [],
+                    "model": "PT40",
+                    "vinMismatch": false,
+                    "systemVars": {
+                      "PERIODIC_EVENT_GAP": 30,
+                      "PERIODIC_EVENT_GAP_NOBLE": 30,
+                      "EVENTS_STORED": 1,
+                      "DRIVING_ACCL": 0,
+                      "DRIVING_BRAKING": 450,
+                      "DRIVING_CORNERING": 0,
+                      "HSI_MODE": 1
+                    },
+                    "configVersion": "3f9a1c0b7d2e"
                   }
                 }
               }
@@ -39019,7 +39675,7 @@
             "bearer": []
           }
         ],
-        "summary": "Reports stored-event backlog and firmware (§7.7).",
+        "summary": "Reports stored-event backlog, firmware and SDK TrackerInfo (§7.7); answers the system variables to apply.",
         "tags": [
           "ingest"
         ],
@@ -39079,10 +39735,49 @@
                         "vehicleId": "veh_1",
                         "spn": 100,
                         "fmi": 1,
+                        "code": null,
+                        "bus": "J1939",
+                        "milOn": true,
+                        "conversionMethod": 0,
+                        "active": null,
                         "occurrence": 3,
                         "source": "0",
                         "description": null,
                         "firstSeenAt": "2026-09-10T12:00:00.000Z",
+                        "lastSeenAt": "2026-09-11T08:00:00.000Z",
+                        "clearedAt": null
+                      },
+                      {
+                        "id": "dtc_2",
+                        "vehicleId": "veh_1",
+                        "spn": null,
+                        "fmi": 3,
+                        "code": "SID 254",
+                        "bus": "J1708",
+                        "milOn": false,
+                        "conversionMethod": null,
+                        "active": true,
+                        "occurrence": 1,
+                        "source": null,
+                        "description": null,
+                        "firstSeenAt": "2026-09-11T08:00:00.000Z",
+                        "lastSeenAt": "2026-09-11T08:00:00.000Z",
+                        "clearedAt": null
+                      },
+                      {
+                        "id": "dtc_3",
+                        "vehicleId": "veh_1",
+                        "spn": null,
+                        "fmi": null,
+                        "code": "P0301",
+                        "bus": "OBD_II",
+                        "milOn": true,
+                        "conversionMethod": null,
+                        "active": null,
+                        "occurrence": 1,
+                        "source": null,
+                        "description": null,
+                        "firstSeenAt": "2026-09-11T08:00:00.000Z",
                         "lastSeenAt": "2026-09-11T08:00:00.000Z",
                         "clearedAt": null
                       }
@@ -39295,7 +39990,7 @@
             "bearer": []
           }
         ],
-        "summary": "Lists DTCs (J1939 SPN/FMI) captured for a unit; open codes by default (TZ §5.7).",
+        "summary": "Lists DTCs captured for a unit — J1939 SPN/FMI, J1708 SID/PID+FMI (`code`), OBD-II `code`; open codes by default (TZ §5.7, PT SDK 6.11).",
         "tags": [
           "dtc"
         ],
@@ -40749,7 +41444,32 @@
                         "serial": "PT30_A86E",
                         "model": "PT30",
                         "bleState": "CONNECTED",
-                        "firmwareOutdated": false
+                        "firmware": "L108",
+                        "firmwareOutdated": false,
+                        "productName": "PT30",
+                        "bleFirmware": "1.4.2",
+                        "imei": null,
+                        "reportedVin": "1FUJGLDR7CLBP8834",
+                        "sdkVersion": "6.11.1",
+                        "appPlatform": "ANDROID",
+                        "connectionType": "BLE",
+                        "busType": "J1939",
+                        "lastInfoAt": "2026-10-10T12:00:00.000Z",
+                        "periodicConnectedSec": 30,
+                        "periodicNoBleSec": 30,
+                        "periodicDisconnectedMin": 30,
+                        "harshAccelMg": 0,
+                        "harshBrakeMg": 450,
+                        "harshCornerMg": 0,
+                        "systemVars": {
+                          "PERIODIC_EVENT_GAP": 30,
+                          "PERIODIC_EVENT_GAP_NOBLE": 30,
+                          "EVENTS_STORED": 1,
+                          "DRIVING_ACCL": 0,
+                          "DRIVING_BRAKING": 450,
+                          "DRIVING_CORNERING": 0,
+                          "HSI_MODE": 1
+                        }
                       }
                     ],
                     "page": 1,
@@ -40917,7 +41637,7 @@
             "bearer": []
           }
         ],
-        "summary": "Lists PT30/PT40 devices with connected/offline BLE state and firmware.",
+        "summary": "Lists PT30/PT40 devices with connected/offline BLE state, firmware, PT SDK 6.11 TrackerInfo and system variables.",
         "tags": [
           "devices"
         ],
@@ -41162,7 +41882,7 @@
             "bearer": []
           }
         ],
-        "summary": "Registers a PT30/PT40 device (TZ §5.4).",
+        "summary": "Registers a PT30/PT40 device (TZ §5.4). Optional PT SDK targets: `periodicNoBleSec` 10–480 s, `harshAccelMg`/`harshBrakeMg`/`harshCornerMg` 0–8192 mG (0 = off).",
         "tags": [
           "devices"
         ],
@@ -41394,9 +42114,33 @@
                     "status": "ASSIGNED",
                     "vehicleId": "veh_1",
                     "bleState": "CONNECTED",
-                    "firmwareVersion": "L108",
+                    "firmware": "L108",
                     "firmwareOutdated": false,
-                    "lastHeartbeatAt": "2026-09-11T15:41:00.000Z"
+                    "lastSeenAt": "2026-09-11T15:41:00.000Z",
+                    "productName": "PT30",
+                    "bleFirmware": "1.4.2",
+                    "imei": null,
+                    "reportedVin": "1FUJGLDR7CLBP8834",
+                    "sdkVersion": "6.11.1",
+                    "appPlatform": "ANDROID",
+                    "connectionType": "BLE",
+                    "busType": "J1939",
+                    "lastInfoAt": "2026-10-10T12:00:00.000Z",
+                    "periodicConnectedSec": 30,
+                    "periodicNoBleSec": 30,
+                    "periodicDisconnectedMin": 30,
+                    "harshAccelMg": 0,
+                    "harshBrakeMg": 450,
+                    "harshCornerMg": 0,
+                    "systemVars": {
+                      "PERIODIC_EVENT_GAP": 30,
+                      "PERIODIC_EVENT_GAP_NOBLE": 30,
+                      "EVENTS_STORED": 1,
+                      "DRIVING_ACCL": 0,
+                      "DRIVING_BRAKING": 450,
+                      "DRIVING_CORNERING": 0,
+                      "HSI_MODE": 1
+                    }
                   }
                 }
               }
@@ -41858,7 +42602,7 @@
             "bearer": []
           }
         ],
-        "summary": "Edits a device (BLE MAC, PE/PN settings, status).",
+        "summary": "Edits a device (BLE MAC, PE/PN settings, status, PT SDK system-variable targets `periodicNoBleSec` 10–480 s and `harshAccelMg`/`harshBrakeMg`/`harshCornerMg` 0–8192 mG).",
         "tags": [
           "devices"
         ],
@@ -68410,6 +69154,101 @@
           "outcome"
         ]
       },
+      "DeviceSystemVarsView": {
+        "type": "object",
+        "properties": {
+          "PERIODIC_EVENT_GAP": {
+            "type": "number",
+            "minimum": 2,
+            "maximum": 7200,
+            "description": "Seconds (Device.periodicConnectedSec)."
+          },
+          "PERIODIC_EVENT_GAP_NOBLE": {
+            "type": "number",
+            "minimum": 10,
+            "maximum": 480,
+            "description": "Seconds (Device.periodicNoBleSec)."
+          },
+          "EVENTS_STORED": {
+            "type": "number",
+            "enum": [
+              1
+            ],
+            "description": "Always 1 — the device must buffer events while BLE is down."
+          },
+          "DRIVING_ACCL": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 8192,
+            "description": "mG, 0 = off."
+          },
+          "DRIVING_BRAKING": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 8192,
+            "description": "mG, 0 = off."
+          },
+          "DRIVING_CORNERING": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 8192,
+            "description": "mG, 0 = off."
+          },
+          "HSI_MODE": {
+            "type": "number",
+            "enum": [
+              1
+            ]
+          }
+        },
+        "required": [
+          "PERIODIC_EVENT_GAP",
+          "PERIODIC_EVENT_GAP_NOBLE",
+          "EVENTS_STORED",
+          "DRIVING_ACCL",
+          "DRIVING_BRAKING",
+          "DRIVING_CORNERING",
+          "HSI_MODE"
+        ]
+      },
+      "DeviceConfigResponse": {
+        "type": "object",
+        "properties": {
+          "serial": {
+            "type": "string",
+            "example": "PT30_A86E"
+          },
+          "model": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DeviceModel"
+              }
+            ]
+          },
+          "systemVars": {
+            "$ref": "#/components/schemas/DeviceSystemVarsView"
+          },
+          "autoFirmware": {
+            "type": "boolean"
+          },
+          "shareDiagnostics": {
+            "type": "boolean"
+          },
+          "configVersion": {
+            "type": "string",
+            "example": "3f9a1c0b7d2e",
+            "description": "Changes whenever systemVars/autoFirmware/shareDiagnostics change."
+          }
+        },
+        "required": [
+          "serial",
+          "model",
+          "systemVars",
+          "autoFirmware",
+          "shareDiagnostics",
+          "configVersion"
+        ]
+      },
       "CertifiedDayView": {
         "type": "object",
         "properties": {
@@ -69169,6 +70008,18 @@
           "OBD_II"
         ]
       },
+      "BusTypeInput": {
+        "oneOf": [
+          {
+            "type": "string",
+            "maxLength": 12
+          },
+          {
+            "type": "integer"
+          }
+        ],
+        "nullable": true
+      },
       "CalibrateOdometerDto": {
         "type": "object",
         "properties": {
@@ -69259,6 +70110,13 @@
         },
         "required": [
           "accept"
+        ]
+      },
+      "ConnectionTypeEnum": {
+        "type": "string",
+        "enum": [
+          "BLE",
+          "USB"
         ]
       },
       "ContactMethodEnum": {
@@ -69512,6 +70370,30 @@
             "minimum": 1,
             "maximum": 480,
             "default": 30
+          },
+          "periodicNoBleSec": {
+            "type": "integer",
+            "minimum": 10,
+            "maximum": 480,
+            "default": 30
+          },
+          "harshAccelMg": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 8192,
+            "default": 0
+          },
+          "harshBrakeMg": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 8192,
+            "default": 0
+          },
+          "harshCornerMg": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 8192,
+            "default": 0
           },
           "autoFirmware": {
             "type": "boolean",
@@ -70533,6 +71415,126 @@
           "PT40"
         ]
       },
+      "DeviceRawEventDto": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2147483647
+          },
+          "hsi": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2147483647,
+            "nullable": true
+          },
+          "occurredAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "live": {
+            "type": "boolean"
+          },
+          "latitude": {
+            "type": "number",
+            "minimum": -90,
+            "maximum": 90,
+            "nullable": true
+          },
+          "longitude": {
+            "type": "number",
+            "minimum": -180,
+            "maximum": 180,
+            "nullable": true
+          },
+          "headingDeg": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 359,
+            "nullable": true
+          },
+          "gpsLocked": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "gpsSatellites": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 99,
+            "nullable": true
+          },
+          "gpsDop": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 999,
+            "nullable": true
+          },
+          "gpsAgeSec": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2147483647,
+            "nullable": true
+          },
+          "odometerKm": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string",
+                "pattern": "^-?\\d+(\\.\\d+)?$"
+              }
+            ],
+            "nullable": true
+          },
+          "speedKmh": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 400,
+            "nullable": true
+          },
+          "engineHours": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string",
+                "pattern": "^-?\\d+(\\.\\d+)?$"
+              }
+            ],
+            "nullable": true
+          },
+          "rpm": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10000,
+            "nullable": true
+          },
+          "obd2": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "engineAgeSec": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2147483647,
+            "nullable": true
+          }
+        },
+        "required": [
+          "type",
+          "seq",
+          "occurredAt",
+          "live"
+        ]
+      },
       "DeviceStatusEnum": {
         "type": "string",
         "enum": [
@@ -70596,6 +71598,62 @@
           "INACTIVE",
           "TERMINATED"
         ]
+      },
+      "DtcCodeDto": {
+        "type": "object",
+        "properties": {
+          "spn": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 999999,
+            "nullable": true
+          },
+          "fmi": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 31,
+            "nullable": true
+          },
+          "code": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 20,
+            "nullable": true
+          },
+          "occurrence": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255,
+            "nullable": true
+          },
+          "bus": {
+            "$ref": "#/components/schemas/BusTypeInput"
+          },
+          "conversionMethod": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1,
+            "nullable": true
+          },
+          "isSid": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "active": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "source": {
+            "type": "string",
+            "maxLength": 40,
+            "nullable": true
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 200,
+            "nullable": true
+          }
+        }
       },
       "DutyStatusDto": {
         "type": "object",
@@ -71224,11 +72282,41 @@
           "at": {
             "type": "string",
             "format": "date-time"
+          },
+          "connectionType": {
+            "$ref": "#/components/schemas/ConnectionTypeEnum"
           }
         },
         "required": [
           "deviceSerial",
           "state"
+        ]
+      },
+      "IngestDeviceEventsDto": {
+        "type": "object",
+        "properties": {
+          "deviceSerial": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 60
+          },
+          "vehicleId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeviceRawEventDto"
+            },
+            "minItems": 1,
+            "maxItems": 500
+          }
+        },
+        "required": [
+          "deviceSerial",
+          "vehicleId",
+          "events"
         ]
       },
       "IngestDeviceStatusDto": {
@@ -71248,9 +72336,42 @@
             "type": "string",
             "maxLength": 20
           },
+          "mainFirmware": {
+            "type": "string",
+            "maxLength": 20
+          },
+          "bleFirmware": {
+            "type": "string",
+            "maxLength": 20
+          },
           "sdkVersion": {
             "type": "string",
             "maxLength": 20
+          },
+          "productName": {
+            "type": "string",
+            "maxLength": 40
+          },
+          "imei": {
+            "type": "string",
+            "maxLength": 20
+          },
+          "reportedVin": {
+            "type": "string",
+            "maxLength": 20
+          },
+          "connectionType": {
+            "$ref": "#/components/schemas/ConnectionTypeEnum"
+          },
+          "busType": {
+            "$ref": "#/components/schemas/BusTypeInput"
+          },
+          "appPlatform": {
+            "type": "string",
+            "enum": [
+              "IOS",
+              "ANDROID"
+            ]
           },
           "recordsLost": {
             "type": "boolean",
@@ -72803,12 +73924,14 @@
           "latitude": {
             "type": "number",
             "minimum": -90,
-            "maximum": 90
+            "maximum": 90,
+            "nullable": true
           },
           "longitude": {
             "type": "number",
             "minimum": -180,
-            "maximum": 180
+            "maximum": 180,
+            "nullable": true
           },
           "speedKmh": {
             "type": "number",
@@ -72853,8 +73976,17 @@
             "nullable": true
           },
           "gear": {
-            "type": "string",
-            "maxLength": 8,
+            "oneOf": [
+              {
+                "type": "integer",
+                "minimum": -1,
+                "maximum": 255
+              },
+              {
+                "type": "string",
+                "maxLength": 8
+              }
+            ],
             "nullable": true
           },
           "seatBelt": {
@@ -72864,7 +73996,7 @@
           "loadPct": {
             "type": "integer",
             "minimum": 0,
-            "maximum": 100,
+            "maximum": 250,
             "nullable": true
           },
           "fuelPct": {
@@ -72952,6 +74084,87 @@
             "maximum": 250,
             "nullable": true
           },
+          "intakePressureKpa": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 9999,
+            "nullable": true
+          },
+          "barometerKpa": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 999,
+            "nullable": true
+          },
+          "fuelTempC": {
+            "type": "integer",
+            "minimum": -60,
+            "maximum": 250,
+            "nullable": true
+          },
+          "intercoolerTempC": {
+            "type": "integer",
+            "minimum": -60,
+            "maximum": 250,
+            "nullable": true
+          },
+          "turboOilTempC": {
+            "type": "integer",
+            "minimum": -60,
+            "maximum": 250,
+            "nullable": true
+          },
+          "retarderPct": {
+            "type": "integer",
+            "minimum": -125,
+            "maximum": 125,
+            "nullable": true
+          },
+          "brakePedal": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255,
+            "nullable": true
+          },
+          "odometerComputed": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "engineHoursComputed": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "gpsLocked": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "gpsSatellites": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 99,
+            "nullable": true
+          },
+          "gpsDop": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 999,
+            "nullable": true
+          },
+          "gpsAgeSec": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2147483647,
+            "nullable": true
+          },
+          "vin": {
+            "type": "string",
+            "maxLength": 20,
+            "nullable": true
+          },
+          "milOn": {
+            "type": "boolean",
+            "nullable": true
+          },
           "dtcCount": {
             "type": "integer",
             "minimum": 0,
@@ -72960,43 +74173,13 @@
           "dtcCodes": {
             "type": "array",
             "items": {
-              "type": "object",
-              "properties": {
-                "spn": {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 999999,
-                  "nullable": true
-                },
-                "fmi": {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 31,
-                  "nullable": true
-                },
-                "source": {
-                  "type": "string",
-                  "maxLength": 40,
-                  "nullable": true
-                },
-                "description": {
-                  "type": "string",
-                  "maxLength": 200,
-                  "nullable": true
-                }
-              }
+              "$ref": "#/components/schemas/DtcCodeDto"
             },
-            "maxItems": 20,
+            "maxItems": 50,
             "nullable": true
           },
           "busType": {
-            "type": "string",
-            "enum": [
-              "J1939",
-              "J1708",
-              "OBD_II"
-            ],
-            "nullable": true
+            "$ref": "#/components/schemas/BusTypeInput"
           },
           "voltage": {
             "type": "number",
@@ -73010,9 +74193,7 @@
           }
         },
         "required": [
-          "time",
-          "latitude",
-          "longitude"
+          "time"
         ]
       },
       "TicketAttachmentKindEnum": {
@@ -73362,6 +74543,30 @@
             "minimum": 1,
             "maximum": 480,
             "default": 30
+          },
+          "periodicNoBleSec": {
+            "type": "integer",
+            "minimum": 10,
+            "maximum": 480,
+            "default": 30
+          },
+          "harshAccelMg": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 8192,
+            "default": 0
+          },
+          "harshBrakeMg": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 8192,
+            "default": 0
+          },
+          "harshCornerMg": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 8192,
+            "default": 0
           },
           "autoFirmware": {
             "type": "boolean",

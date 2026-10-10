@@ -1,5 +1,5 @@
 import { Body, Controller, HttpCode, Post, Req, Res, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiBody, ApiOkResponse, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -9,8 +9,10 @@ import { ERROR_CODES } from '../../common/errors/codes';
 import { apiError, ApiStandardErrors } from '../../common/errors/api-error-responses.decorator';
 import { FigmaScreen } from '../../common/decorators/figma-screen.decorator';
 import { zodBody } from '../../common/pipes/zod-validation.pipe';
+import { DeviceEventsResult, DeviceEventsService } from './device-events.service';
 import {
   IngestBleStateDto,
+  IngestDeviceEventsDto,
   IngestDeviceStatusDto,
   IngestEventsDto,
   IngestTelemetryDto,
@@ -19,7 +21,7 @@ import {
 import { IngestEventsResult, IngestService } from './ingest.service';
 
 /**
- * TZ §7.1 — the four ingest endpoints. Every one of them is called by the mobile APP with a
+ * TZ §7.1 — the ingest endpoints (§7.1 four + SDK 6.11 `device-events`). Every one of them is called by the mobile APP with a
  * DRIVER JWT (§3.1: the PT30 has no SIM, no Wi-Fi and therefore no HTTP endpoint of its own),
  * so `DriverGuard` is mandatory — a back-office token must never post §395 events.
  *
@@ -34,7 +36,7 @@ import { IngestEventsResult, IngestService } from './ingest.service';
  *
  * B-033 — that IP ceiling is a fleet-wide backstop only. §6.5's real ingest limit is
  * 300 req/min PER DRIVER, enforced by the `ingest` bucket in
- * `common/throttler/throttler.options.ts` (one bucket across all four endpoints below), so one
+ * `common/throttler/throttler.options.ts` (one bucket across every endpoint below), so one
  * misbehaving device can no longer spend the whole carrier NAT's budget. Do not add a named
  * `ingest` override to `@Throttle()` here — the limit is intentionally configured centrally.
  */
@@ -44,7 +46,10 @@ import { IngestEventsResult, IngestService } from './ingest.service';
 @Throttle({ default: { limit: 400, ttl: 1000 } })
 @Controller('ingest')
 export class IngestController {
-  constructor(private readonly ingest: IngestService) {}
+  constructor(
+    private readonly ingest: IngestService,
+    private readonly deviceEvents: DeviceEventsService,
+  ) {}
 
   @Post('events')
   @HttpCode(200)
@@ -56,13 +61,14 @@ export class IngestController {
     description: 'Stored. Duplicates by `uuid` are counted, not re-inserted.',
     schema: {
       example: {
-        received: 120,
-        stored: 118,
+        accepted: 118,
         duplicates: 2,
-        unidentified: 0,
+        sequenceIds: { 'drv_1': [1042, 1043] },
         warnings: [],
-        firstEventSequenceId: 1042,
-        lastEventSequenceId: 1159,
+        malfunctions: [],
+        diagnostics: [],
+        unidentifiedSegmentIds: [],
+        confirmationRequests: [],
       },
     },
   })
@@ -72,11 +78,14 @@ export class IngestController {
       'ACCEPTED_WITH_WARNINGS — stored, but at least one event had a bad checksum, a drifted clock or an implausible odometer (§7.3 rules 4/5, §4.3).',
     schema: {
       example: {
-        received: 120,
-        stored: 120,
+        accepted: 120,
         duplicates: 0,
-        unidentified: 3,
-        warnings: [{ uuid: '8f14e45f-ceea-467a-9575-8b1d6b1c9f11', code: 'CHECKSUM_MISMATCH', message: 'Stored as-is and flagged — a §395 record is never dropped.' }],
+        sequenceIds: { 'drv_1': [1042] },
+        warnings: [{ uuid: '8f14e45f-ceea-467a-9575-8b1d6b1c9f11', code: 'CHECKSUM_MISMATCH', detail: 'Checksum mismatch (expected 3A, got 1F).' }],
+        malfunctions: [],
+        diagnostics: ['3'],
+        unidentifiedSegmentIds: [],
+        confirmationRequests: [],
       },
     },
   })
@@ -101,8 +110,32 @@ export class IngestController {
 
   @Post('telemetry')
   @HttpCode(200)
-  @ApiOperation({ summary: 'Uploads Virtual Dashboard points (app downsamples to 1/60 s, §7.5).' })
-  @ApiOkResponse({ description: 'Virtual Dashboard points; the app already downsampled to 1/60 s (§7.5).', schema: { example: { received: 60, stored: 60, duplicates: 0 } } })
+  @ApiOperation({
+    summary: 'Uploads Virtual Dashboard points (app downsamples to 1/60 s, §7.5).',
+    description:
+      'PT SDK 6.11: `latitude`/`longitude` optional (no GPS lock — stored without a position); `loadPct` 0–250; ' +
+      '`gear` int or string (stored as text); `busType` accepts `J1939|J1708|OBD_II`, `OBDII|OBD2|OBD-II` or bits 1/2/4 ' +
+      '(unknown -> null); `dtcCodes[]` (max 50) carry J1939 `spn/fmi/occurrence/conversionMethod`, J1708 `code` or `spn`+`isSid`, `fmi`, `active`, ' +
+      'OBD-II `code`; point `milOn` applies to them; `vin` updates `Device.reportedVin`.',
+  })
+  @ApiBody({
+    schema: {
+      example: {
+        deviceSerial: 'PT30_A86E',
+        vehicleId: '0b6f1c2e-0000-4000-8000-000000000201',
+        points: [
+          {
+            time: '2026-10-10T12:00:00Z', latitude: 41.8781, longitude: -87.6298, speedKmh: 88, headingDeg: 270,
+            odometerKm: 182345.6, engineHours: 5123.4, rpm: 1350, gear: 10, loadPct: 145, busType: 'J1939',
+            intakePressureKpa: 180, barometerKpa: 99.1, gpsLocked: true, gpsSatellites: 9, gpsDop: 1.1, gpsAgeSec: 0,
+            milOn: true, dtcCount: 1, dtcCodes: [{ spn: 100, fmi: 1, occurrence: 3, conversionMethod: 0 }], isTransition: false,
+          },
+          { time: '2026-10-10T12:01:00Z', latitude: null, longitude: null, gpsLocked: false, rpm: 1300, busType: 4 },
+        ],
+      },
+    },
+  })
+  @ApiOkResponse({ description: 'Virtual Dashboard points; the app already downsampled to 1/60 s (§7.5).', schema: { example: { accepted: 60, duplicates: 0, denserThanContract: 0 } } })
   @ApiStandardErrors({ errors: [apiError.forbidden('DRIVER_CONTEXT_REQUIRED — ingest accepts a driver token only.')] })
   telemetry(
     @Req() req: Request,
@@ -113,11 +146,49 @@ export class IngestController {
     return this.ingest.ingestTelemetry(dto, driverId);
   }
 
+  @Post('device-events')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Uploads raw PT SDK TelemetryEvents (live + stored; max 500 / 1 MB, one transaction).',
+    description:
+      'Not §395 records (those still go to /ingest/events). `type` = SDK name (`EV_MEMS_BRK`) or enum (`HARSH_BRAKE`); unknown -> `UNKNOWN`. ' +
+      'Idempotent on (device, occurredAt, seq) — the SDK ACK key. Newly stored `HARSH_ACCEL/BRAKE/CORNER` create a SafetyEvent ' +
+      '(HARSH_ACCEL / HARSH_BRAKING / HARSH_TURN) and raise `alert.harsh_event`. Coordinates are coarsened before storage.',
+  })
+  @ApiBody({
+    schema: {
+      example: {
+        deviceSerial: 'PT30_A86E',
+        vehicleId: '0b6f1c2e-0000-4000-8000-000000000201',
+        events: [
+          { type: 'EV_ENGINE_ON', seq: 41, hsi: 1203, occurredAt: '2026-10-10T11:58:02Z', live: true, latitude: 41.8781, longitude: -87.6298, gpsLocked: true, gpsSatellites: 9, odometerKm: '182345.6', engineHours: '5123.4', rpm: 650 },
+          { type: 'EV_MEMS_BRK', seq: 42, occurredAt: '2026-10-10T12:03:10Z', live: true, latitude: 41.88, longitude: -87.63, headingDeg: 270, speedKmh: 72, rpm: 1400 },
+        ],
+      },
+    },
+  })
+  @ApiOkResponse({ description: 'Duplicates (same device + occurredAt + seq) are counted, not re-inserted.', schema: { example: { received: 2, stored: 2, duplicates: 0, safetyEvents: 1 } } })
+  @ApiStandardErrors({
+    errors: [
+      apiError.forbidden('DRIVER_CONTEXT_REQUIRED — ingest accepts a driver token only; or the device/unit is not yours.'),
+      { status: 413, code: ERROR_CODES.PAYLOAD_TOO_LARGE, message: 'Ingest batch exceeds the 1 MB limit.', details: { bytes: 1400000, limit: 1048576 } },
+    ],
+  })
+  deviceEventsUpload(
+    @Req() req: Request,
+    @Body(zodBody(IngestDeviceEventsDto)) dto: IngestDeviceEventsDto,
+    @CurrentUser('id') driverId: string,
+  ): Promise<DeviceEventsResult> {
+    assertPayloadSize(req);
+    return this.deviceEvents.ingestDeviceEvents(dto, driverId);
+  }
+
   @Post('ble-state')
   @HttpCode(200)
-  @ApiOperation({ summary: 'Reports a BLE state transition (§7.6): CONNECTED / OUT_OF_RANGE / DISCONNECTED.' })
+  @ApiOperation({ summary: 'Reports a BLE state transition (§7.6): CONNECTED / OUT_OF_RANGE / DISCONNECTED; optional `connectionType` BLE|USB (SDK 6.11).' })
   @FigmaScreen('web/settings-eld-devices')
-  @ApiOkResponse({ description: 'BLE transition recorded; a long OUT_OF_RANGE raises the §4.6 diagnostic.', schema: { example: { deviceId: 'dev_1', bleState: 'OUT_OF_RANGE', recordedAt: '2026-09-11T15:41:00.000Z', diagnosticRaised: false } } })
+  @ApiBody({ schema: { example: { deviceSerial: 'PT30_A86E', state: 'CONNECTED', at: '2026-10-10T12:00:00Z', connectionType: 'USB' } } })
+  @ApiOkResponse({ description: 'BLE transition recorded; > 30 min unconnected raises alert.eld_disconnected.', schema: { example: { bleState: 'CONNECTED', connectionType: 'USB', disconnectedAlert: false } } })
   @ApiStandardErrors({ errors: [apiError.forbidden('DRIVER_CONTEXT_REQUIRED — ingest accepts a driver token only.')] })
   bleState(
     @Body(zodBody(IngestBleStateDto)) dto: IngestBleStateDto,
@@ -128,9 +199,32 @@ export class IngestController {
 
   @Post('device-status')
   @HttpCode(200)
-  @ApiOperation({ summary: 'Reports stored-event backlog and firmware (§7.7).' })
+  @ApiOperation({
+    summary: 'Reports stored-event backlog, firmware and SDK TrackerInfo (§7.7); answers the system variables to apply.',
+    description:
+      '`productName` `PT40*` -> model PT40, `PT30*` -> PT30. `reportedVin` differing from the paired unit VIN -> `vinMismatch: true` ' +
+      '(never blocks; `alert.device_vin_mismatch` once per new VIN). `systemVars` are the PT SDK SetSystemVar targets.',
+  })
   @FigmaScreen('web/settings-eld-devices')
-  @ApiOkResponse({ description: 'Stored-event backlog and firmware version (§7.7).', schema: { example: { deviceId: 'dev_1', storedEventCount: 12, firmwareVersion: 'L108', firmwareOutdated: false, lastHeartbeatAt: '2026-09-11T15:41:00.000Z' } } })
+  @ApiBody({
+    schema: {
+      example: {
+        deviceSerial: 'PT30_A86E', storedEventsCount: 12, mainFirmware: 'L108', bleFirmware: '1.4.2', sdkVersion: '6.11.1',
+        productName: 'PT40-C', imei: '356938035643809', reportedVin: '1FUJGLDR7CLBP8834', connectionType: 'BLE', busType: 'J1939',
+        appPlatform: 'ANDROID', recordsLost: false, consecutiveTransferFailures: 0,
+      },
+    },
+  })
+  @ApiOkResponse({
+    description: 'Backlog recorded; > 100 stored events raises alert.device_backlog.',
+    schema: {
+      example: {
+        storedEventsCount: 12, backlogAlert: false, codes: [], model: 'PT40', vinMismatch: false,
+        systemVars: { PERIODIC_EVENT_GAP: 30, PERIODIC_EVENT_GAP_NOBLE: 30, EVENTS_STORED: 1, DRIVING_ACCL: 0, DRIVING_BRAKING: 450, DRIVING_CORNERING: 0, HSI_MODE: 1 },
+        configVersion: '3f9a1c0b7d2e',
+      },
+    },
+  })
   @ApiStandardErrors({ errors: [apiError.forbidden('DRIVER_CONTEXT_REQUIRED — ingest accepts a driver token only.')] })
   deviceStatus(
     @Body(zodBody(IngestDeviceStatusDto)) dto: IngestDeviceStatusDto,

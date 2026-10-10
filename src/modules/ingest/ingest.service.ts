@@ -15,6 +15,13 @@ import {
 } from '../../common/units';
 import { EventBusService } from '../../core/events/event-bus.service';
 import { QUEUES } from '../../core/queue/queue.constants';
+import {
+  buildSystemVars,
+  configVersion,
+  DeviceSystemVars,
+  isVinMismatch,
+  modelFromProductName,
+} from '../devices/system-vars.util';
 import { TelemetryService } from '../telemetry/telemetry.service';
 import { computeChecksum, verifyChecksum } from './checksum';
 import {
@@ -51,6 +58,19 @@ export interface IngestWarning {
   detail: string;
 }
 
+export interface DeviceStatusResult {
+  storedEventsCount: number;
+  backlogAlert: boolean;
+  codes: string[];
+  /** `Device.model` after `productName` normalisation (`PT40-C` -> `PT40`). */
+  model: string;
+  /** `reportedVin` differs from the paired unit's VIN (never blocks; raises an alert). */
+  vinMismatch: boolean;
+  /** PT SDK system variables the app must apply to the device on every heartbeat (D-135). */
+  systemVars: DeviceSystemVars;
+  configVersion: string;
+}
+
 export interface IngestEventsResult {
   accepted: number;
   duplicates: number;
@@ -64,7 +84,7 @@ export interface IngestEventsResult {
   confirmationRequests: string[];
 }
 
-interface IngestContext {
+export interface IngestContext {
   device: Device;
   vehicle: Vehicle;
   driverId: string;
@@ -428,6 +448,12 @@ export class IngestService {
       pcActive,
     });
 
+    // SDK 6.11 — the PT30 reads the VIN off the bus; keep the latest one on the device record.
+    const vin = latestVin(dto.points);
+    if (vin && vin !== ctx.device.reportedVin) {
+      await this.repo.updateDeviceOutsideTx(ctx.device.id, { reportedVin: vin, lastInfoAt: new Date() });
+    }
+
     if (stored.accepted > 0) {
       await this.events.publish('realtime.push', {
         room: `vehicle:${ctx.vehicle.id}`,
@@ -436,14 +462,24 @@ export class IngestService {
       });
       // Phase 10 — harsh-event + geofence detection runs in the worker container, never
       // inline in the request (TZ §3.3). Best-effort: a Redis blip must not fail ingest.
+      // Points without a GPS fix (SDK 6.11) still carry speed/heading for the harsh proxy;
+      // the geofence detector skips them.
       try {
         await this.safetyDetectQueue.add('safety.detect', {
           vehicleId: ctx.vehicle.id,
           driverId,
+          pcActive,
+          // D-135 — where the device itself detects a harsh type (threshold > 0), the
+          // speed-delta proxy for that type is skipped so one manoeuvre is not counted twice.
+          deviceHarsh: {
+            accel: ctx.device.harshAccelMg > 0,
+            brake: ctx.device.harshBrakeMg > 0,
+            corner: ctx.device.harshCornerMg > 0,
+          },
           points: dto.points.map((p) => ({
             time: p.time,
-            latitude: p.latitude,
-            longitude: p.longitude,
+            latitude: p.latitude ?? null,
+            longitude: p.longitude ?? null,
             speedKmh: p.speedKmh,
             headingDeg: p.headingDeg,
           })),
@@ -462,7 +498,7 @@ export class IngestService {
   async recordBleState(
     dto: IngestBleStateDto,
     driverId: string,
-  ): Promise<{ bleState: string; disconnectedAlert: boolean }> {
+  ): Promise<{ bleState: string; connectionType: string | null; disconnectedAlert: boolean }> {
     const ctx = await this.resolveContext(dto.deviceSerial, driverId);
     const now = dto.at ?? new Date();
 
@@ -472,6 +508,7 @@ export class IngestService {
     await this.repo.updateDeviceOutsideTx(ctx.device.id, {
       bleState: dto.state,
       ...(dto.state === 'CONNECTED' && { lastSeenAt: now }),
+      ...(dto.connectionType && { connectionType: dto.connectionType }),
     });
 
     if (disconnectedAlert) {
@@ -488,25 +525,65 @@ export class IngestService {
       payload: { deviceSerial: ctx.device.serial, state: dto.state },
     });
 
-    return { bleState: dto.state, disconnectedAlert };
+    return {
+      bleState: dto.state,
+      connectionType: dto.connectionType ?? ctx.device.connectionType ?? null,
+      disconnectedAlert,
+    };
   }
 
   // =========================================================================
   // POST /ingest/device-status  (§7.7)
   // =========================================================================
 
-  async recordDeviceStatus(
-    dto: IngestDeviceStatusDto,
-    driverId: string,
-  ): Promise<{ storedEventsCount: number; backlogAlert: boolean; codes: string[] }> {
+  async recordDeviceStatus(dto: IngestDeviceStatusDto, driverId: string): Promise<DeviceStatusResult> {
     const ctx = await this.resolveContext(dto.deviceSerial, driverId);
     const now = new Date();
 
-    await this.repo.updateDeviceOutsideTx(ctx.device.id, {
+    // SDK 6.11 `TrackerInfo` — every field optional; only what was sent is written.
+    const firmware = dto.mainFirmware ?? dto.firmware;
+    const model = modelFromProductName(dto.productName);
+    const busType = dto.busType ?? null;
+    const infoSent =
+      dto.productName !== undefined ||
+      firmware !== undefined ||
+      dto.bleFirmware !== undefined ||
+      dto.imei !== undefined ||
+      dto.reportedVin !== undefined ||
+      dto.sdkVersion !== undefined ||
+      dto.appPlatform !== undefined ||
+      dto.connectionType !== undefined ||
+      busType !== null;
+
+    const updated = await this.repo.updateDeviceOutsideTx(ctx.device.id, {
       storedEventsCount: dto.storedEventsCount,
       lastSeenAt: now,
-      ...(dto.firmware && { firmware: dto.firmware }),
+      ...(firmware && { firmware }),
+      ...(dto.productName && { productName: dto.productName }),
+      ...(model && model !== ctx.device.model && { model }),
+      ...(dto.bleFirmware && { bleFirmware: dto.bleFirmware }),
+      ...(dto.imei && { imei: dto.imei }),
+      ...(dto.reportedVin && { reportedVin: dto.reportedVin }),
+      ...(dto.sdkVersion && { sdkVersion: dto.sdkVersion }),
+      ...(dto.appPlatform && { appPlatform: dto.appPlatform }),
+      ...(dto.connectionType && { connectionType: dto.connectionType }),
+      ...(busType && { busType }),
+      ...(infoSent && { lastInfoAt: now }),
     });
+    const device = updated ?? ctx.device;
+
+    // Never blocking: a different VIN is surfaced to the app and back office, nothing more.
+    const vinMismatch = Boolean(ctx.device.vehicleId) && isVinMismatch(dto.reportedVin, ctx.vehicle.vin);
+    // Alerted once per newly reported VIN, not on every heartbeat that repeats it.
+    if (vinMismatch && isVinMismatch(dto.reportedVin, ctx.device.reportedVin ?? '-')) {
+      await this.raiseAlert('alert.device_vin_mismatch', {
+        deviceSerial: ctx.device.serial,
+        vehicleId: ctx.device.vehicleId,
+        reportedVin: dto.reportedVin,
+        vehicleVin: ctx.vehicle.vin,
+        driverId,
+      });
+    }
 
     const backlogAlert = isDeviceBacklog(dto.storedEventsCount);
     if (backlogAlert) {
@@ -533,6 +610,10 @@ export class IngestService {
       storedEventsCount: dto.storedEventsCount,
       backlogAlert,
       codes: codes.map((c) => `${c.kind === 'malfunction' ? 'M' : 'D'}:${c.code}`),
+      model: device.model,
+      vinMismatch,
+      systemVars: buildSystemVars(device),
+      configVersion: configVersion(device),
     };
   }
 
@@ -541,11 +622,27 @@ export class IngestService {
   // =========================================================================
 
   /**
+   * `GET /mobile/device-config` — the device must be paired with a unit the driver is
+   * associated with (same rule as ingest). An unpaired device answers 403, never its config.
+   */
+  async resolveOwnedDevice(deviceSerial: string, driverId: string): Promise<IngestContext> {
+    const device = await this.repo.findDeviceBySerial(deviceSerial);
+    if (!device) {
+      throw new AppException(ERROR_CODES.UNKNOWN_DEVICE, `Unknown device "${deviceSerial}".`, 404);
+    }
+    if (!device.vehicleId) {
+      throw AppException.forbidden('Device is not paired with any unit.', { deviceSerial });
+    }
+    return this.resolveContext(deviceSerial, driverId, device.vehicleId);
+  }
+
+  /**
    * `deviceSerial` and `vehicleId` are claims made by a mobile client — never trusted.
    * The device must exist, be paired with the claimed unit, and the driver must actually be
    * associated with that unit (assignment, or an open login session on it).
+   * Shared with `DeviceEventsService` (`POST /ingest/device-events`).
    */
-  private async resolveContext(
+  async resolveContext(
     deviceSerial: string,
     driverId: string,
     claimedVehicleId?: string,
@@ -802,6 +899,16 @@ function mandatoryFieldsMissing(event: IngestEventDto): string[] {
     missing.push('rawDeviceOdometerKm');
   }
   return missing;
+}
+
+/** The VIN of the newest point that carries one (SDK 6.11 VDB `VIN`). */
+function latestVin(points: IngestTelemetryDto['points']): string | null {
+  let best: { at: number; vin: string } | null = null;
+  for (const p of points) {
+    const vin = p.vin?.trim().toUpperCase();
+    if (vin && (!best || p.time.getTime() >= best.at)) best = { at: p.time.getTime(), vin };
+  }
+  return best?.vin ?? null;
 }
 
 function monthStart(date: Date): string {

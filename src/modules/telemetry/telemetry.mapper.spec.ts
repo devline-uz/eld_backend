@@ -44,17 +44,49 @@ describe('telemetry/mapper — §4.2 conversion + §7.3 rule 9 coarsening', () =
   it('coarsens the position to 1 mile before storage — the raw coordinate is never kept', () => {
     const row = toTelemetryRow(point(), ctx);
     expect(row.latitude).not.toBe(39.961176);
-    expect(distanceMi({ lat: row.latitude, lon: row.longitude }, { lat: 39.961176, lon: -82.998794 })).toBeLessThanOrEqual(1);
+    expect(distanceMi({ lat: row.latitude!, lon: row.longitude! }, { lat: 39.961176, lon: -82.998794 })).toBeLessThanOrEqual(1);
   });
 
   it('coarsens to 10 miles while Personal Conveyance is active', () => {
     const row = toTelemetryRow(point(), { ...ctx, pcActive: true });
     const off = distanceMi(
-      { lat: row.latitude, lon: row.longitude },
+      { lat: row.latitude!, lon: row.longitude! },
       { lat: 39.961176, lon: -82.998794 },
     );
     expect(off).toBeLessThanOrEqual(10);
     expect(row.latitude).not.toBe(39.961176);
+  });
+});
+
+describe('telemetry/mapper — PT SDK 6.11', () => {
+  it('stores a point without a GPS fix with null coordinates (engine data kept)', () => {
+    const row = toTelemetryRow(point({ latitude: null, longitude: null, rpm: 1200, gpsLocked: false }), ctx);
+    expect(row.latitude).toBeNull();
+    expect(row.longitude).toBeNull();
+    expect(row.rpm).toBe(1200);
+    expect(row.gpsLocked).toBe(false);
+  });
+
+  it('treats half a coordinate pair as no position', () => {
+    const row = toTelemetryRow(point({ longitude: undefined }), ctx);
+    expect(row.latitude).toBeNull();
+    expect(row.longitude).toBeNull();
+  });
+
+  it('passes the new metric VDB fields through unchanged', () => {
+    const row = toTelemetryRow(
+      point({
+        intakePressureKpa: 180.5, barometerKpa: 99.1, fuelTempC: 30, intercoolerTempC: 45, turboOilTempC: 95,
+        retarderPct: -40, brakePedal: 12, odometerComputed: true, engineHoursComputed: false,
+        gpsSatellites: 9, gpsDop: 1.2, gpsAgeSec: 3,
+      }),
+      ctx,
+    );
+    expect(row).toMatchObject({
+      intakePressureKpa: 180.5, barometerKpa: 99.1, fuelTempC: 30, intercoolerTempC: 45, turboOilTempC: 95,
+      retarderPct: -40, brakePedal: 12, odometerComputed: true, engineHoursComputed: false,
+      gpsSatellites: 9, gpsDop: 1.2, gpsAgeSec: 3,
+    });
   });
 });
 

@@ -23,8 +23,9 @@ export interface HistoryPoint {
   odometerMi: number | null;
   totalFuelIdleGal: number | null;
   driverId: string | null;
-  lat: number;
-  lon: number;
+  /** `null` for a point without a GPS fix (PT SDK 6.11). */
+  lat: number | null;
+  lon: number | null;
 }
 
 export interface RouteSegment {
@@ -37,8 +38,10 @@ export interface RouteSegment {
   distanceMi: number | null;
   odometerMi: number;
   driverName: string;
-  lat: number;
-  lon: number;
+  /** Last known fix at/before the segment end (else the first after it); `null` only when the
+   * whole day has no located point. */
+  lat: number | null;
+  lon: number | null;
 }
 
 export interface VehicleHistoriesResponse {
@@ -71,8 +74,27 @@ function round1(n: number): number {
   return Math.round(n * 10) / 10;
 }
 
-function locationLabel(p: HistoryPoint): string {
+function locationLabel(p: { lat: number | null; lon: number | null }): string {
+  if (p.lat === null || p.lon === null) return 'Unknown location';
   return `${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}`;
+}
+
+/** Fills fix-less points with the last known fix (else the next one) so a segment still has a
+ * place; the input is time-ordered. */
+function fillPositions(sorted: HistoryPoint[]): HistoryPoint[] {
+  const out = sorted.map((p) => ({ ...p }));
+  let last: { lat: number; lon: number } | null = null;
+  for (const p of out) {
+    if (p.lat !== null && p.lon !== null) last = { lat: p.lat, lon: p.lon };
+    else if (last) Object.assign(p, last);
+  }
+  let next: { lat: number; lon: number } | null = null;
+  for (let i = out.length - 1; i >= 0; i--) {
+    const p = out[i];
+    if (p.lat !== null && p.lon !== null) next = { lat: p.lat, lon: p.lon };
+    else if (next) Object.assign(p, next);
+  }
+  return out;
 }
 
 export function buildVehicleHistories(
@@ -102,7 +124,7 @@ export function buildVehicleHistories(
   };
   if (points.length === 0) return empty;
 
-  const sorted = [...points].sort((a, b) => a.time.getTime() - b.time.getTime());
+  const sorted = fillPositions([...points].sort((a, b) => a.time.getTime() - b.time.getTime()));
 
   const groups: HistoryPoint[][] = [];
   let currentType: 'DRIVE' | 'STOP' | 'IDLE' | null = null;

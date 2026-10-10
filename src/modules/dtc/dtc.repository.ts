@@ -30,17 +30,29 @@ export class DtcRepository extends BaseRepository<
     return this.prisma.diagnosticTroubleCode;
   }
 
-  findOpenByCode(vehicleId: string, spn: number | null, fmi: number | null): Promise<DiagnosticTroubleCode | null> {
+  /** Open row for one dedupe key (rides the `(vehicleId, spn, fmi, code)` index). A `null`
+   * part matches `IS NULL`, so J1939 (`code` null), J1708 (`spn` null) and OBD-II (`spn`/`fmi`
+   * null) keys never collide with each other. */
+  findOpenByCode(
+    vehicleId: string,
+    key: { spn: number | null; fmi: number | null; code: string | null },
+  ): Promise<DiagnosticTroubleCode | null> {
     return this.prisma.diagnosticTroubleCode.findFirst({
-      where: { vehicleId, spn, fmi, clearedAt: null },
+      where: { vehicleId, spn: key.spn, fmi: key.fmi, code: key.code, clearedAt: null },
       orderBy: { lastSeenAt: 'desc' },
     });
   }
 
-  bumpOccurrence(id: string, lastSeenAt: Date): Promise<DiagnosticTroubleCode> {
+  /** Repeat sighting: `occurrence` is the device's own count when it reports one (never lowered),
+   * else +1; the latest bus / MIL / active state wins. */
+  bumpOccurrence(
+    id: string,
+    lastSeenAt: Date,
+    patch: Pick<Prisma.DiagnosticTroubleCodeUpdateInput, 'occurrence' | 'bus' | 'milOn' | 'active' | 'conversionMethod'> = {},
+  ): Promise<DiagnosticTroubleCode> {
     return this.prisma.diagnosticTroubleCode.update({
       where: { id },
-      data: { occurrence: { increment: 1 }, lastSeenAt },
+      data: { occurrence: { increment: 1 }, ...patch, lastSeenAt },
     });
   }
 

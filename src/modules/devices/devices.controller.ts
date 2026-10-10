@@ -33,8 +33,8 @@ export class DevicesController {
   @ApiQuery({ name: 'status', required: false })
   @ApiQuery({ name: 'bleState', required: false })
   @ApiQuery({ name: 'vehicleId', required: false, description: 'B-35 — join a single unit\'s device (device<->vehicle binding lives only on Device.vehicleId).' })
-  @ApiOperation({ summary: 'Lists PT30/PT40 devices with connected/offline BLE state and firmware.' })
-  @ApiOkResponse({ schema: { example: { items: [{ id: 'dev_1', serial: 'PT30_A86E', model: 'PT30', bleState: 'CONNECTED', firmwareOutdated: false }], page: 1, limit: 25, total: 1, totalPages: 1 } } })
+  @ApiOperation({ summary: 'Lists PT30/PT40 devices with connected/offline BLE state, firmware, PT SDK 6.11 TrackerInfo and system variables.' })
+  @ApiOkResponse({ schema: { example: { items: [{ id: 'dev_1', serial: 'PT30_A86E', model: 'PT30', bleState: 'CONNECTED', firmware: 'L108', firmwareOutdated: false, productName: 'PT30', bleFirmware: '1.4.2', imei: null, reportedVin: '1FUJGLDR7CLBP8834', sdkVersion: '6.11.1', appPlatform: 'ANDROID', connectionType: 'BLE', busType: 'J1939', lastInfoAt: '2026-10-10T12:00:00.000Z', periodicConnectedSec: 30, periodicNoBleSec: 30, periodicDisconnectedMin: 30, harshAccelMg: 0, harshBrakeMg: 450, harshCornerMg: 0, systemVars: { PERIODIC_EVENT_GAP: 30, PERIODIC_EVENT_GAP_NOBLE: 30, EVENTS_STORED: 1, DRIVING_ACCL: 0, DRIVING_BRAKING: 450, DRIVING_CORNERING: 0, HSI_MODE: 1 } }], page: 1, limit: 25, total: 1, totalPages: 1 } } })
   @ApiStandardErrors()
   list(@Query(zodBody(DeviceListQueryDto)) query: DeviceListQueryDto) {
     return this.devices.list(query);
@@ -52,7 +52,7 @@ export class DevicesController {
   @Get(':id')
   @Perm('devices', 'READ')
   @ApiOperation({ summary: 'Gets one device.' })
-  @ApiOkResponse({ schema: { example: { id: 'dev_1', serial: 'PT30_A86E', model: 'PT30', status: 'ASSIGNED', vehicleId: 'veh_1', bleState: 'CONNECTED', firmwareVersion: 'L108', firmwareOutdated: false, lastHeartbeatAt: '2026-09-11T15:41:00.000Z' } } })
+  @ApiOkResponse({ schema: { example: { id: 'dev_1', serial: 'PT30_A86E', model: 'PT30', status: 'ASSIGNED', vehicleId: 'veh_1', bleState: 'CONNECTED', firmware: 'L108', firmwareOutdated: false, lastSeenAt: '2026-09-11T15:41:00.000Z', productName: 'PT30', bleFirmware: '1.4.2', imei: null, reportedVin: '1FUJGLDR7CLBP8834', sdkVersion: '6.11.1', appPlatform: 'ANDROID', connectionType: 'BLE', busType: 'J1939', lastInfoAt: '2026-10-10T12:00:00.000Z', periodicConnectedSec: 30, periodicNoBleSec: 30, periodicDisconnectedMin: 30, harshAccelMg: 0, harshBrakeMg: 450, harshCornerMg: 0, systemVars: { PERIODIC_EVENT_GAP: 30, PERIODIC_EVENT_GAP_NOBLE: 30, EVENTS_STORED: 1, DRIVING_ACCL: 0, DRIVING_BRAKING: 450, DRIVING_CORNERING: 0, HSI_MODE: 1 } } } })
   @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.DEVICE_NOT_FOUND, 'Device not found.')] })
   get(@Param('id') id: string) {
     return this.devices.get(id);
@@ -70,7 +70,7 @@ export class DevicesController {
   @Post()
   @Perm('devices', 'FULL')
   @Audit({ object: 'Device', action: 'REGISTER' })
-  @ApiOperation({ summary: 'Registers a PT30/PT40 device (TZ §5.4).' })
+  @ApiOperation({ summary: 'Registers a PT30/PT40 device (TZ §5.4). Optional PT SDK targets: `periodicNoBleSec` 10–480 s, `harshAccelMg`/`harshBrakeMg`/`harshCornerMg` 0–8192 mG (0 = off).' })
   @ApiCreatedResponse({ schema: { example: { id: 'dev_9', serial: 'PT30_1C4F', model: 'PT30', status: 'UNASSIGNED', bleState: 'DISCONNECTED' } } })
   @ApiStandardErrors({ errors: [apiError.conflict(ERROR_CODES.CONFLICT, 'A device with this serial is already registered.')] })
   create(@Body(zodBody(CreateDeviceDto)) dto: CreateDeviceDto) {
@@ -90,7 +90,7 @@ export class DevicesController {
   @Patch(':id')
   @Perm('devices', 'FULL')
   @Audit({ object: 'Device', action: 'UPDATE' })
-  @ApiOperation({ summary: 'Edits a device (BLE MAC, PE/PN settings, status).' })
+  @ApiOperation({ summary: 'Edits a device (BLE MAC, PE/PN settings, status, PT SDK system-variable targets `periodicNoBleSec` 10–480 s and `harshAccelMg`/`harshBrakeMg`/`harshCornerMg` 0–8192 mG).' })
   @ApiOkResponse({ schema: { example: { id: 'dev_1', serial: 'PT30_A86E', bleMac: 'A4:C1:38:12:9F:6E', status: 'ASSIGNED' } } })
   @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.DEVICE_NOT_FOUND, 'Device not found.')] })
   update(@Param('id') id: string, @Body(zodBody(UpdateDeviceDto)) dto: UpdateDeviceDto) {

@@ -22,9 +22,11 @@ export class IftaSegmentsRepository {
     });
   }
 
+  /** Located points only — a PT SDK 6.11 point without a GPS fix has no jurisdiction; the
+   * odometer delta across it is carried by the next located point. */
   telemetryForVehicleDay(vehicleId: string, from: Date, to: Date) {
     return this.prisma.telemetryPoint.findMany({
-      where: { vehicleId, time: { gte: from, lte: to } },
+      where: { vehicleId, time: { gte: from, lte: to }, latitude: { not: null }, longitude: { not: null } },
       orderBy: { time: 'asc' },
       select: { time: true, latitude: true, longitude: true, odometerMi: true, driverId: true },
     });

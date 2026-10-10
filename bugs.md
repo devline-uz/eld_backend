@@ -2256,3 +2256,9 @@ service-code change needed.
 
 ## B-153 — `ingest.e2e-spec.ts` "happy path" failed once in a full integration+e2e run · OPEN (flaky, not reproduced)
 **Found:** 2026-10-08 final verification of the wave-4 branch. One failure in the first `--selectProjects integration e2e --runInBand` run (220/221); the spec alone passed 12/12 and two more full runs passed 221/221. Cause not identified (likely order/timing dependent — shared `onebook_eld_test` state). **Severity:** Low (test flake, no runtime defect observed). **Next:** if it recurs, capture the assertion diff and check sequence-id expectations against rows left by earlier suites.
+
+## B-155 — Telemetry-proxy SafetyEvents stored raw GPS coordinates · FIXED
+**Found:** 2026-10-10, PT SDK 6.11 alignment review of `safety-detect.processor.ts`. `detectHarsh` copied the raw point latitude/longitude into `SafetyEvent`, violating §7.3 rule 9 (raw coordinates are stored nowhere). **Severity:** Medium (privacy/compliance). **Resolution:** detected events are coarsened with `coarsenLocation` before `createMany` — 1 mile, 10 miles when PC was active at batch start (`pcActive` now travels in the `safety.detect` job). Device-reported harsh events (`/ingest/device-events`) use the same coarsened position. **Verified:** `safety-detect.processor.spec.ts`, scoped jest green.
+
+## B-156 — `POST /ingest/events` Swagger examples did not match the response · FIXED
+**Found:** 2026-10-10, same review. The 200/202 examples showed `received/stored/unidentified/first|lastEventSequenceId`, while `IngestEventsResult` returns `accepted/duplicates/sequenceIds/warnings/malfunctions/diagnostics/unidentifiedSegmentIds/confirmationRequests`. **Severity:** Low (docs only). **Resolution:** examples rewritten to the real shape; ble-state / device-status / telemetry examples likewise corrected.
