@@ -131,6 +131,35 @@ describe('Operations — trips / geofences / alert-rules / notifications (e2e)',
     expect(list.body.data.items.some((g: { id: string }) => g.id === created.body.data.id)).toBe(true);
   });
 
+  it('§20 B-104 — stores a geofence vehicle group, rejects an unknown one, and falls back to all groups when the group is deleted', async () => {
+    const auth = { Authorization: `Bearer ${token}` };
+    const group = await request(server()).post('/api/vehicle-groups').set(auth).send({ name: `E2E geofence group ${Date.now()}` });
+    expect(group.status).toBe(201);
+    const groupId = group.body.data.id as string;
+
+    const created = await request(server())
+      .post('/api/geofences')
+      .set(auth)
+      .send({ name: `E2E grouped fence ${Date.now()}`, type: 'CIRCLE', centerLat: 40.0, centerLon: -83.0, radiusMi: 1, vehicleGroupId: groupId });
+    expect(created.status).toBe(201);
+    const fenceId = created.body.data.id as string;
+    createdGeofenceIds.push(fenceId);
+    expect(created.body.data.vehicleGroupId).toBe(groupId);
+
+    const unknown = await request(server())
+      .post('/api/geofences')
+      .set(auth)
+      .send({ name: 'E2E bad group', type: 'CIRCLE', centerLat: 40.0, centerLon: -83.0, radiusMi: 1, vehicleGroupId: '00000000-0000-4000-8000-000000000000' });
+    expect(unknown.status).toBe(404);
+
+    const detail = await request(server()).get(`/api/geofences/${fenceId}`).set(auth);
+    expect(detail.body.data).toMatchObject({ vehicleGroupId: groupId, vehicleGroupName: expect.stringContaining('E2E geofence group') });
+
+    expect((await request(server()).delete(`/api/vehicle-groups/${groupId}`).set(auth)).status).toBe(200);
+    const after = await request(server()).get(`/api/geofences/${fenceId}`).set(auth);
+    expect(after.body.data).toMatchObject({ vehicleGroupId: null, vehicleGroupName: null });
+  });
+
   it('rejects an alert rule that selects the SMS channel with 422 CHANNEL_NOT_AVAILABLE', async () => {
     const res = await request(server())
       .post('/api/alert-rules')

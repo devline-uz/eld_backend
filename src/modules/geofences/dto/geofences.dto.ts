@@ -32,6 +32,8 @@ export const CreateGeofenceDto = z
     colour: GeofenceColourEnum.default('BLUE'),
     /** Time a unit spends inside counts as on-duty yard move (overlay 11.1 footer checkbox). */
     countAsYardMove: z.boolean().default(false),
+    /** §20 B-104 — "Applies to" vehicle group (overlay 11.1). null/absent = all groups. */
+    vehicleGroupId: z.string().uuid().nullable().optional(),
   })
   .refine(
     (v) => {
@@ -58,5 +60,7 @@ export const UpdateGeofenceDto = z.object({
   colour: GeofenceColourEnum.optional(),
   countAsYardMove: z.boolean().optional(),
   enabled: z.boolean().optional(),
+  /** §20 B-104 — null resets the fence to "all groups"; absent leaves it unchanged. */
+  vehicleGroupId: z.string().uuid().nullable().optional(),
 });
 export type UpdateGeofenceDto = z.infer<typeof UpdateGeofenceDto>;

@@ -80,7 +80,7 @@ export class SafetyDetectProcessor extends WorkerHost {
   }
 
   private async detectGeofences(vehicleId: string, points: SafetyDetectJobData['points']): Promise<void> {
-    const fences = await this.geofences.activeCircleFences();
+    const fences = await this.applicableFences(vehicleId);
     if (!fences.length) return;
 
     const orderedPoints: Array<Point & { time: string }> = points
@@ -124,6 +124,17 @@ export class SafetyDetectProcessor extends WorkerHost {
         await this.detectDwell(vehicleId, fence.id, fence.dwellMinutes, circle, orderedPoints);
       }
     }
+  }
+
+  /** §20 B-104 — a fence with a `vehicleGroupId` only applies to vehicles in that group;
+   * a null group applies to every vehicle. The vehicle's group is read at most once per job,
+   * and only when some active fence is group-scoped. */
+  private async applicableFences(vehicleId: string) {
+    const fences = await this.geofences.activeCircleFences();
+    if (!fences.some((f) => f.vehicleGroupId)) return fences;
+    const vehicle = await this.prisma.vehicle.findUnique({ where: { id: vehicleId }, select: { groupId: true } });
+    const groupId = vehicle?.groupId ?? null;
+    return fences.filter((f) => !f.vehicleGroupId || f.vehicleGroupId === groupId);
   }
 
   /** §20 B-15 "Dwell longer than N min" — fires (at most once per batch, throttled by the
