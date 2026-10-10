@@ -38,6 +38,8 @@ import { WorkersModule } from './workers/workers.module';
     FirebaseModule,
     MailModule,
     EventsModule,
+    // Scheduled reports are emailed to their recipients from report.processor (TZ §15).
+    MailModule,
     HealthModule,
     WorkersModule,
   ],

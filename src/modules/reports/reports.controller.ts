@@ -1,5 +1,6 @@
-import { Body, Controller, Delete, Get, HttpCode, Param, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Param, Patch, Post, Query, Res } from '@nestjs/common';
 import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiQuery, ApiResponse, ApiTags } from '@nestjs/swagger';
+import type { Response } from 'express';
 import { Audit } from '../../common/decorators/audit.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { FigmaScreen } from '../../common/decorators/figma-screen.decorator';
@@ -282,5 +283,33 @@ export class ReportsController {
   @ApiOkResponse({ schema: { example: { downloadUrl: 'https://minio.local/reports/rpt_1.csv?X-Amz-Signature=...', expiresAt: '2026-09-18T06:01:00.000Z', fileName: 'rpt_1.csv' } } })
   download(@Param('id') id: string) {
     return this.reports.download(id);
+  }
+
+  @Get(':id/file')
+  @Perm('reports', 'READ')
+  @ApiOperation({
+    summary:
+      'Downloads a READY report file through the API (attachment, `text/csv` or `application/pdf`). The web panel uses this instead of the presigned URL, which points at an object-storage host the browser may not reach. 409 if not ready yet.',
+  })
+  @ApiOkResponse({
+    description: 'The report file itself. Not wrapped in the success envelope.',
+    content: {
+      'text/csv': { schema: { type: 'string' }, example: 'Jurisdiction,Total miles,Taxable miles\nOH,42,42\n' },
+      'application/pdf': { schema: { type: 'string', format: 'binary' } },
+    },
+  })
+  @ApiStandardErrors({
+    errors: [
+      apiError.notFound(ERROR_CODES.REPORT_NOT_FOUND, 'Report not found.'),
+      { status: 409, code: ERROR_CODES.REPORT_NOT_READY, message: 'Report is not ready for download yet.' },
+    ],
+  })
+  async file(@Param('id') id: string, @Res({ passthrough: true }) res: Response): Promise<Buffer> {
+    const { fileName, contentType, body } = await this.reports.file(id);
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.setHeader('Cache-Control', 'no-store');
+    // Returning a Buffer opts out of the success envelope (TransformInterceptor).
+    return body;
   }
 }

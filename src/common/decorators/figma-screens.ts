@@ -172,4 +172,5 @@ export const FIGMA_UNMAPPED_ROUTES: Record<string, string> = {
   'GET /api/reports/dvir': 'Reports — DVIR tab; role-guide export only captured the IFTA/FMCSA tabs (p.20/p.21).',
   'GET /api/reports/{id}': 'Reports — job status polling, not a distinct role-guide page.',
   'GET /api/reports/{id}/download': 'Reports — download action shared by every report tab, not a distinct role-guide page.',
+  'GET /api/reports/{id}/file': 'Reports — same download action as GET /api/reports/{id}/download, streamed through the API for the web panel.',
 };

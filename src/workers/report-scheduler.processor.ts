@@ -80,7 +80,8 @@ export class ReportSchedulerProcessor extends WorkerHost implements OnModuleInit
             requestedById: schedule.createdById,
           },
         });
-        await this.queue.add('report.generate', { reportId: report.id }, { jobId: `report-${report.id}` });
+        // `scheduleId` tells report.processor to email the file to the schedule's recipients.
+        await this.queue.add('report.generate', { reportId: report.id, scheduleId: schedule.id }, { jobId: `report-${report.id}` });
         const nextRunAt = this.reportsService.computeNextRun(schedule.cron, schedule.timezone, now);
         await this.schedulesRepo.update({ id: schedule.id }, { lastRunAt: now, nextRunAt });
         enqueued += 1;

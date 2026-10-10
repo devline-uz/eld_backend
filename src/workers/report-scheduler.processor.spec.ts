@@ -43,7 +43,7 @@ describe('ReportSchedulerProcessor.runTick (TZ §15 — report scheduler runs wi
     const [createArgs] = prisma.report.create.mock.calls[0] as [{ data: { type: string; format: string; requestedById: string } }];
     expect(createArgs.data).toMatchObject({ type: 'ACTIVITY', format: 'CSV', requestedById: 'usr_1' });
     const [, , addOptions] = queue.add.mock.calls[0] as [string, unknown, { jobId: string }];
-    expect(queue.add).toHaveBeenCalledWith('report.generate', { reportId: 'rpt_1' }, expect.anything());
+    expect(queue.add).toHaveBeenCalledWith('report.generate', { reportId: 'rpt_1', scheduleId: 'sch_1' }, expect.anything());
     expect(addOptions.jobId).toBe('report-rpt_1');
     expect(schedulesRepo.update).toHaveBeenCalledWith(
       { id: 'sch_1' },

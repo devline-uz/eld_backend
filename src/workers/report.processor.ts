@@ -23,6 +23,7 @@ import type {
 } from '../modules/reports/dto/reports.dto';
 import type { ReportJobData } from '../modules/reports/reports.service';
 import { REPORT_RETENTION_MONTHS } from '../modules/reports/reports.service';
+import { ScheduledReportMailer } from '../modules/reports/scheduled-report-mailer';
 
 /**
  * TZ §15 — `report.generate` job: builds the file (streamed for CSV, rendered for PDF),
@@ -44,13 +45,14 @@ export class ReportProcessor extends WorkerHost {
     private readonly fmcsaGen: FmcsaPackGenerator,
     private readonly rodsGen: RodsReportGenerator,
     private readonly idleFuelGen: IdleFuelReportGenerator,
+    private readonly scheduledMailer: ScheduledReportMailer,
   ) {
     super();
   }
 
   async process(job: Job<ReportJobData>): Promise<void> {
     if (job.name !== 'report.generate') return;
-    const { reportId } = job.data;
+    const { reportId, scheduleId } = job.data;
     const report = await this.prisma.report.findUnique({ where: { id: reportId } });
     if (!report) {
       this.logger.warn({ reportId }, 'report.generate for a Report row that no longer exists — dropped');
@@ -83,6 +85,17 @@ export class ReportProcessor extends WorkerHost {
       await this.prisma.report.update({ where: { id: reportId }, data: { status: 'FAILED', error: message } });
       this.logger.error({ reportId, err }, 'report.generate failed');
       throw err;
+    }
+
+    // TZ §15 — a scheduled run is delivered by email. Outside the try above: the report is
+    // already READY, so a mail failure must neither mark it FAILED nor retry (regenerate) it.
+    if (scheduleId) {
+      const ready = await this.prisma.report.findUnique({ where: { id: reportId } });
+      if (ready) {
+        await this.scheduledMailer.deliver(scheduleId, ready).catch((err: unknown) => {
+          this.logger.error({ reportId, scheduleId, err }, 'Scheduled report email failed');
+        });
+      }
     }
   }
 

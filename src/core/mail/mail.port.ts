@@ -9,6 +9,14 @@ export interface TransactionalMail {
   subject: string;
   text: string;
   html?: string;
+  /** In-memory attachments only (scheduled report files) — the transport disables file/URL access. */
+  attachments?: TransactionalMailAttachment[];
+}
+
+export interface TransactionalMailAttachment {
+  filename: string;
+  content: Buffer;
+  contentType?: string;
 }
 
 export interface TransactionalMailResult {

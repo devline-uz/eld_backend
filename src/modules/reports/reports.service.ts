@@ -38,6 +38,8 @@ export const REPORT_RETENTION_MONTHS = 24;
 
 export interface ReportJobData {
   reportId: string;
+  /** Set by the report scheduler: once READY, the file is emailed to this schedule's recipients. */
+  scheduleId?: string;
 }
 
 @Injectable()
@@ -114,6 +116,20 @@ export class ReportsService {
     const expiresAt = new Date(Date.now() + REPORT_DOWNLOAD_TTL_SEC * 1000);
     const fileName = report.fileKey.split('/').pop() ?? report.fileKey;
     return { downloadUrl, expiresAt, fileName };
+  }
+
+  /** The READY report's bytes, streamed through the API for the web panel. A presigned URL
+   * points at `S3_ENDPOINT` — on the servers that is MinIO on 127.0.0.1, which a browser cannot
+   * reach — so the panel downloads through this authenticated route instead. */
+  async file(id: string): Promise<{ fileName: string; contentType: string; body: Buffer }> {
+    const report = await this.get(id);
+    if (report.status !== 'READY' || !report.fileKey) {
+      throw new AppException(ERROR_CODES.REPORT_NOT_READY, 'Report is not ready for download yet.', 409);
+    }
+    const body = await this.storage.get(report.fileKey);
+    const fileName = report.fileKey.split('/').pop() ?? report.fileKey;
+    const contentType = fileName.endsWith('.pdf') ? 'application/pdf' : 'text/csv; charset=utf-8';
+    return { fileName, contentType, body };
   }
 
   // ---------------------------------------------------------------------------------------
