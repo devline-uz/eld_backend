@@ -1,0 +1,268 @@
+HealthController_live	Jarayon tirikligini tekshiradi (liveness). Process ishlab tursa doim javob beradi.
+HealthController_ready	Tayyorlikni tekshiradi (readiness): baza javob bersagina instansiya trafik qabul qiladi.
+HealthController_deep	Chuqur tekshiruv: baza, Redis va object storage parallel tekshiriladi.
+AuthController_login	Back-office foydalanuvchisi (web) email + parol bilan kiradi; access + refresh token qaytaradi.
+AuthController_loginDriver	Haydovchi username + parol bilan ilovaga kiradi; access + refresh token qaytaradi.
+AuthController_google	Firebase orqali Google Sign-In. Avtomatik ro'yxatdan o'tkazmaydi — foydalanuvchi oldindan taklif qilingan bo'lishi kerak.
+AuthController_refresh	Refresh token'ni almashtiradi (har ishlatilganda yangisi beriladi, eskisi bekor bo'ladi).
+AuthController_logout	Berilgan refresh token sessiyasini bekor qiladi (chiqish).
+AuthController_forgotPassword	Parolni tiklash tokenini so'raydi. Doim 200 (foydalanuvchi bor-yo'qligi oshkor qilinmaydi).
+AuthController_resetPassword	/auth/password/forgot dan kelgan token bilan yangi parol o'rnatadi.
+AuthController_forgotDriverPassword	Haydovchi username yoki email bo'yicha parol tiklash kodini so'raydi. Doim 200; email bo'lsa kod yuboriladi.
+AuthController_resetDriverPassword	Emaildagi kod bilan haydovchi parolini tiklaydi; haydovchining barcha sessiyalari bekor qilinadi.
+AuthController_verifyEmailChange	`PATCH /users/:id { email }` dan keyingi email o'zgarishini tasdiqlaydi.
+AuthController_me	Joriy autentifikatsiyalangan subyekt (token claim'lari) + web topbar maydonlari.
+CarrierController_get	Kompaniya (carrier) profilini oladi — bitta qator.
+CarrierController_update	Kompaniya profilini yangilaydi (Settings → Company).
+CarrierController_getTransferConfig	eRODS transfer sozlamalari: timezone, Appendix A identifikatorlari, TEST/PRODUCTION rejimi (faqat o'qish).
+AttachmentsController_presign	Bitta biriktirma (rasm/fayl) uchun 15 daqiqalik presigned GET URL; DVIR/defekt/tiket bo'yicha ruxsat tekshiriladi.
+RolesController_list	Barcha rollarni ro'yxatlaydi (4 ta tizim roli bilan).
+RolesController_create	22 kalitli ruxsat matritsasi bilan yangi custom rol yaratadi.
+RolesController_get	Bitta rolni oladi.
+RolesController_update	Custom rolni tahrirlaydi. ADMIN (tizim roli) o'zgartirilmaydi.
+RolesController_remove	Custom rolni o'chiradi. ADMIN o'chirilmaydi.
+UsersController_list	Back-office foydalanuvchilarini roli bilan ro'yxatlaydi.
+UsersController_create	Yangi back-office foydalanuvchini taklif qiladi (audit qilinadi).
+UsersController_get	Bitta foydalanuvchini oladi.
+UsersController_update	Foydalanuvchini tahrirlaydi, rolini ham (rol o'zgarishi audit qilinadi).
+UsersController_remove	Back-office foydalanuvchisini o'chiradi.
+UsersController_resendInvite	INVITED holatidagi foydalanuvchiga taklif emailini qayta yuboradi va 7 kunlik muddatni yangilaydi.
+MeController_profile	Joriy foydalanuvchi profili.
+MeController_updateProfile	Joriy profilni yangilaydi (faqat ism/telefon, rol emas).
+MeController_sessions	Joriy foydalanuvchining faol sessiyalari.
+MeController_revokeAllSessions	Boshqa barcha sessiyalardan chiqaradi ("Sign out everywhere").
+MeController_revokeSession	Bitta sessiyani bekor qiladi.
+MeController_uploadAvatar	Profil avatarini yuklaydi (PNG/JPG, kamida 256x256).
+MeController_deleteAvatar	Profil avatarini o'chiradi.
+MeController_getPreferences	UI sozlamalari: til, timezone, saqlangan view'lar, jadval ustunlari.
+MeController_updatePreferences	UI sozlamalarini to'liq almashtiradi.
+AuditController_list	Audit log yozuvlari, eng yangisi birinchi, cursor pagination.
+ApiKeysController_list	API kalitlari ro'yxati — ochiq kalit yoki to'liq hash hech qachon qaytmaydi.
+ApiKeysController_create	API kalit yaratadi. Ochiq kalit faqat bir marta qaytariladi.
+ApiKeysController_updateScopes	Mavjud API kalitining scope'larini o'zgartiradi.
+ApiKeysController_revoke	API kalitini darhol bekor qiladi.
+DriversController_list	Haydovchilar ro'yxati: CDL, istisnolar, holat.
+DriversController_create	Haydovchi yaratadi (CDL, home terminal timezone, HOS ruleset, istisno bayroqlari).
+DriversController_export	Barcha haydovchilarni `POST /drivers/import` qabul qiladigan formatda eksport qiladi (parolsiz).
+DriversController_roster	W-06 roster: har haydovchi uchun HOS soatlari, joriy duty status, unit va ochiq violation soni.
+DriversController_hos	Bitta haydovchining 4 ta HOS soati, HOS engine hozir hisoblaydi.
+DriversController_get	Bitta haydovchi profili.
+DriversController_update	Haydovchi profili, CDL yoki istisno bayroqlarini yangilaydi.
+DriversController_remove	Haydovchini soft-delete qiladi (TERMINATED, unit ajratiladi). Hech qachon to'liq o'chirmaydi.
+DriversController_import	Haydovchilarni ommaviy import qiladi; `username` bo'yicha upsert.
+DriversController_resetPassword	Dispetcher tomonidan haydovchi ilova parolini tiklash (email yoki og'zaki aytiladigan bir martalik kod). Audit qilinadi.
+DriversController_sendVerification	`Driver.email` ni tasdiqlash tokenini emailga yuboradi.
+DriversController_verifyEmail	`send-verification` tokenini tasdiqlaydi; `emailVerifiedAt` o'rnatiladi.
+DriversController_listDocuments	Haydovchi hujjatlari ro'yxati (CDL skani, medical card va h.k.).
+DriversController_createDocument	Hujjat metadata'sini yozadi va fayl yuklash uchun presigned PUT URL qaytaradi.
+DriversController_removeDocument	Haydovchi hujjatini o'chiradi (storage obyekti va qator).
+TransfersController_create	eRODS transfer so'raydi: §395 Appendix A output faylini yaratadi, tekshiradi, saqlaydi va yuborishni navbatga qo'yadi. TEST rejimda FMCSA'ga yuborilmaydi.
+TransfersController_list	Transferlar tarixi. `TEST_ONLY` — yaratilgan, lekin yuborilmagan fayllar.
+TransfersController_get	Bitta transfer yozuvi.
+TransfersController_download	Yaratilgan Appendix A faylini rasmiy fayl nomi bilan yuklab beradi (TEST rejimda ham ishlaydi).
+MobileTransfersController_create	Haydovchi o'z RODS'i uchun eRODS transfer boshlaydi: Appendix A fayl yaratiladi, tekshiriladi, saqlanadi, yuborish navbatga qo'yiladi. TEST rejimda yuborilmaydi.
+MobileTransfersController_list	Haydovchining oxirgi transferlari (S-10 / M-27 "Last transfer" kvitansiyalari).
+VehiclesController_list	Unitlar ro'yxati — unit raqami, VIN, odometr, holat.
+VehiclesController_create	Unit qo'shadi (VIN, qo'shilgan paytdagi dashboard odometri).
+VehiclesController_export	Barcha unitlarni `POST /vehicles/import` formatida eksport qiladi.
+VehiclesController_get	Bitta unit (Unit detail ekrani).
+VehiclesController_update	Unitni tahrirlaydi.
+VehiclesController_remove	Unitni soft-delete qiladi (INACTIVE, haydovchi ajratiladi).
+VehiclesController_activities	"Unit activity" lentasi: audit yozuvlari + shu unit DVIR'lari.
+VehiclesController_histories	W-05 Unit histories: server tomonda kunni DRIVE/STOP/IDLE segmentlarga ajratadi. 🆕 lat/lon endi `null` bo'lishi mumkin (GPS fix yo'q kun).
+VehiclesController_telemetry	Unitning oxirgi telemetriya nuqtalari (Virtual Dashboard), eng yangisi birinchi. 🆕 lat/lon `null` bo'lishi mumkin; yangi VDB ustunlari (intakePressureKpa, barometerKpa, fuelTempC, intercoolerTempC, turboOilTempC, retarderPct, brakePedal, odometerComputed, engineHoursComputed, gpsLocked, gpsSatellites, gpsDop, gpsAgeSec).
+VehiclesController_import	Unitlarni ommaviy import qiladi; `unitNumber`/`vin` bo'yicha upsert.
+VehiclesController_bulkUpdateStatus	Ko'p unitning `status`ini bitta so'rovda o'zgartiradi; har qatorga OOS qoidasi alohida qo'llanadi.
+VehiclesController_calibrateOdometer	PT30 ko'rsatkichiga nisbatan odometr offsetini qayta kalibrlaydi. Audit qilinadi.
+VehiclesController_assignDriver	Unitga haydovchi biriktiradi. Unit OUT_OF_SERVICE bo'lsa bloklanadi.
+VehiclesController_unassignDriver	Unitdagi joriy haydovchini ajratadi.
+TrailersController_list	Treylerlar ro'yxati (o'chirilmaganlar), sahifalangan.
+TrailersController_create	Treyler qo'shadi.
+TrailersController_export	Treylerlarni `POST /trailers/import` formatida eksport qiladi.
+TrailersController_get	Bitta treyler (o'chirilgan bo'lsa 404).
+TrailersController_update	Treylerni tahrirlaydi.
+TrailersController_remove	Treylerni soft-delete qiladi: ro'yxatdan yashiriladi, raqami bo'shaydi, eski DVIR/trip'lar uni ko'rsataveradi.
+TrailersController_import	Treylerlarni ommaviy import qiladi; `number` bo'yicha upsert.
+VehicleGroupsController_list	Unit guruhlari ro'yxati, unit sonlari bilan.
+VehicleGroupsController_create	Unit guruhi yaratadi; ixtiyoriy `vehicleIds` shu unitlarni guruhga o'tkazadi.
+VehicleGroupsController_get	Bitta guruh, unitlari bilan.
+VehicleGroupsController_update	Guruh nomi/rangini o'zgartiradi.
+VehicleGroupsController_remove	Guruhni o'chiradi; unitlar guruhsiz qoladi.
+VehicleGroupsController_setMembers	Guruh a'zolarini aynan `vehicleIds` bilan almashtiradi.
+AlertRulesController_list	Alert qoidalari ro'yxati (kanallar, throttle, quiet hours, qabul qiluvchilar).
+AlertRulesController_create	Custom alert qoidasi yaratadi. `channels: ["SMS"]` rad etiladi (v2 da).
+AlertRulesController_get	Bitta alert qoidasi.
+AlertRulesController_update	Alert qoidasini yangilaydi (kanallar, throttle, quiet hours, qabul qiluvchilar, yoqilgan/o'chiq).
+AlertRulesController_remove	Custom alert qoidasini o'chiradi (tizim qoidalari o'chirilmaydi).
+AlertRulesController_test	Qoidaning o'z kanallari orqali chaqiruvchiga test bildirishnoma yuboradi.
+NotificationsController_list	Chaqiruvchining in-app bildirishnomalari, segment sonlari bilan. 🆕 yangi tur: `alert.device_vin_mismatch`.
+NotificationsController_readAll	Barcha o'qilmagan bildirishnomalarni o'qilgan qiladi.
+NotificationsController_markRead	Bitta bildirishnomani o'qilgan qiladi.
+NotificationChannelsController_get	Tashkilot darajasidagi kanal sozlamalari (email, webhook).
+NotificationChannelsController_update	Kanal sozlamalarini yangilaydi. O'chirilgan kanal barcha alert qoidalari uchun yetkazishni to'xtatadi.
+WebhooksController_sendTest	Sozlangan webhook manziliga imzolangan test hodisa yuboradi.
+IntegrationsController_list	Ulangan integratsiyalar ro'yxati. Maxfiy maydonlar yashiriladi.
+IntegrationsController_catalog	Integratsiyalar katalogi (Pacific Track, DAT, Geotab, Zapier va h.k.).
+IntegrationsController_get	Bitta integratsiya (maxfiy maydonlar yashirin).
+IntegrationsController_upsert	Provayder ulanishini yaratadi yoki qayta sozlaydi; maxfiy qiymatlar shifrlanadi.
+IntegrationsController_disconnect	Provayderni uzadi va saqlangan sozlama/maxfiy qiymatlarni o'chiradi.
+MobileAppConfigController_appConfig	Ommaviy (auth'siz) ilova sozlamasi: min/oxirgi versiya, store va legal URL'lar, PT30 firmware. `appVersion` berilsa `updateRequired` hisoblanadi.
+MobileAppConfigController_legal	Maxfiylik siyosati / foydalanish shartlari havolasi (`url`ni oching).
+MobileAppConfigController_ping	Tarmoq tezligi testi uchun `bytes` ta tasodifiy bayt (max 1 MiB). 30 so'rov/daqiqa. Konvertsiz.
+MobileBootstrapController_get	Ilova ochilganda: haydovchi, unit, qurilma, carrier konteksti, joriy HOS holati, engine versiyasi, server vaqti va offline DOT inspeksiya paketi.
+MobileSyncController_sync	Offline navbatdagi o'zgarishlarni bitta batch'da qo'llaydi: duty_status, log_entry, certify, dvir.
+MobileDutyStatusController_change	Haydovchi duty statusini o'zgartiradi (OFF/SB/ON). Offline'da /mobile/sync orqali navbatga qo'yiladi.
+MobileDvirController_uploadSignature	Imzo/rasm baytlarini storage'ga yuklaydi; /mobile/dvir yoki /mobile/certify da ishlatiladigan id qaytaradi.
+MobileDvirController_submit	DVIR topshirish: inspeksiya, defektlar, haydovchi imzosi (+ ixtiyoriy mexanik ismi/imzosi).
+MobileVehicleController_list	M-03: haydovchi tanlashi mumkin bo'lgan unitlar (o'ziniki yoki boshqa faol haydovchi band qilmagan ACTIVE unit).
+MobileVehicleController_release	Haydovchining unitini bo'shatadi, boshqa haydovchilar uni `available-vehicles` da ko'radi.
+MobileVehicleController_select	M-03: unitni haydovchiga biriktiradi.
+MobileCoDriverController_current	Faol co-driver juftligi (ikkala o'rindiq), sherik ma'lumoti va faol trip hujjatlari/treylerlari; juftlik yo'q bo'lsa `null`.
+MobileCoDriverController_switch	Haydovchi o'rindig'ini co-driver'ga beradi; co-driver'ning o'z token juftligini qaytaradi.
+MobileCoDriverController_leave	Co-driver juftligini tugatadi va chiqayotgan haydovchining unitini bo'shatadi.
+MobileTripController_get	Faol trip (IN_PROGRESS, bo'lmasa keyingi ASSIGNED): stops[] va documents[]; trip yo'q bo'lsa kun tafsilotlari.
+MobileTripController_patch	Faol tripning haydovchi tahrirlay oladigan maydonlarini yangilaydi; trip yo'q bo'lsa kun tafsilotlari.
+MobileTrailersController_list	Carrier'ning faol treylerlari; `q` raqam yoki VIN bo'yicha qidiradi.
+MobileDvirHistoryController_list	M-10: haydovchining DVIR tarixi (defektlar soni, holat, ta'mir statusi).
+MobileDvirHistoryController_get	M-11: DVIR tafsiloti — defektlar, rasmlar, haydovchi va mexanik imzolari.
+MobileDvirHistoryController_pdf	M-11: DVIR PDF eksporti. Hozircha 501 qaytaradi (generator yo'q).
+MobileCatalogController_defectCatalog	DVIR defekt katalogi (FMCSA 49 CFR 396.11 truck/trailer bandlari).
+MobileCatalogController_get	Haydovchining saqlangan imzosi (15 daqiqalik URL) yoki `null`.
+MobileCatalogController_put	Haydovchi imzosini saqlaydi/almashtiradi (base64 yoki mavjud `signatureImageId`).
+MobileCatalogController_remove	Saqlangan imzoni unutadi (idempotent).
+MobileContactsController_list	Xabar yozish mumkin bo'lgan kontaktlar: ADMIN/FLEET_MANAGER/DISPATCHER, faol co-driver va support.
+PushTokensController_register	Qurilmaning FCM tokenini ro'yxatdan o'tkazadi/yangilaydi (token bo'yicha upsert).
+PushTokensController_remove	Shu qurilmaning push tokenini o'chiradi (faqat chaqiruvchi haydovchiniki bo'lsa).
+DeviceHealthController_get	Unitning faol malfunction/diagnostic kodlari, qurilma holati, kutilayotgan unidentified segmentlar va oxirgi HOS drift (M-20/P-12).
+MobileMessagingController_listConversations	Haydovchi suhbatlari: oxirgi xabar va o'qilmaganlar soni.
+MobileMessagingController_startConversation	`GET /mobile/contacts` dagi kontakt bilan suhbat boshlaydi (yoki mavjudini ishlatadi) va birinchi xabarni yuboradi.
+MobileMessagingController_listMessages	Suhbat tarixi, cursor pagination.
+MobileMessagingController_sendMessage	Suhbatga xabar yuboradi (realtime `message.new`). `clientId` bo'yicha idempotent.
+MobileMessagingController_markRead	Suhbatni o'qilgan qiladi.
+MobileMaintenanceController_list	Tanlangan unitning texnik xizmat vazifalari (eng kechikkani birinchi).
+MobileMaintenanceController_get	Bitta texnik xizmat vazifasi, yuborilgan invoice va tekshiruvchi izohi bilan.
+MobileMaintenanceController_submit	Texnik xizmat invoice'ini back-office tekshiruviga yuboradi.
+MobileDeviceController_reportMac	Tanlangan unitga bog'langan ELD'ning ko'rilgan BLE MAC manzilini xabar qiladi (mos kelmasa alert).
+MobileDeviceConfigController_config	🆕 PT SDK 6.11: ulangan ELD uchun qurilmaga `SetSystemVar` bilan yoziladigan sozlamalar (`systemVars`) va `configVersion`. Versiya o'zgarsa ilova qayta yozadi.
+LogsController_accept	Haydovchi carrier tahririni qabul qiladi (§395.30): taklif faol yozuvga aylanadi, asl yozuv "Inactive — Changed" bo'ladi.
+LogsController_reject	Haydovchi carrier tahririni rad etadi (§395.30): so'rov yopiladi, log o'zgarmaydi.
+LogsController_getDay	Bitta RODS kuni: grafik, yozuvlar, violation'lar, sertifikatsiya holati.
+LogsController_getRange	Kunlar oralig'i bo'yicha qisqa xulosalar (max 62 kun).
+LogsController_getEvents	Kunning barcha §395 yozuvlari, almashtirilgan (2), taklif (3) va rad etilgan (4) lar bilan — inspektor ko'radigan audit izi.
+LogsController_proposeEvent	YANGI yozuv taklif qiladi (recordStatus = 3, haydovchi qabul qilmaguncha hech narsaga ta'sir qilmaydi).
+LogsController_listEditRequests	Carrier tahrir takliflari va haydovchi ularga qanday javob bergani.
+LogsController_createEditRequest	Haydovchi yozuviga tahrir taklif qiladi (§395.30). Haydovchi qabul qilmaguncha hech narsa o'zgarmaydi.
+LogsController_certify	RODS kunlarini sertifikatlaydi. Back-office uchun `hosCertifyOnBehalf = FULL` kerak va audit qilinadi.
+MobileLogsController_createEntry	Haydovchining o'z log tuzatishi (recordOrigin = 2, darhol faol). 4–60 belgilik izoh majburiy, sertifikat bekor bo'ladi.
+MobileLogsController_certify	Ilovadan RODS kunlarini sertifikatlaydi; offline navbatga qo'yiladi.
+MobileLogsController_listEditRequests	Haydovchini kutayotgan carrier tahrir takliflari.
+MobileLogsController_certificationStatus	Oxirgi `days` kunning (default 8, max 14) sertifikatsiya holati.
+MobileLogsController_getDay	Haydovchining o'z RODS kuni (grafik, yozuvlar, sertifikatsiya).
+MobileLogsExportController_exportDay	Haydovchining bitta RODS kunini yuklab beradi: `format=csv` ishlaydi, `pdf` → 501.
+IngestController_events	Ilova hisoblagan §395 Appendix A hodisalarini batch'da yuklaydi (max 500 ta / 1 MB, bitta tranzaksiya). `uuid` bo'yicha dublikat qayta yozilmaydi.
+IngestController_telemetry	🆕 Virtual Dashboard nuqtalarini yuklaydi (1 nuqta/60 s). SDK 6.11: lat/lon ixtiyoriy (GPS'siz nuqta), loadPct 0–250, gear int/string, busType SDK yozilishlari, yangi VDB maydonlari, `dtcCodes[]` shina bo'yicha (J1939 SPN/FMI, J1708 SID/PID, OBD-II kod), `milOn`, `vin`.
+IngestController_deviceEventsUpload	🆕 PT SDK xom TelemetryEvent'larini yuklaydi (EV_POWER/IGNITION/ENGINE/TRIP/PERIODIC/BLE/BUS/MEMS; live + stored; max 500 / 1 MB). (deviceId, occurredAt, seq) bo'yicha idempotent; EV_MEMS_* → SafetyEvent + harsh alert.
+IngestController_bleState	BLE holati o'zgarishini xabar qiladi: CONNECTED / OUT_OF_RANGE / DISCONNECTED. 🆕 ixtiyoriy `connectionType` BLE|USB.
+IngestController_deviceStatus	🆕 Stored hodisalar soni, firmware va SDK TrackerInfo (productName, bleFirmware, imei, reportedVin, connectionType, busType, appPlatform). Javobda `model`, `vinMismatch`, `systemVars`, `configVersion`.
+DtcController_list	Unit nosozlik kodlari (DTC), default faqat ochiqlari. 🆕 qatorda `code`, `bus`, `milOn`, `conversionMethod`, `active` (J1939 SPN/FMI, J1708 SID/PID+FMI, OBD-II kod).
+MessagingController_listConversations	Chaqiruvchining suhbatlari.
+MessagingController_createConversation	Berilgan ishtirokchilar bilan shaxsiy yoki guruh suhbati ochadi.
+MessagingController_listMessages	Suhbatdagi xabarlar (chaqiruvchi ishtirokchi bo'lishi shart).
+MessagingController_sendMessage	Suhbatga xabar yuboradi.
+MessagingController_markRead	Chaqiruvchi uchun suhbatni hozirgacha o'qilgan qiladi.
+MessagingController_broadcast	Bitta xabarni ko'p haydovchiga yuboradi (har haydovchiga alohida suhbat).
+DevicesController_list	PT30/PT40 qurilmalar ro'yxati: BLE holati, firmware. 🆕 SDK TrackerInfo maydonlari (productName, bleFirmware, imei, reportedVin, sdkVersion, appPlatform, connectionType, busType, lastInfoAt), harsh/NOBLE sozlamalari va `systemVars`.
+DevicesController_create	PT30/PT40 qurilmani ro'yxatga oladi. 🆕 ixtiyoriy `periodicNoBleSec` 10–480 s, `harshAccelMg`/`harshBrakeMg`/`harshCornerMg` 0–8192 mG (0 = o'chiq).
+DevicesController_export	Barcha qurilmalarni `POST /devices/import` formatida eksport qiladi.
+DevicesController_get	Bitta qurilma. 🆕 yangi TrackerInfo maydonlari va `systemVars` bilan.
+DevicesController_update	Qurilmani tahrirlaydi (BLE MAC, periodik sozlamalar, holat). 🆕 `periodicNoBleSec`, `harshAccelMg`, `harshBrakeMg`, `harshCornerMg`.
+DevicesController_remove	Qurilmani iste'moldan chiqaradi (RETIRED, ajratiladi). To'liq o'chirmaydi.
+DevicesController_diagnostics	Qurilmaning oxirgi ulanish/GPS diagnostikasi (yozilgan holatdan, jonli so'rov emas).
+DevicesController_import	Qurilmalarni ommaviy import qiladi; `serial` bo'yicha upsert. 🆕 yangi sozlama maydonlari qabul qilinadi.
+DevicesController_updateFirmware	Qurilma xabar qilgan firmware versiyasini yozadi (L108 dan past bo'lsa ogohlantiradi).
+DevicesController_updateBleStatus	Back-office tomonidan BLE holatini qo'lda o'zgartirish (ilova o'zi /ingest/ble-state orqali yuboradi).
+DevicesController_pair	Qurilmani unitga juftlaydi. Bitta unitga bitta qurilma.
+DevicesController_unpair	Qurilmani unitdan ajratadi.
+CoDriverPairingsController_list	Co-driver juftliklari ro'yxati (unit yoki haydovchi bo'yicha, faqat faollar).
+CoDriverPairingsController_create	Unitda co-driver juftligini boshlaydi (team driving).
+CoDriverPairingsController_end	Faol co-driver juftligini tugatadi.
+UnidentifiedController_confirm	Haydovchi "bu siz edingizmi?" savoliga javob beradi (§7.4). Qabul qilinsa yozuvlar unga biriktiriladi (recordOrigin = 1).
+UnidentifiedController_listConfirmationRequests	Carrier shu haydovchidan tasdiqlashni so'ragan unidentified segmentlar (PENDING_CONFIRMATION).
+UnidentifiedController_list	Unidentified driving segmentlari ro'yxati.
+UnidentifiedController_get	Bitta segment va uning ortidagi §395 yozuvlari.
+UnidentifiedController_assign	Segmentni haydovchiga biriktiradi (ASSIGNED, audit). `requireDriverConfirmation` bilan haydovchi tasdig'i so'raladi.
+UnidentifiedController_annotate	Segmentga izoh qo'shadi (max 60 belgi).
+UnidentifiedController_reject	Biriktirishni rad etadi: yozuvlar pool'ga qaytadi (recordOrigin = 4, driverId = null). Hech narsa o'chirilmaydi.
+ViolationsController_list	Flot HOS violation'lari (default status=OPEN), haydovchi ismi va unit bilan.
+ViolationsController_resolve	OPEN violation'ni 4–60 belgilik izoh bilan yopadi. Audit qilinadi; RODS yozuvlari o'zgarmaydi.
+HosStateController_hosStateSubmit	Mobil engine hisoblagan HOS holatini qabul qiladi, saqlaydi va server bilan solishtiradi (drift).
+DvirAdminController_list	Topshirilgan DVIR'lar ro'yxati.
+DvirAdminController_compliance	Sana oralig'ida kutilgan va topshirilgan PRE_TRIP DVIR'lar (W-14 compliance).
+DvirAdminController_get	Bitta DVIR, defektlari va rasmlari bilan.
+DvirAdminController_getPdf	Bitta DVIR'ni §396.11 PDF qilib beradi.
+DvirAdminController_mechanicSignOff	DVIR defektlari bo'yicha mexanik ko'rigini yozadi (§396.13).
+DvirAdminController_nextDriverReview	Keyingi haydovchi oldingi DVIR mexanik xulosasini ko'rganini belgilaydi (§396.13).
+DefectsController_list	DVIR'lardan kelgan defektlar ro'yxati.
+DefectsController_get	Bitta defekt.
+DefectsController_resolve	Defektni yopadi (REPAIRED/NOT_REQUIRED/DEFERRED + ta'mir ma'lumotlari). Oxirgi ochiq defekt bo'lsa unit OUT_OF_SERVICE'dan chiqadi.
+DefectsController_assign	Defekt mas'ulini/ustaxonani belgilaydi yoki tozalaydi.
+DefectsController_linkWorkOrder	Defektni work order'ga biriktiradi yoki ajratadi.
+WorkOrdersController_list	Work order'lar ro'yxati.
+WorkOrdersController_create	Work order yaratadi, ixtiyoriy ochiq defektlarni biriktiradi.
+WorkOrdersController_get	Bitta work order.
+WorkOrdersController_update	Work order'ni tahrirlaydi (sarlavha, prioritet, vendor, narx, muddat). DONE/CANCELLED bo'lgach bloklanadi.
+WorkOrdersController_close	Work order'ni yopadi (DONE). Barcha biriktirilgan defektlar yopilgan bo'lishi shart.
+WorkOrdersController_cancel	Work order'ni bekor qiladi.
+WorkOrdersController_attachDefect	Ochiq defektni shu work order'ga biriktiradi.
+MaintenanceSchedulesController_list	Texnik xizmat jadvallari, hisoblangan muddat holati bilan.
+MaintenanceSchedulesController_create	Texnik xizmat jadvali yaratadi ("Brake service", "DOT annual inspection" va h.k.).
+MaintenanceSchedulesController_get	Bitta jadval, muddat holati bilan.
+MaintenanceSchedulesController_update	Jadvalni tahrirlaydi; `status` + `reviewNote` bilan haydovchi invoice'ini tasdiqlaydi (COMPLETED) yoki rad etadi (REJECTED).
+MaintenanceSchedulesController_remove	Texnik xizmat jadvalini o'chiradi.
+MaintenanceSchedulesController_complete	Jadvalni hozir bajarilgan deb belgilaydi, interval qaytadan boshlanadi.
+SupportController_list	Support tiketlari ro'yxati.
+SupportController_create	Support tiketi ochadi (support:READ yetarli).
+SupportController_get	Bitta support tiketi.
+SupportController_update	Tiketni yangilaydi (holat, prioritet, mas'ul).
+SupportController_createChat	Real-time support chat ochadi va birinchi xabarni yuboradi; javoblar `conversation:{id}` socket room'ida.
+SupportController_createFeedback	In-app fikr-mulohaza yuboradi (support:READ yetarli).
+MobileSupportController_createFeedback	Haydovchi ilovasidan fikr-mulohaza yuboradi.
+MobileSupportController_createTicket	Ilovadan support tiketi ochadi ("Send diagnostics to support" ham shu, category: diagnostics). Ixtiyoriy `contactMethod`.
+MobileSupportController_listOwnTickets	Haydovchining o'z support tiketlari.
+MobileSupportController_getOwnTicket	Haydovchining bitta tiketi (boshqasiniki → 404).
+TripsController_list	Trip/yuklar ro'yxati, dispatch holati bilan.
+TripsController_create	Trip/yuk yaratadi, ixtiyoriy stoplar va boshlang'ich haydovchi/unit bilan.
+TripsController_unassigned	Hali haydovchi biriktirilmagan yuklar (dispatch "unassigned" ustuni).
+TripsController_get	Bitta trip, stoplari bilan.
+TripsController_update	Trip maydonlarini yangilaydi yoki holatini oldinga suradi.
+TripsController_remove	Tripni stoplari bilan butunlay o'chiradi (IN_PROGRESS o'chirilmaydi).
+TripsController_assign	Tripga haydovchi/unit/treyler biriktiradi yoki almashtiradi.
+TripsController_autoAssign	Biriktirilmagan har bir yukni navbatdagi bo'sh ACTIVE haydovchiga beradi.
+SafetyController_listEvents	Harsh-driving hodisalari ro'yxati. 🆕 qurilma akselerometri (EV_MEMS_*) dan kelgan HARSH_ACCEL/HARSH_BRAKING/HARSH_TURN ham shu yerda.
+SafetyController_updateEvent	Safety hodisasini REVIEWED/DISMISSED qiladi.
+SafetyController_scorecard	Flot safety bahosi va haydovchilar reytingi (70 dan pasti belgilanadi), oldingi davr bilan trend.
+SafetyController_coach	"Assign coaching": hodisani izoh bilan COACHED qilib yopadi, yoki `driverId` bilan haydovchi darajasida.
+GeofencesController_list	Live Fleet xaritasidagi barcha geofence'lar.
+GeofencesController_create	Yangi terminal/mijoz geofence'ini chizadi (doira yoki poligon); ixtiyoriy `vehicleGroupId`.
+GeofencesController_get	Bitta geofence.
+GeofencesController_update	Geofence'ni yangilaydi.
+GeofencesController_remove	Geofence'ni o'chiradi.
+SearchController_search	Command palette uchun global haydovchi + unit qidiruvi.
+LiveFleetController_fleet	Har bir unitning joriy holati: oxirgi pozitsiya, tezlik, haydovchi, duty status, HOS soatlari, ELD aloqasi. 🆕 pin koordinatasi bor oxirgi nuqtadan olinadi.
+DashboardController_summary	W-01 Fleet Dashboard uchun bitta so'rovda: live fleet, 24 soatlik violation'lar, kutilayotgan unidentified, o'qilmagan bildirishnomalar, carrier va unit statistikasi.
+ReportsController_generate	Hisobot ishini navbatga qo'yadi. Sinxron emas — GET /reports/:id bilan so'rang yoki `report.ready` ni tinglang.
+ReportsController_list	Hisobot ishlari ro'yxati, eng yangisi birinchi.
+ReportsController_listSchedules	Hisobot jadvallari (cron).
+ReportsController_createSchedule	Hisobot jadvali yaratadi; `nextRunAt` cron/timezone'dan hisoblanadi.
+ReportsController_updateSchedule	Hisobot jadvalini yangilaydi (`enabled`, `cron` va h.k.).
+ReportsController_deleteSchedule	Hisobot jadvalini o'chiradi; yaratilgan hisobotlar qoladi.
+ReportsController_ifta	Chorak uchun IFTA hisobotini navbatga qo'yadi (`?format=PDF` → PDF).
+ReportsController_iftaJurisdictions	W-12 `Jurisdiction` menyusi uchun IFTA yurisdiksiyalari (AQSh, keyin Kanada).
+ReportsController_iftaSummary	W-12 uchun JSON IFTA chorak xulosasi: yurisdiksiya jami, flot MPG, oldingi chorak bilan solishtirish.
+ReportsController_activity	Sana oralig'i uchun activity hisobotini navbatga qo'yadi (`?format=PDF` → PDF).
+ReportsController_activitySummary	W-13/W-15/dashboard uchun haydovchilar bo'yicha JSON activity agregati.
+ReportsController_dvir	Sana oralig'i uchun DVIR hisobotini navbatga qo'yadi (`?format=PDF` → PDF).
+ReportsController_fmcsaPack	Sana oralig'i uchun FMCSA compliance paketini navbatga qo'yadi (har haydovchi Appendix A fayli + PDF muqova).
+ReportsController_get	Hisobot ishi holati; READY bo'lsa 7 kunlik presigned yuklash URL'i.
+ReportsController_download	READY hisobot uchun yangi presigned URL (7 kun). Tayyor bo'lmasa 409.
+ReportsController_file	READY hisobot faylini API orqali yuklab beradi (`text/csv` yoki `application/pdf`). Web shuni ishlatadi.
