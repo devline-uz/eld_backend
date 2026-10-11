@@ -18,8 +18,12 @@ export const CreateDriverDto = z.object({
   cdlNumber: z.string().min(1).max(40),
   cdlState: z.string().min(2).max(10),
 
+  // Optional (product decision): the web panel may create a driver without a home terminal.
+  // `Driver.homeTerminalName` is NOT NULL, so absent / blank is stored as `''` (see
+  // `DriversService.toCreateInput`). `''` is accepted so an export round-trips through import.
+  homeTerminalName: z.string().trim().max(120).optional(),
   // RODS day boundary follows this timezone, never Carrier.timezone (TZ §5.3).
-  homeTerminalName: z.string().min(1).max(120),
+  // Independent of `homeTerminalName` and always defaulted, so HOS never depends on the name.
   homeTerminalTimezone: z.string().min(1).max(64).default('America/New_York'),
 
   hosRuleset: HosRulesetEnum.default('US_70_8_PROPERTY'),
