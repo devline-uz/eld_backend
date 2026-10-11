@@ -98,7 +98,8 @@ export const CreateWorkOrderDto = z.object({
   priority: WorkOrderPriorityEnum.default('NORMAL'),
   vendor: z.string().max(120).optional(),
   costUsd: z.number().min(0).max(1_000_000).optional(),
-  odometerMi: z.number().int().min(0).optional(),
+  /** Same 7-digit odometer ceiling as `logs.dto.ts`; the web form enforces it too. */
+  odometerMi: z.number().int().min(0).max(9_999_999).optional(),
   dueAt: z.string().datetime({ offset: true }).optional(),
   /** Open defects to attach at creation time — TZ §5.10 "Create work order" screen. */
   defectIds: z.array(z.string().uuid()).max(50).optional(),
@@ -110,14 +111,18 @@ export const CreateWorkOrderDto = z.object({
 });
 export type CreateWorkOrderDto = z.infer<typeof CreateWorkOrderDto>;
 
+/**
+ * `null` clears a nullable column (the web Edit work order modal sends `null` for an emptied
+ * `Assign to` / cost / odometer / description — WB-149); `undefined` leaves it alone.
+ */
 export const UpdateWorkOrderDto = z.object({
   title: z.string().min(1).max(200).optional(),
-  description: z.string().max(2000).optional(),
+  description: z.string().max(2000).nullable().optional(),
   priority: WorkOrderPriorityEnum.optional(),
   status: z.enum(['OPEN', 'IN_PROGRESS']).optional(),
-  vendor: z.string().max(120).optional(),
-  costUsd: z.number().min(0).max(1_000_000).optional(),
-  odometerMi: z.number().int().min(0).optional(),
+  vendor: z.string().max(120).nullable().optional(),
+  costUsd: z.number().min(0).max(1_000_000).nullable().optional(),
+  odometerMi: z.number().int().min(0).max(9_999_999).nullable().optional(),
   dueAt: z.string().datetime({ offset: true }).nullable().optional(),
   /** §20 B-42. */
   estimatedLaborHours: z.number().min(0).max(999).optional(),
