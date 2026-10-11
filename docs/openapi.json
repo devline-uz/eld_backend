@@ -33078,13 +33078,36 @@
         ],
         "responses": {
           "200": {
-            "description": "",
+            "description": "OK.",
             "content": {
               "application/json": {
                 "schema": {
+                  "type": "object",
+                  "required": [
+                    "data",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/MobileAttachmentPresignResponse"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "Request trace id (same as the §20 error envelope)."
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
                   "example": {
-                    "url": "https://eldapi.stackyard.uz/onebook-eld/chat/carrier/drv_1/att.m4a?X-Amz-Signature=...",
-                    "expiresAt": "2026-10-11T15:15:00.000Z"
+                    "data": {
+                      "url": "https://eldapi.stackyard.uz/onebook-eld/chat/carrier/drv_1/att.m4a?X-Amz-Signature=...",
+                      "expiresAt": "2026-10-11T15:15:00.000Z"
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-10-08T15:41:00.000Z"
                   }
                 }
               }
@@ -69884,6 +69907,24 @@
         },
         "required": [
           "messagesMarked"
+        ]
+      },
+      "MobileAttachmentPresignResponse": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "example": "https://eldapi.stackyard.uz/onebook-eld/chat/carrier/drv_1/att.m4a?X-Amz-Signature=..."
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-10-11T15:15:00.000Z"
+          }
+        },
+        "required": [
+          "url",
+          "expiresAt"
         ]
       },
       "MaintenanceScheduleStatus": {
