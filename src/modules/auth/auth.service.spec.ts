@@ -25,6 +25,7 @@ describe('AuthService', () => {
   let attachments: MockRepo;
   let mail: MockRepo;
   let loginRecords: MockRepo;
+  let resetCodes: MockRepo;
 
   const activeUser = {
     id: 'u1',
@@ -87,6 +88,13 @@ describe('AuthService', () => {
 
     mail = { send: jest.fn().mockResolvedValue({ delivered: true, reference: 'm1' }) };
     loginRecords = { login: jest.fn().mockResolvedValue(1), logout: jest.fn().mockResolvedValue(1) };
+    resetCodes = {
+      upsert: jest.fn().mockResolvedValue({}),
+      find: jest.fn(),
+      incrementAttempts: jest.fn(),
+      consume: jest.fn().mockResolvedValue(true),
+      notifyAdminsOfResetRequest: jest.fn().mockResolvedValue(2),
+    };
     service = new AuthService(
       users as never,
       drivers as never,
@@ -99,6 +107,7 @@ describe('AuthService', () => {
       attachments as never,
       mail as never,
       loginRecords as never,
+      resetCodes as never,
     );
   });
 
@@ -516,10 +525,95 @@ describe('AuthService', () => {
       expect(mail.send).not.toHaveBeenCalled();
     });
 
-    it('driver without email -> {} and no email', async () => {
-      drivers.findByUsernameOrEmail.mockResolvedValue({ ...drv, email: null });
+    it('driver without email -> {}, no email, no code, admins notified (MB-16)', async () => {
+      const noEmail = { ...drv, email: null, firstName: 'J', lastName: 'S', username: 'john' };
+      drivers.findByUsernameOrEmail.mockResolvedValue(noEmail);
       expect(await service.forgotDriverPassword('john')).toEqual({});
+      await new Promise((r) => setImmediate(r));
       expect(mail.send).not.toHaveBeenCalled();
+      expect(resetCodes.upsert).not.toHaveBeenCalled();
+      expect(resetCodes.notifyAdminsOfResetRequest).toHaveBeenCalledWith(noEmail, expect.any(Date));
+    });
+
+    it('admin notification failure is swallowed (still 200 shape)', async () => {
+      drivers.findByUsernameOrEmail.mockResolvedValue({ ...drv, email: null });
+      resetCodes.notifyAdminsOfResetRequest.mockRejectedValueOnce(new Error('db'));
+      expect(await service.forgotDriverPassword('john')).toEqual({});
+      await new Promise((r) => setImmediate(r));
+    });
+
+    it('stores only a salted hash of a 6-digit code and emails the code with its expiry', async () => {
+      tokens.signDriverPasswordResetToken = jest.fn().mockReturnValue('drv-reset');
+      drivers.findByUsernameOrEmail.mockResolvedValue(drv);
+      (config as unknown as { echoOneTimeSecrets: boolean }).echoOneTimeSecrets = true;
+      const res = await service.forgotDriverPassword('john');
+      await new Promise((r) => setImmediate(r));
+      expect(res.resetCode).toMatch(/^\d{6}$/);
+      const [driverId, salt, hash, expiresAt] = resetCodes.upsert.mock.calls[0] as [string, string, string, Date];
+      expect(driverId).toBe('d1');
+      expect(hash).toBe(sha256(`${salt}:${res.resetCode}`));
+      expect(hash).not.toContain(res.resetCode as string);
+      expect(expiresAt.getTime() - Date.now()).toBeGreaterThan(14 * 60_000);
+      const text = ((mail.send.mock.calls as [{ text: string }][])[0][0]).text;
+      expect(text).toContain(res.resetCode);
+      expect(text).toContain('15 minutes');
+    });
+
+    describe('reset with code (MB-17)', () => {
+      const row = (over: object = {}) => ({
+        driverId: 'd1', salt: 's', codeHash: sha256('s:123456'), attempts: 0, expiresAt: new Date(Date.now() + 60_000), ...over,
+      });
+      beforeEach(() => drivers.findByUsernameOrEmail.mockResolvedValue(drv));
+
+      it('correct code -> password rotated, sessions revoked, code consumed', async () => {
+        resetCodes.find.mockResolvedValue(row());
+        await service.resetDriverPasswordWithCode('john', '123456', 'newpassword');
+        expect(drivers.updatePasswordHash).toHaveBeenCalledWith('d1', 'newhash');
+        expect(driverSessions.revokeAllForDriver).toHaveBeenCalledWith('d1');
+        expect(resetCodes.consume).toHaveBeenCalledWith('d1');
+      });
+
+      it('wrong code -> 401, attempt counted, password untouched', async () => {
+        resetCodes.find.mockResolvedValue(row());
+        resetCodes.incrementAttempts.mockResolvedValue(1);
+        await expect(service.resetDriverPasswordWithCode('john', '000000', 'newpassword')).rejects.toMatchObject({ status: 401 });
+        expect(resetCodes.incrementAttempts).toHaveBeenCalledWith('d1');
+        expect(resetCodes.consume).not.toHaveBeenCalled();
+        expect(drivers.updatePasswordHash).not.toHaveBeenCalled();
+      });
+
+      it('5th wrong attempt invalidates the code', async () => {
+        resetCodes.find.mockResolvedValue(row({ attempts: 4 }));
+        resetCodes.incrementAttempts.mockResolvedValue(5);
+        await expect(service.resetDriverPasswordWithCode('john', '000000', 'newpassword')).rejects.toThrow(AppException);
+        expect(resetCodes.consume).toHaveBeenCalledWith('d1');
+      });
+
+      it('exhausted code rejects even the correct code', async () => {
+        resetCodes.find.mockResolvedValue(row({ attempts: 5 }));
+        await expect(service.resetDriverPasswordWithCode('john', '123456', 'newpassword')).rejects.toThrow(AppException);
+        expect(drivers.updatePasswordHash).not.toHaveBeenCalled();
+      });
+
+      it('expired code -> 401', async () => {
+        resetCodes.find.mockResolvedValue(row({ expiresAt: new Date(Date.now() - 1) }));
+        await expect(service.resetDriverPasswordWithCode('john', '123456', 'newpassword')).rejects.toThrow(AppException);
+        expect(drivers.updatePasswordHash).not.toHaveBeenCalled();
+      });
+
+      it('no code row / unknown driver -> same 401', async () => {
+        resetCodes.find.mockResolvedValue(null);
+        await expect(service.resetDriverPasswordWithCode('john', '123456', 'newpassword')).rejects.toMatchObject({ status: 401 });
+        drivers.findByUsernameOrEmail.mockResolvedValue(null);
+        await expect(service.resetDriverPasswordWithCode('x', '123456', 'newpassword')).rejects.toMatchObject({ status: 401 });
+      });
+
+      it('concurrent use: loser of the consume race is rejected', async () => {
+        resetCodes.find.mockResolvedValue(row());
+        resetCodes.consume.mockResolvedValue(false);
+        await expect(service.resetDriverPasswordWithCode('john', '123456', 'newpassword')).rejects.toThrow(AppException);
+        expect(drivers.updatePasswordHash).not.toHaveBeenCalled();
+      });
     });
 
     it('emails the code; a mail failure is swallowed (same 200)', async () => {
@@ -528,6 +622,7 @@ describe('AuthService', () => {
       (config as unknown as { echoOneTimeSecrets: boolean }).echoOneTimeSecrets = false;
       mail.send.mockRejectedValueOnce(new Error('smtp down'));
       expect(await service.forgotDriverPassword('john')).toEqual({});
+      await new Promise((r) => setImmediate(r));
       expect(mail.send).toHaveBeenCalledWith(expect.objectContaining({ to: 'd@x.com' }));
     });
 
@@ -540,6 +635,7 @@ describe('AuthService', () => {
       mail.send.mockImplementationOnce(() => new Promise<void>((r) => { release = () => { delivered = true; r(); }; }));
       expect(await service.forgotDriverPassword('john')).toEqual({});
       expect(delivered).toBe(false);
+      await new Promise((r) => setImmediate(r));
       release();
     });
 

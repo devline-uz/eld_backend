@@ -14,6 +14,7 @@ import { FigmaScreen } from '../../common/decorators/figma-screen.decorator';
 import {
   DriverLoginDto,
   DriverForgotPasswordDto,
+  DriverResetPasswordDto,
   ForgotPasswordDto,
   GoogleLoginDto,
   LoginDto,
@@ -126,7 +127,9 @@ export class AuthController {
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post('driver/password/forgot')
   @HttpCode(200)
-  @ApiOperation({ summary: 'MR-31 — driver requests a password-reset code by username or email. Always 200 (no user enumeration); the code is emailed when the driver has an email on file.' })
+  @ApiOperation({ summary: 'MR-31/MB-16/MB-17 — driver requests a password-reset code by username or email. Always 200 (no user enumeration).',
+    description: 'With an email on file a 6-digit numeric code is emailed: valid 15 minutes, invalidated after 5 wrong attempts, and a new request invalidates the previous code. Without an email the carrier ADMINs get an in-app notification ("driver X requested a password reset") and reset the password from the driver profile; the response is identical. Limited to 5 requests/min/IP.',
+  })
   @ApiBody({ schema: { example: { username: 'johnsmith' } } })
   @ApiOkResponse({ schema: { example: { success: true } } })
   @ApiStandardErrors({ public: true, errors: [apiError.rateLimited('Limited to 5 requests per minute per IP.')] })
@@ -139,12 +142,15 @@ export class AuthController {
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post('driver/password/reset')
   @HttpCode(200)
-  @ApiOperation({ summary: 'MR-31 — completes a driver password reset with the emailed code; revokes all driver sessions.' })
-  @ApiBody({ schema: { example: { token: 'eyJ...', newPassword: 'NewPassw0rd!' } } })
+  @ApiOperation({ summary: 'MR-31/MB-17 — completes a driver password reset with the emailed 6-digit code; revokes all driver sessions.',
+    description: 'Send `{username|email, code, newPassword}`. The code is valid 15 minutes, single use, and is invalidated after 5 wrong attempts (request a new one via /auth/driver/password/forgot). The legacy `{token, newPassword}` form is still accepted. Every failure returns the same 401 TOKEN_INVALID.',
+  })
+  @ApiBody({ schema: { oneOf: [{ example: { username: 'johnsmith', code: '482913', newPassword: 'NewPassw0rd!' } }, { example: { token: 'eyJ...', newPassword: 'NewPassw0rd!' } }] } })
   @ApiOkResponse({ schema: { example: { success: true } } })
   @ApiStandardErrors({ public: true, errors: [{ status: 401, code: ERROR_CODES.TOKEN_INVALID, message: 'The code is invalid, already used or expired.' }, apiError.rateLimited()] })
-  async resetDriverPassword(@Body(zodBody(ResetPasswordDto)) dto: ResetPasswordDto) {
-    await this.auth.resetDriverPassword(dto.token, dto.newPassword);
+  async resetDriverPassword(@Body(zodBody(DriverResetPasswordDto)) dto: DriverResetPasswordDto) {
+    if (dto.token) await this.auth.resetDriverPassword(dto.token, dto.newPassword);
+    else await this.auth.resetDriverPasswordWithCode((dto.username ?? dto.email) as string, dto.code as string, dto.newPassword);
     return { success: true };
   }
 
