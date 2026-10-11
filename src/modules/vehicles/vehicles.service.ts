@@ -7,8 +7,7 @@ import { OffsetPage, parseSort, toOffsetPage } from '../../common/dto/list-query
 import { applyOdometerOffsetMi, computeOdometerOffsetMi } from '../../common/units/odometer';
 import { CarrierRepository } from '../carrier/carrier.repository';
 import { DriversRepository } from '../drivers/drivers.repository';
-import { FirebaseService } from '../../core/firebase/firebase.service';
-import { MobileRepository } from '../mobile/mobile.repository';
+import { PushService } from '../../core/firebase/push.service';
 import { NotificationsRepository } from '../notifications/notifications.repository';
 import { MAIL_PORT, MailPort } from '../transfers/mail.port';
 import { UsersRepository } from '../users/users.repository';
@@ -124,8 +123,7 @@ export class VehiclesService {
     private readonly notifications: NotificationsRepository,
     private readonly carrier: CarrierRepository,
     private readonly users: UsersRepository,
-    private readonly mobile: MobileRepository,
-    private readonly firebase: FirebaseService,
+    private readonly push: PushService,
     @Inject(MAIL_PORT) private readonly mail: MailPort,
   ) {}
 
@@ -354,18 +352,18 @@ export class VehiclesService {
       });
       // §12.7 — background app gets FCM too, not just the in-app inbox row (same
       // IN_APP + FCM pairing `AlertProcessor.send` uses for every other driver alert).
-      if (this.firebase.enabled) {
-        const tokens = await this.mobile.findPushTokens(dto.driverId);
-        await Promise.allSettled(
-          tokens.map((t) =>
-            this.firebase.sendToToken(
-              t.token,
-              { title, body },
-              { type: 'ASSIGNMENT', id: notification.id, driverId: dto.driverId },
-            ),
-          ),
-        );
-      }
+      await this.push.sendToDriver(
+        dto.driverId,
+        { title, body },
+        {
+          type: 'ASSIGNMENT',
+          id: notification.id,
+          driverId: dto.driverId,
+          objectType: notification.objectType,
+          objectId: notification.objectId,
+          category: notification.category,
+        },
+      );
     }
     return vehicle;
   }

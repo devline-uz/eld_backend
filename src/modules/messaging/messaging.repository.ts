@@ -75,6 +75,11 @@ export class MessagingRepository {
     });
   }
 
+  async findUserDisplayName(userId: string): Promise<string | null> {
+    const u = await this.prisma.user.findUnique({ where: { id: userId }, select: { firstName: true, lastName: true } });
+    return u ? `${u.firstName} ${u.lastName}`.trim() || null : null;
+  }
+
   findById(id: string) {
     return this.prisma.conversation.findUnique({ where: { id }, include: { participants: true } });
   }

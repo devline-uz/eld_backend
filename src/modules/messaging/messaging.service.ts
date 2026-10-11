@@ -1,7 +1,8 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
 import { OffsetPage } from '../../common/dto/list-query.dto';
+import { PushService } from '../../core/firebase/push.service';
 import { EventBusService } from '../../core/events/event-bus.service';
 import type { ContextUser } from '../../core/context/request-context';
 import { BroadcastMessageDto, CreateConversationDto, SendMessageDto } from './dto/messaging.dto';
@@ -13,7 +14,13 @@ function toParticipant(actor: ContextUser): Participant {
 
 @Injectable()
 export class MessagingService {
-  constructor(private readonly repo: MessagingRepository, private readonly events: EventBusService) {}
+  private readonly logger = new Logger(MessagingService.name);
+
+  constructor(
+    private readonly repo: MessagingRepository,
+    private readonly events: EventBusService,
+    private readonly push: PushService,
+  ) {}
 
   async listConversations(actor: ContextUser) {
     const items = await this.repo.listForActor(toParticipant(actor));
@@ -37,11 +44,12 @@ export class MessagingService {
     return { conversationId, lastReadAt: readAt };
   }
 
-  private async assertParticipant(conversationId: string, actor: ContextUser): Promise<void> {
+  private async assertParticipant(conversationId: string, actor: ContextUser) {
     const conversation = await this.repo.findById(conversationId);
     if (!conversation) throw new AppException(ERROR_CODES.NOT_FOUND, 'Conversation not found.', 404);
     const ok = await this.repo.isParticipant(conversationId, toParticipant(actor));
     if (!ok) throw new AppException(ERROR_CODES.FORBIDDEN, 'Not a participant of this conversation.', 403);
+    return conversation;
   }
 
   async listMessages(conversationId: string, actor: ContextUser, page: number, limit: number): Promise<OffsetPage<unknown>> {
@@ -51,7 +59,7 @@ export class MessagingService {
   }
 
   async sendMessage(conversationId: string, dto: SendMessageDto, actor: ContextUser) {
-    await this.assertParticipant(conversationId, actor);
+    const conversation = await this.assertParticipant(conversationId, actor);
     const participant = toParticipant(actor);
     const message = await this.repo.createMessage(conversationId, {
       body: dto.body,
@@ -65,7 +73,37 @@ export class MessagingService {
       event: 'message.new',
       payload: { message },
     });
+    if (actor.type !== 'driver') await this.pushToDrivers(conversation, message, participant);
     return message;
+  }
+
+  /**
+   * Best-effort FCM for a staff-sent message: every token of each driver participant (never
+   * the sender). Identifiers only in `data`; failures are logged, never thrown.
+   */
+  private async pushToDrivers(
+    conversation: { participants?: Array<{ driverId: string | null }> },
+    message: { id: string; conversationId: string; body: string; attachmentId: string | null },
+    sender: Participant,
+  ): Promise<void> {
+    try {
+      const driverIds = (conversation.participants ?? [])
+        .map((p) => p.driverId)
+        .filter((id): id is string => !!id && id !== sender.driverId);
+      if (!driverIds.length) return;
+      const title = (sender.userId && (await this.repo.findUserDisplayName(sender.userId))) || 'Dispatch';
+      const text = message.body?.trim();
+      const body = text ? (text.length > 100 ? `${text.slice(0, 97)}...` : text) : message.attachmentId ? 'Sent an attachment' : '';
+      for (const driverId of driverIds) {
+        await this.push.sendToDriver(
+          driverId,
+          { title, body },
+          { type: 'message.new', conversationId: message.conversationId, messageId: message.id, driverId },
+        );
+      }
+    } catch (err) {
+      this.logger.warn({ conversationId: message.conversationId, err: err instanceof Error ? err.message : String(err) }, 'Chat FCM failed');
+    }
   }
 
   /** MR-3 — tells a staff member's open sessions a driver started a thread with them. */
