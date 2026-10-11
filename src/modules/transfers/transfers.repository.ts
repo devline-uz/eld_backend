@@ -153,4 +153,24 @@ export class TransfersRepository extends BaseRepository<
     if (!ids.length) return Promise.resolve([]);
     return this.prisma.user.findMany({ where: { id: { in: ids } } });
   }
+
+  /** MB-18 — the offline-queued transfer's idempotency ledger (shared `SyncedChange`, key `driverId:clientId`). */
+  findTransferLedger(driverId: string, clientId: string) {
+    return this.prisma.syncedChange.findFirst({
+      where: { OR: [{ clientId: `${driverId}:${clientId}` }, { clientId, driverId }] },
+    });
+  }
+
+  /** MB-18 — stores the first result; returns false when a concurrent replay already won (P2002). */
+  async recordTransferLedger(driverId: string, clientId: string, occurredAt: Date, result: Prisma.InputJsonValue): Promise<boolean> {
+    try {
+      await this.prisma.syncedChange.create({
+        data: { driverId, clientId: `${driverId}:${clientId}`, type: 'create_transfer', status: 'ACCEPTED', occurredAt, result },
+      });
+      return true;
+    } catch (err) {
+      if ((err as { code?: string }).code === 'P2002') return false;
+      throw err;
+    }
+  }
 }

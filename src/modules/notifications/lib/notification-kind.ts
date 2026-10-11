@@ -57,7 +57,7 @@ export function deriveObjectRef(eventName: string, payload: Record<string, unkno
 
   if (eventName === 'alert.edit_request') {
     const id = str(payload.requestId);
-    return id ? { objectType: 'EldEvent', objectId: id } : undefined;
+    return id ? { objectType: 'EditRequest', objectId: id } : undefined;
   }
   if (eventName === 'alert.trip_assigned') {
     const id = str(payload.tripId);

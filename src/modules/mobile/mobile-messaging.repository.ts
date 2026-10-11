@@ -79,6 +79,26 @@ export class MobileMessagingRepository {
     });
   }
 
+  /** MB-8 — messages strictly newer than `after` (a message id or an ISO instant), ascending, for reconnect catch-up. */
+  async listMessagesAfter(conversationId: string, limit: number, after: string): Promise<Message[]> {
+    const isId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(after);
+    const cursor = isId ? await this.prisma.message.findUnique({ where: { id: after } }) : null;
+    // Unknown id: fall back to the whole thread (ascending, capped) so the app never misses a message.
+    const instant = isId ? cursor?.sentAt : new Date(after);
+    return this.prisma.message.findMany({
+      where: {
+        conversationId,
+        ...(instant
+          ? cursor
+            ? { OR: [{ sentAt: { gt: cursor.sentAt } }, { sentAt: cursor.sentAt, id: { gt: cursor.id } }] }
+            : { sentAt: { gt: instant } }
+          : {}),
+      },
+      orderBy: [{ sentAt: 'asc' }, { id: 'asc' }],
+      take: limit,
+    });
+  }
+
   /** §11.5 — sets the driver's own `lastReadAt` and stamps `readAt` on every message in the
    *  conversation they did not author. */
   async markRead(conversationId: string, driverId: string, now: Date): Promise<{ messagesMarked: number }> {

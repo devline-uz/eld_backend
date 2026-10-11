@@ -1226,7 +1226,13 @@ export class LogsService {
       event: 'log.edit_requested',
       payload,
     });
-    await this.raiseAlert('alert.edit_request', payload);
+    // MB-7 — `title`/`message` become the in-app row + FCM text (the alert pipeline otherwise
+    // falls back to a generic "Alert"). Identifiers only; no times or locations in the push.
+    await this.raiseAlert('alert.edit_request', {
+      ...payload,
+      title: 'Log edit request',
+      message: 'Your carrier proposed a change to your log. Review it in the app.',
+    });
   }
 
   private async loadPendingRequest(requestId: string, actor: ContextUser) {

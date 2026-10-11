@@ -13,6 +13,7 @@ function build() {
   const repo = {
     listForDriver: jest.fn().mockResolvedValue([]),
     listMessagesCursor: jest.fn().mockResolvedValue([]),
+    listMessagesAfter: jest.fn().mockResolvedValue([]),
     markRead: jest.fn().mockResolvedValue({ messagesMarked: 0 }),
     nameMaps: jest.fn().mockResolvedValue({ users: new Map([['usr_1', 'Jane Dispatcher']]), drivers: new Map([['drv_1', 'John Smith']]) }),
     findMessageByClientId: jest.fn().mockResolvedValue(null),
@@ -53,6 +54,13 @@ describe('MobileMessagingService', () => {
     const { messagingRepo, service } = build();
     messagingRepo.findById.mockResolvedValue(null);
     await expect(service.listMessages('cnv_x', 'drv_1', { limit: 50 })).rejects.toBeInstanceOf(AppException);
+  });
+
+  it('MB-8 listMessages with `after` uses the ascending catch-up query, not the older-page cursor', async () => {
+    const { repo, service } = build();
+    await service.listMessages('cnv_1', 'drv_1', { limit: 50, after: '2026-10-11T10:00:00Z' });
+    expect(repo.listMessagesAfter).toHaveBeenCalledWith('cnv_1', 50, '2026-10-11T10:00:00Z');
+    expect(repo.listMessagesCursor).not.toHaveBeenCalled();
   });
 
   it('403s listMessages when the driver is not a participant', async () => {

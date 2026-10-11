@@ -33,7 +33,31 @@ export class MessagingService {
       ...dto.driverIds.map((id) => ({ driverId: id })),
       ...dto.userIds.map((id) => ({ userId: id })),
     ];
-    return this.repo.createConversation({ type: dto.type, title: dto.title, createdById: actor.id }, participants);
+    const conversation = await this.repo.createConversation({ type: dto.type, title: dto.title, createdById: actor.id }, participants);
+    if (actor.type !== 'driver') await this.notifyDriversConversationOpened(conversation, actor);
+    return conversation;
+  }
+
+  /**
+   * MB-8 — a staff member opened a thread with a driver: `conversation.new` to each driver's
+   * `driver:{id}` room so an open app adds it without polling. Best-effort, never throws.
+   */
+  private async notifyDriversConversationOpened(
+    conversation: { id: string; type: string; title: string | null; participants?: Array<{ driverId: string | null }> },
+    actor: ContextUser,
+  ): Promise<void> {
+    try {
+      for (const p of conversation.participants ?? []) {
+        if (!p.driverId || p.driverId === actor.id) continue;
+        await this.events.publish('realtime.push', {
+          room: `driver:${p.driverId}`,
+          event: 'conversation.new',
+          payload: { conversationId: conversation.id, type: conversation.type, title: conversation.title },
+        });
+      }
+    } catch (err) {
+      this.logger.warn({ conversationId: conversation.id, err: err instanceof Error ? err.message : String(err) }, 'conversation.new emit failed');
+    }
   }
 
   /** §20 B-67 — `POST /conversations/:id/read`. */
@@ -123,6 +147,7 @@ export class MessagingService {
         { type: 'BROADCAST', title: dto.title, createdById: actor.id },
         [toParticipant(actor), { driverId }],
       );
+      await this.notifyDriversConversationOpened(conversation, actor);
       const message = await this.sendMessage(conversation.id, { body: dto.body }, actor);
       results.push({ conversationId: conversation.id, messageId: message.id, driverId });
     }

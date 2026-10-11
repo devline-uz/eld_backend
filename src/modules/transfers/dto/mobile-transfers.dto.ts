@@ -14,6 +14,10 @@ export const MobileCreateTransferDto = z
     outputFileComment: z.string().trim().max(60).default(''),
     /** EMAIL only — re-validated against `*.fmcsa.dot.gov` by `FmcsaTransferService`. */
     recipient: z.string().trim().max(254).optional(),
+    /** MB-18 — client UUID for an offline-queued inspection transfer; a replay returns the first result. */
+    clientId: z.string().trim().min(8).max(100).optional(),
+    /** MB-18 — when the driver asked for the transfer on the device (offline queue); echoed back, never in the future by more than 5 min. */
+    requestedAt: z.coerce.date().optional(),
   })
   .refine((v) => v.method !== 'EMAIL' || Boolean(v.recipient), {
     message: 'recipient is required for an EMAIL transfer',

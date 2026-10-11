@@ -170,7 +170,12 @@ export class UnidentifiedService {
       event: 'unidentified.confirmation_requested',
       payload,
     });
-    await this.raiseAlert('alert.unidentified_confirmation_requested', payload);
+    // MB-7 — title/message for the in-app row + FCM (identifiers only in `data`).
+    await this.raiseAlert('alert.unidentified_confirmation_requested', {
+      ...payload,
+      title: 'Was this you?',
+      message: 'Your carrier asked you to confirm unidentified driving time.',
+    });
     return this.toView(updated);
   }
 

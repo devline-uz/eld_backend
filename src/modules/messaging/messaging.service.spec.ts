@@ -10,11 +10,15 @@ function buildService(conversation: unknown = { id: 'cnv_1' }, isParticipant = t
       id: 'msg_1', conversationId, body: d.body, attachmentId: d.attachmentId ?? null,
     })),
     findUserDisplayName: jest.fn(async () => 'Ann Dispatcher'),
+    createConversation: jest.fn(async () => ({
+      id: 'cnv_9', type: 'DIRECT', title: null,
+      participants: [{ userId: 'usr_1', driverId: null }, { userId: null, driverId: 'drv_1' }],
+    })),
   };
   const push = { sendToDriver: jest.fn(async () => undefined) };
   const events = { publish: jest.fn(async () => undefined) };
   const service = new MessagingService(repo as never, events as never, push as never);
-  return { service, repo, push };
+  return { service, repo, push, events };
 }
 
 const actor = { id: 'usr_1', type: 'user' } as never;
@@ -69,5 +73,29 @@ describe('MessagingService — chat FCM', () => {
     const { service, push } = buildService(conv);
     push.sendToDriver.mockRejectedValueOnce(new Error('fcm down'));
     await expect(service.sendMessage('cnv_1', { body: 'hi' }, actor)).resolves.toMatchObject({ id: 'msg_1' });
+  });
+});
+
+describe('MessagingService — MB-8 conversation.new to the driver room', () => {
+  it('staff opening a conversation emits conversation.new to each driver participant', async () => {
+    const { service, events } = buildService();
+    await service.createConversation({ type: 'DIRECT', driverIds: ['drv_1'], userIds: [] } as never, actor);
+    expect(events.publish).toHaveBeenCalledWith('realtime.push', {
+      room: 'driver:drv_1',
+      event: 'conversation.new',
+      payload: { conversationId: 'cnv_9', type: 'DIRECT', title: null },
+    });
+  });
+
+  it('a driver opening a conversation emits nothing to driver rooms', async () => {
+    const { service, events } = buildService();
+    await service.createConversation({ type: 'DIRECT', driverIds: [], userIds: ['usr_1'] } as never, { id: 'drv_1', type: 'driver' } as never);
+    expect(events.publish).not.toHaveBeenCalled();
+  });
+
+  it('an emit failure never fails the create', async () => {
+    const { service, events } = buildService();
+    events.publish.mockRejectedValueOnce(new Error('redis down'));
+    await expect(service.createConversation({ type: 'DIRECT', driverIds: ['drv_1'], userIds: [] } as never, actor)).resolves.toMatchObject({ id: 'cnv_9' });
   });
 });

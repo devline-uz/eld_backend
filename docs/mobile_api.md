@@ -1723,6 +1723,7 @@ So'rov misoli:
 - **Auth:** `Authorization: Bearer <driver access token>`
 - **operationId:** `MobileMessagingController_startConversation` · original: _MR-3 — starts (or reuses) a conversation with a contact from `GET /mobile/contacts` and sends the first message._
 - **Izoh (backend):** `contactId` is a staff user id, the active co-driver id, or `"support"`. An existing DIRECT conversation with that contact is reused. Idempotent on `clientId` (uuid, required): a replay returns the first response. The thread shows in the admin panel conversations list; a `conversation.new` realtime event goes to the staff contact's `user:{id}` room and `message.new` to `conversation:{id}`.
+- **Realtime (MB-8):** when staff opens a conversation with a driver (`POST /conversations`, `POST /messages/broadcast`) a `conversation.new` event `{conversationId,type,title}` goes to the driver's `driver:{id}` room. Reconnect catch-up: `GET /api/mobile/conversations/{id}/messages?after=<messageId|ISO>` (oldest first).
 
 **Body** (`application/json`):
 

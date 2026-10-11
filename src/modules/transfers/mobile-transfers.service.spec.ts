@@ -41,7 +41,7 @@ describe('MobileTransfersService (mobile/tz.md MB-4)', () => {
       counts: { header: 9, events: 42 },
     }),
   };
-  const repo = { listTransfers: jest.fn().mockResolvedValue({ items: [transferRow({ status: 'TEST_ONLY', referenceId: 'ERODS-TEST-1' })], total: 1, page: 1, limit: 5, totalPages: 1 }) };
+  const repo = { findTransferLedger: jest.fn().mockResolvedValue(null), recordTransferLedger: jest.fn().mockResolvedValue(true), listTransfers: jest.fn().mockResolvedValue({ items: [transferRow({ status: 'TEST_ONLY', referenceId: 'ERODS-TEST-1' })], total: 1, page: 1, limit: 5, totalPages: 1 }) };
   const service = new MobileTransfersService(transfers as never, repo as never);
 
   beforeEach(() => jest.clearAllMocks());
@@ -62,6 +62,30 @@ describe('MobileTransfersService (mobile/tz.md MB-4)', () => {
     // Storage internals never leak to the app.
     expect(out).not.toHaveProperty('fileKey');
     expect(out).not.toHaveProperty('checksum');
+  });
+
+  it('MB-18 create: first call with clientId stores the ledger row and echoes clientId/requestedAt', async () => {
+    const requestedAt = new Date('2026-09-10T15:40:00Z');
+    const dto = { method: 'WEB_SERVICES' as const, rangeStart: new Date('2026-09-03'), rangeEnd: new Date('2026-09-10'), outputFileComment: '', clientId: 'client-uuid-1', requestedAt };
+    const out = await service.create(DRIVER, dto);
+    const [forwarded] = transfers.create.mock.calls[0] as [Record<string, unknown>];
+    expect(forwarded).not.toHaveProperty('clientId');
+    expect(out).toMatchObject({ clientId: 'client-uuid-1', requestedAt });
+    expect(repo.recordTransferLedger).toHaveBeenCalledWith('drv_1', 'client-uuid-1', requestedAt, expect.anything());
+  });
+
+  it('MB-18 create: a replay of the same clientId returns the first result without a second transfer', async () => {
+    const stored = { id: 'trf_1', status: 'QUEUED', clientId: 'client-uuid-1' };
+    repo.findTransferLedger.mockResolvedValueOnce({ type: 'create_transfer', result: stored });
+    const out = await service.create(DRIVER, { method: 'WEB_SERVICES', rangeStart: new Date(), rangeEnd: new Date(), outputFileComment: '', clientId: 'client-uuid-1' });
+    expect(out).toBe(stored);
+    expect(transfers.create).not.toHaveBeenCalled();
+  });
+
+  it('MB-18 create: a clientId already used by another operation is a 409', async () => {
+    repo.findTransferLedger.mockResolvedValueOnce({ type: 'create_conversation', result: {} });
+    await expect(service.create(DRIVER, { method: 'WEB_SERVICES', rangeStart: new Date(), rangeEnd: new Date(), outputFileComment: '', clientId: 'client-uuid-1' })).rejects.toMatchObject({ status: 409 });
+    expect(transfers.create).not.toHaveBeenCalled();
   });
 
   it('create: a driverId in the body can never override the token subject', async () => {

@@ -5,7 +5,9 @@ import { z } from 'zod';
 export const ListMessagesQueryDto = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
   before: z.string().uuid().optional(),
-});
+  /** MB-8 — reconnect catch-up: a message id OR an ISO-8601 instant; returns strictly newer messages, ascending. */
+  after: z.union([z.string().uuid(), z.string().datetime({ offset: true })]).optional(),
+}).refine((q) => !(q.before && q.after), { message: '`before` and `after` are mutually exclusive.', path: ['after'] });
 export type ListMessagesQueryDto = z.infer<typeof ListMessagesQueryDto>;
 
 /** MB-15 — `POST /mobile/conversations/:id/messages`. Same shape as `SendMessageDto`

@@ -110,7 +110,9 @@ export class MobileMessagingService {
 
   async listMessages(conversationId: string, driverId: string, query: ListMessagesQueryDto) {
     await this.assertParticipant(conversationId, driverId);
-    const items = await this.repo.listMessagesCursor(conversationId, query.limit, query.before);
+    const items = query.after
+      ? await this.repo.listMessagesAfter(conversationId, query.limit, query.after)
+      : await this.repo.listMessagesCursor(conversationId, query.limit, query.before);
     return { items: await this.enrich(items), limit: query.limit };
   }
 
