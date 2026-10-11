@@ -47,13 +47,13 @@ export class SafetyService {
   }
 
   /**
-   * TZ eld.docs/web §9 — "Fleet safety score, driver scorecard sorted by rank". D-133: reads the
+   * TZ eld.docs/web §9 — "Fleet safety score, driver scorecard sorted by rank". D-141: reads the
    * already-computed `DriverScore` rows (nightly `safety-score` job) — it never recomputes on a
    * GET, so the numbers a fleet manager reviews stay stable within a day.
    *
    * No query -> the LATEST computed period (max `periodEnd`). `periodStart` (or `periodEnd`)
    * selects a specific stored period. The baseline is the stored period of the same length
-   * ending the day before (§20 B-44 `previousScore`/`trend` per row; D-133 fleet trend).
+   * ending the day before (§20 B-44 `previousScore`/`trend` per row; D-141 fleet trend).
    */
   async scorecard(query: ScorecardQueryDto): Promise<ScorecardResult> {
     const period = await this.resolvePeriod(query);

@@ -38,7 +38,7 @@ import { WebhookProcessor } from './webhook.processor';
  *   transfer.processor.ts     Phase 9  (eld-compliance-rods) — registered, §10.1/§10.4 send step
  *   alert.processor.ts        Phase 10 (eld-reports-jobs)
  *   safety-detect.processor.ts Phase 10 (eld-fleet-ops)
- *   safety-score.processor.ts registered — nightly W-10 DriverScore (D-133), 10:30 UTC
+ *   safety-score.processor.ts registered — nightly W-10 DriverScore (D-141), 10:30 UTC
  *   webhook.processor.ts      Phase 11 (eld-reports-jobs)
  *   maintenance-due.processor.ts Phase 7 (eld-fleet-ops) — registered, nightly §5.10 sweep
  *   retention.processor.ts    registered — nightly §5.5/§18/§23 RODS 6mo/audit 24mo sweep

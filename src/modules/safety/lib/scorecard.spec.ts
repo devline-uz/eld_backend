@@ -10,7 +10,7 @@ import {
   scoreTrend,
 } from './scorecard';
 
-describe('scorecard period helpers (D-133)', () => {
+describe('scorecard period helpers (D-141)', () => {
   it('a period is 30 inclusive days; the previous one is the 30 days before it', () => {
     const p = periodEndingOn('2026-10-10');
     expect(p).toEqual({ startKey: '2026-09-11', endKey: '2026-10-10' });
@@ -41,7 +41,7 @@ describe('scorecard period helpers (D-133)', () => {
   });
 });
 
-describe('rankDrivers (D-133)', () => {
+describe('rankDrivers (D-141)', () => {
   it('#1 = best score; ties by more miles, then name; unscored get no rank', () => {
     const ranks = rankDrivers([
       { driverId: 'd1', score: 90, milesDriven: 1000, name: 'Brown, A' },
@@ -60,7 +60,7 @@ describe('rankDrivers (D-133)', () => {
   });
 });
 
-describe('fleetScore / scoreTrend (D-133)', () => {
+describe('fleetScore / scoreTrend (D-141)', () => {
   it('is the mile-weighted mean of scored drivers only', () => {
     expect(
       fleetScore([

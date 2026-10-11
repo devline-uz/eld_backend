@@ -2,7 +2,7 @@ import { AppException } from '../../common/errors/app.exception';
 import { SafetyRepository } from './safety.repository';
 import { SafetyService } from './safety.service';
 
-describe('SafetyService (B-43 driver-level coaching, B-44/D-133 scorecard)', () => {
+describe('SafetyService (B-43 driver-level coaching, B-44/D-141 scorecard)', () => {
   let repo: jest.Mocked<Pick<SafetyRepository, 'findById' | 'update' | 'findLatestOpenForDriver' | 'scorecard' | 'latestPeriod'>>;
   let service: SafetyService;
 
@@ -40,7 +40,7 @@ describe('SafetyService (B-43 driver-level coaching, B-44/D-133 scorecard)', () 
     });
   });
 
-  describe('scorecard (D-133)', () => {
+  describe('scorecard (D-141)', () => {
     const row = (over: Record<string, unknown>) => ({
       id: `dsc_${String(over.driverId)}`,
       periodStart: new Date('2026-09-11T00:00:00.000Z'),

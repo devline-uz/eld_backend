@@ -37,7 +37,7 @@ export const UpdateSafetyEventDto = z.object({
 });
 export type UpdateSafetyEventDto = z.infer<typeof UpdateSafetyEventDto>;
 
-/** D-133 — calendar days ("YYYY-MM-DD", home-terminal RODS days), never instants: a period is a
+/** D-141 — calendar days ("YYYY-MM-DD", home-terminal RODS days), never instants: a period is a
  * set of local days, so an ISO instant would re-introduce the B-056 time-zone shift. Both
  * optional; none = the latest computed period. */
 const DayKey = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD');

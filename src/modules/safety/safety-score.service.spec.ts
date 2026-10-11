@@ -27,7 +27,7 @@ function build() {
   return { repo, service: new SafetyScoreService(repo as unknown as SafetyRepository) };
 }
 
-describe('SafetyScoreService (D-133)', () => {
+describe('SafetyScoreService (D-141)', () => {
   it('scores the current and the previous rolling period, using per-zone event windows', async () => {
     const { repo, service } = build();
     const result = await service.run(new Date('2026-10-11T10:30:00Z'));

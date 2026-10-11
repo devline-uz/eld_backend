@@ -1,7 +1,7 @@
 import { addDays, dayEnd, dayKey, dayStart } from '../../hos/engine/timezone';
 
 /**
- * D-133 — W-10 scorecard period, ranking and fleet-score helpers. Pure: no I/O, no clock reads
+ * D-141 — W-10 scorecard period, ranking and fleet-score helpers. Pure: no I/O, no clock reads
  * (the caller passes `now`), so the nightly job and its tests agree on every boundary.
  */
 

@@ -123,14 +123,14 @@ export function toSample(point: {
 // Driver scoring (TZ §11.5 `/safety/scorecard`, "Safety" Figma screen)
 // ---------------------------------------------------------------------------
 
-/** D-133 — a driver with fewer miles than this in the period gets no score ("Not enough miles"). */
+/** D-141 — a driver with fewer miles than this in the period gets no score ("Not enough miles"). */
 export const MIN_SCORED_MILES = 100;
 
-/** D-133 — points deducted per event, per 1,000 miles driven. */
+/** D-141 — points deducted per event, per 1,000 miles driven. */
 export const SCORE_WEIGHTS = { harsh: 2, speeding: 1.5, seatbelt: 3, hosViolation: 5 } as const;
 
 /**
- * D-133 — harsh-event severity multiplier: 4–5 Critical ×4, 3 Major ×2, 1–2 Minor ×1. Severity
+ * D-141 — harsh-event severity multiplier: 4–5 Critical ×4, 3 Major ×2, 1–2 Minor ×1. Severity
  * outside 1–5 is clamped into it, so a bad row can never zero or explode the deduction.
  */
 export function severityFactor(severity: number): number {
@@ -153,7 +153,7 @@ export interface ScoreInput {
 /**
  * TZ eld.docs/web §9 — "Fleet safety score 0-100, below 70 needs attention". No formula is
  * specified, so this is the documented, reproducible points-deduction model of D-033 as revised
- * by D-133 (Phase 1 scorecards):
+ * by D-141 (Phase 1 scorecards):
  *
  *   milesK    = milesDriven / 1000
  *   deduction = Σ harsh × 2 × severityFactor + speeding × 1.5 + seatbelt × 3 + HOS violations × 5

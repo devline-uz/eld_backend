@@ -66,7 +66,7 @@ export class SafetyRepository extends BaseRepository<
   }
 
   /**
-   * D-133 — SafetyEvent counts feeding `computeDriverScore`, per driver / type / severity, for
+   * D-141 — SafetyEvent counts feeding `computeDriverScore`, per driver / type / severity, for
    * events in [from, to). DISMISSED events (a reviewer ruled them false positives) never count;
    * NEW, REVIEWED and COACHED do — coaching does not erase that the event happened.
    */
@@ -78,7 +78,7 @@ export class SafetyRepository extends BaseRepository<
     });
   }
 
-  /** D-133 — read-only: drivers the nightly scorecard considers (not soft-deleted). */
+  /** D-141 — read-only: drivers the nightly scorecard considers (not soft-deleted). */
   scoringDrivers() {
     return this.prisma.driver.findMany({
       where: { deletedAt: null },
@@ -86,7 +86,7 @@ export class SafetyRepository extends BaseRepository<
     });
   }
 
-  /** D-133 — read-only: Σ `DailyLog.totalDistanceMi` per driver over home-terminal days
+  /** D-141 — read-only: Σ `DailyLog.totalDistanceMi` per driver over home-terminal days
    * [from, to] (`logDate` is already the driver's local RODS day). */
   async milesByDriver(fromDay: Date, toDay: Date): Promise<Map<string, number>> {
     const groups = await this.prisma.dailyLog.groupBy({
@@ -97,7 +97,7 @@ export class SafetyRepository extends BaseRepository<
     return new Map(groups.map((g) => [g.driverId, g._sum.totalDistanceMi ?? 0]));
   }
 
-  /** D-133 — read-only: HOS violations per driver whose RODS day is in [from, to]. OPEN and
+  /** D-141 — read-only: HOS violations per driver whose RODS day is in [from, to]. OPEN and
    * RESOLVED count (resolving a violation does not undo it); AUTO_CLEARED do not (a recalc found
    * it was never a violation). */
   async hosViolationsByDriver(fromDay: Date, toDay: Date): Promise<Map<string, number>> {
@@ -110,7 +110,7 @@ export class SafetyRepository extends BaseRepository<
   }
 
   /**
-   * D-133 — writes one period's rows atomically: upserts every computed driver and removes rows
+   * D-141 — writes one period's rows atomically: upserts every computed driver and removes rows
    * of that period for drivers no longer scored (e.g. soft-deleted since the last run), so a
    * re-run is idempotent.
    */
@@ -132,7 +132,7 @@ export class SafetyRepository extends BaseRepository<
     ]);
   }
 
-  /** D-133 — the most recently computed period (max `periodEnd`, then the longest/newest start). */
+  /** D-141 — the most recently computed period (max `periodEnd`, then the longest/newest start). */
   latestPeriod(): Promise<{ periodStart: Date; periodEnd: Date } | null> {
     return this.prisma.driverScore.findFirst({
       orderBy: [{ periodEnd: 'desc' }, { periodStart: 'asc' }],

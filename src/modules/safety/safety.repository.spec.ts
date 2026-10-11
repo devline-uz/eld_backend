@@ -11,7 +11,7 @@ function build() {
   return { prisma, repo: new SafetyRepository(prisma as unknown as PrismaService) };
 }
 
-describe('SafetyRepository — scorecard queries (D-133)', () => {
+describe('SafetyRepository — scorecard queries (D-141)', () => {
   it('latestPeriod picks the max periodEnd (the old exact-equality default could never match)', async () => {
     const { prisma, repo } = build();
     await repo.latestPeriod();

@@ -43,7 +43,7 @@ export class SafetyController {
   @Perm('safety', 'READ')
   @ApiOperation({
     summary:
-      'Fleet safety score and per-driver ranking ("Driver scorecard", below-70 flagged). D-133: returns the latest nightly-computed rolling 30-day period (or the one starting on `periodStart` / ending on `periodEnd`, YYYY-MM-DD). Drivers under `minMiles` have `score: null`, `rank: null`. `fleet.score` is the mile-weighted mean of scored drivers; `fleet.trend` and per-row `trend` compare with the previous period of the same length.',
+      'Fleet safety score and per-driver ranking ("Driver scorecard", below-70 flagged). D-141: returns the latest nightly-computed rolling 30-day period (or the one starting on `periodStart` / ending on `periodEnd`, YYYY-MM-DD). Drivers under `minMiles` have `score: null`, `rank: null`. `fleet.score` is the mile-weighted mean of scored drivers; `fleet.trend` and per-row `trend` compare with the previous period of the same length.',
   })
   @ApiOkResponse({
     schema: {

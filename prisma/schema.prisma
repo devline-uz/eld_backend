@@ -1056,12 +1056,12 @@ model DriverScore {
   milesDriven    Int      @default(0)
   violationCount Int      @default(0)
   rank           Int?
-  /// D-133 — SEATBELT safety events in the period (feeds the score; 3 pts each per 1,000 mi).
+  /// D-141 — SEATBELT safety events in the period (feeds the score; 3 pts each per 1,000 mi).
   seatbeltCount  Int      @default(0)
-  /// D-133 — false when the driver drove < 100 mi in the period: no score (`score` stored as 0
+  /// D-141 — false when the driver drove < 100 mi in the period: no score (`score` stored as 0
   /// and returned as null), no rank, excluded from the fleet score.
   scored         Boolean  @default(true)
-  /// D-133 — when the nightly `safety-score` job last wrote this row.
+  /// D-141 — when the nightly `safety-score` job last wrote this row.
   computedAt     DateTime @default(now())
 
   @@unique([driverId, periodStart])

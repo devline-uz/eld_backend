@@ -6,7 +6,7 @@ import { QUEUES } from '../core/queue/queue.constants';
 import { SafetyScoreService } from '../modules/safety/safety-score.service';
 
 /**
- * D-133 — W-10 scorecards: recomputes `DriverScore` for the rolling 30-day period every night.
+ * D-141 — W-10 scorecards: recomputes `DriverScore` for the rolling 30-day period every night.
  * Same self-scheduling shape as `IftaNightlyProcessor`.
  *
  * 10:30 UTC: the period ends on the newest calendar day that is over in EVERY driver's home

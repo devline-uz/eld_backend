@@ -27,7 +27,7 @@ export interface ScoreRunResult {
 }
 
 /**
- * D-133 — W-10 Phase 1: computes `DriverScore` for the rolling 30-day period (and the 30 days
+ * D-141 — W-10 Phase 1: computes `DriverScore` for the rolling 30-day period (and the 30 days
  * before it, the trend baseline) from SafetyEvent counts, DailyLog miles and HosViolation counts.
  * Read-only against the mobile-owned tables; it only writes `DriverScore`. Run nightly by the
  * worker (`safety-score.processor.ts`); never on an API request.

@@ -1,5 +1,5 @@
 /**
- * D-133 — one-off W-10 scorecard run: `npx ts-node scripts/enqueue-safety-score.ts [YYYY-MM-DD]`.
+ * D-141 — one-off W-10 scorecard run: `npx ts-node scripts/enqueue-safety-score.ts [YYYY-MM-DD]`.
  *
  * Adds a single `safety.score` job to the `safety-score` queue; the running WORKER computes it
  * (same code path as the nightly run, nothing runs in this script or the API). The optional date
