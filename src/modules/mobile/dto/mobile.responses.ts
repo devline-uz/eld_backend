@@ -95,7 +95,7 @@ export class MobileContactResponse {
 
 export class SignatureUploadResponse {
   @ApiProperty({ type: String }) signatureImageId!: string;
-  @ApiProperty({ type: String, nullable: true, description: 'Set for purpose DVIR_PHOTO and INVOICE (the Attachment id), else null.' }) attachmentId!: string | null;
+  @ApiProperty({ type: String, nullable: true, description: 'Set for purpose DVIR_PHOTO, INVOICE, CHAT_AUDIO and CHAT_FILE (the Attachment id), else null.' }) attachmentId!: string | null;
   @ApiProperty({ type: String }) key!: string;
   @ApiProperty({ type: String }) sha256!: string;
   @ApiProperty(INT) sizeBytes!: number;
@@ -458,6 +458,7 @@ export class DvirSummaryResponse {
   @ApiProperty({ enum: RepairStatus, enumName: 'RepairStatus' }) repairStatus!: RepairStatus;
   @ApiProperty({ type: String, nullable: true, description: 'MR-14.' }) trailerNumber!: string | null;
   @ApiProperty({ ...INT, nullable: true, description: 'MR-14.' }) odometerMi!: number | null;
+  @ApiProperty({ type: () => DvirLocationView, nullable: true, description: 'MB-15 — where the inspection was captured (same object as the detail view); null when neither a position nor a place name was captured.' }) location!: DvirLocationView | null;
 }
 
 export class DvirPhotoView {
@@ -598,7 +599,18 @@ export class MobileParticipantView {
 }
 
 /** `toMobileMessage` — the stored `Message` row plus the MR-18 sender fields. */
+/** MB-9 — the file behind an AUDIO/IMAGE/FILE message. `url` is presigned (15 min). */
+export class MessageAttachmentView {
+  @ApiProperty({ type: String }) id!: string;
+  @ApiProperty({ type: String, description: 'Presigned GET URL, valid 15 minutes (S3_PUBLIC_ENDPOINT host when configured).' }) url!: string;
+  @ApiProperty({ type: String }) mimeType!: string;
+  @ApiProperty(INT) sizeBytes!: number;
+  @ApiProperty({ ...INT, nullable: true, description: 'Voice-message length in seconds (AUDIO), else null.' }) durationSec!: number | null;
+}
+
 export class MobileMessageView {
+  @ApiProperty({ enum: ['TEXT', 'AUDIO', 'IMAGE', 'FILE'], enumName: 'MessageType', description: 'MB-9.' }) type!: 'TEXT' | 'AUDIO' | 'IMAGE' | 'FILE';
+  @ApiProperty({ type: () => MessageAttachmentView, nullable: true, description: 'MB-9 — null for TEXT.' }) attachment!: MessageAttachmentView | null;
   @ApiProperty({ type: String }) id!: string;
   @ApiProperty({ type: String }) conversationId!: string;
   @ApiProperty({ type: String, nullable: true }) senderUserId!: string | null;

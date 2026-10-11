@@ -100,13 +100,25 @@ export type DvirSubmitDto = z.infer<typeof DvirSubmitDto>;
 /** `POST /mobile/signature` — standalone signature capture, reusable by certify and DVIR. */
 export const SignatureUploadDto = z
   .object({
-    purpose: z.enum(['CERTIFICATION', 'DVIR', 'DVIR_PHOTO', 'INVOICE']),
+    purpose: z.enum(['CERTIFICATION', 'DVIR', 'DVIR_PHOTO', 'INVOICE', 'CHAT_AUDIO', 'CHAT_FILE']),
     base64: z.string().min(16),
-    mimeType: z.enum(['image/png', 'image/jpeg', 'application/pdf']).default('image/png'),
+    mimeType: z
+      .enum(['image/png', 'image/jpeg', 'application/pdf', 'audio/aac', 'audio/mp4', 'audio/m4a', 'audio/x-m4a'])
+      .default('image/png'),
+    /** MB-9 — voice-message length in seconds (CHAT_AUDIO only). */
+    durationSec: z.number().int().min(0).max(86400).optional(),
   })
-  .refine((v) => v.mimeType !== 'application/pdf' || v.purpose === 'INVOICE', {
+  .refine((v) => v.mimeType !== 'application/pdf' || v.purpose === 'INVOICE' || v.purpose === 'CHAT_FILE', {
     path: ['mimeType'],
-    message: 'application/pdf is only accepted for purpose INVOICE.',
+    message: 'application/pdf is only accepted for purpose INVOICE or CHAT_FILE.',
+  })
+  .refine((v) => !v.mimeType.startsWith('audio/') || v.purpose === 'CHAT_AUDIO', {
+    path: ['mimeType'],
+    message: 'Audio is only accepted for purpose CHAT_AUDIO.',
+  })
+  .refine((v) => v.purpose !== 'CHAT_AUDIO' || v.mimeType.startsWith('audio/'), {
+    path: ['mimeType'],
+    message: 'CHAT_AUDIO needs an audio mimeType (audio/aac or audio/mp4).',
   });
 export type SignatureUploadDto = z.infer<typeof SignatureUploadDto>;
 

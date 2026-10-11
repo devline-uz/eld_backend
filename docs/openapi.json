@@ -1639,6 +1639,7 @@
     },
     "/api/auth/driver/password/forgot": {
       "post": {
+        "description": "With an email on file a 6-digit numeric code is emailed: valid 15 minutes, invalidated after 5 wrong attempts, and a new request invalidates the previous code. Without an email the carrier ADMINs get an in-app notification (\"driver X requested a password reset\") and reset the password from the driver profile; the response is identical. Limited to 5 requests/min/IP.",
         "operationId": "AuthController_forgotDriverPassword",
         "parameters": [],
         "requestBody": {
@@ -1775,7 +1776,7 @@
             }
           }
         },
-        "summary": "MR-31 — driver requests a password-reset code by username or email. Always 200 (no user enumeration); the code is emailed when the driver has an email on file.",
+        "summary": "MR-31/MB-16/MB-17 — driver requests a password-reset code by username or email. Always 200 (no user enumeration).",
         "tags": [
           "auth"
         ],
@@ -1790,6 +1791,7 @@
     },
     "/api/auth/driver/password/reset": {
       "post": {
+        "description": "Send `{username|email, code, newPassword}`. The code is valid 15 minutes, single use, and is invalidated after 5 wrong attempts (request a new one via /auth/driver/password/forgot). The legacy `{token, newPassword}` form is still accepted. Every failure returns the same 401 TOKEN_INVALID.",
         "operationId": "AuthController_resetDriverPassword",
         "parameters": [],
         "requestBody": {
@@ -1797,15 +1799,21 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ResetPasswordDto"
-              },
-              "examples": {
-                "default": {
-                  "value": {
-                    "token": "eyJ...",
-                    "newPassword": "NewPassw0rd!"
+                "oneOf": [
+                  {
+                    "example": {
+                      "username": "johnsmith",
+                      "code": "482913",
+                      "newPassword": "NewPassw0rd!"
+                    }
+                  },
+                  {
+                    "example": {
+                      "token": "eyJ...",
+                      "newPassword": "NewPassw0rd!"
+                    }
                   }
-                }
+                ]
               }
             }
           }
@@ -1974,7 +1982,7 @@
             }
           }
         },
-        "summary": "MR-31 — completes a driver password reset with the emailed code; revokes all driver sessions.",
+        "summary": "MR-31/MB-17 — completes a driver password reset with the emailed 6-digit code; revokes all driver sessions.",
         "tags": [
           "auth"
         ],
@@ -13823,7 +13831,7 @@
     },
     "/api/mobile/transfers": {
       "post": {
-        "description": "The row is returned as it stands right after generation (`status = QUEUED`); the worker moves it to TEST_ONLY / SENT / ACCEPTED / REJECTED / FAILED and fills `referenceId` + `sentAt`. Poll `GET /mobile/transfers` for the receipt (S-10).",
+        "description": "The row is returned as it stands right after generation (`status = QUEUED`); the worker moves it to TEST_ONLY / SENT / ACCEPTED / REJECTED / FAILED and fills `referenceId` + `sentAt`. Poll `GET /mobile/transfers` for the receipt (S-10). MB-18 — an offline roadside-inspection transfer is queued by the app and replayed on reconnect: send a `clientId` (idempotent — a replay returns the FIRST result, no second file or send; a clientId used by another operation is 409) and optionally `requestedAt` (device time of the request, echoed back). 4xx is final; retry only on 5xx/network.",
         "operationId": "MobileTransfersController_create",
         "parameters": [],
         "requestBody": {
@@ -13880,7 +13888,9 @@
                       "counts": {
                         "header": 9,
                         "events": 42
-                      }
+                      },
+                      "clientId": "0b9d6f5e-0000-4000-8000-000000000002",
+                      "requestedAt": "2026-09-10T15:40:00.000Z"
                     },
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-10-08T15:41:00.000Z"
@@ -25726,7 +25736,9 @@
                         "syncBacklogWarnDays": 30,
                         "syncBacklogWarnBytes": 209715200
                       },
-                      "appUpdate": null
+                      "appUpdate": null,
+                      "pendingEditRequestCount": 1,
+                      "pendingUnidentifiedCount": 0
                     },
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-10-08T15:41:00.000Z"
@@ -26544,7 +26556,7 @@
             "bearer": []
           }
         ],
-        "summary": "Uploads captured signature/photo bytes to object storage; returns an id referenced by /mobile/dvir or /mobile/certify. purpose = DVIR_PHOTO also creates an Attachment row (attachmentId) to pass in defects[].photoAttachmentIds (MB-6). M-39: purpose = INVOICE accepts application/pdf (max 10 MiB, `%PDF-` header verified; PNG/JPEG 2 MB) and creates an Attachment (kind INVOICE) whose id is `invoiceAttachmentId` of POST /mobile/maintenance/:id/submit; the uploader reads it back with GET /attachments/:id/presign.",
+        "summary": "Uploads captured signature/photo bytes to object storage; returns an id referenced by /mobile/dvir or /mobile/certify. purpose = DVIR_PHOTO also creates an Attachment row (attachmentId) to pass in defects[].photoAttachmentIds (MB-6). MB-9: purpose = CHAT_AUDIO (audio/aac or audio/mp4; optional `durationSec`) or CHAT_FILE (png/jpeg/pdf) accepts up to 10 MB, verifies the type from magic bytes, creates a chat Attachment and returns `attachmentId` for POST /mobile/conversations/:id/messages `attachmentId`; read it back with GET /mobile/attachments/:id/presign. M-39: purpose = INVOICE accepts application/pdf (max 10 MiB, `%PDF-` header verified; PNG/JPEG 2 MB) and creates an Attachment (kind INVOICE) whose id is `invoiceAttachmentId` of POST /mobile/maintenance/:id/submit; the uploader reads it back with GET /attachments/:id/presign.",
         "tags": [
           "mobile"
         ]
@@ -29141,7 +29153,12 @@
                         "defectCount": 1,
                         "repairStatus": "PENDING",
                         "trailerNumber": "X53-1188",
-                        "odometerMi": 84213
+                        "odometerMi": 84213,
+                        "location": {
+                          "lat": 41.75,
+                          "lon": -87.98,
+                          "name": "2mi ESE IL Darien"
+                        }
                       }
                     ],
                     "traceId": "01J8X3QK9Z0000000000000000",
@@ -29630,7 +29647,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Future state once a single-DVIR PDF generator exists — every call answers 501 today (see below).",
+            "description": "Raw application/pdf bytes; `Content-Disposition: attachment; filename=\"dvir-<id>.pdf\"`.",
             "content": {
               "application/pdf": {
                 "schema": {
@@ -29644,7 +29661,7 @@
           "401": {
             "description": "UNAUTHORIZED — Authentication required.",
             "content": {
-              "application/json": {
+              "application/pdf": {
                 "schema": {
                   "type": "object",
                   "required": [
@@ -29691,7 +29708,7 @@
           "403": {
             "description": "FORBIDDEN — Insufficient permissions for this action.",
             "content": {
-              "application/json": {
+              "application/pdf": {
                 "schema": {
                   "type": "object",
                   "required": [
@@ -29738,7 +29755,7 @@
           "404": {
             "description": "DVIR_NOT_FOUND — DVIR not found.",
             "content": {
-              "application/json": {
+              "application/pdf": {
                 "schema": {
                   "type": "object",
                   "required": [
@@ -29785,7 +29802,7 @@
           "422": {
             "description": "VALIDATION_FAILED — Request validation failed.",
             "content": {
-              "application/json": {
+              "application/pdf": {
                 "schema": {
                   "type": "object",
                   "required": [
@@ -29837,53 +29854,6 @@
                 }
               }
             }
-          },
-          "501": {
-            "description": "NOT_IMPLEMENTED — A single-DVIR PDF export is not implemented yet.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "statusCode",
-                    "code",
-                    "message",
-                    "traceId",
-                    "timestamp"
-                  ],
-                  "properties": {
-                    "statusCode": {
-                      "type": "number"
-                    },
-                    "code": {
-                      "type": "string",
-                      "description": "Stable code from common/errors/codes.ts (append-only)."
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "type": "object",
-                      "additionalProperties": true
-                    },
-                    "traceId": {
-                      "type": "string"
-                    },
-                    "timestamp": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  },
-                  "example": {
-                    "statusCode": 501,
-                    "code": "NOT_IMPLEMENTED",
-                    "message": "A single-DVIR PDF export is not implemented yet.",
-                    "traceId": "01J8X3QK9Z0000000000000000",
-                    "timestamp": "2026-09-11T15:41:00.000Z"
-                  }
-                }
-              }
-            }
           }
         },
         "security": [
@@ -29891,7 +29861,7 @@
             "bearer": []
           }
         ],
-        "summary": "M-11 — per-DVIR PDF export. Not implemented yet: no single-DVIR PDF generator exists (see MobileDvirHistoryService) — every call answers 501 today; the 200 below documents the contract once a generator lands.",
+        "summary": "M-11 / MB-4 — the driver's own DVIR as a §396.11 PDF (inspection header, defects, §396.13 mechanic review, driver signature). Raw bytes, not enveloped. Another driver's DVIR id answers 404.",
         "tags": [
           "mobile"
         ]
@@ -32255,9 +32225,28 @@
             }
           },
           {
+            "name": "after",
+            "required": false,
+            "in": "query",
+            "description": "MB-8 reconnect catch-up: message id OR ISO-8601 instant; returns strictly newer messages, OLDEST first. Mutually exclusive with `before`.",
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              ]
+            }
+          },
+          {
             "name": "before",
             "required": false,
             "in": "query",
+            "description": "Message id; returns strictly older messages, newest first.",
             "schema": {
               "type": "string",
               "format": "uuid"
@@ -32531,7 +32520,7 @@
             "bearer": []
           }
         ],
-        "summary": "Cursor-paginated message history for a conversation the driver participates in.",
+        "summary": "Cursor-paginated message history for a conversation the driver participates in (`before` = older page, `after` = catch-up).",
         "tags": [
           "mobile"
         ]
@@ -33068,6 +33057,243 @@
           }
         ],
         "summary": "Marks the conversation read: sets the driver's lastReadAt and readAt on the other side's messages.",
+        "tags": [
+          "mobile"
+        ]
+      }
+    },
+    "/api/mobile/attachments/{id}/presign": {
+      "get": {
+        "description": "Same 404 for an unknown id and for an attachment the driver may not see. Message lists already carry a presigned `attachment.url`; use this to refresh an expired one.",
+        "operationId": "MobileAttachmentsController_presign",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "url": "https://eldapi.stackyard.uz/onebook-eld/chat/carrier/drv_1/att.m4a?X-Amz-Signature=...",
+                    "expiresAt": "2026-10-11T15:15:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHORIZED — Authentication required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 401,
+                    "code": "UNAUTHORIZED",
+                    "message": "Authentication required.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN — Insufficient permissions for this action.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 403,
+                    "code": "FORBIDDEN",
+                    "message": "Insufficient permissions for this action.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "ATTACHMENT_NOT_FOUND — Attachment not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 404,
+                    "code": "ATTACHMENT_NOT_FOUND",
+                    "message": "Attachment not found.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "VALIDATION_FAILED — Request validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 422,
+                    "code": "VALIDATION_FAILED",
+                    "message": "Request validation failed.",
+                    "details": {
+                      "issues": [
+                        {
+                          "path": "field",
+                          "code": "invalid_type",
+                          "message": "Required"
+                        }
+                      ]
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "MB-9 — short-lived (15 min) presigned GET for an attachment the driver may read: a chat file only for participants of its conversation (or its uploader before it is sent).",
         "tags": [
           "mobile"
         ]
@@ -34517,17 +34743,37 @@
         },
         "responses": {
           "201": {
-            "description": "The proposal is now the active record; the original keeps recordStatus = 2 (Inactive — Changed).",
+            "description": "MB-12 — the real `data` payload. The proposal is now the active record (recordStatus 1); the original is retired (recordStatus 2, Inactive — Changed); the touched days lose their certification (re-certify, §395.30) and hos.recalc runs. Body `{note?: string}` (optional, may be omitted). Refresh `GET /mobile/logs` for the new day.",
             "content": {
               "application/json": {
                 "schema": {
+                  "type": "object",
+                  "required": [
+                    "data",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/EditRequestResolutionResponse"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "Request trace id (same as the §20 error envelope)."
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
                   "example": {
-                    "id": "edt_1",
-                    "status": "ACCEPTED",
-                    "resolvedAt": "2026-09-11T15:41:00.000Z",
-                    "activeEventId": "evt_9001",
-                    "supersededEventId": "evt_8801",
-                    "recertificationRequired": true
+                    "data": {
+                      "id": "9120",
+                      "status": "ACCEPTED",
+                      "applied": true
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-10-08T15:41:00.000Z"
                   }
                 }
               }
@@ -34812,15 +35058,37 @@
         },
         "responses": {
           "201": {
-            "description": "The request is closed and the log is untouched.",
+            "description": "MB-12 — the real `data` payload. The proposal gets a recordStatus 4 (Inactive — Change Rejected) marker; the log is untouched. Body `{note?: string}` (optional, stored as the edit reason).",
             "content": {
               "application/json": {
                 "schema": {
+                  "type": "object",
+                  "required": [
+                    "data",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/EditRequestResolutionResponse"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "Request trace id (same as the §20 error envelope)."
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
                   "example": {
-                    "id": "edt_1",
-                    "status": "REJECTED",
-                    "resolvedAt": "2026-09-11T15:41:00.000Z",
-                    "driverComment": "I was off duty, not on duty."
+                    "data": {
+                      "id": "9120",
+                      "status": "REJECTED",
+                      "applied": false
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-10-08T15:41:00.000Z"
                   }
                 }
               }
@@ -37379,6 +37647,7 @@
     },
     "/api/mobile/log-edit-requests": {
       "get": {
+        "description": "Query `status` = PENDING (default) | ACCEPTED | REJECTED | ALL, optional `from`/`to` RODS days. MB-10 (additive): every item carries `date` (RODS day of `proposedStart`, home-terminal zone), `original` {status, start, end|null, location} of the record being replaced (null for an INSERT), `proposedGraph[]` — the day graph as it would read if accepted now, built by the same plan `POST /logs/edit-requests/:id/accept` writes (empty once resolved) — and `requestedBy` {id, name}. Answer with `POST /logs/edit-requests/:id/accept|reject`.",
         "operationId": "MobileLogsController_listEditRequests",
         "parameters": [
           {
@@ -37458,7 +37727,44 @@
                           "annotation": "Forgot to switch to On duty while loading",
                           "requestedById": "usr_1",
                           "requestedAt": "2026-09-11T14:00:00.000Z",
-                          "resolvedAt": null
+                          "resolvedAt": null,
+                          "date": "2026-09-10",
+                          "original": {
+                            "status": "OFF",
+                            "start": "2026-09-10T18:26:58.000Z",
+                            "end": "2026-09-10T19:30:00.000Z",
+                            "location": "3mi W OH Columbus"
+                          },
+                          "proposedGraph": [
+                            {
+                              "status": "OFF",
+                              "effective": "OFF",
+                              "special": "NONE",
+                              "startAt": "2026-09-10T04:00:00.000Z",
+                              "endAt": "2026-09-10T18:26:58.000Z",
+                              "durationSec": 52018
+                            },
+                            {
+                              "status": "ON",
+                              "effective": "ON",
+                              "special": "NONE",
+                              "startAt": "2026-09-10T18:26:58.000Z",
+                              "endAt": "2026-09-10T19:30:00.000Z",
+                              "durationSec": 3782
+                            },
+                            {
+                              "status": "OFF",
+                              "effective": "OFF",
+                              "special": "NONE",
+                              "startAt": "2026-09-10T19:30:00.000Z",
+                              "endAt": "2026-09-11T04:00:00.000Z",
+                              "durationSec": 30600
+                            }
+                          ],
+                          "requestedBy": {
+                            "id": "usr_1",
+                            "name": "Jane Dispatcher"
+                          }
                         }
                       ]
                     },
@@ -37865,7 +38171,7 @@
     },
     "/api/mobile/logs": {
       "get": {
-        "description": "Additive fields (2026-10-08): `trip` {shippingDocuments, trailerNumbers, notes, bobtail, tripIds, tripNumbers} from the trips overlapping the day (MR-12), merged (D-129) with the driver's no-trip day details for that day (union of lists, trip notes win; `dayDetails: true` when a day-details row exists — written by `PATCH /mobile/trip` with no active trip); `malfunctionIndicator` / `diagnosticIndicator` — an Appendix A malfunction / data diagnostic was in force at some instant of the day (MR-16); every `graph` segment carries `eventId`, `locationDescription`, `odometerMi`, `engineHours`, `annotation`, `carriedOver` of the record that opened it, and every event `eventId`, `locationDescription`, `odometerMi`, `engineHours`, `specialCondition` (MR-13). `locationDescription` is the stored location text (device-provided or driver-entered); when there is none, the server computes the §395 Appendix A 7.29 geo-location offline from the stored position (`3mi W OH Columbus`, PC: 10-mile steps — `docs/location-description.md`).",
+        "description": "MB-14: `events[]` holds EVERY §395 record dated inside the day (every duty-status record, all statuses and origins); `graph[].carriedOver` is true only on the opening segment whose status was recorded on an earlier day (that record is not repeated in `events[]`). Additive fields (2026-10-08): `trip` {shippingDocuments, trailerNumbers, notes, bobtail, tripIds, tripNumbers} from the trips overlapping the day (MR-12), merged (D-129) with the driver's no-trip day details for that day (union of lists, trip notes win; `dayDetails: true` when a day-details row exists — written by `PATCH /mobile/trip` with no active trip); `malfunctionIndicator` / `diagnosticIndicator` — an Appendix A malfunction / data diagnostic was in force at some instant of the day (MR-16); every `graph` segment carries `eventId`, `locationDescription`, `odometerMi`, `engineHours`, `annotation`, `carriedOver` of the record that opened it, and every event `eventId`, `locationDescription`, `odometerMi`, `engineHours`, `specialCondition` (MR-13). `locationDescription` is the stored location text (device-provided or driver-entered); when there is none, the server computes the §395 Appendix A 7.29 geo-location offline from the stored position (`3mi W OH Columbus`, PC: 10-mile steps — `docs/location-description.md`).",
         "operationId": "MobileLogsController_getDay",
         "parameters": [
           {
@@ -38191,8 +38497,15 @@
         ],
         "responses": {
           "200": {
-            "description": "Raw CSV (not wrapped in the success envelope), `Content-Disposition: attachment; filename=\"RODS_<date>.csv\"`.",
+            "description": "Raw file (not wrapped in the success envelope), `Content-Disposition: attachment; filename=\"RODS_<date>.csv|pdf\"`.",
             "content": {
+              "application/pdf": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary",
+                  "example": "%PDF-1.4 ..."
+                }
+              },
               "text/csv": {
                 "schema": {
                   "type": "string"
@@ -38204,7 +38517,49 @@
           "401": {
             "description": "UNAUTHORIZED — Authentication required.",
             "content": {
-              "application/json": {
+              "text/csv": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 401,
+                    "code": "UNAUTHORIZED",
+                    "message": "Authentication required.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              },
+              "application/pdf": {
                 "schema": {
                   "type": "object",
                   "required": [
@@ -38251,7 +38606,49 @@
           "403": {
             "description": "FORBIDDEN — Driver token required (DRIVER_CONTEXT_REQUIRED).",
             "content": {
-              "application/json": {
+              "text/csv": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 403,
+                    "code": "FORBIDDEN",
+                    "message": "Driver token required (DRIVER_CONTEXT_REQUIRED).",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              },
+              "application/pdf": {
                 "schema": {
                   "type": "object",
                   "required": [
@@ -38298,7 +38695,49 @@
           "404": {
             "description": "DRIVER_NOT_FOUND — Driver not found.",
             "content": {
-              "application/json": {
+              "text/csv": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 404,
+                    "code": "DRIVER_NOT_FOUND",
+                    "message": "Driver not found.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              },
+              "application/pdf": {
                 "schema": {
                   "type": "object",
                   "required": [
@@ -38345,7 +38784,58 @@
           "422": {
             "description": "VALIDATION_FAILED — Request validation failed.",
             "content": {
-              "application/json": {
+              "text/csv": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 422,
+                    "code": "VALIDATION_FAILED",
+                    "message": "Request validation failed.",
+                    "details": {
+                      "issues": [
+                        {
+                          "path": "field",
+                          "code": "invalid_type",
+                          "message": "Required"
+                        }
+                      ]
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              },
+              "application/pdf": {
                 "schema": {
                   "type": "object",
                   "required": [
@@ -38397,53 +38887,6 @@
                 }
               }
             }
-          },
-          "501": {
-            "description": "NOT_IMPLEMENTED — PDF export of a RODS day is not available yet.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "statusCode",
-                    "code",
-                    "message",
-                    "traceId",
-                    "timestamp"
-                  ],
-                  "properties": {
-                    "statusCode": {
-                      "type": "number"
-                    },
-                    "code": {
-                      "type": "string",
-                      "description": "Stable code from common/errors/codes.ts (append-only)."
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "type": "object",
-                      "additionalProperties": true
-                    },
-                    "traceId": {
-                      "type": "string"
-                    },
-                    "timestamp": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  },
-                  "example": {
-                    "statusCode": 501,
-                    "code": "NOT_IMPLEMENTED",
-                    "message": "PDF export of a RODS day is not available yet.",
-                    "traceId": "01J8X3QK9Z0000000000000000",
-                    "timestamp": "2026-09-11T15:41:00.000Z"
-                  }
-                }
-              }
-            }
           }
         },
         "security": [
@@ -38451,7 +38894,7 @@
             "bearer": []
           }
         ],
-        "summary": "Downloads one of the driver's own RODS days. format=csv → text/csv (every §395 record of the day, home-terminal local time). format=pdf → 501 NOT_IMPLEMENTED for now.",
+        "summary": "Downloads one of the driver's own RODS days. format=csv → text/csv (every §395 record of the day, home-terminal local time). format=pdf → application/pdf §395.8 daily-log sheet (header fields, 24 h graph grid, remarks).",
         "tags": [
           "mobile"
         ]
@@ -40390,6 +40833,220 @@
         ]
       }
     },
+    "/api/conversations/attachments": {
+      "post": {
+        "description": "Type is verified from the file's magic bytes, not the declared Content-Type. Stored under `chat/carrier/{uploaderId}/`. Read back via `GET /attachments/:id/presign` (conversation participants only).",
+        "operationId": "MessagingController_uploadAttachment",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "file",
+                  "kind"
+                ],
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary"
+                  },
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "CHAT_AUDIO",
+                      "CHAT_FILE"
+                    ]
+                  },
+                  "durationSec": {
+                    "type": "integer",
+                    "description": "Voice-message length, CHAT_AUDIO only."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "id": "att_1",
+                    "attachmentId": "att_1",
+                    "kind": "CHAT_AUDIO",
+                    "mimeType": "audio/mp4",
+                    "sizeBytes": 48211,
+                    "durationSec": 12
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHORIZED — Authentication required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 401,
+                    "code": "UNAUTHORIZED",
+                    "message": "Authentication required.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN — Insufficient permissions for this action.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 403,
+                    "code": "FORBIDDEN",
+                    "message": "Insufficient permissions for this action.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "VALIDATION_FAILED — Missing file, empty file or invalid kind.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 422,
+                    "code": "VALIDATION_FAILED",
+                    "message": "Missing file, empty file or invalid kind.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "MB-9 — uploads a chat voice message (AAC/M4A) or file (PNG/JPEG/PDF), max 10 MB; returns the attachment id to pass as `attachmentId` to POST /conversations/:id/messages.",
+        "tags": [
+          "messaging"
+        ],
+        "x-figma-screens": [
+          {
+            "id": "web/messages",
+            "title": "Messages",
+            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.5 (sidebar)"
+          }
+        ]
+      }
+    },
     "/api/conversations/{id}/messages": {
       "get": {
         "operationId": "MessagingController_listMessages",
@@ -40435,6 +41092,8 @@
                       {
                         "id": "msg_1",
                         "body": "On schedule.",
+                        "type": "TEXT",
+                        "attachment": null,
                         "sentAt": "2026-09-11T15:00:00.000Z"
                       }
                     ],
@@ -40902,7 +41561,7 @@
             "bearer": []
           }
         ],
-        "summary": "Sends a message into a conversation.",
+        "summary": "Sends a message into a conversation. MB-9: `body` may be empty when `attachmentId` (from POST /conversations/attachments) is given; the message carries `type` TEXT|AUDIO|IMAGE|FILE and `attachment{id,url,mimeType,sizeBytes,durationSec}`.",
         "tags": [
           "messaging"
         ],
@@ -45149,6 +45808,7 @@
     },
     "/api/unidentified/{id}/confirm": {
       "post": {
+        "description": "Body `{accept: boolean, annotation?: string (4-60)}`. On a `PENDING_CONFIRMATION` segment only the asked driver may answer: accept → `ASSIGNED` (assignedById stays the carrier user who asked), decline → back to `PENDING`, nothing written. On any other segment, accept is a self-claim and needs a driver↔unit association (§395.32, else 403). Response `data` is the segment after the answer.",
         "operationId": "UnidentifiedController_confirm",
         "parameters": [
           {
@@ -45172,16 +45832,51 @@
         },
         "responses": {
           "201": {
-            "description": "Accepting attributes the records to the driver with recordOrigin = 1 — never 2 (§23).",
+            "description": "The segment after the answer. Attributed copies carry recordOrigin = 4 and recordStatus = 1; the pool originals are retired (recordStatus 2), never deleted (§23).",
             "content": {
               "application/json": {
                 "schema": {
+                  "type": "object",
+                  "required": [
+                    "data",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/UnidentifiedSegmentResponse"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "Request trace id (same as the §20 error envelope)."
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
                   "example": {
-                    "id": "seg_1",
-                    "status": "ASSIGNED",
-                    "driverId": "drv_1",
-                    "recordOrigin": 1,
-                    "eventCount": 4
+                    "data": {
+                      "id": "6f1c2a0e-3d1b-4c55-9a51-2f0f6b1d9e10",
+                      "vehicleId": "b3e0c1d2-8a4f-4f0e-9d7c-1a2b3c4d5e6f",
+                      "startAt": "2026-09-10T12:30:00.000Z",
+                      "endAt": "2026-09-10T13:00:00.000Z",
+                      "durationSec": 1800,
+                      "distanceMi": 21,
+                      "status": "ASSIGNED",
+                      "assignedDriverId": "drv_1",
+                      "assignedById": "usr_1",
+                      "assignedAt": "2026-09-11T15:41:00.000Z",
+                      "annotation": "Unidentified driving assigned to johnsmith",
+                      "confirmationRequestedAt": null,
+                      "fromStoredEvents": true,
+                      "eventIds": [
+                        "7701",
+                        "7702"
+                      ]
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-10-08T15:41:00.000Z"
                   }
                 }
               }
@@ -45235,7 +45930,7 @@
             }
           },
           "403": {
-            "description": "FORBIDDEN — Insufficient permissions for this action.",
+            "description": "FORBIDDEN — This unidentified driving is awaiting confirmation from another driver, or the driver never operated this unit (§395.32).",
             "content": {
               "application/json": {
                 "schema": {
@@ -45273,7 +45968,7 @@
                   "example": {
                     "statusCode": 403,
                     "code": "FORBIDDEN",
-                    "message": "Insufficient permissions for this action.",
+                    "message": "This unidentified driving is awaiting confirmation from another driver, or the driver never operated this unit (§395.32).",
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
                   }
@@ -45437,7 +46132,7 @@
             "bearer": []
           }
         ],
-        "summary": "Driver answers \"was this you?\" (§7.4 rule 2). Accepting attributes the records with recordOrigin = 1 — never 2.",
+        "summary": "Driver answers \"was this you?\" (§7.4 rule 2). Accepting = the driver assumes the records: recordOrigin = 4 (Appendix A 4.4.4.2.4(e), MB-3) — never 2.",
         "tags": [
           "unidentified"
         ],
@@ -45461,25 +46156,60 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": "",
+            "description": "MB-11 — every item adds `startLocation`/`endLocation` (Appendix A 7.29 text), `unitNumber`, `startOdometerMi`/`endOdometerMi` to the segment fields. Up to 200 items, newest first.",
             "content": {
               "application/json": {
                 "schema": {
+                  "type": "object",
+                  "required": [
+                    "data",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/UnidentifiedConfirmationRequestListResponse"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "Request trace id (same as the §20 error envelope)."
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
                   "example": {
-                    "items": [
-                      {
-                        "id": "seg_1",
-                        "vehicleId": "veh_1",
-                        "status": "PENDING_CONFIRMATION",
-                        "assignedDriverId": "drv_1",
-                        "assignedById": "usr_1",
-                        "confirmationRequestedAt": "2026-09-11T15:41:00.000Z",
-                        "startAt": "2026-09-10T12:30:00.000Z",
-                        "endAt": "2026-09-10T13:00:00.000Z",
-                        "durationSec": 1800,
-                        "distanceMi": 21
-                      }
-                    ]
+                    "data": {
+                      "items": [
+                        {
+                          "id": "6f1c2a0e-3d1b-4c55-9a51-2f0f6b1d9e10",
+                          "vehicleId": "b3e0c1d2-8a4f-4f0e-9d7c-1a2b3c4d5e6f",
+                          "startAt": "2026-09-10T12:30:00.000Z",
+                          "endAt": "2026-09-10T13:00:00.000Z",
+                          "durationSec": 1800,
+                          "distanceMi": 21,
+                          "status": "PENDING_CONFIRMATION",
+                          "assignedDriverId": "drv_1",
+                          "assignedById": "usr_1",
+                          "assignedAt": null,
+                          "annotation": null,
+                          "confirmationRequestedAt": "2026-09-11T15:41:00.000Z",
+                          "fromStoredEvents": true,
+                          "eventIds": [
+                            "7701",
+                            "7702"
+                          ],
+                          "startLocation": "3mi W OH Columbus",
+                          "endLocation": "1mi N OH Hilliard",
+                          "unitNumber": "4821",
+                          "startOdometerMi": 120345,
+                          "endOdometerMi": 120366
+                        }
+                      ]
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-10-08T15:41:00.000Z"
                   }
                 }
               }
@@ -46214,18 +46944,51 @@
         },
         "responses": {
           "201": {
-            "description": "recordOrigin stays 1 forever (§23) and the assignment is audited as UNIDENTIFIED_ASSIGNED.",
+            "description": "The segment after the assignment. A carrier assignment keeps recordOrigin 1 (TZ §23) and is audited as UNIDENTIFIED_ASSIGNED.",
             "content": {
               "application/json": {
                 "schema": {
+                  "type": "object",
+                  "required": [
+                    "data",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/UnidentifiedSegmentResponse"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "Request trace id (same as the §20 error envelope)."
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
                   "example": {
-                    "id": "seg_1",
-                    "status": "ASSIGNED",
-                    "driverId": "drv_1",
-                    "assignedById": "usr_1",
-                    "assignedAt": "2026-09-11T15:41:00.000Z",
-                    "recordOrigin": 1,
-                    "eventCount": 4
+                    "data": {
+                      "id": "6f1c2a0e-3d1b-4c55-9a51-2f0f6b1d9e10",
+                      "vehicleId": "b3e0c1d2-8a4f-4f0e-9d7c-1a2b3c4d5e6f",
+                      "startAt": "2026-09-10T12:30:00.000Z",
+                      "endAt": "2026-09-10T13:00:00.000Z",
+                      "durationSec": 1800,
+                      "distanceMi": 21,
+                      "status": "ASSIGNED",
+                      "assignedDriverId": "drv_1",
+                      "assignedById": "usr_1",
+                      "assignedAt": "2026-09-11T15:41:00.000Z",
+                      "annotation": "Unidentified driving assigned to johnsmith",
+                      "confirmationRequestedAt": null,
+                      "fromStoredEvents": true,
+                      "eventIds": [
+                        "7701",
+                        "7702"
+                      ]
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-10-08T15:41:00.000Z"
                   }
                 }
               }
@@ -46524,15 +47287,51 @@
         },
         "responses": {
           "201": {
-            "description": "Annotation is capped at 60 characters (Appendix A).",
+            "description": "Annotation is capped at 60 characters (Appendix A). A PENDING segment becomes ANNOTATED.",
             "content": {
               "application/json": {
                 "schema": {
+                  "type": "object",
+                  "required": [
+                    "data",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/UnidentifiedSegmentResponse"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "Request trace id (same as the §20 error envelope)."
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
                   "example": {
-                    "id": "seg_1",
-                    "status": "ANNOTATED",
-                    "annotation": "Yard move by shop tech",
-                    "annotatedById": "usr_1"
+                    "data": {
+                      "id": "6f1c2a0e-3d1b-4c55-9a51-2f0f6b1d9e10",
+                      "vehicleId": "b3e0c1d2-8a4f-4f0e-9d7c-1a2b3c4d5e6f",
+                      "startAt": "2026-09-10T12:30:00.000Z",
+                      "endAt": "2026-09-10T13:00:00.000Z",
+                      "durationSec": 1800,
+                      "distanceMi": 21,
+                      "status": "ANNOTATED",
+                      "assignedDriverId": null,
+                      "assignedById": null,
+                      "assignedAt": null,
+                      "annotation": "Yard move by shop tech",
+                      "confirmationRequestedAt": null,
+                      "fromStoredEvents": true,
+                      "eventIds": [
+                        "7701",
+                        "7702"
+                      ]
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-10-08T15:41:00.000Z"
                   }
                 }
               }
@@ -46788,12 +47587,47 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "type": "object",
+                  "required": [
+                    "data",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/UnidentifiedSegmentResponse"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "Request trace id (same as the §20 error envelope)."
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
                   "example": {
-                    "id": "seg_1",
-                    "status": "REJECTED",
-                    "driverId": null,
-                    "recordOrigin": 4,
-                    "eventCount": 4
+                    "data": {
+                      "id": "6f1c2a0e-3d1b-4c55-9a51-2f0f6b1d9e10",
+                      "vehicleId": "b3e0c1d2-8a4f-4f0e-9d7c-1a2b3c4d5e6f",
+                      "startAt": "2026-09-10T12:30:00.000Z",
+                      "endAt": "2026-09-10T13:00:00.000Z",
+                      "durationSec": 1800,
+                      "distanceMi": 21,
+                      "status": "REJECTED",
+                      "assignedDriverId": null,
+                      "assignedById": "usr_1",
+                      "assignedAt": "2026-09-11T15:41:00.000Z",
+                      "annotation": "Not this driver",
+                      "confirmationRequestedAt": null,
+                      "fromStoredEvents": true,
+                      "eventIds": [
+                        "7701",
+                        "7702"
+                      ]
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-10-08T15:41:00.000Z"
                   }
                 }
               }
@@ -65309,6 +66143,17 @@
               "type": "integer"
             },
             "description": "Data-line count per output-file segment."
+          },
+          "clientId": {
+            "type": "string",
+            "nullable": true,
+            "description": "MB-18 — echo of the request `clientId` (offline-queued transfers)."
+          },
+          "requestedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "MB-18 — when the driver asked for the transfer on the device."
           }
         },
         "required": [
@@ -65324,7 +66169,9 @@
           "rangeStart",
           "rangeEnd",
           "warnings",
-          "counts"
+          "counts",
+          "clientId",
+          "requestedAt"
         ]
       },
       "MobileTransferView": {
@@ -66443,7 +67290,7 @@
           },
           "carriedOver": {
             "type": "boolean",
-            "description": "The status began on an earlier RODS day."
+            "description": "MB-14 — true only for the segment that opens the day (starts at 00:00 home-terminal time) when the status in force was recorded on an EARLIER RODS day; `eventId` then points at that earlier record, which is NOT repeated in this day's `events[]` (it belongs to the previous day). false whenever the opening record lies inside the day."
           }
         },
         "required": [
@@ -66816,7 +67663,7 @@
             }
           },
           "events": {
-            "description": "Every record of the day, incl. inactive ones.",
+            "description": "MB-14 — every §395 record with `eventDateTime` in [day start, next day start) (home-terminal zone), oldest first: all event types, every duty-status (eventType 1) record of the day, all record statuses (1 active, 2 inactive-changed, 3 change requested, 4 change rejected) and all origins (1 ELD, 2 driver, 3 carrier, 4 unidentified/assumed). The status carried over from the previous day is not repeated — see `graph[].carriedOver`.",
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/LogEventView"
@@ -67078,6 +67925,16 @@
                 "$ref": "#/components/schemas/AppUpdateView"
               }
             ]
+          },
+          "pendingEditRequestCount": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "MB-13 — carrier edit proposals awaiting this driver (= `GET /mobile/log-edit-requests` PENDING items)."
+          },
+          "pendingUnidentifiedCount": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "MB-13 — unidentified segments the carrier asked this driver to confirm (= `GET /unidentified/confirmation-requests` items)."
           }
         },
         "required": [
@@ -67092,7 +67949,9 @@
           "hos",
           "inspectionPacket",
           "syncConfig",
-          "appUpdate"
+          "appUpdate",
+          "pendingEditRequestCount",
+          "pendingUnidentifiedCount"
         ]
       },
       "SyncRejectedView": {
@@ -67290,7 +68149,7 @@
           "attachmentId": {
             "type": "string",
             "nullable": true,
-            "description": "Set for purpose DVIR_PHOTO and INVOICE (the Attachment id), else null."
+            "description": "Set for purpose DVIR_PHOTO, INVOICE, CHAT_AUDIO and CHAT_FILE (the Attachment id), else null."
           },
           "key": {
             "type": "string"
@@ -67992,6 +68851,28 @@
           "DEFERRED"
         ]
       },
+      "DvirLocationView": {
+        "type": "object",
+        "properties": {
+          "lat": {
+            "type": "number",
+            "nullable": true
+          },
+          "lon": {
+            "type": "number",
+            "nullable": true
+          },
+          "name": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "lat",
+          "lon",
+          "name"
+        ]
+      },
       "DvirSummaryResponse": {
         "type": "object",
         "properties": {
@@ -68038,6 +68919,16 @@
             "type": "integer",
             "nullable": true,
             "description": "MR-14."
+          },
+          "location": {
+            "nullable": true,
+            "description": "MB-15 — where the inspection was captured (same object as the detail view); null when neither a position nor a place name was captured.",
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DvirLocationView"
+              }
+            ]
           }
         },
         "required": [
@@ -68049,29 +68940,8 @@
           "defectCount",
           "repairStatus",
           "trailerNumber",
-          "odometerMi"
-        ]
-      },
-      "DvirLocationView": {
-        "type": "object",
-        "properties": {
-          "lat": {
-            "type": "number",
-            "nullable": true
-          },
-          "lon": {
-            "type": "number",
-            "nullable": true
-          },
-          "name": {
-            "type": "string",
-            "nullable": true
-          }
-        },
-        "required": [
-          "lat",
-          "lon",
-          "name"
+          "odometerMi",
+          "location"
         ]
       },
       "DvirDriverSignatureView": {
@@ -68696,6 +69566,45 @@
           "SUPPORT"
         ]
       },
+      "MessageType": {
+        "type": "string",
+        "enum": [
+          "TEXT",
+          "AUDIO",
+          "IMAGE",
+          "FILE"
+        ]
+      },
+      "MessageAttachmentView": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string",
+            "description": "Presigned GET URL, valid 15 minutes (S3_PUBLIC_ENDPOINT host when configured)."
+          },
+          "mimeType": {
+            "type": "string"
+          },
+          "sizeBytes": {
+            "type": "integer"
+          },
+          "durationSec": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Voice-message length in seconds (AUDIO), else null."
+          }
+        },
+        "required": [
+          "id",
+          "url",
+          "mimeType",
+          "sizeBytes",
+          "durationSec"
+        ]
+      },
       "MessageSenderType": {
         "type": "string",
         "enum": [
@@ -68707,6 +69616,24 @@
       "MobileMessageView": {
         "type": "object",
         "properties": {
+          "type": {
+            "description": "MB-9.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/MessageType"
+              }
+            ]
+          },
+          "attachment": {
+            "nullable": true,
+            "description": "MB-9 — null for TEXT.",
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/MessageAttachmentView"
+              }
+            ]
+          },
           "id": {
             "type": "string"
           },
@@ -68764,6 +69691,8 @@
           }
         },
         "required": [
+          "type",
+          "attachment",
           "id",
           "conversationId",
           "senderUserId",
@@ -69249,6 +70178,38 @@
           "configVersion"
         ]
       },
+      "EditRequestResolution": {
+        "type": "string",
+        "enum": [
+          "ACCEPTED",
+          "REJECTED"
+        ]
+      },
+      "EditRequestResolutionResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The edit request id (EldEvent id, bigint as a string)."
+          },
+          "status": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/EditRequestResolution"
+              }
+            ]
+          },
+          "applied": {
+            "type": "boolean",
+            "description": "true on accept (the proposal is now the active record), false on reject (the log is unchanged)."
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "applied"
+        ]
+      },
       "CertifiedDayView": {
         "type": "object",
         "properties": {
@@ -69326,6 +70287,103 @@
           "INSERT"
         ]
       },
+      "EditRequestOriginalView": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "nullable": true,
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DutyStatus"
+              }
+            ]
+          },
+          "start": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "end": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Next active duty-status record; null while it is still in force."
+          },
+          "location": {
+            "type": "string",
+            "nullable": true,
+            "description": "§395 App. A 7.29 location text (stored, else offline geo-location)."
+          }
+        },
+        "required": [
+          "status",
+          "start",
+          "end",
+          "location"
+        ]
+      },
+      "EditRequestGraphSegmentView": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DutyStatus"
+              }
+            ]
+          },
+          "effective": {
+            "description": "PC => OFF, YM => ON.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DutyStatus"
+              }
+            ]
+          },
+          "special": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SpecialCondition"
+              }
+            ]
+          },
+          "startAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "endAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "durationSec": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status",
+          "effective",
+          "special",
+          "startAt",
+          "endAt",
+          "durationSec"
+        ]
+      },
+      "EditRequestRequesterView": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "nullable": true,
+            "example": "Jane Dispatcher"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ]
+      },
       "EditRequestView": {
         "type": "object",
         "properties": {
@@ -69398,6 +70456,39 @@
             "type": "string",
             "format": "date-time",
             "nullable": true
+          },
+          "date": {
+            "type": "string",
+            "format": "date",
+            "example": "2026-10-08",
+            "description": "MB-10 — RODS day of `proposedStart` in the driver's home-terminal zone."
+          },
+          "original": {
+            "nullable": true,
+            "description": "MB-10 — the record the proposal replaces; null for an INSERT.",
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/EditRequestOriginalView"
+              }
+            ]
+          },
+          "proposedGraph": {
+            "description": "MB-10 — the `date` day graph as it would read if the driver accepted now: computed by the same plan `POST /logs/edit-requests/:id/accept` writes. Empty for a request that is no longer PENDING.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EditRequestGraphSegmentView"
+            }
+          },
+          "requestedBy": {
+            "nullable": true,
+            "description": "MB-10 — the carrier user who proposed the edit.",
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/EditRequestRequesterView"
+              }
+            ]
           }
         },
         "required": [
@@ -69414,7 +70505,11 @@
           "annotation",
           "requestedById",
           "requestedAt",
-          "resolvedAt"
+          "resolvedAt",
+          "date",
+          "original",
+          "proposedGraph",
+          "requestedBy"
         ]
       },
       "EditRequestListResponse": {
@@ -69464,6 +70559,234 @@
           "certifiedAt",
           "certificationCount",
           "recertificationRequired"
+        ]
+      },
+      "UnidentifiedStatus": {
+        "type": "string",
+        "enum": [
+          "PENDING",
+          "PENDING_CONFIRMATION",
+          "ASSIGNED",
+          "REJECTED",
+          "ANNOTATED"
+        ]
+      },
+      "UnidentifiedSegmentResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "vehicleId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "startAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "endAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "durationSec": {
+            "type": "integer"
+          },
+          "distanceMi": {
+            "type": "integer"
+          },
+          "status": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/UnidentifiedStatus"
+              }
+            ]
+          },
+          "assignedDriverId": {
+            "type": "string",
+            "nullable": true,
+            "description": "Driver the records belong to (ASSIGNED) or who is asked to confirm (PENDING_CONFIRMATION)."
+          },
+          "assignedById": {
+            "type": "string",
+            "nullable": true,
+            "description": "Carrier user who made / requested the assignment."
+          },
+          "assignedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "annotation": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 60
+          },
+          "confirmationRequestedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "B-83 — set while the segment waits for the asked driver."
+          },
+          "fromStoredEvents": {
+            "type": "boolean",
+            "description": "§23 — the records came out of the PT30 memory. Never dropped."
+          },
+          "eventIds": {
+            "description": "EldEvent ids (bigint as strings) of the unidentified records.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "vehicleId",
+          "startAt",
+          "endAt",
+          "durationSec",
+          "distanceMi",
+          "status",
+          "assignedDriverId",
+          "assignedById",
+          "assignedAt",
+          "annotation",
+          "confirmationRequestedAt",
+          "fromStoredEvents",
+          "eventIds"
+        ]
+      },
+      "UnidentifiedConfirmationRequestView": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "vehicleId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "startAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "endAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "durationSec": {
+            "type": "integer"
+          },
+          "distanceMi": {
+            "type": "integer"
+          },
+          "status": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/UnidentifiedStatus"
+              }
+            ]
+          },
+          "assignedDriverId": {
+            "type": "string",
+            "nullable": true,
+            "description": "Driver the records belong to (ASSIGNED) or who is asked to confirm (PENDING_CONFIRMATION)."
+          },
+          "assignedById": {
+            "type": "string",
+            "nullable": true,
+            "description": "Carrier user who made / requested the assignment."
+          },
+          "assignedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "annotation": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 60
+          },
+          "confirmationRequestedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "B-83 — set while the segment waits for the asked driver."
+          },
+          "fromStoredEvents": {
+            "type": "boolean",
+            "description": "§23 — the records came out of the PT30 memory. Never dropped."
+          },
+          "eventIds": {
+            "description": "EldEvent ids (bigint as strings) of the unidentified records.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "startLocation": {
+            "type": "string",
+            "nullable": true,
+            "description": "Appendix A 7.29 location text at the start (stored, else offline geo-location)."
+          },
+          "endLocation": {
+            "type": "string",
+            "nullable": true,
+            "description": "Appendix A 7.29 location text at the end."
+          },
+          "unitNumber": {
+            "type": "string",
+            "nullable": true,
+            "description": "Vehicle unit number (Appendix A 7.4 CMV power unit number)."
+          },
+          "startOdometerMi": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Total vehicle miles on the first record that has one."
+          },
+          "endOdometerMi": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Total vehicle miles on the last record that has one."
+          }
+        },
+        "required": [
+          "id",
+          "vehicleId",
+          "startAt",
+          "endAt",
+          "durationSec",
+          "distanceMi",
+          "status",
+          "assignedDriverId",
+          "assignedById",
+          "assignedAt",
+          "annotation",
+          "confirmationRequestedAt",
+          "fromStoredEvents",
+          "eventIds",
+          "startLocation",
+          "endLocation",
+          "unitNumber",
+          "startOdometerMi",
+          "endOdometerMi"
+        ]
+      },
+      "UnidentifiedConfirmationRequestListResponse": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UnidentifiedConfirmationRequestView"
+            }
+          }
+        },
+        "required": [
+          "items"
         ]
       },
       "HosCompareSkipReason": {
@@ -72786,6 +74109,15 @@
           "recipient": {
             "type": "string",
             "maxLength": 254
+          },
+          "clientId": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 100
+          },
+          "requestedAt": {
+            "type": "string",
+            "format": "date-time"
           }
         },
         "required": [
@@ -72932,8 +74264,8 @@
         "properties": {
           "body": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 2000
+            "maxLength": 2000,
+            "default": ""
           },
           "attachmentId": {
             "type": "string",
@@ -72943,10 +74275,7 @@
             "type": "string",
             "maxLength": 100
           }
-        },
-        "required": [
-          "body"
-        ]
+        }
       },
       "NextDriverReviewDto": {
         "type": "object",
@@ -73565,8 +74894,8 @@
         "properties": {
           "body": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 2000
+            "maxLength": 2000,
+            "default": ""
           },
           "attachmentId": {
             "type": "string",
@@ -73576,10 +74905,7 @@
             "type": "string",
             "maxLength": 100
           }
-        },
-        "required": [
-          "body"
-        ]
+        }
       },
       "SendTestWebhookDto": {
         "type": "object",
@@ -73621,7 +74947,9 @@
               "CERTIFICATION",
               "DVIR",
               "DVIR_PHOTO",
-              "INVOICE"
+              "INVOICE",
+              "CHAT_AUDIO",
+              "CHAT_FILE"
             ]
           },
           "base64": {
@@ -73633,9 +74961,18 @@
             "enum": [
               "image/png",
               "image/jpeg",
-              "application/pdf"
+              "application/pdf",
+              "audio/aac",
+              "audio/mp4",
+              "audio/m4a",
+              "audio/x-m4a"
             ],
             "default": "image/png"
+          },
+          "durationSec": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 86400
           }
         },
         "required": [

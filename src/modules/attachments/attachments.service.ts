@@ -50,6 +50,15 @@ export class AttachmentsService {
   }
 
   private mayView(attachment: AttachmentOwnerRow, actor: ContextUser): boolean {
+    // MB-9 — chat files: once linked to a message, ONLY that conversation's participants (driver or
+    // staff) may read them; before that, only the uploader. Nobody else, whatever their permissions.
+    if (attachment.kind === 'CHAT_AUDIO' || attachment.kind === 'CHAT_FILE') {
+      if (attachment.messageId) {
+        const participants = attachment.message?.conversation.participants ?? [];
+        return participants.some((p) => (actor.type === 'driver' ? p.driverId === actor.id : p.userId === actor.id));
+      }
+      return attachment.uploadedById === actor.id && attachment.uploadedByType === (actor.type === 'driver' ? 'DRIVER' : 'USER');
+    }
     // M-39/M-41 — a driver may always read back a file THEY uploaded (maintenance invoice PDF, DVIR
     // photo not yet linked); never somebody else's.
     if (actor.type === 'driver' && attachment.uploadedByType === 'DRIVER' && attachment.uploadedById === actor.id) return true;

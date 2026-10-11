@@ -13,11 +13,14 @@ export type ListMessagesQueryDto = z.infer<typeof ListMessagesQueryDto>;
 /** MB-15 — `POST /mobile/conversations/:id/messages`. Same shape as `SendMessageDto`
  *  (`messaging/dto/messaging.dto.ts`), duplicated here rather than imported so the mobile
  *  and web contracts can diverge independently without either agent touching the other's file. */
-export const MobileSendMessageDto = z.object({
-  body: z.string().min(1).max(2000),
-  attachmentId: z.string().max(200).optional(),
-  clientId: z.string().max(100).optional(),
-});
+export const MobileSendMessageDto = z
+  .object({
+    /** MB-9 — may be empty/omitted when `attachmentId` (a CHAT_AUDIO/CHAT_FILE upload) is sent. */
+    body: z.string().max(2000).default(''),
+    attachmentId: z.string().max(200).optional(),
+    clientId: z.string().max(100).optional(),
+  })
+  .refine((v) => v.body.trim().length > 0 || !!v.attachmentId, { path: ['body'], message: 'body or attachmentId is required.' });
 export type MobileSendMessageDto = z.infer<typeof MobileSendMessageDto>;
 
 /** MR-3 — `POST /mobile/conversations`. `contactId` is a `GET /mobile/contacts` id (staff user

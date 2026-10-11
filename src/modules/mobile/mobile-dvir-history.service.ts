@@ -68,10 +68,7 @@ export class MobileDvirHistoryService {
       submittedAt: dvir.submittedAt,
       odometerMi: dvir.odometerMi,
       // MR-14 — also returned when only a place name was captured (no GPS fix); lat/lon are then null.
-      location:
-        dvir.latitude !== null || dvir.longitude !== null || dvir.locationName
-          ? { lat: dvir.latitude === null ? null : Number(dvir.latitude), lon: dvir.longitude === null ? null : Number(dvir.longitude), name: locationTextOf(dvir) }
-          : null,
+      location: dvirLocationOf(dvir),
       trailerNumber: dvir.trailer?.number ?? dvir.trailerNumber ?? null,
       vehicleCondition: dvir.vehicleCondition,
       notes: dvir.notes,
@@ -99,6 +96,13 @@ export class MobileDvirHistoryService {
   }
 }
 
+/** MR-14 / MB-15 — shared by the list rows and the detail view; null when nothing was captured. */
+function dvirLocationOf(dvir: Dvir) {
+  return dvir.latitude !== null || dvir.longitude !== null || dvir.locationName
+    ? { lat: dvir.latitude === null ? null : Number(dvir.latitude), lon: dvir.longitude === null ? null : Number(dvir.longitude), name: locationTextOf(dvir) }
+    : null;
+}
+
 function toSummaryShape(dvir: Dvir & { _count: { defects: number }; trailer: { number: string } | null }) {
   return {
     id: dvir.id,
@@ -111,5 +115,7 @@ function toSummaryShape(dvir: Dvir & { _count: { defects: number }; trailer: { n
     // MR-14 (additive)
     trailerNumber: dvir.trailer?.number ?? dvir.trailerNumber ?? null,
     odometerMi: dvir.odometerMi,
+    // MB-15 (additive) — same object as the detail view's `location`.
+    location: dvirLocationOf(dvir),
   };
 }

@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import type { Conversation, Message, Prisma } from '@prisma/client';
+import { AppException } from '../../common/errors/app.exception';
 import { PrismaService } from '../../core/prisma/prisma.service';
 
 export interface Participant {
@@ -118,10 +119,16 @@ export class MessagingRepository {
   }
 
   async createMessage(conversationId: string, data: Prisma.MessageCreateWithoutConversationInput): Promise<Message> {
-    const [message] = await this.prisma.$transaction([
-      this.prisma.message.create({ data: { ...data, conversation: { connect: { id: conversationId } } } }),
-      this.prisma.conversation.update({ where: { id: conversationId }, data: { lastMessageAt: new Date() } }),
-    ]);
-    return message;
+    return this.prisma.$transaction(async (tx) => {
+      const message = await tx.message.create({ data: { ...data, conversation: { connect: { id: conversationId } } } });
+      await tx.conversation.update({ where: { id: conversationId }, data: { lastMessageAt: new Date() } });
+      // MB-9 — claim the chat upload for this message (one message per attachment; also what
+      // `GET /attachments/:id/presign` keys the participant check on).
+      if (message.attachmentId) {
+        const claimed = await tx.attachment.updateMany({ where: { id: message.attachmentId, messageId: null }, data: { messageId: message.id } });
+        if (claimed.count !== 1) throw AppException.conflict('Attachment is already used by another message.', { attachmentId: message.attachmentId });
+      }
+      return message;
+    });
   }
 }

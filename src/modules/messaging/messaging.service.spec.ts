@@ -15,10 +15,11 @@ function buildService(conversation: unknown = { id: 'cnv_1' }, isParticipant = t
       participants: [{ userId: 'usr_1', driverId: null }, { userId: null, driverId: 'drv_1' }],
     })),
   };
+  const chat = { decorate: jest.fn(async (ms: Array<Record<string, unknown>>) => ms.map((m) => ({ ...m, type: 'TEXT', attachment: null }))), assertSendable: jest.fn(async () => undefined) };
   const push = { sendToDriver: jest.fn(async () => undefined) };
   const events = { publish: jest.fn(async () => undefined) };
-  const service = new MessagingService(repo as never, events as never, push as never);
-  return { service, repo, push, events };
+  const service = new MessagingService(repo as never, events as never, push as never, chat as never);
+  return { service, repo, push, events, chat };
 }
 
 const actor = { id: 'usr_1', type: 'user' } as never;
@@ -61,6 +62,20 @@ describe('MessagingService — chat FCM', () => {
     const { service, push } = buildService(conv);
     await service.sendMessage('cnv_1', { body: '', attachmentId: 'att_1' }, actor);
     expect(push.sendToDriver).toHaveBeenCalledWith('drv_1', expect.objectContaining({ body: 'Sent an attachment' }), expect.anything());
+  });
+
+  it('MB-9 verifies attachment ownership before sending and returns type + attachment', async () => {
+    const { service, chat } = buildService(conv);
+    const out = await service.sendMessage('cnv_1', { body: '', attachmentId: 'att_1' }, actor);
+    expect(chat.assertSendable).toHaveBeenCalledWith('att_1', actor);
+    expect(out).toMatchObject({ type: 'TEXT', attachment: null });
+  });
+
+  it('MB-9 a foreign attachment aborts the send before any row is written', async () => {
+    const { service, chat, repo } = buildService(conv);
+    chat.assertSendable.mockRejectedValueOnce(new Error('nope'));
+    await expect(service.sendMessage('cnv_1', { body: '', attachmentId: 'att_x' }, actor)).rejects.toThrow('nope');
+    expect(repo.createMessage).not.toHaveBeenCalled();
   });
 
   it('never pushes when a driver sends', async () => {

@@ -30,6 +30,7 @@ const service = new MobileDvirService(
   eventBus,
   alertQueue as never,
   new MobileCatalogRepository(prismaService),
+  {} as never,
 );
 
 const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';

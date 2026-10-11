@@ -34,6 +34,8 @@ import { MobileFleetOpsRepository } from './mobile-fleet-ops.repository';
 import { MobileMaintenanceController } from './mobile-maintenance.controller';
 import { MobileMaintenanceRepository } from './mobile-maintenance.repository';
 import { MobileMaintenanceService } from './mobile-maintenance.service';
+import { AttachmentsModule } from '../attachments/attachments.module';
+import { MobileAttachmentsController } from './mobile-attachments.controller';
 import { MobileMessagingController } from './mobile-messaging.controller';
 import { MobileMessagingRepository } from './mobile-messaging.repository';
 import { MobileMessagingService } from './mobile-messaging.service';
@@ -59,7 +61,7 @@ import { SignatureService } from './signature.service';
  * is their shared DB-access point, kept separate from `MobileRepository` on purpose.
  */
 @Module({
-  imports: [HosRecalcModule, LogsModule, IngestModule, AuditModule, AuthModule, MessagingModule, RodsLoginModule],
+  imports: [AttachmentsModule, HosRecalcModule, LogsModule, IngestModule, AuditModule, AuthModule, MessagingModule, RodsLoginModule],
   controllers: [
     MobileAppConfigController,
     MobileBootstrapController,
@@ -76,6 +78,7 @@ import { SignatureService } from './signature.service';
     PushTokensController,
     DeviceHealthController,
     MobileMessagingController,
+    MobileAttachmentsController,
     MobileMaintenanceController,
     MobileDeviceController,
     MobileDeviceConfigController,

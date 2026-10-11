@@ -40,7 +40,7 @@ describe('MobileDvirHistoryService (MB-10)', () => {
     repo.listOwnDvirs.mockResolvedValue([{ ...DVIR, _count: { defects: 1 }, trailer: { number: 'T-77' } }]);
     const result = await service.list('drv_1', 14);
     expect(result).toEqual([
-      { id: 'dvir_1', vehicleId: 'veh_1', type: 'PRE_TRIP', submittedAt: DVIR.submittedAt, vehicleCondition: 'DEFECTS_FOUND', defectCount: 1, repairStatus: 'PENDING', trailerNumber: 'T-77', odometerMi: 100 },
+      { id: 'dvir_1', vehicleId: 'veh_1', type: 'PRE_TRIP', submittedAt: DVIR.submittedAt, vehicleCondition: 'DEFECTS_FOUND', defectCount: 1, repairStatus: 'PENDING', trailerNumber: 'T-77', odometerMi: 100, location: null },
     ]);
   });
 
@@ -49,6 +49,18 @@ describe('MobileDvirHistoryService (MB-10)', () => {
     repo.listOwnDvirs.mockResolvedValue([{ ...DVIR, odometerMi: null, _count: { defects: 0 }, trailer: null }]);
     const [row] = await service.list('drv_1', 14);
     expect(row).toMatchObject({ trailerNumber: null, odometerMi: null });
+  });
+
+  it('MB-15 list() rows carry location (lat/lon/name), and null when nothing was captured', async () => {
+    const { service, repo } = build();
+    repo.listOwnDvirs.mockResolvedValue([
+      { ...DVIR, latitude: 41.75, longitude: -87.98, locationName: 'Darien yard', _count: { defects: 0 }, trailer: null },
+      { ...DVIR, latitude: null, longitude: null, locationName: null, _count: { defects: 0 }, trailer: null },
+    ]);
+    const [withLoc, without] = await service.list('drv_1', 14);
+    expect(withLoc.location).toMatchObject({ lat: 41.75, lon: -87.98 });
+    expect(withLoc.location?.name).toEqual(expect.any(String));
+    expect(without.location).toBeNull();
   });
 
   it('MR-14 get() returns location (numbers; name-only too) and trailerNumber; MR-10 mechanic signature url', async () => {

@@ -82,7 +82,8 @@ export class MobileMessagingRepository {
   /** MB-8 — messages strictly newer than `after` (a message id or an ISO instant), ascending, for reconnect catch-up. */
   async listMessagesAfter(conversationId: string, limit: number, after: string): Promise<Message[]> {
     const isId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(after);
-    const cursor = isId ? await this.prisma.message.findUnique({ where: { id: after } }) : null;
+    // Cursor scoped to THIS conversation: a foreign message id must not act as an oracle for its sentAt.
+    const cursor = isId ? await this.prisma.message.findFirst({ where: { id: after, conversationId } }) : null;
     // Unknown id: fall back to the whole thread (ascending, capped) so the app never misses a message.
     const instant = isId ? cursor?.sentAt : new Date(after);
     return this.prisma.message.findMany({

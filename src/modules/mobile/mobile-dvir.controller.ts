@@ -23,7 +23,7 @@ export class MobileDvirController {
   constructor(private readonly dvir: MobileDvirService) {}
 
   @Post('signature')
-  @ApiOperation({ summary: 'Uploads captured signature/photo bytes to object storage; returns an id referenced by /mobile/dvir or /mobile/certify. purpose = DVIR_PHOTO also creates an Attachment row (attachmentId) to pass in defects[].photoAttachmentIds (MB-6). M-39: purpose = INVOICE accepts application/pdf (max 10 MiB, `%PDF-` header verified; PNG/JPEG 2 MB) and creates an Attachment (kind INVOICE) whose id is `invoiceAttachmentId` of POST /mobile/maintenance/:id/submit; the uploader reads it back with GET /attachments/:id/presign.' })
+  @ApiOperation({ summary: 'Uploads captured signature/photo bytes to object storage; returns an id referenced by /mobile/dvir or /mobile/certify. purpose = DVIR_PHOTO also creates an Attachment row (attachmentId) to pass in defects[].photoAttachmentIds (MB-6). MB-9: purpose = CHAT_AUDIO (audio/aac or audio/mp4; optional `durationSec`) or CHAT_FILE (png/jpeg/pdf) accepts up to 10 MB, verifies the type from magic bytes, creates a chat Attachment and returns `attachmentId` for POST /mobile/conversations/:id/messages `attachmentId`; read it back with GET /mobile/attachments/:id/presign. M-39: purpose = INVOICE accepts application/pdf (max 10 MiB, `%PDF-` header verified; PNG/JPEG 2 MB) and creates an Attachment (kind INVOICE) whose id is `invoiceAttachmentId` of POST /mobile/maintenance/:id/submit; the uploader reads it back with GET /attachments/:id/presign.' })
   @ApiEnvelopeResponse(SignatureUploadResponse, {
     status: 201,
     description: '`attachmentId` is the Attachment id for purpose DVIR_PHOTO and INVOICE (equal to `signatureImageId`), null for signatures.',

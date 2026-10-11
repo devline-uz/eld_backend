@@ -33,11 +33,13 @@ function build() {
     createConversation: jest.fn().mockResolvedValue({ id: 'cnv_new' }),
   };
   const messaging = { sendMessage: jest.fn().mockResolvedValue(msg), notifyConversationStarted: jest.fn().mockResolvedValue(undefined) };
+  const chat = { decorate: jest.fn(async (ms: Array<Record<string, unknown>>) => ms.map((m) => ({ ...m, type: 'TEXT', attachment: null }))), assertSendable: jest.fn(async () => undefined) };
   const service = new MobileMessagingService(
     repo as unknown as MobileMessagingRepository,
     messagingRepo as unknown as MessagingRepository,
     messaging as unknown as MessagingService,
     mobileRepo as unknown as MobileRepository,
+    chat as never,
   );
   return { repo, messagingRepo, messaging, mobileRepo, service };
 }

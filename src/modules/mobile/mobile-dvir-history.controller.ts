@@ -26,7 +26,7 @@ export class MobileDvirHistoryController {
   @ApiOperation({ summary: 'M-10 — own DVIR history: defect count, condition and repair-status summary per submission.' })
   @ApiEnvelopeResponse(DvirSummaryResponse, {
     isArray: true,
-    example: [{ id: 'dvir_1', vehicleId: 'veh_1', type: 'PRE_TRIP', submittedAt: '2026-09-10T12:00:00.000Z', vehicleCondition: 'DEFECTS_FOUND', defectCount: 1, repairStatus: 'PENDING', trailerNumber: 'X53-1188', odometerMi: 84213 }],
+    example: [{ id: 'dvir_1', vehicleId: 'veh_1', type: 'PRE_TRIP', submittedAt: '2026-09-10T12:00:00.000Z', vehicleCondition: 'DEFECTS_FOUND', defectCount: 1, repairStatus: 'PENDING', trailerNumber: 'X53-1188', odometerMi: 84213, location: { lat: 41.75, lon: -87.98, name: '2mi ESE IL Darien' } }],
   })
   @ApiStandardErrors()
   list(@Query(zodBody(DvirHistoryQueryDto)) query: DvirHistoryQueryDto, @CurrentUser('id') driverId: string) {

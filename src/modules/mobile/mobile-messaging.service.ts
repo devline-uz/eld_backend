@@ -3,6 +3,7 @@ import type { Message, Prisma } from '@prisma/client';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
 import type { ContextUser } from '../../core/context/request-context';
+import { ChatAttachmentsService, ChatAttachmentView, MessageType } from '../attachments/chat-attachments.service';
 import { MessagingRepository } from '../messaging/messaging.repository';
 import { MessagingService } from '../messaging/messaging.service';
 import type { ListMessagesQueryDto, MobileSendMessageDto, StartConversationDto } from './dto/mobile-messaging.dto';
@@ -16,6 +17,9 @@ export type MobileMessage = Message & {
   senderId: string | null;
   senderType: MobileSenderType;
   senderName: string | null;
+  /** MB-9 */
+  type: MessageType;
+  attachment: ChatAttachmentView | null;
 };
 
 export interface MobileParticipant {
@@ -31,7 +35,9 @@ export interface StartConversationResult {
 
 type NameMaps = { users: Map<string, string>; drivers: Map<string, string> };
 
-export function toMobileMessage(m: Message, names: NameMaps): MobileMessage {
+type Decorated = Message & { type: MessageType; attachment: ChatAttachmentView | null };
+
+export function toMobileMessage(m: Decorated, names: NameMaps): MobileMessage {
   if (m.senderDriverId) {
     return { ...m, senderId: m.senderDriverId, senderType: 'DRIVER', senderName: names.drivers.get(m.senderDriverId) ?? null };
   }
@@ -56,6 +62,7 @@ export class MobileMessagingService {
     private readonly messagingRepo: MessagingRepository,
     private readonly messaging: MessagingService,
     private readonly mobileRepo: MobileRepository,
+    private readonly chatAttachments: ChatAttachmentsService,
   ) {}
 
   /** MR-18 — each row gains `participants[]` and a non-null `title` (the other party's name for
@@ -73,13 +80,16 @@ export class MobileMessagingService {
       if (r.lastMessage?.senderDriverId) driverIds.add(r.lastMessage.senderDriverId);
     }
     const names = await this.repo.nameMaps([...userIds], [...driverIds]);
+    const decoratedLast = await this.chatAttachments.decorate(rows.map((r) => r.lastMessage).filter((m): m is Message => !!m));
+    const lastById = new Map(decoratedLast.map((m) => [m.id, m]));
     const items = rows.map(({ rawParticipants, ...row }) => {
       const participants = this.toParticipants(rawParticipants, names);
+      const last = row.lastMessage ? lastById.get(row.lastMessage.id) : undefined;
       return {
         ...row,
         title: this.conversationTitle(row, participants, driverId),
         participants,
-        lastMessage: row.lastMessage ? toMobileMessage(row.lastMessage, names) : null,
+        lastMessage: last ? toMobileMessage(last, names) : null,
       };
     });
     return { items };
@@ -105,7 +115,8 @@ export class MobileMessagingService {
       [...new Set(messages.map((m) => m.senderUserId).filter((x): x is string => Boolean(x)))],
       [...new Set(messages.map((m) => m.senderDriverId).filter((x): x is string => Boolean(x)))],
     );
-    return messages.map((m) => toMobileMessage(m, names));
+    const decorated = await this.chatAttachments.decorate(messages);
+    return decorated.map((m) => toMobileMessage(m, names));
   }
 
   async listMessages(conversationId: string, driverId: string, query: ListMessagesQueryDto) {

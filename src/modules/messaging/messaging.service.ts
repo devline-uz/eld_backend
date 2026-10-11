@@ -6,6 +6,7 @@ import { PushService } from '../../core/firebase/push.service';
 import { EventBusService } from '../../core/events/event-bus.service';
 import type { ContextUser } from '../../core/context/request-context';
 import { BroadcastMessageDto, CreateConversationDto, SendMessageDto } from './dto/messaging.dto';
+import { ChatAttachmentsService } from '../attachments/chat-attachments.service';
 import { MessagingRepository, Participant } from './messaging.repository';
 
 function toParticipant(actor: ContextUser): Participant {
@@ -20,6 +21,7 @@ export class MessagingService {
     private readonly repo: MessagingRepository,
     private readonly events: EventBusService,
     private readonly push: PushService,
+    private readonly chatAttachments: ChatAttachmentsService,
   ) {}
 
   async listConversations(actor: ContextUser) {
@@ -79,19 +81,21 @@ export class MessagingService {
   async listMessages(conversationId: string, actor: ContextUser, page: number, limit: number): Promise<OffsetPage<unknown>> {
     await this.assertParticipant(conversationId, actor);
     const { items, total } = await this.repo.listMessages(conversationId, page, limit);
-    return { items, page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) };
+    return { items: await this.chatAttachments.decorate(items), page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) };
   }
 
   async sendMessage(conversationId: string, dto: SendMessageDto, actor: ContextUser) {
     const conversation = await this.assertParticipant(conversationId, actor);
     const participant = toParticipant(actor);
-    const message = await this.repo.createMessage(conversationId, {
+    if (dto.attachmentId) await this.chatAttachments.assertSendable(dto.attachmentId, actor);
+    const created = await this.repo.createMessage(conversationId, {
       body: dto.body,
       attachmentId: dto.attachmentId,
       clientId: dto.clientId,
       senderUserId: participant.userId,
       senderDriverId: participant.driverId,
     });
+    const [message] = await this.chatAttachments.decorate([created]);
     await this.events.publish('realtime.push', {
       room: `conversation:${conversationId}`,
       event: 'message.new',

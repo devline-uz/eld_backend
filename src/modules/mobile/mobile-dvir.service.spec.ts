@@ -25,7 +25,7 @@ function build() {
   const events = { publish: jest.fn().mockResolvedValue(undefined) };
   const alertQueue = { add: jest.fn().mockResolvedValue({}) };
   const catalog = { listCatalogLabels: jest.fn().mockResolvedValue([{ part: 'TRUCK', code: 'BRAKES_SERVICE', name: 'Brakes, Service' }]) };
-  const service = new MobileDvirService(repo as never, photos as never, signatures as never, audit as never, events as never, alertQueue as never, catalog as never);
+  const service = new MobileDvirService(repo as never, photos as never, signatures as never, audit as never, events as never, alertQueue as never, catalog as never, {} as never);
   return { service, repo, photos, signatures, audit, catalog };
 }
 

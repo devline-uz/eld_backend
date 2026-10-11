@@ -158,6 +158,7 @@ export const FIGMA_UNMAPPED_ROUTES: Record<string, string> = {
   'POST /api/notifications/{id}/read': 'In-app notification bell — marking one item read (TZ §14) — same as above.',
   // B-41 presigned download helper — reused by whichever screen renders the attachment
   // (DVIR photo, defect photo, support-ticket file); not a screen of its own.
+  'GET /api/mobile/attachments/{id}/presign': 'Driver app M-16 chat voice/file playback (mobile-requests MB-9) — mobile Figma export missing.',
   'GET /api/attachments/{id}/presign': 'Short-lived presigned GET for a stored attachment (TZ §20 B-41) — reused across DVIR/defect/support screens, not a screen of its own.',
   // Reports (TZ §11.6/§15). Only the IFTA and FMCSA-pack tabs of the Reports screen were
   // exported (p.20/p.21) — the generic generate/list/status/download/schedule flow and the
