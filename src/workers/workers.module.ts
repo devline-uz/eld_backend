@@ -22,6 +22,7 @@ import { ReportProcessor } from './report.processor';
 import { ReportSchedulerProcessor } from './report-scheduler.processor';
 import { RetentionProcessor } from './retention.processor';
 import { SafetyDetectProcessor } from './safety-detect.processor';
+import { SafetyScoreProcessor } from './safety-score.processor';
 import { TransferProcessor } from './transfer.processor';
 import { WebhookProcessor } from './webhook.processor';
 
@@ -37,6 +38,7 @@ import { WebhookProcessor } from './webhook.processor';
  *   transfer.processor.ts     Phase 9  (eld-compliance-rods) — registered, §10.1/§10.4 send step
  *   alert.processor.ts        Phase 10 (eld-reports-jobs)
  *   safety-detect.processor.ts Phase 10 (eld-fleet-ops)
+ *   safety-score.processor.ts registered — nightly W-10 DriverScore (D-133), 10:30 UTC
  *   webhook.processor.ts      Phase 11 (eld-reports-jobs)
  *   maintenance-due.processor.ts Phase 7 (eld-fleet-ops) — registered, nightly §5.10 sweep
  *   retention.processor.ts    registered — nightly §5.5/§18/§23 RODS 6mo/audit 24mo sweep
@@ -66,6 +68,7 @@ import { WebhookProcessor } from './webhook.processor';
     MaintenanceDueProcessor,
     AlertProcessor,
     SafetyDetectProcessor,
+    SafetyScoreProcessor,
     ReportProcessor,
     ReportSchedulerProcessor,
     IftaNightlyProcessor,

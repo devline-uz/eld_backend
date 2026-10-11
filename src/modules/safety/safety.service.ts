@@ -2,11 +2,11 @@ import { Injectable } from '@nestjs/common';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
 import { OffsetPage } from '../../common/dto/list-query.dto';
-import { computeDriverScore } from './lib/harsh-detect';
+import { addDays, dayDiff } from '../hos/engine/timezone';
+import { MIN_SCORED_MILES } from './lib/harsh-detect';
+import { dateKeyToDbDate, dbDateToKey, fleetScore, periodEndingOn, SCORE_ATTENTION_THRESHOLD, scoreTrend } from './lib/scorecard';
 import { AssignCoachingDto, ScorecardQueryDto, SafetyEventListQueryDto, UpdateSafetyEventDto } from './dto/safety.dto';
 import { SafetyRepository } from './safety.repository';
-
-const HARSH_TYPES = new Set(['HARSH_BRAKING', 'HARSH_ACCEL', 'HARSH_TURN']);
 
 @Injectable()
 export class SafetyService {
@@ -47,55 +47,133 @@ export class SafetyService {
   }
 
   /**
-   * TZ eld.docs/web §9 — "Fleet safety score, driver scorecard sorted by rank". Reads the
-   * already-computed `DriverScore` rows for the period (nightly-computed in production);
-   * this endpoint only ranks and returns them — it never recomputes on a GET, so the
-   * numbers a fleet manager reviews stay stable within a session.
+   * TZ eld.docs/web §9 — "Fleet safety score, driver scorecard sorted by rank". D-133: reads the
+   * already-computed `DriverScore` rows (nightly `safety-score` job) — it never recomputes on a
+   * GET, so the numbers a fleet manager reviews stay stable within a day.
    *
-   * §20 B-44 — also reads the immediately preceding period of the same length as a baseline
-   * (W-10 `TREND` column) and adds `previousScore`/`trend` (`trend = score - previousScore`) to
-   * each row; both are `null` when there is no scored previous period for that driver yet.
+   * No query -> the LATEST computed period (max `periodEnd`). `periodStart` (or `periodEnd`)
+   * selects a specific stored period. The baseline is the stored period of the same length
+   * ending the day before (§20 B-44 `previousScore`/`trend` per row; D-133 fleet trend).
    */
-  async scorecard(query: ScorecardQueryDto) {
-    const periodEnd = query.periodEnd ?? new Date();
-    const periodStart = query.periodStart ?? new Date(periodEnd.getTime() - 30 * 24 * 60 * 60 * 1000);
-    const durationMs = periodEnd.getTime() - periodStart.getTime();
-    const previousPeriodEnd = new Date(periodStart.getTime() - 24 * 60 * 60 * 1000);
-    const previousPeriodStart = new Date(previousPeriodEnd.getTime() - durationMs);
+  async scorecard(query: ScorecardQueryDto): Promise<ScorecardResult> {
+    const period = await this.resolvePeriod(query);
+    if (!period) {
+      return { periodStart: null, periodEnd: null, computedAt: null, minMiles: MIN_SCORED_MILES, fleet: emptyFleet(), items: [] };
+    }
+    const lengthDays = dayDiff(period.endKey, period.startKey) + 1;
+    const prevStartKey = addDays(period.startKey, -lengthDays);
 
     const [rows, previousRows] = await Promise.all([
-      this.repo.scorecard(periodStart, periodEnd),
-      this.repo.scorecard(previousPeriodStart, previousPeriodEnd),
+      this.repo.scorecard(dateKeyToDbDate(period.startKey)),
+      this.repo.scorecard(dateKeyToDbDate(prevStartKey)),
     ]);
-    const previousByDriver = new Map(previousRows.map((r) => [r.driverId, r.score]));
+    const previousByDriver = new Map(previousRows.filter((r) => r.scored).map((r) => [r.driverId, r.score]));
 
-    const items = rows.map((row) => {
+    const items: ScorecardItem[] = rows.map((row) => {
+      const score = row.scored ? row.score : null;
       const previousScore = previousByDriver.get(row.driverId) ?? null;
-      return { ...row, previousScore, trend: previousScore === null ? null : row.score - previousScore };
+      return {
+        id: row.id,
+        driverId: row.driverId,
+        periodStart: dbDateToKey(row.periodStart),
+        periodEnd: dbDateToKey(row.periodEnd),
+        score,
+        scored: row.scored,
+        harshCount: row.harshCount,
+        speedingCount: row.speedingCount,
+        seatbeltCount: row.seatbeltCount,
+        milesDriven: row.milesDriven,
+        violationCount: row.violationCount,
+        rank: row.scored ? row.rank : null,
+        previousScore,
+        trend: scoreTrend(score, previousScore),
+        computedAt: row.computedAt.toISOString(),
+      };
     });
-    return { items, periodStart, periodEnd };
+
+    const currentFleet = fleetScore(items);
+    const previousFleet = fleetScore(previousRows.map((r) => ({ score: r.scored ? r.score : null, milesDriven: r.milesDriven })));
+    const scored = items.filter((i) => i.score !== null);
+    const computedAt = rows.reduce<Date | null>((max, r) => (!max || r.computedAt > max ? r.computedAt : max), null);
+    return {
+      periodStart: period.startKey,
+      periodEnd: period.endKey,
+      computedAt: computedAt ? computedAt.toISOString() : null,
+      minMiles: MIN_SCORED_MILES,
+      fleet: {
+        score: currentFleet,
+        previousScore: previousFleet,
+        trend: scoreTrend(currentFleet, previousFleet),
+        scoredDrivers: scored.length,
+        unscoredDrivers: items.length - scored.length,
+        belowThresholdCount: scored.filter((i) => (i.score as number) < SCORE_ATTENTION_THRESHOLD).length,
+        milesDriven: scored.reduce((sum, i) => sum + i.milesDriven, 0),
+      },
+      items: sortScorecard(items),
+    };
   }
 
-  /**
-   * Recomputes `DriverScore` for one driver/period from `SafetyEvent` counts
-   * (`computeDriverScore`, safety/lib/harsh-detect.ts — documented D-0xx). Called by the
-   * nightly retention/scoring sweep and available here for on-demand recompute.
-   */
-  async recomputeScore(driverId: string, periodStart: Date, periodEnd: Date, milesDriven: number, violationCount: number) {
-    const groups = await this.repo.countsForDriver(driverId, periodStart, periodEnd);
-    let harshCount = 0;
-    let speedingCount = 0;
-    for (const g of groups) {
-      if (HARSH_TYPES.has(g.type)) harshCount += g._count._all;
-      if (g.type === 'SPEEDING') speedingCount += g._count._all;
+  private async resolvePeriod(query: ScorecardQueryDto): Promise<{ startKey: string; endKey: string } | null> {
+    if (query.periodStart) {
+      const rows = await this.repo.scorecard(dateKeyToDbDate(query.periodStart));
+      return rows.length > 0 ? { startKey: query.periodStart, endKey: dbDateToKey(rows[0].periodEnd) } : null;
     }
-    const score = computeDriverScore({ harshCount, speedingCount, milesDriven, violationCount });
-    return this.repo.upsertScore(driverId, periodStart, periodEnd, {
-      score,
-      harshCount,
-      speedingCount,
-      milesDriven,
-      violationCount,
-    });
+    if (query.periodEnd) return periodEndingOn(query.periodEnd);
+    const latest = await this.repo.latestPeriod();
+    return latest ? { startKey: dbDateToKey(latest.periodStart), endKey: dbDateToKey(latest.periodEnd) } : null;
   }
+}
+
+export interface ScorecardItem {
+  id: string;
+  driverId: string;
+  periodStart: string;
+  periodEnd: string;
+  /** null = fewer than `minMiles` in the period ("Not enough miles"). */
+  score: number | null;
+  scored: boolean;
+  harshCount: number;
+  speedingCount: number;
+  seatbeltCount: number;
+  milesDriven: number;
+  violationCount: number;
+  rank: number | null;
+  previousScore: number | null;
+  trend: number | null;
+  computedAt: string;
+}
+
+export interface ScorecardFleet {
+  /** Mile-weighted mean of scored drivers. */
+  score: number | null;
+  previousScore: number | null;
+  trend: number | null;
+  scoredDrivers: number;
+  unscoredDrivers: number;
+  /** Scored drivers below 70 ("needs attention"). */
+  belowThresholdCount: number;
+  milesDriven: number;
+}
+
+export interface ScorecardResult {
+  periodStart: string | null;
+  periodEnd: string | null;
+  computedAt: string | null;
+  minMiles: number;
+  fleet: ScorecardFleet;
+  items: ScorecardItem[];
+}
+
+function emptyFleet(): ScorecardFleet {
+  return { score: null, previousScore: null, trend: null, scoredDrivers: 0, unscoredDrivers: 0, belowThresholdCount: 0, milesDriven: 0 };
+}
+
+/** Ranked rows by rank; then unscored rows by miles desc, then driverId. */
+export function sortScorecard(items: ScorecardItem[]): ScorecardItem[] {
+  return [...items].sort((a, b) => {
+    if (a.rank !== null && b.rank !== null) return a.rank - b.rank;
+    if (a.rank !== null) return -1;
+    if (b.rank !== null) return 1;
+    return b.milesDriven - a.milesDriven || a.driverId.localeCompare(b.driverId);
+  });
 }

@@ -16,6 +16,8 @@ export const QUEUES = {
   TRANSFER: 'transfer',
   ALERT: 'alert',
   SAFETY_DETECT: 'safety-detect',
+  /** D-133 — nightly W-10 driver scorecard (`DriverScore`) for the rolling 30-day period. */
+  SAFETY_SCORE: 'safety-score',
   /** §5.10 — nightly due/overdue sweep over `MaintenanceSchedule` (Phase 7, eld-fleet-ops). */
   MAINTENANCE_DUE: 'maintenance-due',
   RETENTION: 'retention',
