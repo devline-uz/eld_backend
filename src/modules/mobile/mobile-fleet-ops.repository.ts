@@ -262,6 +262,20 @@ export class MobileFleetOpsRepository {
     });
   }
 
+  /** MB-4 — the owned DVIR with the driver/vehicle/trailer rows `DvirPdfBuilder` prints. */
+  getOwnDvirForPdf(id: string, driverId: string) {
+    return this.prisma.dvir.findFirst({
+      where: { id, driverId },
+      include: {
+        defects: { include: { photos: true } },
+        photos: true,
+        driver: { select: { firstName: true, lastName: true, cdlNumber: true } },
+        vehicle: { select: { unitNumber: true, vin: true, licensePlate: true, plateState: true } },
+        trailer: { select: { number: true } },
+      },
+    });
+  }
+
   // ---------------------------------------------------------------------
   // MB-14 — contacts (M-15/M-16)
   // ---------------------------------------------------------------------

@@ -3,10 +3,11 @@ import { MobileFleetOpsRepository } from './mobile-fleet-ops.repository';
 import type { StoragePort } from '../../core/storage/storage.port';
 
 function build() {
-  const repo = { listOwnDvirs: jest.fn(), getOwnDvir: jest.fn() };
+  const repo = { listOwnDvirs: jest.fn(), getOwnDvir: jest.fn(), getOwnDvirForPdf: jest.fn() };
+  const pdfBuilder = { build: jest.fn().mockResolvedValue(Buffer.from('%PDF-1.4')) };
   const storage = { presignGet: jest.fn().mockResolvedValue('https://signed') };
-  const service = new MobileDvirHistoryService(repo as unknown as MobileFleetOpsRepository, storage as unknown as StoragePort);
-  return { service, repo, storage };
+  const service = new MobileDvirHistoryService(repo as unknown as MobileFleetOpsRepository, storage as unknown as StoragePort, pdfBuilder as never);
+  return { service, repo, storage, pdfBuilder };
 }
 
 const DVIR = {
@@ -98,15 +99,19 @@ describe('MobileDvirHistoryService (MB-10)', () => {
     expect(result.mechanicSignature).toBeNull();
   });
 
-  it('pdf() 501s NOT_IMPLEMENTED for a DVIR the driver owns', async () => {
-    const { service, repo } = build();
-    repo.getOwnDvir.mockResolvedValue(DVIR);
-    await expect(service.pdf('dvir_1', 'drv_1')).rejects.toMatchObject({ code: 'NOT_IMPLEMENTED', status: 501 });
+  it('pdf() renders the owned DVIR through the shared DvirPdfBuilder (MB-4)', async () => {
+    const { service, repo, pdfBuilder } = build();
+    repo.getOwnDvirForPdf.mockResolvedValue(DVIR);
+    const out = await service.pdf('dvir_1', 'drv_1');
+    expect(repo.getOwnDvirForPdf).toHaveBeenCalledWith('dvir_1', 'drv_1');
+    expect(pdfBuilder.build).toHaveBeenCalledWith(DVIR);
+    expect(out.subarray(0, 5).toString()).toBe('%PDF-');
   });
 
   it('pdf() 404s DVIR_NOT_FOUND rather than leaking another driver\'s DVIR existence', async () => {
-    const { service, repo } = build();
-    repo.getOwnDvir.mockResolvedValue(null);
+    const { service, repo, pdfBuilder } = build();
+    repo.getOwnDvirForPdf.mockResolvedValue(null);
     await expect(service.pdf('dvir_9', 'drv_1')).rejects.toMatchObject({ code: 'DVIR_NOT_FOUND', status: 404 });
+    expect(pdfBuilder.build).not.toHaveBeenCalled();
   });
 });

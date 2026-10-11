@@ -27,6 +27,7 @@ import { MobileDeviceService } from './mobile-device.service';
 import { MobileDutyStatusController } from './mobile-duty-status.controller';
 import { MobileDvirController } from './mobile-dvir.controller';
 import { MobileDvirHistoryController } from './mobile-dvir-history.controller';
+import { DvirPdfBuilder } from '../service/dvir-pdf.builder';
 import { MobileDvirHistoryService } from './mobile-dvir-history.service';
 import { MobileDvirService } from './mobile-dvir.service';
 import { MobileFleetOpsRepository } from './mobile-fleet-ops.repository';
@@ -94,6 +95,7 @@ import { SignatureService } from './signature.service';
     MobileCoDriverService,
     MobileTripService,
     MobileDvirHistoryService,
+    DvirPdfBuilder, // MB-4 — the web DVIR PDF renderer, reused for GET /mobile/dvirs/:id/pdf
     MobileContactsService,
     // MB-1 (push tokens), MB-7 (device health), MB-15 (driver-facing messaging) — Phase 6b.
     PushTokensRepository,

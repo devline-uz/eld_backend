@@ -110,6 +110,37 @@ describe('S3StorageService', () => {
     expect(getSignedUrl).toHaveBeenCalledWith(expect.anything(), expect.anything(), { expiresIn: 300 });
   });
 
+  type S3Mock = jest.Mock<unknown, [Record<string, unknown>]> & { mock: { results: { value: unknown }[] } };
+  const s3ClientMock = (): S3Mock => {
+    const mod: unknown = jest.requireMock('@aws-sdk/client-s3');
+    return (mod as { S3Client: S3Mock }).S3Client;
+  };
+  const signedWith = (n: number): unknown => (getSignedUrl.mock.calls as unknown[][])[n]?.[0];
+
+  it('MB-1 — S3_PUBLIC_ENDPOINT: presigns with a second path-style client on the public origin; put/delete keep the internal one', async () => {
+    const S3Client = s3ClientMock();
+    S3Client.mockClear();
+    getSignedUrl.mockResolvedValue('https://pub/x');
+    const service = new S3StorageService(makeConfig({ S3_PUBLIC_ENDPOINT: 'https://eldapi.example.com', S3_FORCE_PATH_STYLE: false }) as never);
+    expect(S3Client).toHaveBeenCalledTimes(2);
+    expect(S3Client.mock.calls[1]?.[0]).toMatchObject({ endpoint: 'https://eldapi.example.com', forcePathStyle: true });
+    await service.presignGet('a.pdf');
+    await service.presignPut('a.pdf', 'application/pdf');
+    const signingClient: unknown = S3Client.mock.results[1]?.value;
+    expect(signedWith(0)).toBe(signingClient);
+    expect(signedWith(1)).toBe(signingClient);
+  });
+
+  it('MB-1 — without S3_PUBLIC_ENDPOINT a single client signs and uploads', async () => {
+    const S3Client = s3ClientMock();
+    S3Client.mockClear();
+    getSignedUrl.mockResolvedValue('u');
+    const service = new S3StorageService(makeConfig() as never);
+    expect(S3Client).toHaveBeenCalledTimes(1);
+    await service.presignGet('a');
+    expect(signedWith(0)).toBe(S3Client.mock.results[0]?.value);
+  });
+
   it('ping() presigns a health-check GET and returns true', async () => {
     const service = new S3StorageService(makeConfig() as never);
     getSignedUrl.mockResolvedValue('https://signed-health-url');

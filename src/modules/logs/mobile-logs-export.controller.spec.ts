@@ -23,13 +23,22 @@ describe('MobileLogsExportController (MB-18)', () => {
     expect(thrown).toMatchObject({ code: 'DRIVER_CONTEXT_REQUIRED', status: 403 });
   });
 
-  it('returns the raw CSV string (envelope bypass) with attachment headers; driver id from the token', async () => {
-    const res = { setHeader: jest.fn() };
-    const body = await controller.exportDay(LogExportDateParamDto.parse({ date: '2026-09-10' }), LogExportFormatQueryDto.parse({}), driver, res as never);
+  it('sends the raw file (envelope bypass) with attachment headers; driver id from the token', async () => {
+    const res = { setHeader: jest.fn(), send: jest.fn() };
+    await controller.exportDay(LogExportDateParamDto.parse({ date: '2026-09-10' }), LogExportFormatQueryDto.parse({}), driver, res as never);
     expect(service.exportDay).toHaveBeenCalledWith('drv_1', '2026-09-10', 'csv');
-    expect(typeof body).toBe('string');
+    expect(res.send).toHaveBeenCalledWith('sequenceId\r\n');
     expect(res.setHeader).toHaveBeenCalledWith('Content-Type', 'text/csv; charset=utf-8');
     expect(res.setHeader).toHaveBeenCalledWith('Content-Disposition', 'attachment; filename="RODS_2026-09-10.csv"');
+  });
+
+  it('pdf: sends the Buffer with application/pdf (MB-4)', async () => {
+    const pdf = Buffer.from('%PDF-1.4');
+    service.exportDay.mockResolvedValueOnce({ fileName: 'RODS_2026-09-10.pdf', contentType: 'application/pdf', body: pdf });
+    const res = { setHeader: jest.fn(), send: jest.fn() };
+    await controller.exportDay(LogExportDateParamDto.parse({ date: '2026-09-10' }), LogExportFormatQueryDto.parse({ format: 'pdf' }), driver, res as never);
+    expect(res.setHeader).toHaveBeenCalledWith('Content-Type', 'application/pdf');
+    expect(res.send).toHaveBeenCalledWith(pdf);
   });
 
   it('DTOs: date must be YYYY-MM-DD, format only csv|pdf', () => {
