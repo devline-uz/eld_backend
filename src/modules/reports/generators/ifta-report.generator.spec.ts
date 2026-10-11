@@ -1,4 +1,17 @@
-import { IftaReportGenerator, previousQuarter, quarterRange } from './ifta-report.generator';
+import { IftaReportGenerator, mpgOf, previousQuarter, quarterRange } from './ifta-report.generator';
+
+describe('mpgOf (W-12 MPG column = TOTAL MILES / FUEL of the same row)', () => {
+  it('divides miles by gallons, rounded to 2 decimals', () => {
+    expect(mpgOf(6466, 1288)).toBe(5.02);
+    expect(mpgOf(2740, 175)).toBe(15.66);
+  });
+
+  it('is null (rendered `—`) for 0 or missing gallons — never Infinity/NaN', () => {
+    expect(mpgOf(200, 0)).toBeNull();
+    expect(mpgOf(0, 0)).toBeNull();
+    expect(mpgOf(200, null)).toBeNull();
+  });
+});
 
 describe('previousQuarter (TZ web/tz.md §20 — W-12 "vs prev." chip)', () => {
   it('steps back within a year', () => {
@@ -48,6 +61,17 @@ describe('IftaReportGenerator (TZ §15 — real IftaSegment/FuelPurchase aggrega
     expect(rows).toEqual([
       { jurisdiction: 'KY', milesDriven: 200, fuelPurchasedGal: '0.00', fleetMpg: '10.000', taxableGallons: '20.000', netTaxableGallons: '20.000' },
       { jurisdiction: 'OH', milesDriven: 800, fuelPurchasedGal: '100.00', fleetMpg: '10.000', taxableGallons: '80.000', netTaxableGallons: '-20.000' },
+    ]);
+  });
+
+  it('prints `—` (not 0 / Infinity) for fleet MPG and taxable gallons when no fuel was purchased', async () => {
+    const prisma = buildPrisma();
+    prisma.fuelPurchase.groupBy.mockResolvedValue([]);
+    const gen = new IftaReportGenerator(prisma as never);
+    const rows = await gen.rows({ quarter: '2026-Q3' });
+    expect(rows).toEqual([
+      { jurisdiction: 'KY', milesDriven: 200, fuelPurchasedGal: '0.00', fleetMpg: '—', taxableGallons: '—', netTaxableGallons: '—' },
+      { jurisdiction: 'OH', milesDriven: 800, fuelPurchasedGal: '0.00', fleetMpg: '—', taxableGallons: '—', netTaxableGallons: '—' },
     ]);
   });
 
@@ -140,9 +164,11 @@ describe('IftaReportGenerator.summary (gap B-46 — GET /reports/ifta/summary JS
       fleetMpgPrev: 10, // 500 mi / 50 gal in 2026-Q2
     });
     expect(summary.rows).toEqual([
-      { jurisdiction: 'KY', totalMiles: 200, taxableMiles: 200, fuelGal: 0, mpg: 10, taxDueUsd: null },
-      { jurisdiction: 'OH', totalMiles: 800, taxableMiles: 800, fuelGal: 100, mpg: 10, taxDueUsd: null },
+      // Row MPG is that row's miles / gallons — KY bought no fuel, so it has no MPG (not Infinity).
+      { jurisdiction: 'KY', totalMiles: 200, taxableMiles: 200, fuelGal: 0, mpg: null, taxDueUsd: null },
+      { jurisdiction: 'OH', totalMiles: 800, taxableMiles: 800, fuelGal: 100, mpg: 8, taxDueUsd: null },
     ]);
+    // Total row = sum(miles) / sum(gallons) over the rows.
     expect(summary.totals).toEqual({ totalMiles: 1000, taxableMiles: 1000, fuelGal: 100, mpg: 10, taxDueUsd: null });
   });
 
@@ -213,13 +239,14 @@ describe('IftaReportGenerator — W-12 `Jurisdiction` / `Vehicle group` filters'
     };
   }
 
-  it('summary: `jurisdiction` narrows rows/miles/gallons/receipts but keeps fleet MPG fleet-wide', async () => {
+  it('summary: `jurisdiction` narrows rows/miles/gallons/receipts but keeps the KPI fleet MPG fleet-wide', async () => {
     const gen = new IftaReportGenerator(buildPrisma() as never);
     const summary = await gen.summary({ quarter: '2026-Q3', jurisdiction: 'KY' });
 
-    expect(summary.rows).toEqual([{ jurisdiction: 'KY', totalMiles: 200, taxableMiles: 200, fuelGal: 40, mpg: 10, taxDueUsd: null }]);
+    // KY: 200 mi / 40 gal = 5 — the single row and the Total row agree (never the fleet's 10).
+    expect(summary.rows).toEqual([{ jurisdiction: 'KY', totalMiles: 200, taxableMiles: 200, fuelGal: 40, mpg: 5, taxDueUsd: null }]);
     expect(summary.kpis).toMatchObject({ totalMiles: 200, taxableMiles: 200, fuelGal: 40, receiptCount: 2, fleetMpg: 10 });
-    expect(summary.totals).toEqual({ totalMiles: 200, taxableMiles: 200, fuelGal: 40, mpg: 10, taxDueUsd: null });
+    expect(summary.totals).toEqual({ totalMiles: 200, taxableMiles: 200, fuelGal: 40, mpg: 5, taxDueUsd: null });
   });
 
   it('rows (CSV/PDF): `jurisdiction` keeps only that row, taxable gallons still use fleet MPG', async () => {
