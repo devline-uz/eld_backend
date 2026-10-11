@@ -92,7 +92,10 @@ describe('AuthService', () => {
       upsert: jest.fn().mockResolvedValue({}),
       find: jest.fn(),
       incrementAttempts: jest.fn(),
+      claimAttempt: jest.fn().mockResolvedValue(true),
       consume: jest.fn().mockResolvedValue(true),
+      isLocked: jest.fn().mockResolvedValue(false),
+      recordFailure: jest.fn().mockResolvedValue(false),
       notifyAdminsOfResetRequest: jest.fn().mockResolvedValue(2),
     };
     service = new AuthService(
@@ -575,16 +578,14 @@ describe('AuthService', () => {
 
       it('wrong code -> 401, attempt counted, password untouched', async () => {
         resetCodes.find.mockResolvedValue(row());
-        resetCodes.incrementAttempts.mockResolvedValue(1);
         await expect(service.resetDriverPasswordWithCode('john', '000000', 'newpassword')).rejects.toMatchObject({ status: 401 });
-        expect(resetCodes.incrementAttempts).toHaveBeenCalledWith('d1');
+        expect(resetCodes.claimAttempt).toHaveBeenCalledWith('d1', sha256('s:123456'), 5, expect.any(Date));
         expect(resetCodes.consume).not.toHaveBeenCalled();
         expect(drivers.updatePasswordHash).not.toHaveBeenCalled();
       });
 
       it('5th wrong attempt invalidates the code', async () => {
         resetCodes.find.mockResolvedValue(row({ attempts: 4 }));
-        resetCodes.incrementAttempts.mockResolvedValue(5);
         await expect(service.resetDriverPasswordWithCode('john', '000000', 'newpassword')).rejects.toThrow(AppException);
         expect(resetCodes.consume).toHaveBeenCalledWith('d1');
       });
@@ -606,6 +607,38 @@ describe('AuthService', () => {
         await expect(service.resetDriverPasswordWithCode('john', '123456', 'newpassword')).rejects.toMatchObject({ status: 401 });
         drivers.findByUsernameOrEmail.mockResolvedValue(null);
         await expect(service.resetDriverPasswordWithCode('x', '123456', 'newpassword')).rejects.toMatchObject({ status: 401 });
+      });
+
+      it('B-158: no attempt left to claim (parallel guesses spent it) -> 401 even for the correct code', async () => {
+        resetCodes.find.mockResolvedValue(row({ attempts: 2 }));
+        resetCodes.claimAttempt.mockResolvedValueOnce(false);
+        await expect(service.resetDriverPasswordWithCode('john', '123456', 'newpassword')).rejects.toMatchObject({ status: 401 });
+        expect(resetCodes.consume).not.toHaveBeenCalled();
+        expect(drivers.updatePasswordHash).not.toHaveBeenCalled();
+      });
+
+      it('B-158: inside the issuance cooldown no code is stored and no mail is sent', async () => {
+        tokens.signDriverPasswordResetToken = jest.fn().mockReturnValue('drv-reset');
+        drivers.findByUsernameOrEmail.mockResolvedValue(drv);
+        resetCodes.upsert.mockResolvedValueOnce(null);
+        expect(await service.forgotDriverPassword('john')).toEqual(expect.any(Object));
+        await new Promise((r) => setImmediate(r));
+        await new Promise((r) => setImmediate(r));
+        expect(mail.send).not.toHaveBeenCalled();
+      });
+
+      it('B-160: a wrong code is counted against the per-driver 24 h failure budget', async () => {
+        resetCodes.find.mockResolvedValue(row());
+        await expect(service.resetDriverPasswordWithCode('john', '000000', 'newpassword')).rejects.toMatchObject({ status: 401, code: 'TOKEN_INVALID' });
+        expect(resetCodes.recordFailure).toHaveBeenCalledWith('d1', expect.any(Date));
+      });
+
+      it('B-160: a locked driver gets the same generic 401 even with the correct code; nothing is compared', async () => {
+        resetCodes.isLocked.mockResolvedValueOnce(true);
+        resetCodes.find.mockResolvedValue(row());
+        await expect(service.resetDriverPasswordWithCode('john', '123456', 'newpassword')).rejects.toMatchObject({ status: 401, code: 'TOKEN_INVALID' });
+        expect(resetCodes.claimAttempt).not.toHaveBeenCalled();
+        expect(drivers.updatePasswordHash).not.toHaveBeenCalled();
       });
 
       it('concurrent use: loser of the consume race is rejected', async () => {

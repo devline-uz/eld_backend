@@ -6,11 +6,11 @@ import type {
   Driver,
   DriverDayDetails,
   EldEvent,
-  Prisma,
   UnidentifiedSegment,
   User,
   Vehicle,
 } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { BaseRepository, ModelDelegate } from '../../core/prisma/base.repository';
 import { PrismaService } from '../../core/prisma/prisma.service';
 import type { DayTrip } from '../logs/day-extras';
@@ -162,7 +162,7 @@ export class TransfersRepository extends BaseRepository<
   }
 
   /** MB-18 — stores the first result; returns false when a concurrent replay already won (P2002). */
-  async recordTransferLedger(driverId: string, clientId: string, occurredAt: Date, result: Prisma.InputJsonValue): Promise<boolean> {
+  async recordTransferLedger(driverId: string, clientId: string, occurredAt: Date, result: Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput): Promise<boolean> {
     try {
       await this.prisma.syncedChange.create({
         data: { driverId, clientId: `${driverId}:${clientId}`, type: 'create_transfer', status: 'ACCEPTED', occurredAt, result },
@@ -172,5 +172,36 @@ export class TransfersRepository extends BaseRepository<
       if ((err as { code?: string }).code === 'P2002') return false;
       throw err;
     }
+  }
+
+  /** B-159 — claims `clientId` BEFORE the transfer is generated: the unique constraint lets exactly
+   * one concurrent caller insert the (result-less) reservation row. False = someone else holds it. */
+  reserveTransferLedger(driverId: string, clientId: string, occurredAt: Date): Promise<boolean> {
+    return this.recordTransferLedger(driverId, clientId, occurredAt, Prisma.DbNull);
+  }
+
+  /** B-159 — takes over a reservation whose owner died (no result, older than `staleBefore`).
+   * Atomic: only one caller's conditional update matches. */
+  async takeOverStaleTransferLedger(driverId: string, clientId: string, staleBefore: Date): Promise<boolean> {
+    const res = await this.prisma.syncedChange.updateMany({
+      where: { clientId: `${driverId}:${clientId}`, driverId, type: 'create_transfer', result: { equals: Prisma.DbNull }, processedAt: { lt: staleBefore } },
+      data: { processedAt: new Date() },
+    });
+    return res.count > 0;
+  }
+
+  /** B-159 — stores the first result on the reservation row. */
+  async completeTransferLedger(driverId: string, clientId: string, result: Prisma.InputJsonValue): Promise<void> {
+    await this.prisma.syncedChange.updateMany({
+      where: { clientId: `${driverId}:${clientId}`, driverId, type: 'create_transfer' },
+      data: { result, processedAt: new Date() },
+    });
+  }
+
+  /** B-159 — the transfer failed: drop the result-less reservation so the device may retry. */
+  async releaseTransferLedger(driverId: string, clientId: string): Promise<void> {
+    await this.prisma.syncedChange.deleteMany({
+      where: { clientId: `${driverId}:${clientId}`, driverId, type: 'create_transfer', result: { equals: Prisma.DbNull } },
+    });
   }
 }

@@ -8,6 +8,9 @@ import type { PreSendFinding } from './pre-send-checks';
 import { TransfersRepository } from './transfers.repository';
 import { TransfersService } from './transfers.service';
 
+/** B-159 — a result-less reservation older than this is treated as abandoned (crashed owner). */
+const LEDGER_STALE_MS = 10 * 60 * 1000;
+
 /** Receipt shape for the driver app (mobile/tz.md M-28 → S-10). */
 export interface MobileTransferView {
   id: string;
@@ -49,35 +52,44 @@ export class MobileTransfersService {
     // `clientId` yields the FIRST result, never a second file or a second FMCSA send.
     const { clientId, requestedAt, ...rest } = dto;
     if (clientId) {
-      const prior = await this.repo.findTransferLedger(actor.id, clientId);
-      if (prior) return this.replay(prior, clientId);
-    }
-    const view = await this.transfers.create({ ...rest, driverId: actor.id }, actor);
-    const result = {
-      ...toMobileView(view.transfer),
-      /** §10.3 warnings (UNCERTIFIED_LOGS, UNRESOLVED_UNIDENTIFIED, ACTIVE_MALFUNCTION, ERODS_TEST_MODE). */
-      warnings: view.warnings.map((w: PreSendFinding) => w.code),
-      counts: view.counts,
-      clientId: clientId ?? null,
-      requestedAt: requestedAt ?? null,
-    };
-    if (clientId) {
-      const won = await this.repo.recordTransferLedger(
-        actor.id,
-        clientId,
-        requestedAt ?? new Date(),
-        JSON.parse(JSON.stringify(result)) as Prisma.InputJsonValue,
-      );
-      if (!won) {
+      // B-159 — reserve the clientId row FIRST (unique constraint), only then generate/send. A
+      // check-then-create let two concurrent replays both miss the ledger and both transfer.
+      const reserved = await this.repo.reserveTransferLedger(actor.id, clientId, requestedAt ?? new Date());
+      if (!reserved) {
         const prior = await this.repo.findTransferLedger(actor.id, clientId);
-        if (prior) return this.replay(prior, clientId);
+        const stale = prior && prior.type === 'create_transfer' && prior.result == null
+          && (await this.repo.takeOverStaleTransferLedger(actor.id, clientId, new Date(Date.now() - LEDGER_STALE_MS)));
+        if (!stale) return this.replay(prior, clientId);
       }
+    }
+    let result: MobileTransferCreated;
+    try {
+      const view = await this.transfers.create({ ...rest, driverId: actor.id }, actor);
+      result = {
+        ...toMobileView(view.transfer),
+        /** §10.3 warnings (UNCERTIFIED_LOGS, UNRESOLVED_UNIDENTIFIED, ACTIVE_MALFUNCTION, ERODS_TEST_MODE). */
+        warnings: view.warnings.map((w: PreSendFinding) => w.code),
+        counts: view.counts,
+        clientId: clientId ?? null,
+        requestedAt: requestedAt ?? null,
+      };
+    } catch (err) {
+      // Nothing was transferred: free the reservation so the device's next replay can retry.
+      if (clientId) await this.repo.releaseTransferLedger(actor.id, clientId).catch(() => undefined);
+      throw err;
+    }
+    if (clientId) {
+      await this.repo.completeTransferLedger(actor.id, clientId, JSON.parse(JSON.stringify(result)) as Prisma.InputJsonValue);
     }
     return result;
   }
 
-  private replay(prior: { type: string; result: unknown }, clientId: string): MobileTransferCreated {
-    if (prior.type !== 'create_transfer' || !prior.result) {
+  private replay(prior: { type: string; result: unknown } | null, clientId: string): MobileTransferCreated {
+    if (!prior || (prior.type === 'create_transfer' && prior.result == null)) {
+      // B-159 — the first request is still generating/sending: never start a second transfer.
+      throw AppException.conflict('A transfer with this clientId is still in progress; retry shortly.', { clientId, state: 'IN_PROGRESS' });
+    }
+    if (prior.type !== 'create_transfer') {
       throw AppException.conflict('clientId already used by another operation.', { clientId });
     }
     return prior.result as MobileTransferCreated;

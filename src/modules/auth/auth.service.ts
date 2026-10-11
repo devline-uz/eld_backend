@@ -362,8 +362,9 @@ export class AuthService {
       .then(() =>
         this.resetCodes.upsert(driver.id, salt, sha256(`${salt}:${code}`), new Date(Date.now() + DRIVER_RESET_CODE_TTL_MS)),
       )
-      .then(() =>
-        this.mail.send({
+      .then((issued) =>
+        // B-158 — inside the per-driver cooldown no new code is stored, so none is mailed.
+        issued === null ? undefined : this.mail.send({
           to: driver.email as string,
           subject: 'Your OneBook ELD password reset code',
           text:
@@ -385,17 +386,24 @@ export class AuthService {
     const invalid = () => new AppException(ERROR_CODES.TOKEN_INVALID, 'The code is invalid, already used or expired.', 401);
     const driver = await this.drivers.findByUsernameOrEmail(identifier);
     if (!driver) throw invalid();
+    // B-160 — 15 wrong codes in 24 h lock code reset for that driver for 24 h (same generic 401).
+    if (await this.resetCodes.isLocked(driver.id, new Date())) throw invalid();
     const row = await this.resetCodes.find(driver.id);
     if (!row) throw invalid();
     if (row.expiresAt.getTime() <= Date.now() || row.attempts >= DRIVER_RESET_CODE_MAX_ATTEMPTS) {
       await this.resetCodes.consume(driver.id);
       throw invalid();
     }
+    // B-158 — spend the attempt atomically BEFORE comparing: a read-then-increment let parallel
+    // guesses all pass the stale `attempts` check and blow through the 5-attempt cap.
+    if (!(await this.resetCodes.claimAttempt(driver.id, row.codeHash, DRIVER_RESET_CODE_MAX_ATTEMPTS, new Date()))) {
+      throw invalid();
+    }
     const expected = Buffer.from(row.codeHash, 'hex');
     const actual = Buffer.from(sha256(`${row.salt}:${code}`), 'hex');
     if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) {
-      const attempts = await this.resetCodes.incrementAttempts(driver.id);
-      if (attempts !== null && attempts >= DRIVER_RESET_CODE_MAX_ATTEMPTS) await this.resetCodes.consume(driver.id);
+      if (row.attempts + 1 >= DRIVER_RESET_CODE_MAX_ATTEMPTS) await this.resetCodes.consume(driver.id);
+      await this.resetCodes.recordFailure(driver.id, new Date());
       throw invalid();
     }
     // Single use: only the caller whose delete removed the row may proceed.

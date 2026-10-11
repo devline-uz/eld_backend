@@ -147,6 +147,19 @@ model DriverPasswordResetCode {
   driver Driver @relation(fields: [driverId], references: [id], onDelete: Cascade)
 }
 
+/// B-160 — per-driver reset-code budget that outlives the single code row (which is deleted on
+/// use/exhaustion): max 5 codes issued per 24 h window; 15 wrong guesses in the window lock
+/// code reset for 24 h (`lockedUntil`).
+model DriverPasswordResetThrottle {
+  driverId       String    @id
+  windowStart    DateTime  @default(now())
+  codesIssued    Int       @default(0)
+  failedAttempts Int       @default(0)
+  lockedUntil    DateTime?
+
+  driver Driver @relation(fields: [driverId], references: [id], onDelete: Cascade)
+}
+
 /// Driver-side refresh-token session (tz §6.1: driver JWT access 24h / refresh 90d).
 /// Mirrors `Session` — not in the §5.2 tz.md snippet (which only shows the User side).
 model DriverSession {
@@ -230,6 +243,7 @@ model Driver {
   savedSignature         DriverSavedSignature?
   dayDetails             DriverDayDetails[]
   passwordResetCode      DriverPasswordResetCode?
+  passwordResetThrottle  DriverPasswordResetThrottle?
 
   @@index([status])
   // Partial unique indexes (WHERE "deletedAt" IS NULL) live in the migration SQL only; whitelisted
@@ -1344,6 +1358,8 @@ model Attachment {
   /// §20 B-91 — semantic kind for server-collected ticket attachments, e.g. DEVICE_DIAGNOSTICS /
   /// ELD_EVENTS_24H; null for ordinary DVIR/defect photos.
   kind           String?
+  /// MB-9 — voice-message length (CHAT_AUDIO), seconds; client-reported.
+  durationSec    Int?
 
   uploadedById   String?
   uploadedByType EditorType

@@ -1,4 +1,6 @@
 import { Controller, Get, Param, Query, Res, UseGuards } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
+import { resolveDriverTracker, type TrackableRequest } from '../../common/throttler/principal-tracker';
 import { ApiBearerAuth, ApiOkResponse, ApiProduces, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { Response } from 'express';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -21,6 +23,8 @@ export class MobileLogsExportController {
   constructor(private readonly exporter: MobileLogsExportService) {}
 
   @Get(':date/export')
+  // B-161 — CSV/PDF rendering is CPU-heavy; 10/min per DRIVER (not per IP: a fleet shares a depot NAT).
+  @Throttle({ default: { limit: 10, ttl: 60_000, getTracker: (req: TrackableRequest) => resolveDriverTracker(req) } })
   @ApiOperation({
     summary: "Downloads one of the driver's own RODS days. format=csv → text/csv (every §395 record of the day, home-terminal local time). format=pdf → application/pdf §395.8 daily-log sheet (header fields, 24 h graph grid, remarks).",
   })
