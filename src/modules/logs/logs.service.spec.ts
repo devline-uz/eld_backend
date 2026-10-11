@@ -82,6 +82,9 @@ class FakeRepo {
     this.events.filter((e) => e.supersedesId !== null && ids.includes(e.supersedesId)),
   );
   findEditRequests = jest.fn(async () => this.events.filter((e) => e.recordStatus === 3));
+  // MB-10
+  findEventsByIds = jest.fn(async (ids: bigint[]) => this.events.filter((e) => ids.includes(e.id)));
+  findUserNames = jest.fn(async (ids: string[]) => new Map(ids.map((id) => [id, `Name of ${id}`])));
   findViolations = jest.fn(async () => []);
   findUnidentifiedSegments = jest.fn(async () => []);
   findVehicleIdsForDriver = jest.fn(async () => ['veh-1']);
@@ -732,6 +735,91 @@ describe('daily log generation', () => {
     const { service, repo } = build();
     repo.driver = null;
     await expect(service.getDay('nope', '2026-06-01')).rejects.toMatchObject({ code: 'DRIVER_NOT_FOUND' });
+  });
+});
+
+describe('MB-14 — GET /mobile/logs events[] holds every duty-status record of the day', () => {
+  it('lists every in-day record (all statuses and origins) and never repeats the carried-over one', async () => {
+    const { service, repo } = build();
+    repo.events = [
+      // Carried over from 2026-05-31 (in force at 00:00 EDT on 2026-06-01).
+      evt({ id: 1n, at: '2026-05-31T22:00:00Z', code: 2 }),
+      evt({ id: 2n, at: '2026-06-01T12:00:00Z', code: 4, recordOrigin: 1 }),
+      evt({ id: 3n, at: '2026-06-01T13:00:00Z', code: 3, recordOrigin: 4 }),
+      evt({ id: 4n, at: '2026-06-01T15:00:00Z', code: 1, recordOrigin: 2 }),
+      evt({ id: 5n, at: '2026-06-01T15:00:00Z', code: 4, recordStatus: 3, recordOrigin: 3, supersedesId: 4n }),
+      evt({ id: 6n, at: '2026-06-01T16:00:00Z', code: 2, recordStatus: 2, recordOrigin: 1, supersedesId: 4n }),
+      // Next RODS day (00:00 EDT = 04:00Z) — not part of 2026-06-01.
+      evt({ id: 7n, at: '2026-06-02T04:00:00Z', code: 1 }),
+    ];
+
+    const day = await service.getDay(DRIVER, '2026-06-01', new Date('2026-06-02T12:00:00Z'));
+
+    expect(day.events.map((event) => event.id)).toEqual(['2', '3', '4', '5', '6']);
+    expect(day.graph[0]).toMatchObject({ status: 'SB', eventId: '1', carriedOver: true });
+    expect(day.graph.slice(1).every((segment) => segment.carriedOver === false)).toBe(true);
+  });
+});
+
+describe('MB-10 — GET /mobile/log-edit-requests screen data', () => {
+  it('adds date, original, requestedBy and the day graph as it would read after accepting', async () => {
+    const { service, repo } = build();
+    repo.events = [
+      evt({ id: 1n, at: '2026-06-01T04:00:00Z', code: 1 }),
+      evt({ id: 2n, at: '2026-06-01T12:00:00Z', code: 4 }),
+      evt({ id: 3n, at: '2026-06-01T14:00:00Z', code: 1 }),
+      evt({
+        id: 5n,
+        at: '2026-06-01T12:00:00Z',
+        code: 2,
+        recordStatus: 3,
+        recordOrigin: 3,
+        supersedesId: 2n,
+        editedById: 'user-1',
+        annotation: 'Driver was in the sleeper',
+      }),
+    ];
+
+    const { items } = await service.listEditRequests(DRIVER, { status: 'PENDING' }, new Date('2026-06-03T00:00:00Z'));
+
+    expect(items).toHaveLength(1);
+    const [item] = items;
+    expect(item.date).toBe('2026-06-01');
+    expect(item.original).toEqual({
+      status: 'ON',
+      start: new Date('2026-06-01T12:00:00Z'),
+      end: new Date('2026-06-01T14:00:00Z'),
+      location: null,
+    });
+    expect(item.requestedBy).toEqual({ id: 'user-1', name: 'Name of user-1' });
+    // Same plan as accept: the 12:00–14:00 ON becomes SB; the rest of the day is unchanged.
+    expect(item.proposedGraph.map((segment) => [segment.status, segment.startAt.toISOString(), segment.endAt.toISOString()])).toEqual([
+      ['OFF', '2026-06-01T04:00:00.000Z', '2026-06-01T12:00:00.000Z'],
+      ['SB', '2026-06-01T12:00:00.000Z', '2026-06-01T14:00:00.000Z'],
+      ['OFF', '2026-06-01T14:00:00.000Z', '2026-06-02T04:00:00.000Z'],
+    ]);
+    // Read-only: listing never writes anything.
+    expect(repo.runInTransaction).not.toHaveBeenCalled();
+  });
+
+  it('INSERT proposals have original null; resolved requests carry an empty proposedGraph', async () => {
+    const { service, repo } = build();
+    repo.events = [
+      evt({ id: 1n, at: '2026-06-01T04:00:00Z', code: 1 }),
+      evt({ id: 5n, at: '2026-06-01T12:00:00Z', code: 4, recordStatus: 3, recordOrigin: 3, editedById: 'user-1' }),
+      evt({ id: 6n, at: '2026-06-01T13:00:00Z', code: 4, recordStatus: 3, recordOrigin: 3, supersedesId: 1n }),
+      evt({ id: 7n, at: '2026-06-01T13:00:00Z', code: 4, recordStatus: 4, supersedesId: 6n }),
+    ];
+
+    const { items } = await service.listEditRequests(DRIVER, { status: 'ALL' }, new Date('2026-06-03T00:00:00Z'));
+
+    const insert = items.find((item) => item.id === '5')!;
+    expect(insert.original).toBeNull();
+    expect(insert.proposedGraph.some((segment) => segment.status === 'ON')).toBe(true);
+    const rejected = items.find((item) => item.id === '6')!;
+    expect(rejected.status).toBe('REJECTED');
+    expect(rejected.proposedGraph).toEqual([]);
+    expect(rejected.requestedBy).toBeNull();
   });
 });
 

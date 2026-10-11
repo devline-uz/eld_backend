@@ -1,6 +1,7 @@
 /**
  * TZ §5.9 / §7.4 / §23 — unidentified driving.
- *   `recordOrigin` stays 1 when a segment is assigned and is NEVER 2;
+ *   `recordOrigin` stays 1 when a carrier assigns a segment, is 4 when the DRIVER assumes it
+ *   (Appendix A 4.4.4.2.4(e), MB-3), and is NEVER 2;
  *   rejection puts the records back in the pool (origin 4, driverId null);
  *   device-stored records are never lost — nothing is updated or deleted, only appended.
  */
@@ -74,6 +75,7 @@ class FakeRepo {
   listSegments = jest.fn(async () => ({ items: [this.segment], total: 1, page: 1, limit: 25, totalPages: 1 }));
   findDriver = jest.fn(async () => this.driver);
   findEventsByIds = jest.fn(async (ids: bigint[]) => this.events.filter((e) => ids.includes(e.id)));
+  findVehicleUnitNumbers = jest.fn(async (ids: string[]) => new Map(ids.map((id) => [id, `unit-${id}`])));
   findSupersedingEvents = jest.fn(async (ids: bigint[]) =>
     this.events.filter((e) => e.supersedesId !== null && ids.includes(e.supersedesId)),
   );
@@ -298,11 +300,21 @@ describe('annotation and driver confirmation', () => {
     expect(audit.insert).toHaveBeenCalledWith(expect.objectContaining({ action: 'UNIDENTIFIED_ANNOTATED' }));
   });
 
-  it('a driver accepting "was this you?" assigns the segment to themselves, origin still 1', async () => {
-    const { service, writer } = build();
+  it('MB-3: a driver self-claiming "was this you?" assumes the records with origin 4, never 2 (Appendix A 4.4.4.2.4(e))', async () => {
+    const { service, writer, audit } = build();
     await service.confirm('seg-1', { accept: true }, { id: DRIVER, type: 'driver' });
     const copies = writer.rows.filter((row) => row.kind === 'NEW_ACTIVE');
-    expect(copies.every((row) => row.recordOrigin === 1)).toBe(true);
+    expect(copies.length).toBe(2);
+    expect(copies.every((row) => row.recordOrigin === 4 && row.recordStatus === 1)).toBe(true);
+    // 4.4.4.2.4(c) — the unidentified originals become Inactive — Changed.
+    expect(writer.rows.filter((row) => row.kind === 'INACTIVE_MARKER').every((row) => row.recordStatus === 2)).toBe(true);
+    expect(writer.rows.some((row) => row.recordOrigin === 2)).toBe(false);
+    expect(audit.insert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'UNIDENTIFIED_ASSIGNED',
+        after: expect.objectContaining({ recordOrigin: 4, confirmedByDriver: true }) as unknown,
+      }),
+    );
   });
 
   it('a driver declining leaves the segment unidentified', async () => {
@@ -380,14 +392,16 @@ describe('B-83 — assignment that waits for the driver to confirm (§395.32)', 
     );
   });
 
-  it('the asked driver confirming attributes the records with origin 1, keeping the carrier as assignedById', async () => {
+  it('MB-3: the asked driver confirming assumes the records with origin 4, keeping the carrier as assignedById', async () => {
     const ctx = await requested();
     ctx.repo.hasDriverVehicleAssociation.mockClear();
     const view = await ctx.service.confirm('seg-1', { accept: true }, driverActor);
     expect(view.status).toBe('ASSIGNED');
     expect(ctx.repo.segment).toMatchObject({ assignedDriverId: DRIVER, assignedById: 'user-1' });
     const attributed = ctx.writer.calls.find((call) => call.ctx.driverId === DRIVER);
-    expect(attributed?.rows.filter((row) => row.kind === 'NEW_ACTIVE').every((row) => row.recordOrigin === 1)).toBe(true);
+    const copies = attributed?.rows.filter((row) => row.kind === 'NEW_ACTIVE') ?? [];
+    expect(copies.length).toBe(2);
+    expect(copies.every((row) => row.recordOrigin === 4)).toBe(true);
     expect(ctx.writer.rows.some((row) => row.recordOrigin === 2)).toBe(false);
     expect(ctx.logs.recordLogChange).toHaveBeenCalled();
     expect(ctx.audit.insert).toHaveBeenCalledWith(
@@ -422,6 +436,48 @@ describe('B-83 — assignment that waits for the driver to confirm (§395.32)', 
     await ctx.service.reject('seg-1', {}, actor);
     expect(ctx.repo.segment).toMatchObject({ status: 'REJECTED', assignedDriverId: null, confirmationRequestedAt: null });
     expect(ctx.writer.calls).toHaveLength(0);
+  });
+
+  it('MB-3: rejecting a driver-assumed segment retires the origin-4 copies and returns them to the pool', async () => {
+    const { service, repo, writer } = build();
+    repo.segment = { ...repo.segment, status: 'ASSIGNED', assignedDriverId: DRIVER };
+    repo.events = [
+      ...repo.events,
+      { ...poolEvent(11n, '2026-06-01T12:00:00Z'), driverId: DRIVER, recordOrigin: 4, supersedesId: 1n },
+      { ...poolEvent(12n, '2026-06-01T13:00:00Z', 1), driverId: DRIVER, recordOrigin: 4, supersedesId: 2n },
+    ];
+    await service.reject('seg-1', { reason: 'Not this driver' }, actor);
+    const driverCall = writer.calls.find((call) => call.ctx.driverId === DRIVER)!;
+    expect(driverCall.rows.every((row) => row.recordStatus === 2 && row.recordOrigin === 4)).toBe(true);
+    const poolCall = writer.calls.find((call) => call.ctx.driverId === null)!;
+    expect(poolCall.rows.every((row) => row.recordStatus === 1 && row.recordOrigin === 4)).toBe(true);
+  });
+
+  it('MB-11: each confirmation request carries location text, unit number and odometer readings', async () => {
+    const { service, repo } = build();
+    repo.segment = { ...repo.segment, status: 'PENDING_CONFIRMATION', assignedDriverId: DRIVER, startLocation: null, endLocation: null };
+    repo.events = [
+      { ...poolEvent(1n, '2026-06-01T12:00:00Z'), locationName: 'Florence, KY', totalVehicleMiles: 1000 },
+      { ...poolEvent(2n, '2026-06-01T13:00:00Z', 1), locationName: 'Walton, KY', totalVehicleMiles: 1042 },
+    ];
+    const { items } = await service.listConfirmationRequests(driverActor);
+    expect(items[0]).toMatchObject({
+      id: 'seg-1',
+      status: 'PENDING_CONFIRMATION',
+      startLocation: 'Florence, KY',
+      endLocation: 'Walton, KY',
+      unitNumber: 'unit-veh-1',
+      startOdometerMi: 1000,
+      endOdometerMi: 1042,
+    });
+  });
+
+  it('MB-11: a stored segment location wins; missing odometers are null', async () => {
+    const { service, repo } = build();
+    repo.segment = { ...repo.segment, status: 'PENDING_CONFIRMATION', assignedDriverId: DRIVER, startLocation: '2mi E KY Florence', endLocation: null };
+    repo.events = repo.events.map((event) => ({ ...event, totalVehicleMiles: null }));
+    const { items } = await service.listConfirmationRequests(driverActor);
+    expect(items[0]).toMatchObject({ startLocation: '2mi E KY Florence', endLocation: 'Florence, KY', startOdometerMi: null, endOdometerMi: null });
   });
 
   it('lists the requests addressed to the calling driver only', async () => {

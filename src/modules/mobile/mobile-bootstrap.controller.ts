@@ -58,6 +58,8 @@ export class MobileBootstrapController {
       inspectionPacket: { driverId: 'drv_1', timezone: 'America/New_York', generatedAt: '2026-10-08T15:41:00.000Z', days: [] },
       syncConfig: { batchMaxChanges: 500, batchMaxBytes: 1048576, onlineIntervalSec: 60, onlineBatchThreshold: 50, offlineBackoffSec: [30, 60, 300, 900, 1800], localEventRetentionDays: 30, localInspectionRetentionDays: 8, syncBacklogWarnDays: 30, syncBacklogWarnBytes: 209715200 },
       appUpdate: null,
+      pendingEditRequestCount: 1,
+      pendingUnidentifiedCount: 0,
     },
   })
   @ApiStandardErrors()

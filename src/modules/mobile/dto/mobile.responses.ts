@@ -363,6 +363,10 @@ export class MobileBootstrapResponse {
   @ApiProperty({ type: () => InspectionPacketView, description: '§13.5 — the last 8 RODS days, same day shape as `GET /mobile/logs`.' }) inspectionPacket!: InspectionPacketView;
   @ApiProperty({ type: () => SyncConfigView }) syncConfig!: SyncConfigView;
   @ApiProperty({ type: () => AppUpdateView, nullable: true, description: 'MB-19 — null when no version is configured.' }) appUpdate!: AppUpdateView | null;
+  @ApiProperty({ type: 'integer', minimum: 0, description: 'MB-13 — carrier edit proposals awaiting this driver (= `GET /mobile/log-edit-requests` PENDING items).' })
+  pendingEditRequestCount!: number;
+  @ApiProperty({ type: 'integer', minimum: 0, description: 'MB-13 — unidentified segments the carrier asked this driver to confirm (= `GET /unidentified/confirmation-requests` items).' })
+  pendingUnidentifiedCount!: number;
 }
 
 // ---------------------------------------------------------------- trip (MobileTripService)

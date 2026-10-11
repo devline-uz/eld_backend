@@ -35,6 +35,8 @@ function build(env: Record<string, string | undefined>) {
     findVehicle: jest.fn(),
     findActivePairing: jest.fn().mockResolvedValue(null),
     findDeviceByVehicle: jest.fn(),
+    countPendingEditRequests: jest.fn().mockResolvedValue(2),
+    countPendingUnidentifiedConfirmations: jest.fn().mockResolvedValue(1),
   };
   const hosRecalc = { computeCurrentState: jest.fn().mockResolvedValue(null) };
   const logs = { getInspectionPacket: jest.fn().mockResolvedValue({ days: [] }) };
@@ -86,6 +88,13 @@ describe('MobileBootstrapService — appUpdate (MB-19)', () => {
       notes: null,
       storeUrl: { ios: null, android: null },
     });
+  });
+});
+
+describe('MobileBootstrapService — pending badge counts (MB-13, 2026-10-11)', () => {
+  it('returns the pending edit-request and unidentified-confirmation counts', async () => {
+    const result = await build({}).bootstrap('drv_1');
+    expect(result).toMatchObject({ pendingEditRequestCount: 2, pendingUnidentifiedCount: 1 });
   });
 });
 

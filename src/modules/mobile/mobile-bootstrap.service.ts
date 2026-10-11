@@ -42,7 +42,7 @@ export class MobileBootstrapService {
     const driver = await this.repo.findDriver(driverId);
     if (!driver) throw new AppException(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.', 404, { driverId });
 
-    const [carrier, vehicle, pairing, hos, inspection, availableVehicles] = await Promise.all([
+    const [carrier, vehicle, pairing, hos, inspection, availableVehicles, pendingEditRequestCount, pendingUnidentifiedCount] = await Promise.all([
       this.repo.findCarrier(),
       driver.assignedVehicleId ? this.repo.findVehicle(driver.assignedVehicleId) : Promise.resolve(null),
       this.repo.findActivePairing(driverId),
@@ -50,6 +50,9 @@ export class MobileBootstrapService {
       this.logs.getInspectionPacket(driverId, now),
       // MB-2 (mobile/tz.md §21.1, screen M-03) — units this driver may pick from.
       this.fleetOps.findAvailableVehicles(driverId),
+      // MB-13 (2026-10-11) — badge counts for the "Carrier edit requests" / "Was this you?" screens.
+      this.repo.countPendingEditRequests(driverId),
+      this.repo.countPendingUnidentifiedConfirmations(driverId),
     ]);
     const device = vehicle ? await this.repo.findDeviceByVehicle(vehicle.id) : null;
     // MB-3 (mobile/tz.md §21.1, screens S-11/S-18/S-19) — the co-driver's own identity + duty
@@ -165,6 +168,10 @@ export class MobileBootstrapService {
       /** MB-19 — force-update banner (M-09). `null` when unconfigured, never a half-filled
        * object: an app must not show "update available" off bare defaults. */
       appUpdate: this.buildAppUpdate(),
+      /** MB-13 — same set as `GET /mobile/log-edit-requests?status=PENDING`. */
+      pendingEditRequestCount,
+      /** MB-13 — same set as `GET /unidentified/confirmation-requests`. */
+      pendingUnidentifiedCount,
     };
   }
 

@@ -43,7 +43,14 @@ export class LogGraphSegmentView {
   @ApiProperty({ ...INT, nullable: true }) odometerMi!: number | null;
   @ApiProperty({ type: Number, nullable: true }) engineHours!: number | null;
   @ApiProperty({ type: String, nullable: true }) annotation!: string | null;
-  @ApiProperty({ type: Boolean, description: 'The status began on an earlier RODS day.' }) carriedOver!: boolean;
+  @ApiProperty({
+    type: Boolean,
+    description:
+      'MB-14 — true only for the segment that opens the day (starts at 00:00 home-terminal time) when the status in force ' +
+      'was recorded on an EARLIER RODS day; `eventId` then points at that earlier record, which is NOT repeated in this ' +
+      'day\'s `events[]` (it belongs to the previous day). false whenever the opening record lies inside the day.',
+  })
+  carriedOver!: boolean;
 }
 
 export class LogEventView {
@@ -117,7 +124,16 @@ export class LogDayResponse {
   @ApiProperty({ type: String, example: 'America/Chicago' }) timezone!: string;
   @ApiProperty({ type: () => LogDaySummaryView }) summary!: LogDaySummaryView;
   @ApiProperty({ type: () => LogGraphSegmentView, isArray: true }) graph!: LogGraphSegmentView[];
-  @ApiProperty({ type: () => LogEventView, isArray: true, description: 'Every record of the day, incl. inactive ones.' }) events!: LogEventView[];
+  @ApiProperty({
+    type: () => LogEventView,
+    isArray: true,
+    description:
+      'MB-14 — every §395 record with `eventDateTime` in [day start, next day start) (home-terminal zone), oldest first: ' +
+      'all event types, every duty-status (eventType 1) record of the day, all record statuses (1 active, 2 inactive-changed, ' +
+      '3 change requested, 4 change rejected) and all origins (1 ELD, 2 driver, 3 carrier, 4 unidentified/assumed). ' +
+      'The status carried over from the previous day is not repeated — see `graph[].carriedOver`.',
+  })
+  events!: LogEventView[];
   @ApiProperty({ type: () => LogDayTripView, description: 'MR-12 / D-129.' }) trip!: LogDayTripView;
   @ApiProperty({ type: Boolean, description: 'MR-16 — an Appendix A malfunction was in force at some instant of the day.' }) malfunctionIndicator!: boolean;
   @ApiProperty({ type: Boolean, description: 'MR-16 — a data diagnostic event was in force at some instant of the day.' }) diagnosticIndicator!: boolean;
@@ -162,6 +178,36 @@ export class CertifyResponse {
   @ApiProperty({ type: () => CertifiedDayView, isArray: true }) days!: CertifiedDayView[];
 }
 
+/** MB-10 — the record an EDIT proposal replaces. */
+export class EditRequestOriginalView {
+  @ApiProperty({ enum: DutyStatus, enumName: 'DutyStatus', nullable: true }) status!: DutyStatus | null;
+  @ApiProperty(DT) start!: string;
+  @ApiProperty({ ...DT, nullable: true, description: 'Next active duty-status record; null while it is still in force.' }) end!: string | null;
+  @ApiProperty({ type: String, nullable: true, description: '§395 App. A 7.29 location text (stored, else offline geo-location).' }) location!: string | null;
+}
+
+/** MB-10 — one segment of `proposedGraph` (the `graph` segment core fields). */
+export class EditRequestGraphSegmentView {
+  @ApiProperty({ enum: DutyStatus, enumName: 'DutyStatus' }) status!: DutyStatus;
+  @ApiProperty({ enum: DutyStatus, enumName: 'DutyStatus', description: 'PC => OFF, YM => ON.' }) effective!: DutyStatus;
+  @ApiProperty({ enum: SPECIAL_CONDITIONS, enumName: 'SpecialCondition' }) special!: (typeof SPECIAL_CONDITIONS)[number];
+  @ApiProperty(DT) startAt!: string;
+  @ApiProperty(DT) endAt!: string;
+  @ApiProperty(INT) durationSec!: number;
+}
+
+export class EditRequestRequesterView {
+  @ApiProperty({ type: String }) id!: string;
+  @ApiProperty({ type: String, nullable: true, example: 'Jane Dispatcher' }) name!: string | null;
+}
+
+/** MB-12 — `POST /logs/edit-requests/:id/accept|reject` (`data` of the envelope). */
+export class EditRequestResolutionResponse {
+  @ApiProperty({ type: String, description: 'The edit request id (EldEvent id, bigint as a string).' }) id!: string;
+  @ApiProperty({ enum: ['ACCEPTED', 'REJECTED'], enumName: 'EditRequestResolution' }) status!: 'ACCEPTED' | 'REJECTED';
+  @ApiProperty({ type: Boolean, description: 'true on accept (the proposal is now the active record), false on reject (the log is unchanged).' }) applied!: boolean;
+}
+
 export class EditRequestView {
   @ApiProperty({ type: String }) id!: string;
   @ApiProperty({ type: String }) driverId!: string;
@@ -177,6 +223,19 @@ export class EditRequestView {
   @ApiProperty({ type: String, nullable: true }) requestedById!: string | null;
   @ApiProperty(DT) requestedAt!: string;
   @ApiProperty({ ...DT, nullable: true }) resolvedAt!: string | null;
+  @ApiProperty({ ...DAY, description: 'MB-10 — RODS day of `proposedStart` in the driver\'s home-terminal zone.' }) date!: string;
+  @ApiProperty({ type: () => EditRequestOriginalView, nullable: true, description: 'MB-10 — the record the proposal replaces; null for an INSERT.' })
+  original!: EditRequestOriginalView | null;
+  @ApiProperty({
+    type: () => EditRequestGraphSegmentView,
+    isArray: true,
+    description:
+      'MB-10 — the `date` day graph as it would read if the driver accepted now: computed by the same plan ' +
+      '`POST /logs/edit-requests/:id/accept` writes. Empty for a request that is no longer PENDING.',
+  })
+  proposedGraph!: EditRequestGraphSegmentView[];
+  @ApiProperty({ type: () => EditRequestRequesterView, nullable: true, description: 'MB-10 — the carrier user who proposed the edit.' })
+  requestedBy!: EditRequestRequesterView | null;
 }
 
 export class EditRequestListResponse {
