@@ -14,6 +14,7 @@ import { TransfersModule } from '../modules/transfers/transfers.module';
 import { WebhooksModule } from '../modules/webhooks/webhooks.module';
 import { AlertProcessor } from './alert.processor';
 import { HosDriftProcessor } from './hos-drift.processor';
+import { HosOpenDrivingProcessor } from './hos-open-driving.processor';
 import { HosRecalcProcessor } from './hos-recalc.processor';
 import { IftaNightlyProcessor } from './ifta-nightly.processor';
 import { MaintenanceDueProcessor } from './maintenance-due.processor';
@@ -29,6 +30,7 @@ import { WebhookProcessor } from './webhook.processor';
  * never runs in the API container). Processors are added by their owning phase:
  *   hos-recalc.processor.ts   Phase 4  (eld-hos-engine) — registered
  *   hos-drift.processor.ts    Phase 4b (eld-hos-engine) — registered, nightly §8.6 sweep
+ *   hos-open-driving.processor.ts — registered, 5-min hos.recalc for still-open DRIVING records
  *   report.processor.ts       Phase 8  (eld-reports-jobs) — registered, §15 report.generate
  *   report-scheduler.processor.ts Phase 8 (eld-reports-jobs) — registered, §15 cron scheduler
  *   ifta-nightly.processor.ts Phase 8  (eld-reports-jobs) — registered, nightly §15 IftaSegment
@@ -58,6 +60,7 @@ import { WebhookProcessor } from './webhook.processor';
   providers: [
     HosRecalcProcessor,
     HosDriftProcessor,
+    HosOpenDrivingProcessor,
     TransferProcessor,
     WebhookProcessor,
     MaintenanceDueProcessor,

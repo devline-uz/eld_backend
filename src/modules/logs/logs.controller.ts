@@ -99,7 +99,7 @@ export class LogsController {
   })
   @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.')] })
   getDay(@Param('driverId') driverId: string, @Query(zodBody(LogDateQueryDto)) query: LogDateQueryDto) {
-    return this.logs.getDay(driverId, query.date);
+    return this.logs.getDayView(driverId, query.date);
   }
 
   @Get(':driverId/range')

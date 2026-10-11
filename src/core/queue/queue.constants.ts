@@ -3,6 +3,9 @@ export const QUEUES = {
   HOS_RECALC: 'hos-recalc',
   /** §8.6 — nightly server-vs-app HOS state drift comparison. */
   HOS_DRIFT: 'hos-drift',
+  /** Every 5 min — re-runs `hos.recalc` for drivers whose DRIVING record is still open, so a
+   * violation that accrues with the clock alone reaches `HosViolation` without a new record. */
+  HOS_OPEN_DRIVING: 'hos-open-driving',
   REPORT: 'report',
   /** §15 — self-scheduling minute tick that scans `ReportSchedule` and enqueues due
    * `report.generate` jobs into REPORT. A separate queue from REPORT itself so the tick's
