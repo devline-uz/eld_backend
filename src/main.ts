@@ -8,6 +8,7 @@ import { AppModule } from './app.module';
 import { AppConfigService } from './core/config/config.service';
 import { applyZodSwagger, attachZodComponents } from './common/swagger/zod-swagger';
 import { type AccessTokenVerifier, driverOnlyLargeJson } from './common/middleware/driver-large-json.middleware';
+import { panelUserLargeJson } from './common/middleware/panel-user-large-json.middleware';
 import { TokenService } from './modules/auth/token.service';
 
 /**
@@ -28,6 +29,9 @@ export function configureApp(app: INestApplication): AppConfigService {
   // B-148 — parsing runs before the guards, so the 14 MB parser is gated on a verified DRIVER token;
   // anyone else falls through to the 1 MB parser below.
   app.use(`/${config.get('API_PREFIX')}/mobile/signature`, driverOnlyLargeJson(resolveTokenVerifier(app), '14mb'));
+  // Web panel — `POST /vehicles/import` takes up to 2,000 rows (~1 KB worst case each), which can
+  // exceed 1 MB; a verified back-office USER token gets a 4 MB parser on this one route only.
+  app.use(`/${config.get('API_PREFIX')}/vehicles/import`, panelUserLargeJson(resolveTokenVerifier(app), '4mb'));
   app.use(json({ limit: '1mb' }));
   app.enableCors({
     origin: config.corsOrigins,
