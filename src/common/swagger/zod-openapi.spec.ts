@@ -46,6 +46,20 @@ describe('zod → OpenAPI converter (Phase 13B)', () => {
     });
   });
 
+  it('keeps the description of a described reference by wrapping the $ref in allOf', () => {
+    const reg = new ZodSchemaRegistry();
+    const Ruleset = z.enum(['A', 'B']);
+    reg.register(Ruleset, 'RulesetEnum');
+    const Body = z.object({ ruleset: Ruleset.optional().describe('Omitted -> default.'), plain: Ruleset.optional() });
+    expect(reg.toSchema(Body)).toEqual({
+      type: 'object',
+      properties: {
+        ruleset: { allOf: [{ $ref: '#/components/schemas/RulesetEnum' }], description: 'Omitted -> default.' },
+        plain: { $ref: '#/components/schemas/RulesetEnum' },
+      },
+    });
+  });
+
   it('suffixes a clashing name for a different schema', () => {
     const reg = new ZodSchemaRegistry();
     expect(reg.register(z.string(), 'X')).toBe('X');

@@ -11,6 +11,8 @@ import { DriverSessionRepository } from './repositories/driver-session.repositor
 import { SessionRepository } from './repositories/session.repository';
 import { UserAuthRepository } from './repositories/user-auth.repository';
 import { TokenService } from './token.service';
+import { PasswordResetCodeService } from './password-reset-code.service';
+import { PasswordResetCodeRepository } from './repositories/password-reset-code.repository';
 
 /**
  * TZ §6 — real binding for `TokenVerifier` (replaces `NotImplementedTokenVerifier` from
@@ -36,6 +38,8 @@ import { TokenService } from './token.service';
     SessionRepository,
     DriverSessionRepository,
     DriverResetCodeRepository,
+    PasswordResetCodeService,
+    PasswordResetCodeRepository,
   ],
   exports: [TokenService, AuthService, TokenVerifier],
 })

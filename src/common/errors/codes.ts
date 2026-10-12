@@ -33,6 +33,12 @@ export const ERROR_CODES = {
   DRIVER_CONTEXT_REQUIRED: 'DRIVER_CONTEXT_REQUIRED',
   /** B-25 — `AUTH_MODE=production` blocks `POST /auth/login`; the back office must use Google Sign-In. */
   PASSWORD_LOGIN_DISABLED: 'PASSWORD_LOGIN_DISABLED',
+  /** Web "Forgot password?" — `POST /auth/password/reset-code/confirm`: the emailed 6-digit code
+   * does not match. 422, `details: { code: message, attemptsRemaining }`. */
+  RESET_CODE_INVALID: 'RESET_CODE_INVALID',
+  /** Web "Forgot password?" — no usable code: never requested, expired, already used, or locked
+   * after too many wrong attempts. 422, `details: { code: message }`; request a new code. */
+  RESET_CODE_EXPIRED: 'RESET_CODE_EXPIRED',
 
   // --- fleet (TZ §5.3, §5.4) ----------------------------------------------
   DRIVER_NOT_FOUND: 'DRIVER_NOT_FOUND',

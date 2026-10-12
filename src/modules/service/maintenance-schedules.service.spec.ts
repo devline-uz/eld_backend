@@ -38,6 +38,12 @@ describe('MaintenanceSchedulesService (TZ §5.10)', () => {
     await expect(service.create({ vehicleId: 'veh_x', name: 'Brakes', intervalMi: 25000, enabled: true })).rejects.toBeInstanceOf(AppException);
   });
 
+  it('BE-019 — 404s creating a schedule for a soft-deleted vehicle', async () => {
+    vehicles.findById.mockResolvedValue({ id: 'veh_1', deletedAt: new Date() } as never);
+    await expect(service.create({ vehicleId: 'veh_1', name: 'Brakes', intervalMi: 25000, enabled: true })).rejects.toMatchObject({ code: 'VEHICLE_NOT_FOUND' });
+    expect(repo.create).not.toHaveBeenCalled();
+  });
+
   it('computes nextDueMi from lastServiceMi + intervalMi on create', async () => {
     vehicles.findById.mockResolvedValue({ id: 'veh_1', odometerMi: 990000 } as never);
     repo.create.mockImplementation((data) => Promise.resolve({ id: 'ms_1', ...data } as never));

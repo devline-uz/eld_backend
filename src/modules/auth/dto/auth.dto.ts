@@ -67,3 +67,21 @@ export const DriverResetPasswordDto = z
     message: 'either token, or code with username/email, is required',
   });
 export type DriverResetPasswordDto = z.infer<typeof DriverResetPasswordDto>;
+
+/** Web "Forgot password?" — same rule as `ResetPasswordDto.newPassword` (min 8), capped so an
+ * unauthenticated caller cannot make Argon2 hash megabytes. */
+export const WebNewPassword = z.string().min(8, 'Password must be at least 8 characters.').max(128, 'Password must be at most 128 characters.');
+
+/** `POST /auth/password/reset-code` — back-office `User` only (never a driver). */
+export const RequestPasswordResetCodeDto = z.object({
+  email: z.string().trim().email().max(254),
+});
+export type RequestPasswordResetCodeDto = z.infer<typeof RequestPasswordResetCodeDto>;
+
+/** `POST /auth/password/reset-code/confirm`. */
+export const ConfirmPasswordResetCodeDto = z.object({
+  email: z.string().trim().email().max(254),
+  code: z.string().trim().regex(/^\d{6}$/, 'Enter the 6-digit code from the email.'),
+  newPassword: WebNewPassword,
+});
+export type ConfirmPasswordResetCodeDto = z.infer<typeof ConfirmPasswordResetCodeDto>;

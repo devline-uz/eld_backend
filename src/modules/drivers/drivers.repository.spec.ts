@@ -86,6 +86,30 @@ describe('DriversRepository', () => {
       await repo.listRoster({ hasOpenViolation: flag }, 1, 25, {});
       expect(whereOf().violations).toEqual(expected);
     });
+
+    it.each([
+      [true, 'some'],
+      [false, 'none'],
+    ] as const)('UI-015 — hasOpenViolation=%s applies the stale-cap exclusions (%s)', async (flag, key) => {
+      const exclude = [{ NOT: { driverId: 'd1', occurredAt: { gt: new Date('2026-10-11T02:00:00Z') } } }];
+      await repo.listRoster({ hasOpenViolation: flag, violationExclude: exclude }, 1, 25, {});
+      expect(whereOf().violations).toEqual({ [key]: { AND: [{ status: 'OPEN' }, ...exclude] } });
+    });
+  });
+
+  describe('rosterSummary (UI-015)', () => {
+    it('counts every live driver and those with an active violation, ignoring list filters', async () => {
+      driver.count.mockResolvedValueOnce(12).mockResolvedValueOnce(3);
+      const exclude = [{ NOT: { driverId: 'd1', occurredAt: { gt: new Date('2026-10-11T02:00:00Z') } } }];
+      await expect(repo.rosterSummary(exclude)).resolves.toEqual({ total: 12, withActiveViolations: 3 });
+      expect(driver.count).toHaveBeenNthCalledWith(1, { where: { deletedAt: null } });
+      expect(driver.count).toHaveBeenNthCalledWith(2, { where: { deletedAt: null, violations: { some: { AND: [{ status: 'OPEN' }, ...exclude] } } } });
+    });
+
+    it('without exclusions counts plain OPEN rows', async () => {
+      await repo.rosterSummary();
+      expect(driver.count).toHaveBeenNthCalledWith(2, { where: { deletedAt: null, violations: { some: { status: 'OPEN' } } } });
+    });
   });
 
   describe('countOpenViolations', () => {

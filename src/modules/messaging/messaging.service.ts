@@ -50,12 +50,33 @@ export class MessagingService {
     return { items };
   }
 
+  /**
+   * Web `POST /conversations`. BE-012 — recipients are de-duplicated (the creator is never added
+   * twice); a DIRECT conversation has exactly one other participant and re-opening one that
+   * already exists returns it instead of creating a duplicate; GROUP/BROADCAST need at least one.
+   * BE-010 — unknown / deleted drivers and unknown users are a 422 (`details.driverIds` /
+   * `details.userIds` list them), not an FK 500. The mobile chat never reaches this method.
+   */
   async createConversation(dto: CreateConversationDto, actor: ContextUser) {
-    const participants: Participant[] = [
-      toParticipant(actor),
-      ...dto.driverIds.map((id) => ({ driverId: id })),
-      ...dto.userIds.map((id) => ({ userId: id })),
-    ];
+    const self = toParticipant(actor);
+    const driverIds = [...new Set(dto.driverIds)].filter((id) => id !== self.driverId);
+    const userIds = [...new Set(dto.userIds)].filter((id) => id !== self.userId);
+    const others = driverIds.length + userIds.length;
+    if (dto.type === 'DIRECT' && others !== 1) {
+      const message = 'A direct conversation needs exactly one other participant.';
+      throw new AppException(ERROR_CODES.VALIDATION_FAILED, message, 422, { driverIds: message });
+    }
+    if (others === 0) {
+      const message = 'Add at least one participant.';
+      throw new AppException(ERROR_CODES.VALIDATION_FAILED, message, 422, { driverIds: message });
+    }
+    await this.assertRecipientsExist(driverIds, userIds);
+    const recipients: Participant[] = [...driverIds.map((id) => ({ driverId: id })), ...userIds.map((id) => ({ userId: id }))];
+    if (dto.type === 'DIRECT') {
+      const existing = await this.repo.findDirectBetween(self, recipients[0]);
+      if (existing) return existing;
+    }
+    const participants: Participant[] = [self, ...recipients];
     const conversation = await this.repo.createConversation({ type: dto.type, title: dto.title, createdById: actor.id }, participants);
     await this.notifyConversationCreated(conversation.id, participants, null, conversation);
     if (actor.type !== 'driver') await this.notifyDriversConversationOpened(conversation, actor);
@@ -215,10 +236,25 @@ export class MessagingService {
       .catch(() => undefined);
   }
 
-  /** TZ §11.5 `POST /messages/broadcast` — one message, many one-to-one deliveries. */
+  /** BE-010 — 422 naming every unknown / soft-deleted driver and unknown user. */
+  private async assertRecipientsExist(driverIds: string[], userIds: string[]): Promise<void> {
+    const [liveDrivers, users] = await Promise.all([this.repo.findLiveDriverIds(driverIds), this.repo.findUserIds(userIds)]);
+    const missingDrivers = driverIds.filter((id) => !liveDrivers.has(id));
+    const missingUsers = userIds.filter((id) => !users.has(id));
+    if (missingDrivers.length === 0 && missingUsers.length === 0) return;
+    throw new AppException(ERROR_CODES.VALIDATION_FAILED, 'Some recipients were not found.', 422, {
+      ...(missingDrivers.length > 0 && { driverIds: missingDrivers }),
+      ...(missingUsers.length > 0 && { userIds: missingUsers }),
+    });
+  }
+
+  /** TZ §11.5 `POST /messages/broadcast` — one message, many one-to-one deliveries. Recipients are
+   * de-duplicated and validated up front (BE-010), so nothing is sent if any id is bad. */
   async broadcast(dto: BroadcastMessageDto, actor: ContextUser) {
+    const driverIds = [...new Set(dto.driverIds)];
+    await this.assertRecipientsExist(driverIds, []);
     const results = [];
-    for (const driverId of dto.driverIds) {
+    for (const driverId of driverIds) {
       const participants = [toParticipant(actor), { driverId }];
       const conversation = await this.repo.createConversation(
         { type: 'BROADCAST', title: dto.title, createdById: actor.id },

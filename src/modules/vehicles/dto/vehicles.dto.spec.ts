@@ -1,4 +1,14 @@
-import { CreateVehicleDto, ImportVehiclesDto, UpdateVehicleDto, VEHICLE_IMPORT_MAX_ROWS, VIN_MESSAGE } from './vehicles.dto';
+import {
+  CalibrateOdometerDto,
+  CreateTrailerDto,
+  CreateVehicleDto,
+  ImportVehiclesDto,
+  TrailerListQueryDto,
+  UpdateVehicleDto,
+  VEHICLE_IMPORT_MAX_ROWS,
+  VehicleListQueryDto,
+  VIN_MESSAGE,
+} from './vehicles.dto';
 
 const base = { unitNumber: '7301' };
 
@@ -60,5 +70,36 @@ describe('ImportVehiclesDto row cap (web tz.md — "2,000 rows maximum")', () =>
     const result = ImportVehiclesDto.safeParse({ vehicles: rows(2001) });
     expect(result.success).toBe(false);
     if (!result.success) expect(result.error.issues[0]?.path).toEqual(['vehicles']);
+  });
+});
+
+describe('BE-007 / BE-008 / BE-015 / BE-017 — bounds, trimming and plate state', () => {
+  const VIN = '1FUJHHDR5NLNN4410';
+
+  it('caps page on the vehicle and trailer lists (no 500 on a huge OFFSET)', () => {
+    expect(VehicleListQueryDto.safeParse({ page: '99999999999' }).success).toBe(false);
+    expect(TrailerListQueryDto.safeParse({ page: '99999999999' }).success).toBe(false);
+    expect(VehicleListQueryDto.parse({ page: '3' }).page).toBe(3);
+  });
+
+  it('rejects an odometer beyond the INT4-safe cap on create and calibrate', () => {
+    expect(CreateVehicleDto.safeParse({ ...base, vin: VIN, odometerMi: 2_147_483_648 }).success).toBe(false);
+    expect(CalibrateOdometerDto.safeParse({ odometerMi: 2_147_483_648 }).success).toBe(false);
+    expect(CreateVehicleDto.parse({ ...base, vin: VIN, odometerMi: 650_000 }).odometerMi).toBe(650_000);
+  });
+
+  it('trims the unit / trailer number and rejects whitespace-only', () => {
+    expect(CreateVehicleDto.parse({ unitNumber: '  101 ', vin: VIN }).unitNumber).toBe('101');
+    expect(CreateVehicleDto.safeParse({ unitNumber: '   ', vin: VIN }).success).toBe(false);
+    expect(CreateTrailerDto.safeParse({ number: '   ' }).success).toBe(false);
+  });
+
+  it('plate state: upper-cases a valid US/CA code, keeps empty / null, rejects junk', () => {
+    expect(CreateVehicleDto.parse({ ...base, vin: VIN, plateState: ' oh ' }).plateState).toBe('OH');
+    expect(CreateVehicleDto.parse({ ...base, vin: VIN, plateState: 'ON' }).plateState).toBe('ON');
+    expect(UpdateVehicleDto.parse({ plateState: '' }).plateState).toBe('');
+    expect(UpdateVehicleDto.parse({ plateState: null }).plateState).toBeNull();
+    expect(CreateVehicleDto.safeParse({ ...base, vin: VIN, plateState: 'ZZZZZ' }).success).toBe(false);
+    expect(CreateVehicleDto.safeParse({ ...base, vin: VIN, plateState: 'ZZ' }).success).toBe(false);
   });
 });

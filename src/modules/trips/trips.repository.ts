@@ -1,8 +1,8 @@
 import { Injectable } from '@nestjs/common';
-import type { Prisma, Trip } from '@prisma/client';
+import type { Driver, Prisma, Trip, Vehicle } from '@prisma/client';
 import { BaseRepository, ModelDelegate } from '../../core/prisma/base.repository';
 import { PrismaService } from '../../core/prisma/prisma.service';
-import { UNIT_BLOCKING_STATUSES } from './trip-schedule';
+import { escapeLike } from '../../common/dto/list-query.dto';
 
 export interface TripListFilter {
   status?: Trip['status'];
@@ -16,6 +16,26 @@ const NAME_JOIN = {
   driver: { select: { id: true, firstName: true, lastName: true } },
   vehicle: { select: { id: true, unitNumber: true } },
 } as const;
+
+/** BE-002 — the per-status `OR` branches of the schedule-candidate pre-filter (exported for the spec). */
+export function scheduleCandidateFilters(window: { start: Date; end: Date | null }): Prisma.TripWhereInput[] {
+  const { start, end } = window;
+  return [
+    {
+      status: { in: ['DRAFT', 'PLANNED', 'ASSIGNED'] },
+      plannedStartAt: end ? { not: null, lt: end } : { not: null },
+      OR: [{ plannedEndAt: null }, { plannedEndAt: { gt: start } }],
+    },
+    { status: 'IN_PROGRESS' },
+    {
+      status: 'DELIVERED',
+      AND: [
+        { OR: [{ completedAt: { gt: start } }, { completedAt: null, plannedEndAt: { gt: start } }] },
+        ...(end ? [{ OR: [{ startedAt: { lt: end } }, { startedAt: null, plannedStartAt: { lt: end } }] }] : []),
+      ],
+    },
+  ];
+}
 
 @Injectable()
 export class TripsRepository extends BaseRepository<
@@ -48,14 +68,24 @@ export class TripsRepository extends BaseRepository<
     return this.prisma.trailer.findUnique({ where: { id }, select: { id: true, deletedAt: true } });
   }
 
+  /** BE-001 — the driver a trip write names (live or soft-deleted); the service decides. */
+  findDriverForTrip(id: string): Promise<{ id: string; status: Driver['status']; deletedAt: Date | null } | null> {
+    return this.prisma.driver.findUnique({ where: { id }, select: { id: true, status: true, deletedAt: true } });
+  }
+
+  /** BE-001 — the unit a trip write names (live or soft-deleted); the service decides. */
+  findVehicleForTrip(id: string): Promise<{ id: string; status: Vehicle['status']; deletedAt: Date | null } | null> {
+    return this.prisma.vehicle.findUnique({ where: { id }, select: { id: true, status: true, deletedAt: true } });
+  }
+
   async list(filter: TripListFilter, page: number, limit: number, orderBy: Record<string, 'asc' | 'desc'>) {
     const where: Prisma.TripWhereInput = {
       ...(filter.status && { status: filter.status }),
       ...(filter.driverId && { driverId: filter.driverId }),
       ...(filter.q && {
         OR: [
-          { number: { contains: filter.q, mode: 'insensitive' } },
-          { shippingDocument: { contains: filter.q, mode: 'insensitive' } },
+          { number: { contains: escapeLike(filter.q), mode: 'insensitive' } },
+          { shippingDocument: { contains: escapeLike(filter.q), mode: 'insensitive' } },
         ],
       }),
     };
@@ -197,6 +227,16 @@ export class TripsRepository extends BaseRepository<
     return row?.number ?? null;
   }
 
+  /**
+   * BE-002 — a status-aware pre-filter mirroring `occupancyOf` (trip-schedule.ts), so only trips
+   * that can really overlap `window` come back and nothing has to be truncated:
+   *  - DRAFT/PLANNED/ASSIGNED: planned start set, `plannedStartAt < end`, planned end open or `> start`;
+   *  - IN_PROGRESS: always (its occupancy stretches to "now");
+   *  - DELIVERED: `completedAt ?? plannedEndAt > start` and `startedAt ?? plannedStartAt < end` —
+   *    an old delivered trip with no planned end is no longer treated as open-ended.
+   * No `take`: the previous `take: 50` ordered by `plannedStartAt ASC` could drop the one real
+   * conflict behind 50 stale rows. `findScheduleConflict` still applies the exact rule.
+   */
   private findScheduleCandidates(
     holder: { vehicleId: string } | { driverId: string } | { trailerId: string },
     window: { start: Date; end: Date | null },
@@ -206,32 +246,10 @@ export class TripsRepository extends BaseRepository<
     return db.trip.findMany({
       where: {
         ...holder,
-        status: { in: [...UNIT_BLOCKING_STATUSES] },
         ...(excludeTripId && { id: { not: excludeTripId } }),
-        AND: [
-          {
-            OR: [
-              { status: 'IN_PROGRESS' },
-              { plannedEndAt: null },
-              { plannedEndAt: { gt: window.start } },
-              { completedAt: { gt: window.start } },
-            ],
-          },
-          ...(window.end
-            ? [
-                {
-                  OR: [
-                    { status: 'IN_PROGRESS' as const },
-                    { plannedStartAt: { lt: window.end } },
-                    { startedAt: { lt: window.end } },
-                  ],
-                },
-              ]
-            : []),
-        ],
+        OR: scheduleCandidateFilters(window),
       },
       orderBy: { plannedStartAt: 'asc' },
-      take: 50,
       select: {
         id: true,
         number: true,

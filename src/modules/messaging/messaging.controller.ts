@@ -8,13 +8,14 @@ import { Perm } from '../../common/decorators/perm.decorator';
 import { apiError, ApiStandardErrors, ERROR_CODES } from '../../common/errors';
 import { zodBody } from '../../common/pipes/zod-validation.pipe';
 import { z } from 'zod';
+import { MAX_LIST_PAGE } from '../../common/dto/list-query.dto';
 import type { ContextUser } from '../../core/context/request-context';
 import { AppException } from '../../common/errors/app.exception';
 import { BroadcastMessageDto, UploadChatAttachmentDto, CreateConversationDto, SendMessageDto } from './dto/messaging.dto';
 import { ChatAttachmentsService, MAX_CHAT_ATTACHMENT_BYTES } from '../attachments/chat-attachments.service';
 import { MessagingService } from './messaging.service';
 
-const PageQueryDto = z.object({ page: z.coerce.number().int().min(1).default(1), limit: z.coerce.number().int().min(1).max(200).default(50) });
+const PageQueryDto = z.object({ page: z.coerce.number().int().min(1).max(MAX_LIST_PAGE).default(1), limit: z.coerce.number().int().min(1).max(200).default(50) });
 
 /** TZ §11.5 — chat and broadcast, gated by `messaging`. */
 @FigmaScreen('web/messages')
@@ -40,8 +41,20 @@ export class MessagingController {
   @Perm('messaging', 'FULL')
   @Audit({ object: 'Conversation', action: 'CREATE' })
   @ApiOperation({ summary: 'Opens a direct or group conversation with the given participants.' })
-  @ApiCreatedResponse({ schema: { example: { id: 'cnv_2', type: 'DIRECT' } } })
-  @ApiStandardErrors()
+  @ApiCreatedResponse({
+    description: 'Created. For type DIRECT an existing conversation between the two participants is returned instead of creating a duplicate.',
+    schema: { example: { id: 'cnv_2', type: 'DIRECT' } },
+  })
+  @ApiStandardErrors({
+    errors: [
+      {
+        ...apiError.validation('A direct conversation needs exactly one other participant.'),
+        details: { driverIds: 'A direct conversation needs exactly one other participant.' },
+        description:
+          'VALIDATION_FAILED — wrong participant count for the conversation type (DIRECT needs exactly one other participant; at least one participant otherwise) or unknown recipients (details.driverIds).',
+      },
+    ],
+  })
   createConversation(@Body(zodBody(CreateConversationDto)) dto: CreateConversationDto, @CurrentUser() actor: ContextUser) {
     return this.messaging.createConversation(dto, actor);
   }

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MAX_LIST_PAGE } from '../../../common/dto/list-query.dto';
 
 /**
  * B-6 (web/tz.md §20) — `GET /violations`. W-01 sends `window=24h`; the rest are the fleet-list
@@ -15,7 +16,7 @@ export const ViolationListQueryDto = z
     type: z.enum(['DRIVING_11', 'SHIFT_14', 'BREAK_30', 'CYCLE_70', 'CYCLE_60', 'FORM_MANNER']).optional(),
     /** Defaults to OPEN — the W-01 KPI counts open violations (web/tz.md §W-01 KPI 3). */
     status: z.enum(['OPEN', 'RESOLVED', 'AUTO_CLEARED', 'ALL']).default('OPEN'),
-    page: z.coerce.number().int().min(1).default(1),
+    page: z.coerce.number().int().min(1).max(MAX_LIST_PAGE).default(1),
     limit: z.coerce.number().int().min(1).max(200).default(25),
   })
   .refine((q) => !(q.from && q.to) || q.from <= q.to, { message: '`from` must not be after `to`.', path: ['from'] });

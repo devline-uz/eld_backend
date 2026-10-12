@@ -34,7 +34,7 @@ import {
   VehicleListQueryDto,
   VehicleTelemetryQueryDto,
 } from './dto/vehicles.dto';
-import { EldSerialTakenError, VehiclesRepository } from './vehicles.repository';
+import { EldSerialTakenError, VehiclesRepository, type VehicleStatusCounts } from './vehicles.repository';
 
 const SORTABLE_FIELDS = ['unitNumber', 'vin', 'make', 'model', 'status', 'createdAt'] as const;
 
@@ -127,10 +127,14 @@ export class VehiclesService {
     @Inject(MAIL_PORT) private readonly mail: MailPort,
   ) {}
 
-  async list(query: VehicleListQueryDto): Promise<OffsetPage<Vehicle>> {
+  /** UI-004 — the page plus `statusCounts`: fleet-wide ACTIVE / INACTIVE / OUT_OF_SERVICE (filters ignored). */
+  async list(query: VehicleListQueryDto): Promise<OffsetPage<Vehicle> & { statusCounts: VehicleStatusCounts }> {
     const orderBy = parseSort(query.sort, SORTABLE_FIELDS, { unitNumber: 'asc' });
-    const { items, total } = await this.vehicles.list({ status: query.status, q: query.q, groupId: query.groupId }, query.page, query.limit, orderBy);
-    return toOffsetPage(items, total, query.page, query.limit);
+    const [{ items, total }, statusCounts] = await Promise.all([
+      this.vehicles.list({ status: query.status, q: query.q, groupId: query.groupId }, query.page, query.limit, orderBy),
+      this.vehicles.countByStatus(),
+    ]);
+    return { ...toOffsetPage(items, total, query.page, query.limit), statusCounts };
   }
 
   async get(id: string): Promise<Vehicle> {
@@ -286,6 +290,13 @@ export class VehiclesService {
   async remove(id: string): Promise<Vehicle> {
     await this.get(id);
     await this.assertStatusChangeAllowed(id, 'INACTIVE');
+    // BE-013 — never leave a live trip pointing at a deleted unit: the dispatcher moves or cancels
+    // those trips first (least destructive; nothing is silently unassigned).
+    const openTrips = await this.vehicles.findOpenTrips(id);
+    if (openTrips.length > 0) {
+      const numbers = openTrips.map((t) => t.number).join(', ');
+      throw AppException.conflict(`This unit still has open trips (${numbers}). Reassign or cancel them first.`, { openTrips });
+    }
     const driver = await this.drivers.findOne({ assignedVehicleId: id });
     if (driver) await this.drivers.update({ id: driver.id }, { assignedVehicle: { disconnect: true } });
     const removed = await this.vehicles.update({ id }, { status: 'INACTIVE', deletedAt: new Date() });
@@ -330,13 +341,25 @@ export class VehiclesService {
     if (vehicle.status === 'OUT_OF_SERVICE') {
       throw new AppException(ERROR_CODES.VEHICLE_OUT_OF_SERVICE, 'Vehicle is out of service and cannot be assigned a driver.', 409);
     }
+    // BE-006 — an INACTIVE unit is parked; it cannot take a driver either.
+    if (vehicle.status !== 'ACTIVE') {
+      throw AppException.conflict('Vehicle is inactive and cannot be assigned a driver.', { status: vehicle.status });
+    }
     const driver = await this.drivers.findById({ id: dto.driverId });
-    if (!driver) throw new AppException(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.', 404);
+    // BE-006 — a soft-deleted driver is gone as far as the web is concerned (same 404 as GET).
+    if (!driver || driver.deletedAt) throw new AppException(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.', 404);
+    if (driver.status !== 'ACTIVE') {
+      throw AppException.conflict(`Driver is ${driver.status.toLowerCase()} and cannot be assigned a unit.`, {
+        driverId: `Driver is ${driver.status.toLowerCase()} and cannot be assigned a unit.`,
+      });
+    }
     if (driver.assignedVehicleId === vehicleId) return vehicle;
     try {
       await this.drivers.update({ id: dto.driverId }, { assignedVehicle: { connect: { id: vehicleId } } });
-    } catch {
-      throw AppException.conflict('Vehicle is already assigned to another driver.');
+    } catch (err) {
+      // BE-006 — only the unique index on `assignedVehicleId` means "taken"; anything else is real.
+      if (isUniqueViolation(err)) throw AppException.conflict('Vehicle is already assigned to another driver.');
+      throw err;
     }
     if (dto.notify) {
       const title = 'New unit assignment';

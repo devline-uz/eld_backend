@@ -47,7 +47,8 @@ export class WorkOrdersService {
 
   async create(dto: CreateWorkOrderDto, openedById: string): Promise<WorkOrder> {
     const vehicle = await this.vehicles.findById({ id: dto.vehicleId });
-    if (!vehicle) throw new AppException(ERROR_CODES.VEHICLE_NOT_FOUND, 'Vehicle not found.', 404, { vehicleId: dto.vehicleId });
+    // BE-019 — a soft-deleted unit is gone for the web; nothing new may be attached to it.
+    if (!vehicle || vehicle.deletedAt) throw new AppException(ERROR_CODES.VEHICLE_NOT_FOUND, 'Vehicle not found.', 404, { vehicleId: dto.vehicleId });
 
     const number = await this.repo.nextNumber();
     // `Keep the unit out of service` is applied in the same transaction as the insert.

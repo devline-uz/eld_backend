@@ -46,6 +46,8 @@ Jami: **205 ta endpoint**, 37 bo'lim.
   - `POST /api/auth/logout` — Berilgan refresh token sessiyasini bekor qiladi (chiqish).
   - `POST /api/auth/password/forgot` — Parolni tiklash tokenini so'raydi. Doim 200 (foydalanuvchi bor-yo'qligi oshkor qilinmaydi).
   - `POST /api/auth/password/reset` — /auth/password/forgot dan kelgan token bilan yangi parol o'rnatadi.
+  - `POST /api/auth/password/reset-code` — Web "Forgot password?" 1-qadam: faol back-office foydalanuvchiga 6 xonali kod emailga yuboradi (yo'q email → 404).
+  - `POST /api/auth/password/reset-code/confirm` — Web "Forgot password?" 2-qadam: kodni tekshiradi va yangi parolni o'rnatadi; barcha sessiyalar bekor qilinadi.
   - `POST /api/auth/email/verify` — `PATCH /users/:id { email }` dan keyingi email o'zgarishini tasdiqlaydi.
   - `GET /api/auth/me` — Joriy autentifikatsiyalangan subyekt (token claim'lari) + web topbar maydonlari.
 - [Kompaniya (carrier)](#bolim-carrier) — 3 ta
@@ -535,6 +537,47 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 ```
 
 **Xatolar:** `401` TOKEN_EXPIRED — The reset link has expired — request a new one. · `422` VALIDATION_FAILED — Request validation failed.
+
+---
+
+### `POST /api/auth/password/reset-code`
+
+**Nima qiladi:** Web "Forgot password?" 1-qadam. Faqat back-office `User` (haydovchi emas). Email ACTIVE foydalanuvchiga tegishli bo'lsa, 6 xonali bir martalik kod emailga yuboriladi (bazada faqat HMAC, 15 daqiqa amal qiladi, 5 ta noto'g'ri urinish, yangi kod eskisini bekor qiladi). `AUTH_MODE=production` da `POST /auth/login` kabi 403 bilan rad etiladi.
+
+- **Auth:** Ochiq (token kerak emas) · **Throttle:** 5/daq/IP, bitta akkauntga 60 soniyada 1 kod
+- **operationId:** `AuthController_requestPasswordResetCode`
+
+**Body:** `{ "email": "sarah.chen@universal-logistics.example" }`
+
+**Javob `200`:**
+
+```json
+{
+  "success": true,
+  "email": "sarah.chen@universal-logistics.example",
+  "expiresInSec": 900,
+  "resendAfterSec": 60
+}
+```
+
+`code` maydoni faqat `DEV_ECHO_SECRETS=true` va `NODE_ENV!=production` bo'lganda qaytadi.
+
+**Xatolar:** `404` NOT_FOUND — No account found with this email (`details.email`). · `403` PASSWORD_LOGIN_DISABLED · `422` VALIDATION_FAILED · `429` RATE_LIMITED (`details.retryAfterSec` — resend cooldown) · `503` SERVICE_UNAVAILABLE — email yuborilmadi.
+
+---
+
+### `POST /api/auth/password/reset-code/confirm`
+
+**Nima qiladi:** Web "Forgot password?" 2-qadam. Kodni tekshiradi, yangi parolni Argon2id bilan saqlaydi, kodni ishlatilgan deb belgilaydi va foydalanuvchining barcha refresh sessiyalarini bekor qiladi. Audit: `PASSWORD_RESET`.
+
+- **Auth:** Ochiq (token kerak emas) · **Throttle:** 10/daq/IP
+- **operationId:** `AuthController_confirmPasswordResetCode`
+
+**Body:** `{ "email": "…", "code": "123456", "newPassword": "8–128 belgi" }`
+
+**Javob `200`:** `{ "success": true }`
+
+**Xatolar:** `422` RESET_CODE_INVALID — `details.code`, `details.attemptsRemaining` · `422` RESET_CODE_EXPIRED — muddati o'tgan / ishlatilgan / 5 urinishdan keyin bloklangan · `422` VALIDATION_FAILED · `403` PASSWORD_LOGIN_DISABLED · `429` RATE_LIMITED.
 
 ---
 

@@ -223,7 +223,11 @@ function convert(schema: ZodType, reg: ZodSchemaRegistry, depth: number, root = 
   const next = (s: ZodType): OpenApiSchema => convert(s, reg, depth + 1);
   const description = typeof def.description === 'string' ? def.description : undefined;
   const out = convertNode(def, next);
-  if (description && !('$ref' in out)) out.description = description;
+  if (!description) return out;
+  // A sibling `description` next to a bare `$ref` is ignored by OpenAPI 3.0 tooling, so a described
+  // reference (e.g. `NamedEnum.optional().describe(...)`) is wrapped in `allOf`.
+  if ('$ref' in out) return { allOf: [out], description };
+  out.description = description;
   return out;
 }
 

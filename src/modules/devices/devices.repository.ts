@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { Device, Prisma } from '@prisma/client';
 import { BaseRepository, ModelDelegate } from '../../core/prisma/base.repository';
 import { PrismaService } from '../../core/prisma/prisma.service';
+import { escapeLike } from '../../common/dto/list-query.dto';
 
 export interface DeviceListFilter {
   status?: Device['status'];
@@ -62,9 +63,9 @@ export class DevicesRepository extends BaseRepository<
       ...(filter.isVirtual !== undefined && { isVirtual: filter.isVirtual }),
       ...(filter.q && {
         OR: [
-          { serial: { contains: filter.q, mode: 'insensitive' } },
-          { bleMacAddress: { contains: filter.q, mode: 'insensitive' } },
-          { firmware: { contains: filter.q, mode: 'insensitive' } },
+          { serial: { contains: escapeLike(filter.q), mode: 'insensitive' } },
+          { bleMacAddress: { contains: escapeLike(filter.q), mode: 'insensitive' } },
+          { firmware: { contains: escapeLike(filter.q), mode: 'insensitive' } },
         ],
       }),
     };
@@ -73,6 +74,21 @@ export class DevicesRepository extends BaseRepository<
       this.prisma.device.count({ where }),
     ]);
     return { items, total };
+  }
+
+  /**
+   * UI-012 — fleet-wide connection counts over the inventory (RETIRED excluded, list filters
+   * ignored). `connected` is the effective state: stored CONNECTED AND heard from since
+   * `connectedSince`; `offlineOver24h` = never seen or silent since before `offlineBefore`.
+   */
+  async connectionCounts(connectedSince: Date, offlineBefore: Date): Promise<{ total: number; connected: number; offlineOver24h: number }> {
+    const inventory: Prisma.DeviceWhereInput = { status: { not: 'RETIRED' } };
+    const [total, connected, offlineOver24h] = await Promise.all([
+      this.prisma.device.count({ where: inventory }),
+      this.prisma.device.count({ where: { ...inventory, bleState: 'CONNECTED', lastSeenAt: { gte: connectedSince } } }),
+      this.prisma.device.count({ where: { ...inventory, OR: [{ lastSeenAt: null }, { lastSeenAt: { lt: offlineBefore } }] } }),
+    ]);
+    return { total, connected, offlineOver24h };
   }
 
   listAll(): Promise<Device[]> {

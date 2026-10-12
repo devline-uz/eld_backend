@@ -81,6 +81,8 @@ describe('DriversService', () => {
       | 'findLiveIdByCdlKey'
       | 'findVehicleForAssignment'
       | 'createWithVehicle'
+      | 'fleetManagerExists'
+      | 'findOpenTrips'
     >
   >;
   let tokens: jest.Mocked<Pick<TokenService, 'signDriverEmailVerifyToken' | 'verifyDriverEmailVerifyToken'>>;
@@ -109,6 +111,8 @@ describe('DriversService', () => {
       findLiveIdByCdlKey: jest.fn().mockResolvedValue(null),
       findVehicleForAssignment: jest.fn().mockResolvedValue(null),
       createWithVehicle: jest.fn(),
+      fleetManagerExists: jest.fn().mockResolvedValue(true),
+      findOpenTrips: jest.fn().mockResolvedValue([]),
     };
     repo.findByEmail.mockResolvedValue(null);
     tokens = { signDriverEmailVerifyToken: jest.fn(), verifyDriverEmailVerifyToken: jest.fn() };
@@ -242,6 +246,54 @@ describe('DriversService', () => {
     const withInvite = await service.create({ ...baseDto, sendInvitation: true, email: 'jsmith@example.com' });
     expect(withInvite.inviteCode).toMatch(/^\d{6}$/);
     expect(mail.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('BE-004 — an admin-entered password is never overwritten by the invitation code', async () => {
+    repo.findByUsername.mockResolvedValue(null);
+    repo.create.mockResolvedValue(makeDriver({ email: 'jsmith@example.com' }) as never);
+
+    const created = await service.create({ ...baseDto, password: 'Admin-Chosen-1', sendInvitation: true, email: 'jsmith@example.com' });
+    expect(created.inviteCode).toBeUndefined();
+    // Only the create wrote a hash (of the admin's password) — no second write with a code.
+    expect(repo.update).not.toHaveBeenCalled();
+    expect(mail.send).toHaveBeenCalledTimes(1);
+    expect(mail.send.mock.calls[0][0].text).not.toMatch(/\d{6}/);
+  });
+
+  it('BE-004 — import rows with a password do not get a one-time code either', async () => {
+    repo.findByUsername.mockResolvedValue(null);
+    repo.create.mockResolvedValue(makeDriver({ email: 'jsmith@example.com' }) as never);
+    await service.importMany({
+      drivers: [{ ...baseDto, email: 'jsmith@example.com', password: 'Admin-Chosen-1' }],
+      options: { duplicateStrategy: 'UPDATE', sendInvitations: true, applyDefaultExemptions: false },
+    });
+    expect(repo.update).not.toHaveBeenCalled();
+    expect(mail.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('BE-010 — an unknown fleetManagerId is a 422 keyed fleetManagerId on create and update', async () => {
+    repo.findByUsername.mockResolvedValue(null);
+    repo.fleetManagerExists.mockResolvedValue(false);
+    const fm = '33333333-3333-4333-8333-333333333333';
+    await expect(service.create({ ...baseDto, fleetManagerId: fm })).rejects.toMatchObject({
+      status: 422,
+      details: { fleetManagerId: 'Fleet manager not found.' },
+    });
+    expect(repo.create).not.toHaveBeenCalled();
+    repo.findById.mockResolvedValue(makeDriver() as never);
+    await expect(service.update('drv_1', { fleetManagerId: fm })).rejects.toMatchObject({ status: 422 });
+    expect(repo.update).not.toHaveBeenCalled();
+  });
+
+  it('BE-013 — remove() is a 409 listing the open trips, and deletes nothing', async () => {
+    repo.findById.mockResolvedValue(makeDriver() as never);
+    repo.findOpenTrips.mockResolvedValue([{ id: 'trp_1', number: 'TRP-1', status: 'ASSIGNED' }]);
+    await expect(service.remove('drv_1')).rejects.toMatchObject({
+      code: 'CONFLICT',
+      status: 409,
+      details: { openTrips: [{ id: 'trp_1', number: 'TRP-1', status: 'ASSIGNED' }] },
+    });
+    expect(repo.update).not.toHaveBeenCalled();
   });
 
   it('rejects an unknown driver id on update', async () => {
@@ -540,6 +592,54 @@ describe('DriversService', () => {
 
       await expect(service.deleteDocument('drv_1', 'doc_1')).rejects.toThrow(AppException);
       expect(repo.deleteDocument).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('UI-005 — hosRuleset defaults to the carrier ruleset', () => {
+    const { hosRuleset: _ruleset, ...noRuleset } = baseDto;
+    const withCarrier = (hosRuleset: string | null) =>
+      new DriversService(
+        repo as never,
+        tokens as never,
+        config as never,
+        mail,
+        storage as never,
+        attachments as never,
+        { get: jest.fn().mockResolvedValue(hosRuleset ? { hosRuleset } : null) } as never,
+      );
+    const createdRuleset = (call = 0) => (repo.create.mock.calls[call] as [{ hosRuleset?: string }])[0].hosRuleset;
+
+    beforeEach(() => {
+      repo.create.mockResolvedValue(makeDriver() as never);
+    });
+
+    it('the DTO no longer invents US_70_8_PROPERTY', () => {
+      expect(CreateDriverDto.parse(noRuleset).hosRuleset).toBeUndefined();
+      expect(CreateDriverDto.parse(baseDto).hosRuleset).toBe('US_70_8_PROPERTY');
+    });
+
+    it('create without hosRuleset takes the carrier ruleset', async () => {
+      await withCarrier('US_60_7_PASSENGER').create(noRuleset);
+      expect(createdRuleset()).toBe('US_60_7_PASSENGER');
+    });
+
+    it('an explicit hosRuleset wins over the carrier one', async () => {
+      await withCarrier('US_60_7_PASSENGER').create({ ...baseDto, hosRuleset: 'US_70_8_PASSENGER' } as never);
+      expect(createdRuleset()).toBe('US_70_8_PASSENGER');
+    });
+
+    it('no carrier row ⇒ undefined ⇒ the column default', async () => {
+      await withCarrier(null).create(noRuleset);
+      expect(createdRuleset()).toBeUndefined();
+    });
+
+    it('import: new rows take the carrier ruleset; an updated row keeps its own (no overwrite)', async () => {
+      repo.findByUsername.mockResolvedValueOnce(null).mockResolvedValueOnce(makeDriver() as never);
+      repo.update.mockResolvedValue(makeDriver() as never);
+      await withCarrier('US_60_7_PROPERTY').importMany({ drivers: [{ ...noRuleset, username: 'new1' }, noRuleset] as never });
+      expect(createdRuleset()).toBe('US_60_7_PROPERTY');
+      const [, updateArg] = repo.update.mock.calls[0] as [unknown, Record<string, unknown>];
+      expect(updateArg).not.toHaveProperty('hosRuleset');
     });
   });
 

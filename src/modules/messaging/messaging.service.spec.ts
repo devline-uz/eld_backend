@@ -24,6 +24,9 @@ function buildService(conversation: unknown = { id: 'cnv_1' }, isParticipant = t
       ...data,
       participants: participants.map((p) => ({ userId: p.userId ?? null, driverId: p.driverId ?? null })),
     })),
+    findLiveDriverIds: jest.fn(async (ids: string[]) => new Set(ids)),
+    findUserIds: jest.fn(async (ids: string[]) => new Set(ids)),
+    findDirectBetween: jest.fn(async (..._args: unknown[]): Promise<unknown> => null),
   };
   const chat = { decorate: jest.fn(async (ms: Array<Record<string, unknown>>) => ms.map((m) => ({ ...m, type: 'TEXT', attachment: null }))), assertSendable: jest.fn(async () => undefined) };
   const push = { sendToDriver: jest.fn(async () => undefined) };
@@ -100,7 +103,7 @@ describe('MessagingService — realtime chat contract', () => {
 
   it('createConversation pushes conversation.new to every staff identity room (creator included, no driver rooms)', async () => {
     const { service, events } = buildService();
-    const out = await service.createConversation({ type: 'DIRECT', driverIds: ['drv_1'], userIds: ['usr_2'] } as never, actor);
+    const out = await service.createConversation({ type: 'GROUP', driverIds: ['drv_1'], userIds: ['usr_2'] } as never, actor);
     expect(out.id).toBe('cnv_new');
     expect(events.publish).toHaveBeenCalledWith('realtime.push', {
       room: ['user:usr_1', 'user:usr_2'],
@@ -150,5 +153,62 @@ describe('MessagingService — realtime chat contract', () => {
     expect(pushes[0].room).toBe('driver:drv_9');
     expect(pushes[1].room).toEqual(['conversation:cnv_new', 'user:usr_1']);
     expect(pushes[2].room).toEqual(['user:usr_1']);
+  });
+});
+
+describe('MessagingService — web conversation validation (BE-010 / BE-012)', () => {
+  it('DIRECT with an existing 1:1 thread returns it instead of creating a duplicate', async () => {
+    const { service, repo, events } = buildService();
+    const existing = { id: 'cnv_old', type: 'DIRECT', participants: [{ userId: 'usr_1' }, { driverId: 'drv_1' }] };
+    repo.findDirectBetween.mockResolvedValueOnce(existing);
+    await expect(service.createConversation({ type: 'DIRECT', driverIds: ['drv_1'], userIds: [] }, actor)).resolves.toBe(existing);
+    expect(repo.findDirectBetween).toHaveBeenCalledWith({ userId: 'usr_1' }, { driverId: 'drv_1' });
+    expect(repo.createConversation).not.toHaveBeenCalled();
+    expect(events.publish).not.toHaveBeenCalled();
+  });
+
+  it('DIRECT needs exactly one other participant (duplicates and the creator do not count)', async () => {
+    const { service, repo } = buildService();
+    await expect(service.createConversation({ type: 'DIRECT', driverIds: ['drv_1', 'drv_2'], userIds: [] }, actor)).rejects.toMatchObject({ status: 422 });
+    await expect(service.createConversation({ type: 'DIRECT', driverIds: [], userIds: ['usr_1'] }, actor)).rejects.toMatchObject({ status: 422 });
+    await service.createConversation({ type: 'DIRECT', driverIds: ['drv_1', 'drv_1'], userIds: ['usr_1'] }, actor);
+    expect(repo.createConversation).toHaveBeenCalledWith(expect.anything(), [{ userId: 'usr_1' }, { driverId: 'drv_1' }]);
+  });
+
+  it('GROUP with no participants besides the creator is a 422', async () => {
+    const { service, repo } = buildService();
+    await expect(service.createConversation({ type: 'GROUP', driverIds: [], userIds: [] }, actor)).rejects.toMatchObject({
+      code: 'VALIDATION_FAILED',
+      status: 422,
+    });
+    expect(repo.createConversation).not.toHaveBeenCalled();
+  });
+
+  it('unknown / deleted drivers and unknown users are a 422 listing them, not an FK 500', async () => {
+    const { service, repo } = buildService();
+    repo.findLiveDriverIds.mockResolvedValueOnce(new Set(['drv_1']));
+    repo.findUserIds.mockResolvedValueOnce(new Set());
+    await expect(service.createConversation({ type: 'GROUP', driverIds: ['drv_1', 'drv_gone'], userIds: ['usr_x'] }, actor)).rejects.toMatchObject({
+      status: 422,
+      details: { driverIds: ['drv_gone'], userIds: ['usr_x'] },
+    });
+    expect(repo.createConversation).not.toHaveBeenCalled();
+  });
+
+  it('broadcast validates every driver up front and sends nothing when one is unknown', async () => {
+    const { service, repo } = buildService(conversationWithParticipants);
+    repo.findLiveDriverIds.mockResolvedValueOnce(new Set(['drv_1']));
+    await expect(service.broadcast({ driverIds: ['drv_1', 'drv_gone'], body: 'hi' }, actor)).rejects.toMatchObject({
+      status: 422,
+      details: { driverIds: ['drv_gone'] },
+    });
+    expect(repo.createConversation).not.toHaveBeenCalled();
+  });
+
+  it('broadcast de-duplicates recipients', async () => {
+    const { service, repo } = buildService(conversationWithParticipants);
+    const out = await service.broadcast({ driverIds: ['drv_1', 'drv_1'], body: 'hi' }, actor);
+    expect(out.sent).toBe(1);
+    expect(repo.createConversation).toHaveBeenCalledTimes(1);
   });
 });

@@ -60,6 +60,8 @@ describe('VehiclesService', () => {
       | 'findLiveByPlate'
       | 'saveWithDevice'
       | 'releaseDevice'
+      | 'findOpenTrips'
+      | 'countByStatus'
     >
   >;
   let driversRepo: jest.Mocked<Pick<DriversRepository, 'findById' | 'update' | 'findOne'>>;
@@ -77,6 +79,7 @@ describe('VehiclesService', () => {
       findByUnitNumber: jest.fn(),
       findByVin: jest.fn(),
       list: jest.fn(),
+      countByStatus: jest.fn().mockResolvedValue({ ACTIVE: 0, INACTIVE: 0, OUT_OF_SERVICE: 0, total: 0 }),
       listAll: jest.fn(),
       create: jest.fn(),
       delete: jest.fn(),
@@ -93,6 +96,7 @@ describe('VehiclesService', () => {
       findLiveByPlate: jest.fn().mockResolvedValue(null),
       saveWithDevice: jest.fn(),
       releaseDevice: jest.fn().mockResolvedValue({ count: 0 }),
+      findOpenTrips: jest.fn().mockResolvedValue([]),
     };
     driversRepo = {
       findById: jest.fn(),
@@ -151,7 +155,7 @@ describe('VehiclesService', () => {
 
     it('assigns the driver when the vehicle is ACTIVE', async () => {
       vehiclesRepo.findById.mockResolvedValue(makeVehicle() as never);
-      driversRepo.findById.mockResolvedValue({ id: 'drv_1', assignedVehicleId: null } as never);
+      driversRepo.findById.mockResolvedValue({ id: 'drv_1', status: 'ACTIVE', deletedAt: null, assignedVehicleId: null } as never);
       driversRepo.update.mockResolvedValue({} as never);
 
       await service.assignDriver('veh_1', { driverId: 'drv_1', notify: true });
@@ -161,17 +165,53 @@ describe('VehiclesService', () => {
 
     it('surfaces a conflict when the unit is already assigned to another driver', async () => {
       vehiclesRepo.findById.mockResolvedValue(makeVehicle() as never);
-      driversRepo.findById.mockResolvedValue({ id: 'drv_1', assignedVehicleId: null } as never);
-      driversRepo.update.mockRejectedValue(new Error('Unique constraint failed'));
+      driversRepo.findById.mockResolvedValue({ id: 'drv_1', status: 'ACTIVE', deletedAt: null, assignedVehicleId: null } as never);
+      driversRepo.update.mockRejectedValue(Object.assign(new Error('Unique constraint failed'), { code: 'P2002' }));
 
-      await expect(service.assignDriver('veh_1', { driverId: 'drv_1', notify: true })).rejects.toThrow(AppException);
+      await expect(service.assignDriver('veh_1', { driverId: 'drv_1', notify: true })).rejects.toMatchObject({ status: 409 });
+    });
+
+    it('BE-006 — any other write error is NOT masked as a 409', async () => {
+      vehiclesRepo.findById.mockResolvedValue(makeVehicle() as never);
+      driversRepo.findById.mockResolvedValue({ id: 'drv_1', status: 'ACTIVE', deletedAt: null, assignedVehicleId: null } as never);
+      const boom = Object.assign(new Error('db down'), { code: 'P1001' });
+      driversRepo.update.mockRejectedValue(boom);
+
+      await expect(service.assignDriver('veh_1', { driverId: 'drv_1', notify: true })).rejects.toBe(boom);
+    });
+
+    it('BE-006 — a soft-deleted driver is 404, a TERMINATED / INACTIVE one 409, an INACTIVE unit 409', async () => {
+      vehiclesRepo.findById.mockResolvedValue(makeVehicle() as never);
+      driversRepo.findById.mockResolvedValueOnce({ id: 'drv_1', status: 'TERMINATED', deletedAt: new Date(), assignedVehicleId: null } as never);
+      await expect(service.assignDriver('veh_1', { driverId: 'drv_1', notify: true })).rejects.toMatchObject({ code: 'DRIVER_NOT_FOUND', status: 404 });
+      driversRepo.findById.mockResolvedValueOnce({ id: 'drv_1', status: 'TERMINATED', deletedAt: null, assignedVehicleId: null } as never);
+      await expect(service.assignDriver('veh_1', { driverId: 'drv_1', notify: true })).rejects.toMatchObject({ code: 'CONFLICT', status: 409 });
+      driversRepo.findById.mockResolvedValueOnce({ id: 'drv_1', status: 'INACTIVE', deletedAt: null, assignedVehicleId: null } as never);
+      await expect(service.assignDriver('veh_1', { driverId: 'drv_1', notify: true })).rejects.toMatchObject({ status: 409 });
+      vehiclesRepo.findById.mockResolvedValue(makeVehicle({ status: 'INACTIVE' }) as never);
+      await expect(service.assignDriver('veh_1', { driverId: 'drv_1', notify: true })).rejects.toMatchObject({ code: 'CONFLICT', status: 409 });
+      expect(driversRepo.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('remove — open trips (BE-013)', () => {
+    it('is a 409 listing the open trips and changes nothing', async () => {
+      vehiclesRepo.findById.mockResolvedValue(makeVehicle() as never);
+      vehiclesRepo.findOpenTrips.mockResolvedValue([{ id: 'trp_1', number: 'TRP-1', status: 'PLANNED' }]);
+      await expect(service.remove('veh_1')).rejects.toMatchObject({
+        code: 'CONFLICT',
+        status: 409,
+        details: { openTrips: [{ id: 'trp_1', number: 'TRP-1', status: 'PLANNED' }] },
+      });
+      expect(vehiclesRepo.update).not.toHaveBeenCalled();
+      expect(driversRepo.update).not.toHaveBeenCalled();
     });
   });
 
   describe('assignDriver — B-74 notify', () => {
     it('creates a notification when notify is true', async () => {
       vehiclesRepo.findById.mockResolvedValue(makeVehicle() as never);
-      driversRepo.findById.mockResolvedValue({ id: 'drv_1', assignedVehicleId: null } as never);
+      driversRepo.findById.mockResolvedValue({ id: 'drv_1', status: 'ACTIVE', deletedAt: null, assignedVehicleId: null } as never);
       driversRepo.update.mockResolvedValue({} as never);
 
       await service.assignDriver('veh_1', { driverId: 'drv_1', notify: true });
@@ -181,7 +221,7 @@ describe('VehiclesService', () => {
 
     it('never creates a notification when notify is false', async () => {
       vehiclesRepo.findById.mockResolvedValue(makeVehicle() as never);
-      driversRepo.findById.mockResolvedValue({ id: 'drv_1', assignedVehicleId: null } as never);
+      driversRepo.findById.mockResolvedValue({ id: 'drv_1', status: 'ACTIVE', deletedAt: null, assignedVehicleId: null } as never);
       driversRepo.update.mockResolvedValue({} as never);
 
       await service.assignDriver('veh_1', { driverId: 'drv_1', notify: false });
@@ -191,7 +231,7 @@ describe('VehiclesService', () => {
 
     it('pushes FCM via PushService with the persisted deep-link fields (§12.7)', async () => {
       vehiclesRepo.findById.mockResolvedValue(makeVehicle() as never);
-      driversRepo.findById.mockResolvedValue({ id: 'drv_1', assignedVehicleId: null } as never);
+      driversRepo.findById.mockResolvedValue({ id: 'drv_1', status: 'ACTIVE', deletedAt: null, assignedVehicleId: null } as never);
       driversRepo.update.mockResolvedValue({} as never);
       notifications.create.mockResolvedValue({ id: 'ntf_1', objectType: 'Vehicle', objectId: 'veh_1', category: 'assignment' } as never);
 
@@ -206,7 +246,7 @@ describe('VehiclesService', () => {
 
     it('does not push when notify is false', async () => {
       vehiclesRepo.findById.mockResolvedValue(makeVehicle() as never);
-      driversRepo.findById.mockResolvedValue({ id: 'drv_1', assignedVehicleId: null } as never);
+      driversRepo.findById.mockResolvedValue({ id: 'drv_1', status: 'ACTIVE', deletedAt: null, assignedVehicleId: null } as never);
       driversRepo.update.mockResolvedValue({} as never);
 
       await service.assignDriver('veh_1', { driverId: 'drv_1', notify: false });
@@ -222,6 +262,14 @@ describe('VehiclesService', () => {
       expect(vehiclesRepo.list).toHaveBeenCalledWith({ status: undefined, q: undefined }, 1, 20, { unitNumber: 'asc' });
       expect(result.items).toHaveLength(1);
       expect(result.total).toBe(1);
+    });
+
+    it('UI-004 — list carries fleet-wide statusCounts, whatever the status filter', async () => {
+      vehiclesRepo.list.mockResolvedValue({ items: [], total: 0 });
+      vehiclesRepo.countByStatus.mockResolvedValue({ ACTIVE: 5, INACTIVE: 2, OUT_OF_SERVICE: 1, total: 8 });
+      const result = await service.list({ page: 1, limit: 20, status: 'OUT_OF_SERVICE' } as never);
+      expect(result.statusCounts).toEqual({ ACTIVE: 5, INACTIVE: 2, OUT_OF_SERVICE: 1, total: 8 });
+      expect(vehiclesRepo.countByStatus).toHaveBeenCalledWith();
     });
 
     it('get throws VEHICLE_NOT_FOUND when missing', async () => {
@@ -668,7 +716,7 @@ describe('VehiclesService', () => {
   describe('assignDriver — already assigned to same driver', () => {
     it('returns the vehicle without re-assigning', async () => {
       vehiclesRepo.findById.mockResolvedValue(makeVehicle() as never);
-      driversRepo.findById.mockResolvedValue({ id: 'drv_1', assignedVehicleId: 'veh_1' } as never);
+      driversRepo.findById.mockResolvedValue({ id: 'drv_1', status: 'ACTIVE', deletedAt: null, assignedVehicleId: 'veh_1' } as never);
       const result = await service.assignDriver('veh_1', { driverId: 'drv_1', notify: true });
       expect(driversRepo.update).not.toHaveBeenCalled();
       expect(result.id).toBe('veh_1');

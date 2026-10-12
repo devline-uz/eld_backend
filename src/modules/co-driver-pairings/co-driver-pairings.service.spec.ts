@@ -37,6 +37,17 @@ describe('CoDriverPairingsService', () => {
       ).rejects.toThrow(AppException);
     });
 
+    it('BE-019 — rejects a soft-deleted driver or unit', async () => {
+      drivers.findById.mockResolvedValueOnce({ id: 'drv_1' } as never).mockResolvedValueOnce({ id: 'drv_2', deletedAt: new Date() } as never);
+      vehicles.findById.mockResolvedValue({ id: 'veh_1' } as never);
+      await expect(service.create({ primaryDriverId: 'drv_1', coDriverId: 'drv_2', vehicleId: 'veh_1' }, 'usr_1')).rejects.toMatchObject({ code: 'DRIVER_NOT_FOUND' });
+
+      drivers.findById.mockResolvedValue({ id: 'drv_x', deletedAt: null } as never);
+      vehicles.findById.mockResolvedValue({ id: 'veh_1', deletedAt: new Date() } as never);
+      await expect(service.create({ primaryDriverId: 'drv_1', coDriverId: 'drv_2', vehicleId: 'veh_1' }, 'usr_1')).rejects.toMatchObject({ code: 'VEHICLE_NOT_FOUND' });
+      expect(pairings.create).not.toHaveBeenCalled();
+    });
+
     it('rejects an unknown vehicle', async () => {
       drivers.findById.mockResolvedValue({ id: 'drv_x' } as never);
       vehicles.findById.mockResolvedValue(null);

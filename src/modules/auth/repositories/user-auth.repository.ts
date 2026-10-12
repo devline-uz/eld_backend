@@ -13,6 +13,14 @@ export class UserAuthRepository {
     return this.prisma.user.findUnique({ where: { email }, include: { role: true } });
   }
 
+  /** Web "Forgot password?" — the address as typed may differ in case from the stored one. */
+  findByEmailInsensitiveWithRole(email: string): Promise<UserWithRole | null> {
+    return this.prisma.user.findFirst({
+      where: { email: { equals: email, mode: 'insensitive' } },
+      include: { role: true },
+    });
+  }
+
   findByIdWithRole(id: string): Promise<UserWithRole | null> {
     return this.prisma.user.findUnique({ where: { id }, include: { role: true } });
   }

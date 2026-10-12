@@ -75,7 +75,7 @@ export class DriversController {
   @ApiQuery({ name: 'hasOpenViolation', required: false, enum: ['true', 'false'] })
   @ApiQuery({ name: 'exempt', required: false, enum: ['true', 'false'], description: 'Filters on `eldExempt`.' })
   @ApiOperation({ summary: 'W-06 roster: per driver the HOS engine clocks, current duty status, assigned unit and open violation count.' })
-  @ApiOkResponse({ schema: { example: { items: [{ driver: { id: 'drv_1', username: 'jsmith', firstName: 'John', lastName: 'Smith', homeTerminalName: 'Columbus, OH', appVersion: 'v2.24', email: 'john@example.com', eldExempt: false, allowPersonalConveyance: true, allowYardMove: true, shortHaulException: false, splitSleeperEnabled: false }, dutyStatus: 'DRIVING', unit: { id: 'veh_1', unitNumber: '101' }, hos: { driveRemainingSec: 16200, shiftRemainingSec: 20400, cycleRemainingSec: 252000 }, openViolations: 0, emailVerified: null, isStale: false, staleSince: null }], page: 1, limit: 25, total: 1, totalPages: 1 } } })
+  @ApiOkResponse({ description: "UI-005/UI-015 (additive): items[].driver.hosRuleset 'US_70_8_PROPERTY'|'US_60_7_PROPERTY'|'US_70_8_PASSENGER'|'US_60_7_PASSENGER'; summary {total, withActiveViolations} over every live driver (filters / search / page ignored).", schema: { example: { items: [{ driver: { id: 'drv_1', username: 'jsmith', firstName: 'John', lastName: 'Smith', homeTerminalName: 'Columbus, OH', appVersion: 'v2.24', email: 'john@example.com', eldExempt: false, allowPersonalConveyance: true, allowYardMove: true, shortHaulException: false, splitSleeperEnabled: false, hosRuleset: 'US_70_8_PROPERTY' }, dutyStatus: 'DRIVING', unit: { id: 'veh_1', unitNumber: '101' }, hos: { driveRemainingSec: 16200, shiftRemainingSec: 20400, cycleRemainingSec: 252000 }, openViolations: 0, emailVerified: null, isStale: false, staleSince: null }], page: 1, limit: 25, total: 1, totalPages: 1, summary: { total: 57, withActiveViolations: 3 } } } })
   @ApiStandardErrors()
   roster(@Query(zodBody(DriverRosterQueryDto)) query: DriverRosterQueryDto) {
     return this.roster$.roster(query);
@@ -84,7 +84,7 @@ export class DriversController {
   @Get(':id/hos')
   @Perm('hos', 'READ')
   @ApiOperation({ summary: 'The four HOS clocks for one driver, computed now by the HOS engine (never from daily totals).' })
-  @ApiOkResponse({ schema: { example: { driveRemainingSec: 16200, shiftRemainingSec: 20400, cycleRemainingSec: 180000, breakInSec: 7440, onDutySince: '2026-09-12T14:26:00.000Z', cycleLimitSec: 252000, shiftLimitSec: 50400, driveLimitSec: 39600, breakLimitSec: 28800, dutyStatus: 'DRIVING', statusSince: '2026-09-12T18:00:00.000Z', computedAt: '2026-09-12T20:00:00.000Z', isStale: false, staleSince: null } } })
+  @ApiOkResponse({ description: 'UI-005 (additive): hosRuleset — the ruleset every limit comes from (same enum as Driver.hosRuleset).', schema: { example: { driveRemainingSec: 16200, shiftRemainingSec: 20400, cycleRemainingSec: 180000, breakInSec: 7440, onDutySince: '2026-09-12T14:26:00.000Z', cycleLimitSec: 252000, shiftLimitSec: 50400, driveLimitSec: 39600, breakLimitSec: 28800, dutyStatus: 'DRIVING', statusSince: '2026-09-12T18:00:00.000Z', computedAt: '2026-09-12T20:00:00.000Z', isStale: false, staleSince: null, hosRuleset: 'US_70_8_PROPERTY' } } })
   @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.')] })
   hos(@Param('id') id: string) {
     return this.roster$.clocks(id);
@@ -168,7 +168,16 @@ export class DriversController {
   @Audit({ object: 'Driver', action: 'DELETE' })
   @ApiOperation({ summary: 'Soft-deletes a driver (status -> TERMINATED, unassigns their unit). Never hard-deletes — see bugs.md B-009.' })
   @ApiOkResponse({ description: 'Soft-deleted — status is TERMINATED, the unit is unassigned.', schema: { example: { id: 'drv_1', status: 'TERMINATED', assignedVehicleId: null } } })
-  @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.')] })
+  @ApiStandardErrors({
+    errors: [
+      apiError.notFound(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.'),
+      {
+        ...apiError.conflict(ERROR_CODES.CONFLICT, 'This driver still has open trips (TRP-1001). Reassign or cancel them first.'),
+        details: { openTrips: [{ id: 'trp_1', number: 'TRP-1001', status: 'ASSIGNED' }] },
+        description: 'CONFLICT — the driver still has open trips (DRAFT / PLANNED / ASSIGNED / IN_PROGRESS); details.openTrips [{id, number, status}] (max 20). Reassign or cancel them first.',
+      },
+    ],
+  })
   remove(@Param('id') id: string) {
     return this.drivers.remove(id);
   }

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MAX_LIST_PAGE } from '../../../common/dto/list-query.dto';
 
 /** §395 Appendix A — 60 characters, and §9.3's 4-character floor for a meaningful annotation. */
 const annotation = z.string().trim().min(4).max(60);
@@ -8,7 +9,7 @@ export const UnidentifiedListQueryDto = z.object({
   vehicleId: z.string().uuid().optional(),
   from: z.coerce.date().optional(),
   to: z.coerce.date().optional(),
-  page: z.coerce.number().int().min(1).default(1),
+  page: z.coerce.number().int().min(1).max(MAX_LIST_PAGE).default(1),
   limit: z.coerce.number().int().min(1).max(200).default(25),
 });
 export type UnidentifiedListQueryDto = z.infer<typeof UnidentifiedListQueryDto>;
