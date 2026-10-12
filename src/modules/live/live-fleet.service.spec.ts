@@ -29,6 +29,7 @@ function setup() {
     ),
     latestLocatedEvents: jest.fn().mockResolvedValue(new Map()),
     activeSpecialDriving: jest.fn().mockResolvedValue(new Map([['drv_1', 'PC']])),
+    findAdverseInvokedToday: jest.fn().mockResolvedValue(new Set()),
   };
   const hos = {
     computeCurrentStates: jest.fn().mockResolvedValue(

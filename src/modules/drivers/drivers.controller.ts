@@ -1,6 +1,8 @@
 import { Body, Controller, Delete, Get, HttpCode, Param, Patch, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiCreatedResponse, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { Audit } from '../../common/decorators/audit.decorator';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import type { ContextUser } from '../../core/context/request-context';
 import { Perm } from '../../common/decorators/perm.decorator';
 import { zodBody } from '../../common/pipes/zod-validation.pipe';
 import {
@@ -9,6 +11,7 @@ import {
   DriverListQueryDto,
   DriverRosterQueryDto,
   ImportDriversDto,
+  InvokeAdverseDrivingDto,
   UpdateDriverDto,
   VerifyDriverEmailDto,
 } from './dto/drivers.dto';
@@ -72,7 +75,7 @@ export class DriversController {
   @ApiQuery({ name: 'hasOpenViolation', required: false, enum: ['true', 'false'] })
   @ApiQuery({ name: 'exempt', required: false, enum: ['true', 'false'], description: 'Filters on `eldExempt`.' })
   @ApiOperation({ summary: 'W-06 roster: per driver the HOS engine clocks, current duty status, assigned unit and open violation count.' })
-  @ApiOkResponse({ schema: { example: { items: [{ driver: { id: 'drv_1', username: 'jsmith', firstName: 'John', lastName: 'Smith', homeTerminalName: 'Columbus, OH', appVersion: 'v2.24', email: 'john@example.com', eldExempt: false, allowPersonalConveyance: true, allowYardMove: true, shortHaulException: false, splitSleeperEnabled: false }, dutyStatus: 'DRIVING', unit: { id: 'veh_1', unitNumber: '101' }, hos: { driveRemainingSec: 16200, shiftRemainingSec: 20400, cycleRemainingSec: 252000 }, openViolations: 0, emailVerified: null }], page: 1, limit: 25, total: 1, totalPages: 1 } } })
+  @ApiOkResponse({ schema: { example: { items: [{ driver: { id: 'drv_1', username: 'jsmith', firstName: 'John', lastName: 'Smith', homeTerminalName: 'Columbus, OH', appVersion: 'v2.24', email: 'john@example.com', eldExempt: false, allowPersonalConveyance: true, allowYardMove: true, shortHaulException: false, splitSleeperEnabled: false }, dutyStatus: 'DRIVING', unit: { id: 'veh_1', unitNumber: '101' }, hos: { driveRemainingSec: 16200, shiftRemainingSec: 20400, cycleRemainingSec: 252000 }, openViolations: 0, emailVerified: null, isStale: false, staleSince: null }], page: 1, limit: 25, total: 1, totalPages: 1 } } })
   @ApiStandardErrors()
   roster(@Query(zodBody(DriverRosterQueryDto)) query: DriverRosterQueryDto) {
     return this.roster$.roster(query);
@@ -81,10 +84,30 @@ export class DriversController {
   @Get(':id/hos')
   @Perm('hos', 'READ')
   @ApiOperation({ summary: 'The four HOS clocks for one driver, computed now by the HOS engine (never from daily totals).' })
-  @ApiOkResponse({ schema: { example: { driveRemainingSec: 16200, shiftRemainingSec: 20400, cycleRemainingSec: 180000, breakInSec: 7440, onDutySince: '2026-09-12T14:26:00.000Z', cycleLimitSec: 252000, shiftLimitSec: 50400, driveLimitSec: 39600, breakLimitSec: 28800, dutyStatus: 'DRIVING', statusSince: '2026-09-12T18:00:00.000Z', computedAt: '2026-09-12T20:00:00.000Z' } } })
+  @ApiOkResponse({ schema: { example: { driveRemainingSec: 16200, shiftRemainingSec: 20400, cycleRemainingSec: 180000, breakInSec: 7440, onDutySince: '2026-09-12T14:26:00.000Z', cycleLimitSec: 252000, shiftLimitSec: 50400, driveLimitSec: 39600, breakLimitSec: 28800, dutyStatus: 'DRIVING', statusSince: '2026-09-12T18:00:00.000Z', computedAt: '2026-09-12T20:00:00.000Z', isStale: false, staleSince: null } } })
   @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.')] })
   hos(@Param('id') id: string) {
     return this.roster$.clocks(id);
+  }
+
+  @Post(':id/hos/adverse-driving')
+  @HttpCode(200)
+  @Perm('hos', 'FULL')
+  @Audit({ object: 'Driver', action: 'ADVERSE_DRIVING_INVOKE' })
+  @ApiOperation({ summary: 'BUG-001 — invokes adverse driving conditions (49 CFR §395.1(b)(1)) for one RODS day of a permitted driver, with the required annotation. Only that day gets the +2 h drive / shift extension.' })
+  @ApiOkResponse({ schema: { example: { id: 'adv_1', driverId: 'drv_1', date: '2026-09-12', annotation: 'Unforeseen snow closure on I-80, dispatcher confirmed', invokedById: 'usr_1', invokedByType: 'user', createdAt: '2026-09-12T18:00:00.000Z' } } })
+  @ApiStandardErrors({
+    errors: [
+      apiError.notFound(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.'),
+      apiError.unprocessable(ERROR_CODES.VALIDATION_FAILED, 'Adverse driving is not enabled for this driver.'),
+    ],
+  })
+  invokeAdverseDriving(
+    @Param('id') id: string,
+    @Body(zodBody(InvokeAdverseDrivingDto)) dto: InvokeAdverseDrivingDto,
+    @CurrentUser() actor: ContextUser,
+  ) {
+    return this.roster$.invokeAdverseDriving(id, dto, actor);
   }
 
   @Get(':id')

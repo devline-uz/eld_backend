@@ -36,8 +36,10 @@ export class ViolationsService {
     private readonly audit: AuditRepository,
   ) {}
 
-  async list(query: ViolationListQueryDto, now: Date = new Date()) {
-    const where = buildWhere(query, now);
+  /** `exclude` — BUG-003 extra `NOT` clauses from `ActiveViolationsService` (stale-status rows). */
+  async list(query: ViolationListQueryDto, now: Date = new Date(), exclude: Prisma.HosViolationWhereInput[] = []) {
+    const base = buildWhere(query, now);
+    const where = exclude.length ? { AND: [base, ...exclude] } : base;
     const { items, total } = await this.repo.list(where, query.page, query.limit);
 
     const contexts = await Promise.all(items.map((row) => this.repo.findContextEvent(row.driverId, row.occurredAt)));

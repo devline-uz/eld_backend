@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { HosState } from '../hos/hos.types';
 import { HosRecalcService } from '../hos-recalc/hos-recalc.service';
+import { withEffectiveAdverse } from '../drivers/lib/adverse-driving';
 import { LiveFleetRepository } from './live-fleet.repository';
 import { compareUnitNumbers, toLiveFleetUnit, type LiveFleetResponse } from './live-fleet.mapper';
 
@@ -37,7 +38,9 @@ export class LiveFleetService {
     const until = new Date(now.getTime() + FUTURE_TOLERANCE_MS);
     const vehicles = await this.repo.findVehicles();
     const vehicleIds = vehicles.map((v) => v.id);
-    const drivers = vehicles.flatMap((v) => (v.driver ? [v.driver] : []));
+    const assigned = vehicles.flatMap((v) => (v.driver ? [v.driver] : []));
+    // BUG-001 — the +2 h adverse extension only on a day it was invoked (§395.1(b)(1)).
+    const drivers = withEffectiveAdverse(assigned, await this.repo.findAdverseInvokedToday(assigned, now));
     const driverIds = drivers.map((d) => d.id);
 
     const [telemetry, located, special, hosStates] = await Promise.all([

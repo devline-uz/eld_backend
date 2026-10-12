@@ -81,6 +81,11 @@ export function deriveObjectRef(eventName: string, payload: Record<string, unkno
     const id = str(payload.driverId);
     return id ? { objectType: 'Driver', objectId: id } : undefined;
   }
+  // BUG-002 — raised per driver (no device serial on the payload); the row opens the driver.
+  if (eventName === 'alert.eld_status_stale') {
+    const id = str(payload.driverId);
+    return id ? { objectType: 'Driver', objectId: id } : undefined;
+  }
   if (eventName.startsWith('alert.eld_') || eventName.startsWith('alert.device_')) {
     const id = str(payload.deviceSerial);
     return id ? { objectType: 'Device', objectId: id } : undefined;
@@ -124,6 +129,8 @@ export function deriveNotificationBody(eventName: string, payload: Record<string
       return 'The recorded engine hours drifted from the ELD reading.';
     case eventName === 'alert.eld_disconnected':
       return 'An ELD device disconnected.';
+    case eventName === 'alert.eld_status_stale':
+      return 'ELD connection lost: a duty status stopped updating.';
     case eventName === 'alert.device_backlog':
       return 'A device has a data sync backlog.';
     case eventName === 'alert.device_mac_mismatch':

@@ -15,6 +15,7 @@ import {
   ResolveEditRequestDto,
 } from './dto/logs.dto';
 import { LogsService } from './logs.service';
+import { ActiveViolationsService } from '../violations/active-violations.service';
 import { apiError, ApiStandardErrors, ERROR_CODES } from '../../common/errors';
 import { FigmaScreen } from '../../common/decorators/figma-screen.decorator';
 
@@ -30,7 +31,10 @@ import { FigmaScreen } from '../../common/decorators/figma-screen.decorator';
 @ApiBearerAuth()
 @Controller('logs')
 export class LogsController {
-  constructor(private readonly logs: LogsService) {}
+  constructor(
+    private readonly logs: LogsService,
+    private readonly activeViolations: ActiveViolationsService,
+  ) {}
 
   @Post('edit-requests/:id/accept')
   // §395.30(c)(1) — the DRIVER resolves a carrier proposal, nobody else. Without this guard
@@ -98,8 +102,12 @@ export class LogsController {
     },
   })
   @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.')] })
-  getDay(@Param('driverId') driverId: string, @Query(zodBody(LogDateQueryDto)) query: LogDateQueryDto) {
-    return this.logs.getDayView(driverId, query.date);
+  async getDay(@Param('driverId') driverId: string, @Query(zodBody(LogDateQueryDto)) query: LogDateQueryDto) {
+    // BUG-003 — `Violations · today` reads the same active rows the dashboard and roster count:
+    // refreshed against the live engine first, stale-status rows (BUG-002) left out.
+    const isActive = await this.activeViolations.activeFilter(driverId);
+    const day = await this.logs.getDayView(driverId, query.date);
+    return { ...day, violations: day.violations.filter(isActive) };
   }
 
   @Get(':driverId/range')
