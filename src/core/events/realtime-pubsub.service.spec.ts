@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { AppConfigService } from '../config/config.service';
 import { EventBusService } from './event-bus.service';
-import { RealtimePubSubService } from './realtime-pubsub.service';
+import { isRelayPayload, RealtimePubSubService } from './realtime-pubsub.service';
 
 class FakeRedis extends EventEmitter {
   publish = jest.fn(async () => 1);
@@ -104,5 +104,24 @@ describe('RealtimePubSubService', () => {
 
     expect(publisher.quit).toHaveBeenCalled();
     expect(subscriber.quit).toHaveBeenCalled();
+  });
+
+  it('accepts a multi-room push (array of valid rooms) and relays it unchanged', async () => {
+    const { service } = makeService();
+    service.onModuleInit();
+    const [, subscriber] = instances;
+    const received: unknown[] = [];
+    service.onRelayed((payload) => received.push(payload));
+    const push = { room: ['conversation:c1', 'user:u1', 'driver:d1'], event: 'message.new', payload: { message: { id: 'm1' } } };
+    subscriber.emit('message', 'onebook:db3:realtime:push', JSON.stringify(push));
+    expect(received).toEqual([push]);
+    await service.onModuleDestroy();
+  });
+
+  it('rejects multi-room pushes that are empty or contain an invalid room', () => {
+    expect(isRelayPayload({ room: [], event: 'message.new', payload: {} })).toBe(false);
+    expect(isRelayPayload({ room: ['user:u1', 'admin:*'], event: 'message.new', payload: {} })).toBe(false);
+    expect(isRelayPayload({ room: ['user:u1', 42], event: 'message.new', payload: {} })).toBe(false);
+    expect(isRelayPayload({ room: ['user:u1', 'driver:d1'], event: 'message.new', payload: {} })).toBe(true);
   });
 });

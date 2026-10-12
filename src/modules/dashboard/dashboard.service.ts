@@ -6,7 +6,7 @@ import { LiveFleetService } from '../live/live-fleet.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { UnidentifiedService } from '../unidentified/unidentified.service';
 import { VehiclesService } from '../vehicles/vehicles.service';
-import { ViolationsService } from '../violations/violations.service';
+import { ActiveViolationsService } from '../violations/active-violations.service';
 
 const DUTY_ON_STATUSES: LiveDutyStatus[] = ['DRIVING', 'ON_DUTY', 'SLEEPER'];
 
@@ -22,7 +22,7 @@ const DUTY_ON_STATUSES: LiveDutyStatus[] = ['DRIVING', 'ON_DUTY', 'SLEEPER'];
 export class DashboardService {
   constructor(
     private readonly liveFleet: LiveFleetService,
-    private readonly violations: ViolationsService,
+    private readonly violations: ActiveViolationsService,
     private readonly unidentified: UnidentifiedService,
     private readonly notifications: NotificationsService,
     private readonly carrier: CarrierService,
@@ -32,7 +32,12 @@ export class DashboardService {
   async summary(actor: ContextUser, now: Date = new Date()) {
     const [fleet, violationsPage, unidentifiedPage, unread, carrierProfile, activeVehicles, allVehicles] = await Promise.all([
       this.liveFleet.snapshot(now),
-      this.violations.list({ window: '24h', status: 'OPEN', page: 1, limit: 25 }, now),
+      // One definition of "violation" across the panel: an OPEN `HosViolation` row, whatever day
+      // it was filed on — the same rows the Drivers roster counts (`openViolations`) and the
+      // driver log lists. A 24 h window here made the KPI read 0 while the roster said "1 with
+      // active violations" for a violation filed two days earlier and still unresolved.
+      // BUG-003 — read through `ActiveViolationsService`, the single web definition.
+      this.violations.list({ status: 'OPEN', page: 1, limit: 25 }, now),
       this.unidentified.list({ status: 'PENDING', page: 1, limit: 25 }),
       this.notifications.list(actor, { page: 1, limit: 1, unreadOnly: true }),
       this.carrier.get(),

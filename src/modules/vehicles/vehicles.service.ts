@@ -495,10 +495,15 @@ export class VehiclesService {
   async importMany(dto: ImportVehiclesDto, actorUserId?: string): Promise<ImportSummary> {
     const options = dto.options ?? DEFAULT_IMPORT_OPTIONS;
     const summary: ImportSummary = { imported: 0, updated: 0, skipped: 0, failed: [] };
+    // Up to 2,000 rows usually share a handful of groups — check each group id once, not per row.
+    const knownGroups = new Set<string>();
     for (let index = 0; index < dto.vehicles.length; index += 1) {
       const row = this.applyImportDefaults(dto.vehicles[index], options);
       try {
-        await this.assertGroupExists(row.groupId);
+        if (row.groupId && !knownGroups.has(row.groupId)) {
+          await this.assertGroupExists(row.groupId);
+          knownGroups.add(row.groupId);
+        }
         const existing = (await this.vehicles.findByUnitNumber(row.unitNumber)) ?? (await this.vehicles.findByVin(row.vin));
         let vehicle: Vehicle;
         if (existing) {

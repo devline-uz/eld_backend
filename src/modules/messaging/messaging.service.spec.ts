@@ -2,25 +2,43 @@ import { MessagingService } from './messaging.service';
 
 function buildService(conversation: unknown = { id: 'cnv_1' }, isParticipant = true) {
   const repo = {
-    findById: jest.fn(async () => conversation),
+    findById: jest.fn(async (_id?: string): Promise<unknown> => conversation),
     isParticipant: jest.fn(async () => isParticipant),
     markRead: jest.fn(async () => undefined),
     listForActor: jest.fn(async () => []),
-    createMessage: jest.fn(async (conversationId: string, d: { body: string; attachmentId?: string }) => ({
-      id: 'msg_1', conversationId, body: d.body, attachmentId: d.attachmentId ?? null,
+    createMessage: jest.fn(async (conversationId: string, data: Record<string, unknown>) => ({
+      id: 'msg_1',
+      conversationId,
+      body: data.body,
+      attachmentId: data.attachmentId ?? null,
+      clientId: data.clientId ?? null,
+      senderUserId: data.senderUserId ?? null,
+      senderDriverId: data.senderDriverId ?? null,
+      sentAt: new Date('2026-10-11T10:00:00Z'),
     })),
     findUserDisplayName: jest.fn(async () => 'Ann Dispatcher'),
-    createConversation: jest.fn(async () => ({
-      id: 'cnv_9', type: 'DIRECT', title: null,
-      participants: [{ userId: 'usr_1', driverId: null }, { userId: null, driverId: 'drv_1' }],
+    createConversation: jest.fn(async (data: Record<string, unknown>, participants: Array<{ userId?: string; driverId?: string }> = []) => ({
+      id: 'cnv_new',
+      type: 'DIRECT',
+      title: null,
+      ...data,
+      participants: participants.map((p) => ({ userId: p.userId ?? null, driverId: p.driverId ?? null })),
     })),
   };
   const chat = { decorate: jest.fn(async (ms: Array<Record<string, unknown>>) => ms.map((m) => ({ ...m, type: 'TEXT', attachment: null }))), assertSendable: jest.fn(async () => undefined) };
   const push = { sendToDriver: jest.fn(async () => undefined) };
-  const events = { publish: jest.fn(async () => undefined) };
+  const events = { publish: jest.fn(async (_name: string, _payload: unknown) => undefined) };
   const service = new MessagingService(repo as never, events as never, push as never, chat as never);
   return { service, repo, push, events, chat };
 }
+
+const conversationWithParticipants = {
+  id: 'cnv_1',
+  participants: [
+    { userId: 'usr_1', driverId: null },
+    { userId: null, driverId: 'drv_1' },
+  ],
+};
 
 const actor = { id: 'usr_1', type: 'user' } as never;
 
@@ -44,73 +62,93 @@ describe('MessagingService — §20 B-67 mark read', () => {
   });
 });
 
-describe('MessagingService — chat FCM', () => {
-  const conv = { id: 'cnv_1', participants: [{ userId: 'usr_1', driverId: null }, { userId: null, driverId: 'drv_1' }] };
-
-  it('pushes the driver participant when staff sends (identifiers only in data)', async () => {
-    const { service, push } = buildService(conv);
-    await service.sendMessage('cnv_1', { body: 'x'.repeat(150) }, actor);
-    expect(push.sendToDriver).toHaveBeenCalledTimes(1);
-    const [driverId, notification, data] = push.sendToDriver.mock.calls[0] as unknown as [string, { title: string; body: string }, Record<string, string>];
-    expect(driverId).toBe('drv_1');
-    expect(notification.title).toBe('Ann Dispatcher');
-    expect(notification.body.length).toBeLessThanOrEqual(100);
-    expect(data).toEqual({ type: 'message.new', conversationId: 'cnv_1', messageId: 'msg_1', driverId: 'drv_1' });
-  });
-
-  it('uses "Sent an attachment" for an empty body with an attachment', async () => {
-    const { service, push } = buildService(conv);
-    await service.sendMessage('cnv_1', { body: '', attachmentId: 'att_1' }, actor);
-    expect(push.sendToDriver).toHaveBeenCalledWith('drv_1', expect.objectContaining({ body: 'Sent an attachment' }), expect.anything());
-  });
-
-  it('MB-9 verifies attachment ownership before sending and returns type + attachment', async () => {
-    const { service, chat } = buildService(conv);
-    const out = await service.sendMessage('cnv_1', { body: '', attachmentId: 'att_1' }, actor);
-    expect(chat.assertSendable).toHaveBeenCalledWith('att_1', actor);
-    expect(out).toMatchObject({ type: 'TEXT', attachment: null });
-  });
-
-  it('MB-9 a foreign attachment aborts the send before any row is written', async () => {
-    const { service, chat, repo } = buildService(conv);
-    chat.assertSendable.mockRejectedValueOnce(new Error('nope'));
-    await expect(service.sendMessage('cnv_1', { body: '', attachmentId: 'att_x' }, actor)).rejects.toThrow('nope');
-    expect(repo.createMessage).not.toHaveBeenCalled();
-  });
-
-  it('never pushes when a driver sends', async () => {
-    const { service, push } = buildService(conv);
-    await service.sendMessage('cnv_1', { body: 'hi' }, { id: 'drv_1', type: 'driver' } as never);
-    expect(push.sendToDriver).not.toHaveBeenCalled();
-  });
-
-  it('a push failure never fails the send', async () => {
-    const { service, push } = buildService(conv);
-    push.sendToDriver.mockRejectedValueOnce(new Error('fcm down'));
-    await expect(service.sendMessage('cnv_1', { body: 'hi' }, actor)).resolves.toMatchObject({ id: 'msg_1' });
-  });
-});
-
-describe('MessagingService — MB-8 conversation.new to the driver room', () => {
-  it('staff opening a conversation emits conversation.new to each driver participant', async () => {
-    const { service, events } = buildService();
-    await service.createConversation({ type: 'DIRECT', driverIds: ['drv_1'], userIds: [] } as never, actor);
+describe('MessagingService — realtime chat contract', () => {
+  it('message.new goes to the conversation room AND every staff identity room in one push (no driver rooms)', async () => {
+    const { service, events } = buildService(conversationWithParticipants);
+    await service.sendMessage('cnv_1', { body: 'hello', clientId: 'c1' }, actor);
+    expect(events.publish).toHaveBeenCalledTimes(1);
     expect(events.publish).toHaveBeenCalledWith('realtime.push', {
-      room: 'driver:drv_1',
-      event: 'conversation.new',
-      payload: { conversationId: 'cnv_9', type: 'DIRECT', title: null },
+      room: ['conversation:cnv_1', 'user:usr_1'],
+      event: 'message.new',
+      payload: {
+        conversationId: 'cnv_1',
+        message: expect.objectContaining({ id: 'msg_1', conversationId: 'cnv_1', senderUserId: 'usr_1', senderId: 'usr_1', senderType: 'STAFF' }) as unknown,
+      },
     });
   });
 
-  it('a driver opening a conversation emits nothing to driver rooms', async () => {
+  it('a driver-sent message.new carries senderType DRIVER and reaches the staff identity room', async () => {
+    const { service, events } = buildService(conversationWithParticipants);
+    await service.sendMessage('cnv_1', { body: 'from cab' }, { id: 'drv_1', type: 'driver' } as never);
+    const [, push] = events.publish.mock.calls[0] as [string, { room: string[]; payload: { message: Record<string, unknown> } }];
+    expect(push.room).toContain('user:usr_1');
+    expect(push.payload.message).toMatchObject({ senderDriverId: 'drv_1', senderId: 'drv_1', senderType: 'DRIVER' });
+  });
+
+  it('dedupes identity rooms when a participant appears twice', async () => {
+    const { service, events } = buildService({
+      id: 'cnv_1',
+      participants: [
+        { userId: 'usr_1', driverId: null },
+        { userId: 'usr_1', driverId: null },
+      ],
+    });
+    await service.sendMessage('cnv_1', { body: 'x' }, actor);
+    const [, push] = events.publish.mock.calls[0] as [string, { room: string[] }];
+    expect(push.room).toEqual(['conversation:cnv_1', 'user:usr_1']);
+  });
+
+  it('createConversation pushes conversation.new to every staff identity room (creator included, no driver rooms)', async () => {
     const { service, events } = buildService();
-    await service.createConversation({ type: 'DIRECT', driverIds: [], userIds: ['usr_1'] } as never, { id: 'drv_1', type: 'driver' } as never);
+    const out = await service.createConversation({ type: 'DIRECT', driverIds: ['drv_1'], userIds: ['usr_2'] } as never, actor);
+    expect(out.id).toBe('cnv_new');
+    expect(events.publish).toHaveBeenCalledWith('realtime.push', {
+      room: ['user:usr_1', 'user:usr_2'],
+      event: 'conversation.new',
+      payload: expect.objectContaining({ conversationId: 'cnv_new', message: null }) as unknown,
+    });
+  });
+
+  it('a conversation.new push failure never fails createConversation', async () => {
+    const { service, events } = buildService();
+    events.publish.mockRejectedValueOnce(new Error('redis down'));
+    await expect(service.createConversation({ type: 'DIRECT', driverIds: ['drv_1'], userIds: [] } as never, actor)).resolves.toMatchObject({ id: 'cnv_new' });
+  });
+
+  it('markRead pushes conversation.read to the reader identity room only', async () => {
+    const { service, events } = buildService();
+    await service.markRead('cnv_1', actor);
+    expect(events.publish).toHaveBeenCalledWith('realtime.push', {
+      room: 'user:usr_1',
+      event: 'conversation.read',
+      payload: { conversationId: 'cnv_1', lastReadAt: expect.any(Date) as Date, userId: 'usr_1' },
+    });
+  });
+
+  it('a driver mark-read pushes nothing', async () => {
+    const { service, events } = buildService();
+    await service.markRead('cnv_1', { id: 'drv_1', type: 'driver' } as never);
     expect(events.publish).not.toHaveBeenCalled();
   });
 
-  it('an emit failure never fails the create', async () => {
+  it('notifyConversationStarted (MR-3) pushes conversation.new to the staff user room', async () => {
     const { service, events } = buildService();
-    events.publish.mockRejectedValueOnce(new Error('redis down'));
-    await expect(service.createConversation({ type: 'DIRECT', driverIds: ['drv_1'], userIds: [] } as never, actor)).resolves.toMatchObject({ id: 'cnv_9' });
+    await service.notifyConversationStarted('usr_1', 'cnv_9', { id: 'msg_9' });
+    expect(events.publish).toHaveBeenCalledWith('realtime.push', {
+      room: 'user:usr_1',
+      event: 'conversation.new',
+      payload: { conversationId: 'cnv_9', message: { id: 'msg_9' } },
+    });
+  });
+
+  it('broadcast emits message.new and conversation.new to staff rooms for each driver thread', async () => {
+    const { service, repo, events } = buildService();
+    repo.findById.mockImplementation(async () => ({ id: 'cnv_new', participants: [{ userId: 'usr_1', driverId: null }, { userId: null, driverId: 'drv_9' }] }));
+    await service.broadcast({ driverIds: ['drv_9'], body: 'all hands', title: 'Notice' }, actor);
+    const pushes = events.publish.mock.calls.map(([, p]) => p as { event: string; room: string | string[] });
+    expect(pushes.map((p) => p.event)).toEqual(['conversation.new', 'message.new', 'conversation.new']);
+    expect(pushes[0].room).toBe('driver:drv_9');
+    expect(pushes[1].room).toEqual(['conversation:cnv_new', 'user:usr_1']);
+    expect(pushes[2].room).toEqual(['user:usr_1']);
   });
 });

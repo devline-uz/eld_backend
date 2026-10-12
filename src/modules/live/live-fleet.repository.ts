@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../core/prisma/prisma.service';
+import { findAdverseInvokedToday } from '../drivers/lib/adverse-driving';
 import type { LatestLocatedEvent, LatestTelemetry } from './live-fleet.mapper';
 
 /**
@@ -29,6 +30,11 @@ export class LiveFleetRepository {
         driver: true,
       },
     });
+  }
+
+  /** BUG-001 — ids of the permitted drivers with adverse driving invoked for their current RODS day. */
+  findAdverseInvokedToday(drivers: Array<{ id: string; homeTerminalTimezone: string; adverseDrivingEnabled: boolean }>, now: Date): Promise<Set<string>> {
+    return findAdverseInvokedToday(this.prisma, drivers, now);
   }
 
   /**

@@ -41,8 +41,25 @@ export class SafetyController {
 
   @Get('scorecard')
   @Perm('safety', 'READ')
-  @ApiOperation({ summary: 'Fleet safety score and per-driver ranking ("Driver scorecard", below-70 flagged). B-44: each row includes previousScore/trend vs. the prior period of the same length.' })
-  @ApiOkResponse({ schema: { example: { items: [{ driverId: 'drv_1', score: 68, harshCount: 4, rank: 1, previousScore: 74, trend: -6 }], periodStart: '2026-08-12', periodEnd: '2026-09-11' } } })
+  @ApiOperation({
+    summary:
+      'Fleet safety score and per-driver ranking ("Driver scorecard", below-70 flagged). D-141: returns the latest nightly-computed rolling 30-day period (or the one starting on `periodStart` / ending on `periodEnd`, YYYY-MM-DD). Drivers under `minMiles` have `score: null`, `rank: null`. `fleet.score` is the mile-weighted mean of scored drivers; `fleet.trend` and per-row `trend` compare with the previous period of the same length.',
+  })
+  @ApiOkResponse({
+    schema: {
+      example: {
+        periodStart: '2026-09-11',
+        periodEnd: '2026-10-10',
+        computedAt: '2026-10-11T10:30:02.000Z',
+        minMiles: 100,
+        fleet: { score: 88, previousScore: 85, trend: 3, scoredDrivers: 12, unscoredDrivers: 2, belowThresholdCount: 1, milesDriven: 48210 },
+        items: [
+          { id: 'dsc_1', driverId: 'drv_1', periodStart: '2026-09-11', periodEnd: '2026-10-10', score: 96, scored: true, harshCount: 1, speedingCount: 0, seatbeltCount: 0, milesDriven: 5210, violationCount: 0, rank: 1, previousScore: 92, trend: 4, computedAt: '2026-10-11T10:30:02.000Z' },
+          { id: 'dsc_2', driverId: 'drv_2', periodStart: '2026-09-11', periodEnd: '2026-10-10', score: null, scored: false, harshCount: 0, speedingCount: 0, seatbeltCount: 0, milesDriven: 42, violationCount: 0, rank: null, previousScore: null, trend: null, computedAt: '2026-10-11T10:30:02.000Z' },
+        ],
+      },
+    },
+  })
   @ApiStandardErrors()
   scorecard(@Query(zodBody(ScorecardQueryDto)) query: ScorecardQueryDto) {
     return this.safety.scorecard(query);

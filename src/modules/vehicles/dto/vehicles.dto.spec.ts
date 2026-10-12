@@ -1,4 +1,4 @@
-import { CreateVehicleDto, ImportVehiclesDto, UpdateVehicleDto, VIN_MESSAGE } from './vehicles.dto';
+import { CreateVehicleDto, ImportVehiclesDto, UpdateVehicleDto, VEHICLE_IMPORT_MAX_ROWS, VIN_MESSAGE } from './vehicles.dto';
 
 const base = { unitNumber: '7301' };
 
@@ -42,5 +42,23 @@ describe('web-panel VIN validation (ISO 3779: 17 chars, no I/O/Q)', () => {
   it('PATCH leaves vin optional but validates it when sent', () => {
     expect(UpdateVehicleDto.safeParse({ make: 'Volvo' }).success).toBe(true);
     expect(UpdateVehicleDto.safeParse({ vin: '1FUJHHDR5NLNN44I0' }).success).toBe(false);
+  });
+});
+
+describe('ImportVehiclesDto row cap (web tz.md — "2,000 rows maximum")', () => {
+  const rows = (n: number) => Array.from({ length: n }, (_, i) => ({ unitNumber: String(i + 1), vin: '1FUJHHDR5NLNN4410' }));
+
+  it('caps at 2,000 rows', () => {
+    expect(VEHICLE_IMPORT_MAX_ROWS).toBe(2000);
+  });
+
+  it('accepts exactly 2,000 rows', () => {
+    expect(ImportVehiclesDto.safeParse({ vehicles: rows(2000) }).success).toBe(true);
+  });
+
+  it('rejects 2,001 rows on the `vehicles` array', () => {
+    const result = ImportVehiclesDto.safeParse({ vehicles: rows(2001) });
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.issues[0]?.path).toEqual(['vehicles']);
   });
 });

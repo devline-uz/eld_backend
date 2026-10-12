@@ -123,24 +123,53 @@ export function toSample(point: {
 // Driver scoring (TZ §11.5 `/safety/scorecard`, "Safety" Figma screen)
 // ---------------------------------------------------------------------------
 
+/** D-141 — a driver with fewer miles than this in the period gets no score ("Not enough miles"). */
+export const MIN_SCORED_MILES = 100;
+
+/** D-141 — points deducted per event, per 1,000 miles driven. */
+export const SCORE_WEIGHTS = { harsh: 2, speeding: 1.5, seatbelt: 3, hosViolation: 5 } as const;
+
+/**
+ * D-141 — harsh-event severity multiplier: 4–5 Critical ×4, 3 Major ×2, 1–2 Minor ×1. Severity
+ * outside 1–5 is clamped into it, so a bad row can never zero or explode the deduction.
+ */
+export function severityFactor(severity: number): number {
+  const s = Math.max(1, Math.min(5, Math.round(severity)));
+  if (s >= 4) return 4;
+  if (s === 3) return 2;
+  return 1;
+}
+
 export interface ScoreInput {
-  harshCount: number;
+  /** Harsh braking/accel/turn events, grouped by severity (`count` events at `severity`). */
+  harsh: ReadonlyArray<{ severity: number; count: number }>;
   speedingCount: number;
-  milesDriven: number;
+  seatbeltCount: number;
+  /** HOS violations in the period. */
   violationCount: number;
+  milesDriven: number;
 }
 
 /**
  * TZ eld.docs/web §9 — "Fleet safety score 0-100, below 70 needs attention". No formula is
- * specified, so this implements a documented, reproducible points-deduction model
- * (D-0xx): start at 100, deduct per event normalised per 1,000 miles driven so a
- * high-mileage driver isn't penalised more than a low-mileage one for the same event rate.
+ * specified, so this is the documented, reproducible points-deduction model of D-033 as revised
+ * by D-141 (Phase 1 scorecards):
+ *
+ *   milesK    = milesDriven / 1000
+ *   deduction = Σ harsh × 2 × severityFactor + speeding × 1.5 + seatbelt × 3 + HOS violations × 5
+ *   score     = clamp(round(100 − deduction / milesK), 0, 100)
+ *
+ * Returns `null` (no score) when `milesDriven < MIN_SCORED_MILES` — a handful of miles would turn
+ * one event into a 0 and is not a meaningful rate. Pure and deterministic.
  */
-export function computeDriverScore(input: ScoreInput): number {
-  const milesK = Math.max(input.milesDriven, 1) / 1000;
+export function computeDriverScore(input: ScoreInput): number | null {
+  if (!(input.milesDriven >= MIN_SCORED_MILES)) return null;
+  const milesK = input.milesDriven / 1000;
+  const harshPoints = input.harsh.reduce((sum, h) => sum + h.count * SCORE_WEIGHTS.harsh * severityFactor(h.severity), 0);
   const deduction =
-    (input.harshCount / milesK) * 2 +
-    (input.speedingCount / milesK) * 1.5 +
-    (input.violationCount / milesK) * 5;
-  return Math.max(0, Math.min(100, Math.round(100 - deduction)));
+    harshPoints +
+    input.speedingCount * SCORE_WEIGHTS.speeding +
+    input.seatbeltCount * SCORE_WEIGHTS.seatbelt +
+    input.violationCount * SCORE_WEIGHTS.hosViolation;
+  return Math.max(0, Math.min(100, Math.round(100 - deduction / milesK)));
 }

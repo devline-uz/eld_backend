@@ -4,7 +4,7 @@ import type { LiveFleetService } from '../live/live-fleet.service';
 import type { NotificationsService } from '../notifications/notifications.service';
 import type { UnidentifiedService } from '../unidentified/unidentified.service';
 import type { VehiclesService } from '../vehicles/vehicles.service';
-import type { ViolationsService } from '../violations/violations.service';
+import type { ActiveViolationsService } from '../violations/active-violations.service';
 
 describe('DashboardService — reuses each feature module\'s own service via Promise.all', () => {
   const liveFleet = {
@@ -32,7 +32,7 @@ describe('DashboardService — reuses each feature module\'s own service via Pro
 
   const service = new DashboardService(
     liveFleet as unknown as LiveFleetService,
-    violations as unknown as ViolationsService,
+    violations as unknown as ActiveViolationsService,
     unidentified as unknown as UnidentifiedService,
     notifications as unknown as NotificationsService,
     carrier as unknown as CarrierService,
@@ -51,7 +51,7 @@ describe('DashboardService — reuses each feature module\'s own service via Pro
     expect(result.carrier).toEqual({ id: 'carrier', name: 'Universal Logistics Inc.', timezone: 'America/New_York' });
     expect(result.vehicles).toEqual({ active: 40, total: 45 });
 
-    expect(violations.list).toHaveBeenCalledWith({ window: '24h', status: 'OPEN', page: 1, limit: 25 }, now);
+    expect(violations.list).toHaveBeenCalledWith({ status: 'OPEN', page: 1, limit: 25 }, now);
     expect(unidentified.list).toHaveBeenCalledWith({ status: 'PENDING', page: 1, limit: 25 });
     expect(notifications.list).toHaveBeenCalledWith(actor, { page: 1, limit: 1, unreadOnly: true });
     expect(vehicles.list).toHaveBeenCalledWith({ page: 1, limit: 1, status: 'ACTIVE' });

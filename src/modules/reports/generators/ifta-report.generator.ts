@@ -10,6 +10,12 @@ type VehicleScope = { vehicleId?: string | { in: string[] } };
 import { csvFromRows } from '../lib/csv-stream';
 import { renderPdf } from '../lib/pdf-render';
 
+/** CSV/PDF cell for a figure that cannot be derived (no fuel purchased -> no fleet MPG). */
+const NO_VALUE = '—';
+
+/** One CSV/PDF line. `fleetMpg` is the fleet-wide MPG (total miles / total gallons, same value on
+ * every line) that IFTA divides each jurisdiction's miles by to get `taxableGallons` — it is not
+ * that jurisdiction's own miles / `fuelPurchasedGal`. */
 export interface IftaReportRow {
   jurisdiction: string;
   milesDriven: number;
@@ -30,8 +36,10 @@ export interface IftaJurisdictionTotals {
    * as 0 — a jurisdiction that legitimately had zero gallons purchased while others had some
    * still reports a real `0`, only the whole-quarter "no fuel data" case is `null`). */
   fuelGal: number | null;
-  /** Fleet-wide MPG (IFTA does not track per-jurisdiction fuel economy). `null` under the same
-   * condition as `fuelGal`. */
+  /** `totalMiles / fuelGal` of THIS row (a jurisdiction, or the Total row over the filtered
+   * rows) — so the MPG column always equals the two columns beside it. `null` when `fuelGal` is
+   * `null` or 0 (rendered `—`, never Infinity). This is NOT the fleet MPG used for taxable
+   * gallons — that one is `kpis.fleetMpg` (see `mpgOf`). */
   mpg: number | null;
   /** No `TaxRate` model exists yet (per-jurisdiction IFTA tax rates are not persisted anywhere
    * in this schema) — always `null` until that data exists. See D-054 in decisions.md. */
@@ -58,6 +66,13 @@ export interface IftaSummary {
   rows: IftaSummaryRow[];
   /** One "Total" row, same shape as a jurisdiction row minus `jurisdiction` (web WD-068). */
   totals: IftaJurisdictionTotals;
+}
+
+/** Miles per gallon of one row, rounded like every other summary figure; `null` when there is
+ * no fuel to divide by (no fuel data at all, or 0 gal bought) — never Infinity/NaN. */
+export function mpgOf(miles: number, gallons: number | null): number | null {
+  if (gallons === null || !(gallons > 0)) return null;
+  return Number((miles / gallons).toFixed(2));
 }
 
 /** `YYYY-Q#` -> UTC [start, end] of that quarter, inclusive. */
@@ -112,23 +127,25 @@ export class IftaReportGenerator {
 
     const totalMiles = segments.reduce((sum, s) => sum + (s._sum.distanceMi ?? 0), 0);
     const totalGallonsBurned = purchases.reduce((sum, p) => sum + Number(p._sum.gallons ?? 0), 0);
-    const fleetMpg = totalGallonsBurned > 0 ? totalMiles / totalGallonsBurned : 0;
+    const fleetMpg = totalGallonsBurned > 0 ? totalMiles / totalGallonsBurned : null;
 
-    // Fleet MPG stays fleet-wide (the IFTA formula), `jurisdiction` only narrows the rows.
+    // Fleet MPG stays fleet-wide (the IFTA formula), `jurisdiction` only narrows the rows. With no
+    // gallons at all there is no fleet MPG, so it and the taxable gallons derived from it print
+    // `—` rather than a fake `0` (or Infinity).
     return segments
       .filter((s) => (s._sum.distanceMi ?? 0) > 0)
       .filter((s) => !params.jurisdiction || s.jurisdiction === params.jurisdiction)
       .map((s) => {
         const miles = s._sum.distanceMi ?? 0;
         const fuelPurchased = purchasedByJurisdiction.get(s.jurisdiction) ?? 0;
-        const taxableGallons = fleetMpg > 0 ? miles / fleetMpg : 0;
+        const taxableGallons = fleetMpg === null ? null : miles / fleetMpg;
         return {
           jurisdiction: s.jurisdiction,
           milesDriven: miles,
           fuelPurchasedGal: fuelPurchased.toFixed(2),
-          fleetMpg: fleetMpg.toFixed(3),
-          taxableGallons: taxableGallons.toFixed(3),
-          netTaxableGallons: (taxableGallons - fuelPurchased).toFixed(3),
+          fleetMpg: fleetMpg === null ? NO_VALUE : fleetMpg.toFixed(3),
+          taxableGallons: taxableGallons === null ? NO_VALUE : taxableGallons.toFixed(3),
+          netTaxableGallons: taxableGallons === null ? NO_VALUE : (taxableGallons - fuelPurchased).toFixed(3),
         } satisfies IftaReportRow;
       })
       .sort((a, b) => a.jurisdiction.localeCompare(b.jurisdiction));
@@ -179,9 +196,11 @@ export class IftaReportGenerator {
         : Promise.resolve(null),
     ]);
 
-    // `jurisdiction` narrows rows, miles, gallons and receipts to that one jurisdiction; fleet
-    // MPG (and its vs-prev chip) stays fleet-wide — IFTA taxable gallons are always miles in a
-    // jurisdiction divided by the fleet's MPG, never a per-jurisdiction MPG.
+    // `jurisdiction` narrows rows, miles, gallons and receipts to that one jurisdiction. The KPI
+    // fleet MPG (and its vs-prev chip) stays fleet-wide — IFTA taxable gallons are always miles in
+    // a jurisdiction divided by the fleet's MPG. The table's `mpg` column is different: it is
+    // each row's own miles / gallons (Total row: over the filtered rows), so MPG always equals
+    // TOTAL MILES / FUEL on the same line.
     const scopedMiles = jurisdiction
       ? current.segments.find((s) => s.jurisdiction === jurisdiction)?._sum.distanceMi ?? 0
       : current.totalMiles;
@@ -195,17 +214,19 @@ export class IftaReportGenerator {
       .filter((s) => !jurisdiction || s.jurisdiction === jurisdiction)
       .map((s) => {
         const miles = s._sum.distanceMi ?? 0;
-        const fuelGal = current.purchasedByJurisdiction.get(s.jurisdiction) ?? 0;
+        const fuelGal = current.hasFuelData ? Number((current.purchasedByJurisdiction.get(s.jurisdiction) ?? 0).toFixed(2)) : null;
         return {
           jurisdiction: s.jurisdiction,
           totalMiles: miles,
           taxableMiles: miles, // no exemption/trip-permit model exists — every mile is taxable (D-054)
-          fuelGal: current.hasFuelData ? Number(fuelGal.toFixed(2)) : null,
-          mpg: current.fleetMpg === null ? null : Number(current.fleetMpg.toFixed(2)),
+          fuelGal,
+          mpg: mpgOf(miles, fuelGal),
           taxDueUsd: null, // no TaxRate model — see D-054
         } satisfies IftaSummaryRow;
       })
       .sort((a, b) => a.jurisdiction.localeCompare(b.jurisdiction));
+
+    const scopedFuelGal = current.hasFuelData ? Number(scopedGallons.toFixed(2)) : null;
 
     return {
       quarter,
@@ -214,7 +235,7 @@ export class IftaReportGenerator {
         totalMiles: scopedMiles,
         taxableMiles: scopedMiles,
         taxablePct: scopedMiles > 0 ? 100 : null,
-        fuelGal: current.hasFuelData ? Number(scopedGallons.toFixed(2)) : null,
+        fuelGal: scopedFuelGal,
         receiptCount: current.hasFuelData ? scopedReceipts : null,
         fleetMpg: current.fleetMpg === null ? null : Number(current.fleetMpg.toFixed(2)),
         fleetMpgPrev: previous.fleetMpg === null ? null : Number(previous.fleetMpg.toFixed(2)),
@@ -223,8 +244,8 @@ export class IftaReportGenerator {
       totals: {
         totalMiles: scopedMiles,
         taxableMiles: scopedMiles,
-        fuelGal: current.hasFuelData ? Number(scopedGallons.toFixed(2)) : null,
-        mpg: current.fleetMpg === null ? null : Number(current.fleetMpg.toFixed(2)),
+        fuelGal: scopedFuelGal,
+        mpg: mpgOf(scopedMiles, scopedFuelGal),
         taxDueUsd: null,
       },
     };

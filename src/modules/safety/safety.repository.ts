@@ -65,27 +65,86 @@ export class SafetyRepository extends BaseRepository<
     });
   }
 
-  /** Raw counts feeding `computeDriverScore` for a period, per driver. */
-  countsForDriver(driverId: string, from: Date, to: Date) {
+  /**
+   * D-141 — SafetyEvent counts feeding `computeDriverScore`, per driver / type / severity, for
+   * events in [from, to). DISMISSED events (a reviewer ruled them false positives) never count;
+   * NEW, REVIEWED and COACHED do — coaching does not erase that the event happened.
+   */
+  eventCountsForDrivers(driverIds: string[], from: Date, to: Date) {
     return this.prisma.safetyEvent.groupBy({
-      by: ['type'],
-      where: { driverId, occurredAt: { gte: from, lte: to } },
+      by: ['driverId', 'type', 'severity'],
+      where: { driverId: { in: driverIds }, occurredAt: { gte: from, lt: to }, status: { not: 'DISMISSED' } },
       _count: { _all: true },
     });
   }
 
-  upsertScore(driverId: string, periodStart: Date, periodEnd: Date, data: Omit<Prisma.DriverScoreCreateInput, 'driverId' | 'periodStart' | 'periodEnd'>): Promise<DriverScore> {
-    return this.prisma.driverScore.upsert({
-      where: { driverId_periodStart: { driverId, periodStart } },
-      create: { driverId, periodStart, periodEnd, ...data },
-      update: { periodEnd, ...data },
+  /** D-141 — read-only: drivers the nightly scorecard considers (not soft-deleted). */
+  scoringDrivers() {
+    return this.prisma.driver.findMany({
+      where: { deletedAt: null },
+      select: { id: true, firstName: true, lastName: true, status: true, homeTerminalTimezone: true },
     });
   }
 
-  scorecard(periodStart: Date, periodEnd: Date): Promise<DriverScore[]> {
+  /** D-141 — read-only: Σ `DailyLog.totalDistanceMi` per driver over home-terminal days
+   * [from, to] (`logDate` is already the driver's local RODS day). */
+  async milesByDriver(fromDay: Date, toDay: Date): Promise<Map<string, number>> {
+    const groups = await this.prisma.dailyLog.groupBy({
+      by: ['driverId'],
+      where: { logDate: { gte: fromDay, lte: toDay } },
+      _sum: { totalDistanceMi: true },
+    });
+    return new Map(groups.map((g) => [g.driverId, g._sum.totalDistanceMi ?? 0]));
+  }
+
+  /** D-141 — read-only: HOS violations per driver whose RODS day is in [from, to]. OPEN and
+   * RESOLVED count (resolving a violation does not undo it); AUTO_CLEARED do not (a recalc found
+   * it was never a violation). */
+  async hosViolationsByDriver(fromDay: Date, toDay: Date): Promise<Map<string, number>> {
+    const groups = await this.prisma.hosViolation.groupBy({
+      by: ['driverId'],
+      where: { logDate: { gte: fromDay, lte: toDay }, status: { not: 'AUTO_CLEARED' } },
+      _count: { _all: true },
+    });
+    return new Map(groups.map((g) => [g.driverId, g._count._all]));
+  }
+
+  /**
+   * D-141 — writes one period's rows atomically: upserts every computed driver and removes rows
+   * of that period for drivers no longer scored (e.g. soft-deleted since the last run), so a
+   * re-run is idempotent.
+   */
+  async replacePeriodScores(
+    periodStart: Date,
+    periodEnd: Date,
+    rows: Array<Omit<Prisma.DriverScoreCreateManyInput, 'periodStart' | 'periodEnd' | 'id'>>,
+  ): Promise<void> {
+    const computedAt = new Date();
+    await this.prisma.$transaction([
+      this.prisma.driverScore.deleteMany({ where: { periodStart, driverId: { notIn: rows.map((r) => r.driverId) } } }),
+      ...rows.map((r) =>
+        this.prisma.driverScore.upsert({
+          where: { driverId_periodStart: { driverId: r.driverId, periodStart } },
+          create: { ...r, periodStart, periodEnd, computedAt },
+          update: { ...r, periodEnd, computedAt },
+        }),
+      ),
+    ]);
+  }
+
+  /** D-141 — the most recently computed period (max `periodEnd`, then the longest/newest start). */
+  latestPeriod(): Promise<{ periodStart: Date; periodEnd: Date } | null> {
+    return this.prisma.driverScore.findFirst({
+      orderBy: [{ periodEnd: 'desc' }, { periodStart: 'asc' }],
+      select: { periodStart: true, periodEnd: true },
+    });
+  }
+
+  /** Every `DriverScore` row of the period that starts on `periodStart`. */
+  scorecard(periodStart: Date): Promise<DriverScore[]> {
     return this.prisma.driverScore.findMany({
-      where: { periodStart, periodEnd },
-      orderBy: { score: 'asc' },
+      where: { periodStart },
+      orderBy: [{ rank: { sort: 'asc', nulls: 'last' } }, { milesDriven: 'desc' }, { driverId: 'asc' }],
     });
   }
 }

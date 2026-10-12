@@ -4,6 +4,7 @@ import { AttachmentsModule } from '../attachments/attachments.module';
 import { AuthModule } from '../auth/auth.module';
 import { HosRecalcModule } from '../hos-recalc/hos-recalc.module';
 import { TransfersModule } from '../transfers/transfers.module';
+import { ViolationsModule } from '../violations/violations.module';
 import { DriverRosterService } from './driver-roster.service';
 import { DriversController } from './drivers.controller';
 import { DriversRepository } from './drivers.repository';
@@ -14,7 +15,7 @@ import { DriversService } from './drivers.service';
  * none of them imports `DriversModule` back. `StoragePort` is `@Global()` (`StorageModule`),
  * so the raw upload-PUT presign needs no import here. */
 @Module({
-  imports: [HosRecalcModule, AuthModule, TransfersModule, AttachmentsModule],
+  imports: [HosRecalcModule, AuthModule, TransfersModule, AttachmentsModule, ViolationsModule],
   controllers: [DriversController],
   providers: [DriversService, DriversRepository, DriverRosterService],
   exports: [DriversService, DriversRepository],

@@ -52,6 +52,7 @@ import {
 import { LogsRepository } from './logs.repository';
 import { RodsEventWriter } from './rods-event-writer';
 import { affectedHeaderRange, buildDailyLogHeaders, RODS_HEADER_LOOKBACK_DAYS } from './daily-log-header';
+import { ongoingViolationsAtDayStart } from './ongoing-violations';
 import {
   activeRecords,
   buildRodsDay,
@@ -145,22 +146,95 @@ export class LogsService {
     return { driverId, timezone, generatedAt: now, days };
   }
 
-  /** The raw §395 record list of one RODS day, INCLUDING superseded and proposed records. */
+  /**
+   * W-08 (web panel) — `getDay` plus `ongoingViolations`: the shift-level limits that driving
+   * carried over midnight is still breaking when this day opens (see `ongoing-violations.ts`).
+   * The mobile `GET /mobile/logs` keeps calling `getDay` and is unchanged.
+   */
+  async getDayView(driverId: string, date: string | undefined, now: Date = new Date()) {
+    const driver = await this.requireDriver(driverId);
+    const timezone = driver.homeTerminalTimezone;
+    const key = date ?? dayKey(timezone, now);
+    const day = await this.getDay(driverId, key, now);
+    const startAt = dayStart(timezone, key);
+    const history = startAt.getTime() > now.getTime()
+      ? []
+      : await this.repo.findEvents(driverId, dayStart(timezone, addDays(key, -RODS_HEADER_LOOKBACK_DAYS)), new Date(startAt.getTime() - 1));
+    const ongoingViolations = ongoingViolationsAtDayStart({
+      events: history,
+      driver: {
+        driverId,
+        allowPersonalConveyance: driver.allowPersonalConveyance,
+        allowYardMove: driver.allowYardMove,
+        adverseDrivingEnabled: driver.adverseDrivingEnabled,
+        shortHaulException: driver.shortHaulException,
+        splitSleeperEnabled: driver.splitSleeperEnabled,
+      },
+      ruleset: driver.hosRuleset,
+      timezone,
+      dayStartAt: startAt,
+      now,
+    });
+    return { ...day, ongoingViolations };
+  }
+
+  /**
+   * The raw §395 record list of one RODS day, INCLUDING superseded and proposed records.
+   *
+   * `carriedIn` is the active duty-status record in force at the day's first instant when it
+   * began on an earlier RODS day. The 24-hour grid (`getDay`) draws that status from 00:00, so
+   * without it a day spent entirely in a status carried over midnight showed a full graph above
+   * an empty record table ("No ELD records for this day"). Same day boundaries and the same
+   * lookback (`RODS_HEADER_LOOKBACK_DAYS`) the grid is built with.
+   */
   async getEvents(driverId: string, date: string | undefined, now: Date = new Date()) {
     const driver = await this.requireDriver(driverId);
     const timezone = driver.homeTerminalTimezone;
     const key = date ?? dayKey(timezone, now);
-    const events = await this.repo.findEvents(
-      driverId,
-      dayStart(timezone, key),
-      dayEnd(timezone, key),
-    );
+    const startAt = dayStart(timezone, key);
+    const events = await this.repo.findEvents(driverId, startAt, dayEnd(timezone, key));
+    const carriedIn = await this.findCarriedIn(driverId, timezone, key, startAt, events, now);
     return {
       driverId,
       date: key,
       timezone,
       events: events.map((event) => this.toEventView(event)),
+      carriedIn: carriedIn ? this.toEventView(carriedIn) : null,
     };
+  }
+
+  private async findCarriedIn(
+    driverId: string,
+    timezone: string,
+    key: string,
+    startAt: Date,
+    dayEvents: EldEvent[],
+    now: Date,
+  ): Promise<EldEvent | null> {
+    if (startAt.getTime() > now.getTime()) return null;
+    const opensAtMidnight = activeRecords(dayEvents).some(
+      (event) => event.eventType === 1 && event.eventDateTime.getTime() === startAt.getTime(),
+    );
+    if (opensAtMidnight) return null;
+    const history = await this.repo.findEvents(
+      driverId,
+      dayStart(timezone, addDays(key, -RODS_HEADER_LOOKBACK_DAYS)),
+      new Date(startAt.getTime() - 1),
+    );
+    // Markers that retire a record may sit inside the day, so the whole span decides what is active.
+    const active = activeRecords([...history, ...dayEvents]) as EldEvent[];
+    let last: EldEvent | null = null;
+    for (const event of active) {
+      if (event.eventType !== 1 || event.eventDateTime.getTime() >= startAt.getTime()) continue;
+      if (
+        !last ||
+        event.eventDateTime.getTime() > last.eventDateTime.getTime() ||
+        (event.eventDateTime.getTime() === last.eventDateTime.getTime() && event.eventSequenceId > last.eventSequenceId)
+      ) {
+        last = event;
+      }
+    }
+    return last;
   }
 
   /**

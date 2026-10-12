@@ -14,6 +14,7 @@ import { TransfersModule } from '../modules/transfers/transfers.module';
 import { WebhooksModule } from '../modules/webhooks/webhooks.module';
 import { AlertProcessor } from './alert.processor';
 import { HosDriftProcessor } from './hos-drift.processor';
+import { HosOpenDrivingProcessor } from './hos-open-driving.processor';
 import { HosRecalcProcessor } from './hos-recalc.processor';
 import { IftaNightlyProcessor } from './ifta-nightly.processor';
 import { MaintenanceDueProcessor } from './maintenance-due.processor';
@@ -21,6 +22,7 @@ import { ReportProcessor } from './report.processor';
 import { ReportSchedulerProcessor } from './report-scheduler.processor';
 import { RetentionProcessor } from './retention.processor';
 import { SafetyDetectProcessor } from './safety-detect.processor';
+import { SafetyScoreProcessor } from './safety-score.processor';
 import { TransferProcessor } from './transfer.processor';
 import { WebhookProcessor } from './webhook.processor';
 
@@ -29,12 +31,14 @@ import { WebhookProcessor } from './webhook.processor';
  * never runs in the API container). Processors are added by their owning phase:
  *   hos-recalc.processor.ts   Phase 4  (eld-hos-engine) — registered
  *   hos-drift.processor.ts    Phase 4b (eld-hos-engine) — registered, nightly §8.6 sweep
+ *   hos-open-driving.processor.ts — registered, 5-min hos.recalc for still-open DRIVING records
  *   report.processor.ts       Phase 8  (eld-reports-jobs) — registered, §15 report.generate
  *   report-scheduler.processor.ts Phase 8 (eld-reports-jobs) — registered, §15 cron scheduler
  *   ifta-nightly.processor.ts Phase 8  (eld-reports-jobs) — registered, nightly §15 IftaSegment
  *   transfer.processor.ts     Phase 9  (eld-compliance-rods) — registered, §10.1/§10.4 send step
  *   alert.processor.ts        Phase 10 (eld-reports-jobs)
  *   safety-detect.processor.ts Phase 10 (eld-fleet-ops)
+ *   safety-score.processor.ts registered — nightly W-10 DriverScore (D-141), 10:30 UTC
  *   webhook.processor.ts      Phase 11 (eld-reports-jobs)
  *   maintenance-due.processor.ts Phase 7 (eld-fleet-ops) — registered, nightly §5.10 sweep
  *   retention.processor.ts    registered — nightly §5.5/§18/§23 RODS 6mo/audit 24mo sweep
@@ -58,11 +62,13 @@ import { WebhookProcessor } from './webhook.processor';
   providers: [
     HosRecalcProcessor,
     HosDriftProcessor,
+    HosOpenDrivingProcessor,
     TransferProcessor,
     WebhookProcessor,
     MaintenanceDueProcessor,
     AlertProcessor,
     SafetyDetectProcessor,
+    SafetyScoreProcessor,
     ReportProcessor,
     ReportSchedulerProcessor,
     IftaNightlyProcessor,

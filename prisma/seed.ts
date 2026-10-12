@@ -791,6 +791,25 @@ async function main(): Promise<void> {
     });
   }
 
+  // BUG-002 — `DriverRosterService` enqueues `alert.eld_status_stale` when a duty status stays
+  // open past its plausible cap (the ELD stopped reporting). Without a matching rule
+  // `AlertProcessor` drops it; this one fills the web bell of the office roles. Same row as
+  // migration 20261012100000_default_eld_status_stale_alert_rule (existing databases).
+  await prisma.alertRule.upsert({
+    where: { key: 'default_eld_status_stale' },
+    update: {},
+    create: {
+      key: 'default_eld_status_stale',
+      name: 'ELD connection lost',
+      severity: 'WARNING',
+      conditions: [{ event: 'alert.eld_status_stale' }],
+      channels: ['IN_APP'],
+      recipients: { roles: ['SUPER_ADMIN', 'ADMIN', 'FLEET_MANAGER', 'DISPATCHER'] },
+      enabled: true,
+      isSystem: true,
+    },
+  });
+
   console.log('Seed complete:', {
     carriers: 1,
     roles: Object.keys(roleIds).length,

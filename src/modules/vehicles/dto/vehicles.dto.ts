@@ -117,9 +117,12 @@ export const ImportVehicleRowDto = CreateVehicleDto.omit({ deviceId: true, eldSe
 });
 export type ImportVehicleRowDto = z.infer<typeof ImportVehicleRowDto>;
 
+/** Web tz.md §Import vehicles — "2,000 rows maximum". Trailer import keeps its own 1,000 cap. */
+export const VEHICLE_IMPORT_MAX_ROWS = 2000;
+
 /** Fleet import (TZ Phase 2 — "fleet import"/"fleet export" round-trip without loss). */
 export const ImportVehiclesDto = z.object({
-  vehicles: z.array(ImportVehicleRowDto).min(1).max(1000),
+  vehicles: z.array(ImportVehicleRowDto).min(1).max(VEHICLE_IMPORT_MAX_ROWS),
   options: ImportVehiclesOptionsDto.optional(),
 });
 export type ImportVehiclesDto = z.infer<typeof ImportVehiclesDto>;

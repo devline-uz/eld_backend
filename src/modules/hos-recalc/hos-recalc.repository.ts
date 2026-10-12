@@ -26,6 +26,13 @@ export type HosRodsEventRow = Pick<
   'id' | 'eventType' | 'eventCode' | 'eventDateTime' | 'recordStatus' | 'recordOrigin' | 'eventSequenceId' | 'supersedesId' | 'totalVehicleMiles' | 'vehicleId'
 >;
 
+/** Open-driving sweep — a driver whose latest duty-status record is DRIVING, and since when. */
+export interface OpenDrivingRow {
+  driverId: string;
+  homeTerminalTimezone: string;
+  since: Date;
+}
+
 /** B-055 — the slim `DailyLog` projection the recap consumes. */
 export interface HosDailyLogRow {
   driverId: string;
@@ -229,5 +236,26 @@ export class HosRecalcRepository extends BaseRepository<
         },
       })
       .then((result) => result.count);
+  }
+
+  /**
+   * Open-driving sweep — ACTIVE drivers whose latest active duty-status record (inside
+   * `[since, now]`) is DRIVING. Their 11 h / 14 h / 30 min / cycle overruns keep growing with
+   * the clock alone, without a new record arriving to trigger `hos.recalc`, so they are the only
+   * drivers whose stored violations can go stale between ingests.
+   */
+  findOpenDrivingDrivers(since: Date, now: Date): Promise<OpenDrivingRow[]> {
+    return this.prisma.$queryRaw<OpenDrivingRow[]>(Prisma.sql`
+      SELECT last."driverId", last."homeTerminalTimezone", last."eventDateTime" AS "since"
+      FROM (
+        SELECT DISTINCT ON (e."driverId") e."driverId", d."homeTerminalTimezone", e."eventCode", e."eventDateTime"
+        FROM "EldEvent" e
+        JOIN "Driver" d ON d."id" = e."driverId"
+        WHERE e."eventType" = 1 AND e."recordStatus" = 1
+          AND e."eventDateTime" >= ${since} AND e."eventDateTime" <= ${now}
+          AND d."deletedAt" IS NULL AND d."status" = 'ACTIVE'
+        ORDER BY e."driverId", e."eventDateTime" DESC, e."eventSequenceId" DESC
+      ) last
+      WHERE last."eventCode" = 3`);
   }
 }

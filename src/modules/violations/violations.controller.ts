@@ -7,6 +7,7 @@ import { apiError, ApiStandardErrors, ERROR_CODES } from '../../common/errors';
 import { zodBody } from '../../common/pipes/zod-validation.pipe';
 import type { ContextUser } from '../../core/context/request-context';
 import { ResolveViolationDto, ViolationListQueryDto } from './dto/violations.dto';
+import { ActiveViolationsService } from './active-violations.service';
 import { ViolationsService } from './violations.service';
 
 /** B-6 (web/tz.md §20, tz.md §11.4) — W-01 violations panel and W-08 `Resolve`. */
@@ -15,7 +16,10 @@ import { ViolationsService } from './violations.service';
 @ApiBearerAuth()
 @Controller('violations')
 export class ViolationsController {
-  constructor(private readonly violations: ViolationsService) {}
+  constructor(
+    private readonly violations: ViolationsService,
+    private readonly active: ActiveViolationsService,
+  ) {}
 
   @Get()
   @Perm('hos', 'READ')
@@ -38,7 +42,8 @@ export class ViolationsController {
   })
   @ApiStandardErrors()
   list(@Query(zodBody(ViolationListQueryDto)) query: ViolationListQueryDto) {
-    return this.violations.list(query);
+    // BUG-003 — the one web definition of an active violation (same rows the roster and HOS log count).
+    return this.active.list(query);
   }
 
   @Post(':id/resolve')

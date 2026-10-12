@@ -18,8 +18,12 @@ export const CreateDriverDto = z.object({
   cdlNumber: z.string().min(1).max(40),
   cdlState: z.string().min(2).max(10),
 
+  // Optional (product decision): the web panel may create a driver without a home terminal.
+  // `Driver.homeTerminalName` is NOT NULL, so absent / blank is stored as `''` (see
+  // `DriversService.toCreateInput`). `''` is accepted so an export round-trips through import.
+  homeTerminalName: z.string().trim().max(120).optional(),
   // RODS day boundary follows this timezone, never Carrier.timezone (TZ §5.3).
-  homeTerminalName: z.string().min(1).max(120),
+  // Independent of `homeTerminalName` and always defaulted, so HOS never depends on the name.
   homeTerminalTimezone: z.string().min(1).max(64).default('America/New_York'),
 
   hosRuleset: HosRulesetEnum.default('US_70_8_PROPERTY'),
@@ -115,3 +119,12 @@ export const VerifyDriverEmailDto = z.object({
   token: z.string().min(1),
 });
 export type VerifyDriverEmailDto = z.infer<typeof VerifyDriverEmailDto>;
+
+/** BUG-001 — `POST /drivers/:id/hos/adverse-driving`: invoke §395.1(b)(1) for one RODS day. */
+export const InvokeAdverseDrivingDto = z.object({
+  /** RODS day (home-terminal timezone); defaults to the driver's current day. */
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD').optional(),
+  /** §395.1(b)(1) — the required note describing the adverse conditions encountered. */
+  annotation: z.string().trim().min(4).max(255),
+});
+export type InvokeAdverseDrivingDto = z.infer<typeof InvokeAdverseDrivingDto>;
