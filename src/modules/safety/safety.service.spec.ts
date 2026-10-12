@@ -2,12 +2,12 @@ import { AppException } from '../../common/errors/app.exception';
 import { SafetyRepository } from './safety.repository';
 import { SafetyService } from './safety.service';
 
-describe('SafetyService (B-43 driver-level coaching, B-44 scorecard trend)', () => {
-  let repo: jest.Mocked<Pick<SafetyRepository, 'findById' | 'update' | 'findLatestOpenForDriver' | 'scorecard'>>;
+describe('SafetyService (B-43 driver-level coaching, B-44/D-141 scorecard)', () => {
+  let repo: jest.Mocked<Pick<SafetyRepository, 'findById' | 'update' | 'findLatestOpenForDriver' | 'scorecard' | 'latestPeriod'>>;
   let service: SafetyService;
 
   beforeEach(() => {
-    repo = { findById: jest.fn(), update: jest.fn(), findLatestOpenForDriver: jest.fn(), scorecard: jest.fn() };
+    repo = { findById: jest.fn(), update: jest.fn(), findLatestOpenForDriver: jest.fn(), scorecard: jest.fn(), latestPeriod: jest.fn() };
     service = new SafetyService(repo as unknown as SafetyRepository);
   });
 
@@ -40,31 +40,82 @@ describe('SafetyService (B-43 driver-level coaching, B-44 scorecard trend)', () 
     });
   });
 
-  describe('scorecard', () => {
-    it('B-44 — attaches previousScore/trend from the immediately preceding period of the same length', async () => {
-      const periodStart = new Date('2026-09-01T00:00:00.000Z');
-      const periodEnd = new Date('2026-09-08T00:00:00.000Z'); // 7-day period
-      repo.scorecard.mockImplementation((start) => {
-        if (start.getTime() === periodStart.getTime()) {
-          return Promise.resolve([{ driverId: 'drv_1', score: 68, harshCount: 4, rank: 1 }] as never);
-        }
-        return Promise.resolve([{ driverId: 'drv_1', score: 80, harshCount: 1, rank: 1 }] as never);
-      });
+  describe('scorecard (D-141)', () => {
+    const row = (over: Record<string, unknown>) => ({
+      id: `dsc_${String(over.driverId)}`,
+      periodStart: new Date('2026-09-11T00:00:00.000Z'),
+      periodEnd: new Date('2026-10-10T00:00:00.000Z'),
+      score: 0,
+      scored: true,
+      harshCount: 0,
+      speedingCount: 0,
+      seatbeltCount: 0,
+      milesDriven: 0,
+      violationCount: 0,
+      rank: null,
+      computedAt: new Date('2026-10-11T10:30:00.000Z'),
+      ...over,
+    });
+    const prevRow = (over: Record<string, unknown>) =>
+      row({ periodStart: new Date('2026-08-12T00:00:00.000Z'), periodEnd: new Date('2026-09-10T00:00:00.000Z'), ...over });
 
-      const result = await service.scorecard({ periodStart, periodEnd });
+    function mockPeriods(current: unknown[], previous: unknown[]) {
+      repo.scorecard.mockImplementation((start: Date) =>
+        Promise.resolve((start.toISOString().startsWith('2026-09-11') ? current : start.toISOString().startsWith('2026-08-12') ? previous : []) as never),
+      );
+    }
 
-      expect(result.items).toEqual([expect.objectContaining({ driverId: 'drv_1', score: 68, previousScore: 80, trend: -12 })]);
-      // Previous period is the same 7-day length, ending the day before periodStart.
-      const [, previousCall] = repo.scorecard.mock.calls;
-      expect(previousCall[1]).toEqual(new Date(periodStart.getTime() - 24 * 60 * 60 * 1000));
+    it('with no query returns the latest computed period (max periodEnd)', async () => {
+      repo.latestPeriod.mockResolvedValue({ periodStart: new Date('2026-09-11T00:00:00.000Z'), periodEnd: new Date('2026-10-10T00:00:00.000Z') });
+      mockPeriods([row({ driverId: 'drv_1', score: 90, milesDriven: 1000, rank: 1 })], []);
+
+      const result = await service.scorecard({});
+
+      expect(result.periodStart).toBe('2026-09-11');
+      expect(result.periodEnd).toBe('2026-10-10');
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0]).toEqual(expect.objectContaining({ periodStart: '2026-09-11', periodEnd: '2026-10-10', computedAt: '2026-10-11T10:30:00.000Z' }));
+      // Baseline = same-length period ending the day before.
+      expect(repo.scorecard.mock.calls.map(([d]) => d.toISOString().slice(0, 10))).toEqual(['2026-09-11', '2026-08-12']);
     });
 
-    it('B-44 — previousScore/trend are null with no prior scored period', async () => {
-      repo.scorecard.mockResolvedValueOnce([{ driverId: 'drv_1', score: 68 }] as never).mockResolvedValueOnce([] as never);
+    it('returns an empty, null-period response when nothing has been computed yet', async () => {
+      repo.latestPeriod.mockResolvedValue(null);
+      const result = await service.scorecard({});
+      expect(result).toEqual(expect.objectContaining({ periodStart: null, periodEnd: null, items: [], minMiles: 100 }));
+      expect(result.fleet.score).toBeNull();
+    });
 
-      const result = await service.scorecard({ periodStart: new Date('2026-09-01T00:00:00.000Z'), periodEnd: new Date('2026-09-08T00:00:00.000Z') });
+    it('unscored rows return score/rank null and sort after ranked rows; fleet is mile-weighted with trend', async () => {
+      repo.latestPeriod.mockResolvedValue({ periodStart: new Date('2026-09-11T00:00:00.000Z'), periodEnd: new Date('2026-10-10T00:00:00.000Z') });
+      mockPeriods(
+        [
+          row({ driverId: 'drv_low', score: 0, scored: false, milesDriven: 40, rank: null }),
+          row({ driverId: 'drv_b', score: 60, milesDriven: 1000, rank: 2 }),
+          row({ driverId: 'drv_a', score: 100, milesDriven: 3000, rank: 1 }),
+        ],
+        [prevRow({ driverId: 'drv_a', score: 80, milesDriven: 1000 }), prevRow({ driverId: 'drv_b', score: 70, milesDriven: 1000 }), prevRow({ driverId: 'drv_low', score: 0, scored: false, milesDriven: 10 })],
+      );
 
-      expect(result.items).toEqual([expect.objectContaining({ previousScore: null, trend: null })]);
+      const result = await service.scorecard({});
+
+      expect(result.items.map((i) => [i.driverId, i.rank, i.score])).toEqual([
+        ['drv_a', 1, 100],
+        ['drv_b', 2, 60],
+        ['drv_low', null, null],
+      ]);
+      expect(result.items[0]).toEqual(expect.objectContaining({ previousScore: 80, trend: 20 }));
+      expect(result.items[2]).toEqual(expect.objectContaining({ previousScore: null, trend: null }));
+      // (100×3000 + 60×1000) / 4000 = 90 ; previous (80+70)/2 = 75
+      expect(result.fleet).toEqual({ score: 90, previousScore: 75, trend: 15, scoredDrivers: 2, unscoredDrivers: 1, belowThresholdCount: 1, milesDriven: 4000 });
+    });
+
+    it('an explicit periodStart selects that stored period', async () => {
+      mockPeriods([row({ driverId: 'drv_1', score: 95, milesDriven: 500, rank: 1 })], []);
+      const result = await service.scorecard({ periodStart: '2026-09-11' });
+      expect(repo.latestPeriod).not.toHaveBeenCalled();
+      expect(result.periodEnd).toBe('2026-10-10');
+      expect(result.fleet.score).toBe(95);
     });
   });
 });

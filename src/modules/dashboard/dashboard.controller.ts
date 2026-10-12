@@ -16,7 +16,7 @@ import { DashboardService } from './dashboard.service';
  * ```
  * {
  *   liveFleet: { items: LiveFleetUnit[], generatedAt: string, counts: { total, onDuty, moving, idle, offline } },
- *   violations: { items: Violation[], total: number },   // window=24h, status=OPEN, same shape as GET /violations
+ *   violations: { items: Violation[], total: number },   // status=OPEN (any day), same shape as GET /violations
  *   unidentified: { total: number, totalDurationSec: number }, // status=PENDING
  *   notifications: { unreadCount: number },               // caller's own inbox
  *   carrier: { id: string, name: string, timezone: string | null },
@@ -35,7 +35,7 @@ export class DashboardController {
   @Get('summary')
   @Perm('dashboard', 'READ')
   @ApiOperation({
-    summary: 'One-call aggregate for the W-01 Fleet Dashboard: live fleet, 24h violations, pending unidentified driving, unread notification count, carrier basics, and vehicle counts.',
+    summary: 'One-call aggregate for the W-01 Fleet Dashboard: live fleet, open violations, pending unidentified driving, unread notification count, carrier basics, and vehicle counts.',
   })
   @ApiOkResponse({
     schema: {

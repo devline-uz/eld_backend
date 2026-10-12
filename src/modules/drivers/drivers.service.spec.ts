@@ -6,7 +6,7 @@ import type { TokenService } from '../auth/token.service';
 import type { MailPort } from '../transfers/mail.port';
 import { DriversRepository } from './drivers.repository';
 import { DriversService } from './drivers.service';
-import { CreateDriverDocumentDto } from './dto/drivers.dto';
+import { CreateDriverDocumentDto, CreateDriverDto, UpdateDriverDto } from './dto/drivers.dto';
 
 function makeDriver(overrides: Partial<Record<string, unknown>> = {}) {
   return {
@@ -188,6 +188,40 @@ describe('DriversService', () => {
 
     const [createArg] = repo.create.mock.calls[0] as [{ passwordHash: string }];
     expect(createArg.passwordHash).toMatch(/^\$argon2id\$/);
+  });
+
+  describe('home terminal is optional on create (web panel)', () => {
+    const { homeTerminalName: _omit, ...withoutTerminal } = baseDto;
+
+    it('CreateDriverDto accepts a missing / blank home terminal, trims it, and still caps it at 120 chars', () => {
+      const missing = CreateDriverDto.safeParse(withoutTerminal);
+      expect(missing.success).toBe(true);
+      expect(missing.success && missing.data.homeTerminalName).toBeUndefined();
+      expect(missing.success && missing.data.homeTerminalTimezone).toBe('America/New_York');
+      expect(CreateDriverDto.safeParse({ ...withoutTerminal, homeTerminalName: '' }).success).toBe(true);
+      const trimmed = CreateDriverDto.safeParse({ ...withoutTerminal, homeTerminalName: '  Columbus, OH  ' });
+      expect(trimmed.success && trimmed.data.homeTerminalName).toBe('Columbus, OH');
+      expect(CreateDriverDto.safeParse({ ...withoutTerminal, homeTerminalName: 'x'.repeat(120) }).success).toBe(true);
+      expect(CreateDriverDto.safeParse({ ...withoutTerminal, homeTerminalName: 'x'.repeat(121) }).success).toBe(false);
+      expect(CreateDriverDto.safeParse({ ...withoutTerminal, homeTerminalName: 42 }).success).toBe(false);
+    });
+
+    it('UpdateDriverDto leaves an omitted home terminal untouched and still caps it at 120 chars', () => {
+      const parsed = UpdateDriverDto.safeParse({ firstName: 'Jane' });
+      expect(parsed.success && parsed.data.homeTerminalName).toBeUndefined();
+      expect(UpdateDriverDto.safeParse({ homeTerminalName: 'x'.repeat(121) }).success).toBe(false);
+    });
+
+    it('stores an empty string (NOT NULL column) when no home terminal is sent', async () => {
+      repo.findByUsername.mockResolvedValue(null);
+      repo.create.mockResolvedValue(makeDriver({ homeTerminalName: '' }) as never);
+
+      await service.create(CreateDriverDto.parse(withoutTerminal));
+
+      const [createArg] = repo.create.mock.calls[0] as [{ homeTerminalName: string; homeTerminalTimezone: string }];
+      expect(createArg.homeTerminalName).toBe('');
+      expect(createArg.homeTerminalTimezone).toBe('America/New_York');
+    });
   });
 
   it('rejects a duplicate username', async () => {

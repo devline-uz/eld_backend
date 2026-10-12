@@ -1156,3 +1156,57 @@ describe('MR-12 / MR-13 / MR-16 — GET /mobile/logs day extras', () => {
     expect(day.trip).toMatchObject({ shippingDocuments: ['BOL-DAY'], trailerNumbers: ['X53-1'], notes: 'yard', dayDetails: true, tripIds: [] });
   });
 });
+
+describe('W-08 — the record table and the grid read the same RODS day', () => {
+  it('getEvents returns the record carried in over midnight, so a 24:00 grid never sits over an empty table', async () => {
+    const { service, repo } = build();
+    // DRIVING from 2026-10-08 03:44 ET with no later record: 2026-10-10 is driving from 00:00.
+    repo.events = [evt({ id: 1n, at: '2026-10-08T07:24:00Z', code: 4 }), evt({ id: 2n, at: '2026-10-08T07:44:00Z', code: 3 })];
+    const now = new Date('2026-10-11T10:00:00Z');
+
+    const day = await service.getDay(DRIVER, '2026-10-10', now);
+    const records = await service.getEvents(DRIVER, '2026-10-10', now);
+
+    expect(day.summary.drivingSec).toBe(86400);
+    expect(records.events).toEqual([]);
+    expect(records.carriedIn).toMatchObject({ id: '2', status: 'D', eventDateTime: new Date('2026-10-08T07:44:00Z') });
+  });
+
+  it('has no carriedIn when a record opens the day exactly at midnight, or for a future day', async () => {
+    const { service, repo } = build();
+    repo.events = [evt({ id: 1n, at: '2026-10-08T07:44:00Z', code: 3 }), evt({ id: 2n, at: '2026-10-10T04:00:00Z', code: 1 })];
+    const now = new Date('2026-10-11T10:00:00Z');
+    expect((await service.getEvents(DRIVER, '2026-10-10', now)).carriedIn).toBeNull();
+    expect((await service.getEvents(DRIVER, '2026-10-12', now)).carriedIn).toBeNull();
+  });
+
+  it('skips a carried record that a later "Inactive — Changed" marker retired', async () => {
+    const { service, repo } = build();
+    repo.events = [
+      evt({ id: 1n, at: '2026-10-08T07:24:00Z', code: 4 }),
+      evt({ id: 2n, at: '2026-10-08T07:44:00Z', code: 3 }),
+      evt({ id: 3n, at: '2026-10-08T07:44:00Z', code: 3, recordStatus: 2, supersedesId: 2n }),
+    ];
+    const records = await service.getEvents(DRIVER, '2026-10-10', new Date('2026-10-11T10:00:00Z'));
+    expect(records.carriedIn).toMatchObject({ id: '1', status: 'ON' });
+  });
+
+  it('getDayView lists the violations still in force at 00:00 of a day spent driving past the limits', async () => {
+    const { service, repo } = build();
+    repo.driver = { ...repo.driver, hosRuleset: 'US_70_8_PROPERTY' };
+    repo.events = [evt({ id: 1n, at: '2026-10-08T07:24:00Z', code: 4 }), evt({ id: 2n, at: '2026-10-08T07:44:00Z', code: 3 })];
+
+    const view = await service.getDayView(DRIVER, '2026-10-10', new Date('2026-10-11T10:00:00Z'));
+
+    expect(view.summary.drivingSec).toBe(86400);
+    expect(view.ongoingViolations.map((v) => v.type).sort()).toEqual(['BREAK_30', 'DRIVING_11', 'SHIFT_14']);
+  });
+
+  it('getDayView reports nothing on a legal day', async () => {
+    const { service, repo } = build();
+    repo.driver = { ...repo.driver, hosRuleset: 'US_70_8_PROPERTY' };
+    repo.events = [evt({ id: 1n, at: '2026-10-10T12:00:00Z', code: 3 }), evt({ id: 2n, at: '2026-10-10T16:00:00Z', code: 1 })];
+    const view = await service.getDayView(DRIVER, '2026-10-10', new Date('2026-10-11T10:00:00Z'));
+    expect(view.ongoingViolations).toEqual([]);
+  });
+});

@@ -460,7 +460,8 @@ export class DriversService {
       phone: dto.phone,
       cdlNumber: dto.cdlNumber,
       cdlState: dto.cdlState,
-      homeTerminalName: dto.homeTerminalName,
+      // Optional on the DTO, NOT NULL in the DB: no home terminal is stored as `''`.
+      homeTerminalName: dto.homeTerminalName ?? '',
       homeTerminalTimezone: dto.homeTerminalTimezone,
       hosRuleset: dto.hosRuleset,
       allowPersonalConveyance: dto.allowPersonalConveyance,

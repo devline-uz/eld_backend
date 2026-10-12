@@ -51,7 +51,7 @@ describe('DashboardService — reuses each feature module\'s own service via Pro
     expect(result.carrier).toEqual({ id: 'carrier', name: 'Universal Logistics Inc.', timezone: 'America/New_York' });
     expect(result.vehicles).toEqual({ active: 40, total: 45 });
 
-    expect(violations.list).toHaveBeenCalledWith({ window: '24h', status: 'OPEN', page: 1, limit: 25 }, now);
+    expect(violations.list).toHaveBeenCalledWith({ status: 'OPEN', page: 1, limit: 25 }, now);
     expect(unidentified.list).toHaveBeenCalledWith({ status: 'PENDING', page: 1, limit: 25 });
     expect(notifications.list).toHaveBeenCalledWith(actor, { page: 1, limit: 1, unreadOnly: true });
     expect(vehicles.list).toHaveBeenCalledWith({ page: 1, limit: 1, status: 'ACTIVE' });

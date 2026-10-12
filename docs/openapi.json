@@ -58979,7 +58979,7 @@
             "in": "query",
             "schema": {
               "type": "string",
-              "format": "date-time"
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
             }
           },
           {
@@ -58988,7 +58988,7 @@
             "in": "query",
             "schema": {
               "type": "string",
-              "format": "date-time"
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
             }
           }
         ],
@@ -58999,18 +58999,55 @@
               "application/json": {
                 "schema": {
                   "example": {
+                    "periodStart": "2026-09-11",
+                    "periodEnd": "2026-10-10",
+                    "computedAt": "2026-10-11T10:30:02.000Z",
+                    "minMiles": 100,
+                    "fleet": {
+                      "score": 88,
+                      "previousScore": 85,
+                      "trend": 3,
+                      "scoredDrivers": 12,
+                      "unscoredDrivers": 2,
+                      "belowThresholdCount": 1,
+                      "milesDriven": 48210
+                    },
                     "items": [
                       {
+                        "id": "dsc_1",
                         "driverId": "drv_1",
-                        "score": 68,
-                        "harshCount": 4,
+                        "periodStart": "2026-09-11",
+                        "periodEnd": "2026-10-10",
+                        "score": 96,
+                        "scored": true,
+                        "harshCount": 1,
+                        "speedingCount": 0,
+                        "seatbeltCount": 0,
+                        "milesDriven": 5210,
+                        "violationCount": 0,
                         "rank": 1,
-                        "previousScore": 74,
-                        "trend": -6
+                        "previousScore": 92,
+                        "trend": 4,
+                        "computedAt": "2026-10-11T10:30:02.000Z"
+                      },
+                      {
+                        "id": "dsc_2",
+                        "driverId": "drv_2",
+                        "periodStart": "2026-09-11",
+                        "periodEnd": "2026-10-10",
+                        "score": null,
+                        "scored": false,
+                        "harshCount": 0,
+                        "speedingCount": 0,
+                        "seatbeltCount": 0,
+                        "milesDriven": 42,
+                        "violationCount": 0,
+                        "rank": null,
+                        "previousScore": null,
+                        "trend": null,
+                        "computedAt": "2026-10-11T10:30:02.000Z"
                       }
-                    ],
-                    "periodStart": "2026-08-12",
-                    "periodEnd": "2026-09-11"
+                    ]
                   }
                 }
               }
@@ -59172,7 +59209,7 @@
             "bearer": []
           }
         ],
-        "summary": "Fleet safety score and per-driver ranking (\"Driver scorecard\", below-70 flagged). B-44: each row includes previousScore/trend vs. the prior period of the same length.",
+        "summary": "Fleet safety score and per-driver ranking (\"Driver scorecard\", below-70 flagged). D-141: returns the latest nightly-computed rolling 30-day period (or the one starting on `periodStart` / ending on `periodEnd`, YYYY-MM-DD). Drivers under `minMiles` have `score: null`, `rank: null`. `fleet.score` is the mile-weighted mean of scored drivers; `fleet.trend` and per-row `trend` compare with the previous period of the same length.",
         "tags": [
           "safety"
         ],
@@ -61260,7 +61297,7 @@
             "bearer": []
           }
         ],
-        "summary": "One-call aggregate for the W-01 Fleet Dashboard: live fleet, 24h violations, pending unidentified driving, unread notification count, carrier basics, and vehicle counts.",
+        "summary": "One-call aggregate for the W-01 Fleet Dashboard: live fleet, open violations, pending unidentified driving, unread notification count, carrier basics, and vehicle counts.",
         "tags": [
           "dashboard"
         ],
@@ -70484,7 +70521,6 @@
           },
           "homeTerminalName": {
             "type": "string",
-            "minLength": 1,
             "maxLength": 120
           },
           "homeTerminalTimezone": {
@@ -70548,8 +70584,7 @@
           "firstName",
           "lastName",
           "cdlNumber",
-          "cdlState",
-          "homeTerminalName"
+          "cdlState"
         ]
       },
       "CreateEditRequestDto": {
@@ -71346,7 +71381,8 @@
           },
           "odometerMi": {
             "type": "integer",
-            "minimum": 0
+            "minimum": 0,
+            "maximum": 9999999
           },
           "dueAt": {
             "type": "string",
@@ -72227,7 +72263,7 @@
               "$ref": "#/components/schemas/ImportVehicleRowDto"
             },
             "minItems": 1,
-            "maxItems": 1000
+            "maxItems": 2000
           },
           "options": {
             "$ref": "#/components/schemas/ImportVehiclesOptionsDto"
@@ -74614,7 +74650,6 @@
           },
           "homeTerminalName": {
             "type": "string",
-            "minLength": 1,
             "maxLength": 120
           },
           "homeTerminalTimezone": {
@@ -75159,7 +75194,8 @@
           },
           "description": {
             "type": "string",
-            "maxLength": 2000
+            "maxLength": 2000,
+            "nullable": true
           },
           "priority": {
             "$ref": "#/components/schemas/WorkOrderPriorityEnum"
@@ -75173,16 +75209,20 @@
           },
           "vendor": {
             "type": "string",
-            "maxLength": 120
+            "maxLength": 120,
+            "nullable": true
           },
           "costUsd": {
             "type": "number",
             "minimum": 0,
-            "maximum": 1000000
+            "maximum": 1000000,
+            "nullable": true
           },
           "odometerMi": {
             "type": "integer",
-            "minimum": 0
+            "minimum": 0,
+            "maximum": 9999999,
+            "nullable": true
           },
           "dueAt": {
             "type": "string",
