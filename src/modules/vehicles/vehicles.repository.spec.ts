@@ -9,6 +9,7 @@ function makeDelegate() {
     update: jest.fn(),
     delete: jest.fn(),
     count: jest.fn().mockResolvedValue(0),
+    groupBy: jest.fn().mockResolvedValue([]),
   };
 }
 
@@ -60,6 +61,12 @@ describe('VehiclesRepository', () => {
     expect(result).toEqual({ items: [{ id: 'v1' }], total: 1 });
   });
 
+  it('BE-014 — list escapes LIKE wildcards so `%` / `_` search literally', async () => {
+    await repo.list({ q: '50%_a\\b' }, 1, 20, { unitNumber: 'asc' });
+    const where = (vehicle.findMany.mock.calls[0] as [{ where: Record<string, unknown> }])[0].where;
+    expect(where.OR).toEqual(expect.arrayContaining([{ unitNumber: { contains: '50\\%\\_a\\\\b', mode: 'insensitive' } }]));
+  });
+
   it('list omits status/q filters when not provided', async () => {
     await repo.list({}, 1, 20, { unitNumber: 'asc' });
     const where = (vehicle.findMany.mock.calls[0] as [{ where: Record<string, unknown> }])[0].where;
@@ -80,5 +87,14 @@ describe('VehiclesRepository', () => {
       select: { id: true },
     });
     expect(result).toEqual([{ id: 'def_1' }]);
+  });
+
+  it('UI-004 — countByStatus groups live units by record status, zero-filled', async () => {
+    vehicle.groupBy.mockResolvedValue([
+      { status: 'ACTIVE', _count: { _all: 4 } },
+      { status: 'OUT_OF_SERVICE', _count: { _all: 1 } },
+    ]);
+    await expect(repo.countByStatus()).resolves.toEqual({ ACTIVE: 4, INACTIVE: 0, OUT_OF_SERVICE: 1, total: 5 });
+    expect(vehicle.groupBy).toHaveBeenCalledWith({ by: ['status'], where: { deletedAt: null }, _count: { _all: true } });
   });
 });

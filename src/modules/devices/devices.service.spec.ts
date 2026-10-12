@@ -17,7 +17,7 @@ function makeDevice(overrides: Partial<Record<string, unknown>> = {}) {
 }
 
 describe('DevicesService', () => {
-  let devicesRepo: jest.Mocked<Pick<DevicesRepository, 'findById' | 'findBySerial' | 'findByVehicleId' | 'create' | 'update' | 'delete' | 'list' | 'listAll'>>;
+  let devicesRepo: jest.Mocked<Pick<DevicesRepository, 'findById' | 'findBySerial' | 'findByVehicleId' | 'create' | 'update' | 'delete' | 'list' | 'listAll' | 'connectionCounts'>>;
   let vehiclesRepo: jest.Mocked<Pick<VehiclesRepository, 'findById'>>;
   let service: DevicesService;
 
@@ -31,6 +31,7 @@ describe('DevicesService', () => {
       delete: jest.fn(),
       list: jest.fn(),
       listAll: jest.fn(),
+      connectionCounts: jest.fn().mockResolvedValue({ total: 0, connected: 0, offlineOver24h: 0 }),
     };
     vehiclesRepo = { findById: jest.fn() };
     service = new DevicesService(devicesRepo as unknown as DevicesRepository, vehiclesRepo as unknown as VehiclesRepository);
@@ -56,6 +57,32 @@ describe('DevicesService', () => {
       serial: 'asc',
     });
     expect(result.items[0].firmwareOutdated).toBe(true);
+  });
+
+  describe('UI-012 — effective connection', () => {
+    const NOW = new Date('2026-10-12T12:00:00Z');
+    const minsAgo = (m: number) => new Date(NOW.getTime() - m * 60_000);
+
+    it.each([
+      ['CONNECTED', minsAgo(5), 'CONNECTED'],
+      ['CONNECTED', minsAgo(31), 'DISCONNECTED'],
+      ['CONNECTED', null, 'DISCONNECTED'],
+      ['OUT_OF_RANGE', minsAgo(1), 'DISCONNECTED'],
+      ['DISCONNECTED', minsAgo(1), 'DISCONNECTED'],
+    ] as const)('stored %s seen %s reads %s', async (bleState, lastSeenAt, expected) => {
+      devicesRepo.list.mockResolvedValue({ items: [makeDevice({ bleState, lastSeenAt })], total: 1 } as never);
+      const result = await service.list({ page: 1, limit: 25 }, NOW);
+      expect(result.items[0].connection).toBe(expected);
+      expect(result.items[0].bleState).toBe(bleState);
+    });
+
+    it('list carries inventory-wide connectionCounts (30 min / 24 h lines)', async () => {
+      devicesRepo.list.mockResolvedValue({ items: [], total: 0 });
+      devicesRepo.connectionCounts.mockResolvedValue({ total: 10, connected: 6, offlineOver24h: 2 });
+      const result = await service.list({ page: 1, limit: 25, bleState: 'CONNECTED' } as never, NOW);
+      expect(result.connectionCounts).toEqual({ total: 10, connected: 6, disconnected: 4, offlineOver24h: 2 });
+      expect(devicesRepo.connectionCounts).toHaveBeenCalledWith(minsAgo(30), new Date('2026-10-11T12:00:00Z'));
+    });
   });
 
   describe('create', () => {
@@ -171,6 +198,13 @@ describe('DevicesService', () => {
         { id: 'dev_1' },
         expect.objectContaining({ vehicle: { connect: { id: 'veh_1' } }, status: 'ASSIGNED' }),
       );
+    });
+
+    it('BE-019 — rejects pairing to a soft-deleted unit', async () => {
+      devicesRepo.findById.mockResolvedValue(makeDevice() as never);
+      vehiclesRepo.findById.mockResolvedValue({ id: 'veh_1', deletedAt: new Date() } as never);
+      await expect(service.pair('dev_1', { vehicleId: 'veh_1' })).rejects.toMatchObject({ code: 'VEHICLE_NOT_FOUND' });
+      expect(devicesRepo.update).not.toHaveBeenCalled();
     });
 
     it('rejects pairing when the unit already has a different device', async () => {

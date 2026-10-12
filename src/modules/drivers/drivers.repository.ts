@@ -3,6 +3,7 @@ import type { AdverseDrivingInvocation, Driver, DriverDocument, Prisma } from '@
 import { BaseRepository, ModelDelegate } from '../../core/prisma/base.repository';
 import { PrismaService } from '../../core/prisma/prisma.service';
 import { findAdverseInvokedToday } from './lib/adverse-driving';
+import { escapeLike } from '../../common/dto/list-query.dto';
 
 export interface DriverListFilter {
   status?: Driver['status'];
@@ -13,6 +14,16 @@ export interface DriverRosterFilter extends DriverListFilter {
   terminal?: string;
   hasOpenViolation?: boolean;
   exempt?: boolean;
+  /**
+   * UI-015 — the `ActiveViolationsService.refresh` exclusions (rows a STALE status filed after its
+   * cap), so `hasOpenViolation` matches the roster's `openViolations` counts.
+   */
+  violationExclude?: Prisma.HosViolationWhereInput[];
+}
+
+/** UI-015 — the active-violation relation filter: OPEN rows minus the stale-cap exclusions. */
+function activeViolationWhere(exclude: Prisma.HosViolationWhereInput[] = []): Prisma.HosViolationWhereInput {
+  return exclude.length === 0 ? { status: 'OPEN' } : { AND: [{ status: 'OPEN' }, ...exclude] };
 }
 
 export type DriverWithUnit = Driver & { assignedVehicle: { id: string; unitNumber: string } | null };
@@ -98,6 +109,21 @@ export class DriversRepository extends BaseRepository<
     });
   }
 
+  /** BE-010 — `fleetManagerId` must name an existing panel user (else the FK/connect is a 500). */
+  async fleetManagerExists(userId: string): Promise<boolean> {
+    return (await this.prisma.user.findUnique({ where: { id: userId }, select: { id: true } })) !== null;
+  }
+
+  /** BE-013 — unfinished trips (draft → in progress) that still point at this driver. */
+  findOpenTrips(driverId: string): Promise<Array<{ id: string; number: string; status: string }>> {
+    return this.prisma.trip.findMany({
+      where: { driverId, status: { in: ['DRAFT', 'PLANNED', 'ASSIGNED', 'IN_PROGRESS'] } },
+      select: { id: true, number: true, status: true },
+      orderBy: { plannedStartAt: 'asc' },
+      take: 20,
+    });
+  }
+
   /**
    * B-100 — creates the driver and assigns the unit in ONE transaction. The assignment is a
    * scalar `assignedVehicleId` write, not a relation `connect`: Prisma's `connect` on this 1:1
@@ -124,11 +150,11 @@ export class DriversRepository extends BaseRepository<
       ...(filter.status && { status: filter.status }),
       ...(filter.q && {
         OR: [
-          { username: { contains: filter.q, mode: 'insensitive' } },
-          { firstName: { contains: filter.q, mode: 'insensitive' } },
-          { lastName: { contains: filter.q, mode: 'insensitive' } },
-          { cdlNumber: { contains: filter.q, mode: 'insensitive' } },
-          { email: { contains: filter.q, mode: 'insensitive' } },
+          { username: { contains: escapeLike(filter.q), mode: 'insensitive' } },
+          { firstName: { contains: escapeLike(filter.q), mode: 'insensitive' } },
+          { lastName: { contains: escapeLike(filter.q), mode: 'insensitive' } },
+          { cdlNumber: { contains: escapeLike(filter.q), mode: 'insensitive' } },
+          { email: { contains: escapeLike(filter.q), mode: 'insensitive' } },
         ],
       }),
     };
@@ -151,15 +177,15 @@ export class DriversRepository extends BaseRepository<
       ...(filter.status && { status: filter.status }),
       ...(filter.terminal && { homeTerminalName: { equals: filter.terminal, mode: 'insensitive' } }),
       ...(filter.exempt !== undefined && { eldExempt: filter.exempt }),
-      ...(filter.hasOpenViolation === true && { violations: { some: { status: 'OPEN' } } }),
-      ...(filter.hasOpenViolation === false && { violations: { none: { status: 'OPEN' } } }),
+      ...(filter.hasOpenViolation === true && { violations: { some: activeViolationWhere(filter.violationExclude) } }),
+      ...(filter.hasOpenViolation === false && { violations: { none: activeViolationWhere(filter.violationExclude) } }),
       ...(filter.q && {
         OR: [
-          { username: { contains: filter.q, mode: 'insensitive' } },
-          { firstName: { contains: filter.q, mode: 'insensitive' } },
-          { lastName: { contains: filter.q, mode: 'insensitive' } },
-          { cdlNumber: { contains: filter.q, mode: 'insensitive' } },
-          { email: { contains: filter.q, mode: 'insensitive' } },
+          { username: { contains: escapeLike(filter.q), mode: 'insensitive' } },
+          { firstName: { contains: escapeLike(filter.q), mode: 'insensitive' } },
+          { lastName: { contains: escapeLike(filter.q), mode: 'insensitive' } },
+          { cdlNumber: { contains: escapeLike(filter.q), mode: 'insensitive' } },
+          { email: { contains: escapeLike(filter.q), mode: 'insensitive' } },
         ],
       }),
     };
@@ -175,6 +201,19 @@ export class DriversRepository extends BaseRepository<
       this.prisma.driver.count({ where: scoped }),
     ]);
     return { items, total };
+  }
+
+  /**
+   * UI-015 — roster header counts over every live driver in scope, whatever the current
+   * filter / search / page: `total` drivers and how many have an ACTIVE violation (same
+   * definition as the `hasOpenViolation` segment).
+   */
+  async rosterSummary(violationExclude: Prisma.HosViolationWhereInput[] = []): Promise<{ total: number; withActiveViolations: number }> {
+    const [total, withActiveViolations] = await Promise.all([
+      this.prisma.driver.count({ where: this.scopeWhere({ deletedAt: null }) }),
+      this.prisma.driver.count({ where: this.scopeWhere({ deletedAt: null, violations: { some: activeViolationWhere(violationExclude) } }) }),
+    ]);
+    return { total, withActiveViolations };
   }
 
   /** OPEN `HosViolation` rows per driver (AUTO_CLEARED / RESOLVED are not open). */

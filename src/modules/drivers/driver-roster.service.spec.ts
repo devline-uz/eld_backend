@@ -64,6 +64,7 @@ function makeHos(events: Row[], dailyLogs: Array<{ driverId: string; logDate: Da
 function makeDriversRepo(items: Array<ReturnType<typeof makeDriver>>, open: Record<string, number> = {}, adverseInvoked: string[] = []) {
   return {
     listRoster: jest.fn().mockResolvedValue({ items, total: items.length }),
+    rosterSummary: jest.fn().mockResolvedValue({ total: items.length, withActiveViolations: Object.keys(open).length }),
     countOpenViolations: jest.fn(async () => new Map(Object.entries(open))),
     findById: jest.fn(async ({ id }: { id: string }) => items.find((d) => d.id === id) ?? null),
     findAdverseInvokedToday: jest.fn(async () => new Set(adverseInvoked)),
@@ -118,7 +119,8 @@ describe('DriverRosterService.roster', () => {
 
     const page = await service.roster(query({ page: '1', limit: '25', q: 'smith' }), NOW);
 
-    expect(Object.keys(page).sort()).toEqual(['items', 'limit', 'page', 'total', 'totalPages']);
+    expect(Object.keys(page).sort()).toEqual(['items', 'limit', 'page', 'summary', 'total', 'totalPages']);
+    expect(page.summary).toEqual({ total: 2, withActiveViolations: 1 });
     expect(page).toMatchObject({ page: 1, limit: 25, total: 2, totalPages: 1 });
     const [first, second] = page.items;
     expect(Object.keys(first).sort()).toEqual(['driver', 'dutyStatus', 'emailVerified', 'hos', 'isStale', 'limits', 'openViolations', 'staleSince', 'unit']);
@@ -137,6 +139,7 @@ describe('DriverRosterService.roster', () => {
       allowYardMove: true,
       shortHaulException: false,
       splitSleeperEnabled: false,
+      hosRuleset: 'US_70_8_PROPERTY',
     });
     expect(first.dutyStatus).toBe('DRIVING');
     expect(first.unit).toEqual({ id: 'veh_1', unitNumber: '101' });
@@ -163,6 +166,25 @@ describe('DriverRosterService.roster', () => {
       10,
       { lastName: 'asc' },
     );
+  });
+
+  it('UI-015 — the hasOpenViolation segment and the global summary use the ActiveViolationsService exclusions', async () => {
+    const drivers = makeDriversRepo([]);
+    const { service: hos } = makeHos([]);
+    const exclude = [{ NOT: { driverId: 'drv_9', occurredAt: { gt: new Date('2026-09-11T02:00:00Z') } } }];
+    const activeViolations = { refresh: jest.fn().mockResolvedValue(exclude), openCountsByDriver: jest.fn().mockResolvedValue(new Map()) };
+    drivers.rosterSummary.mockResolvedValue({ total: 12, withActiveViolations: 3 });
+    const service = new DriverRosterService(drivers as unknown as DriversRepository, hos, undefined, activeViolations as never);
+    const page = await service.roster(query({ hasOpenViolation: 'true', q: 'smith' }), NOW);
+    expect(drivers.listRoster).toHaveBeenCalledWith(
+      { status: undefined, q: 'smith', terminal: undefined, hasOpenViolation: true, exempt: undefined, violationExclude: exclude },
+      1,
+      25,
+      { lastName: 'asc' },
+    );
+    // The header count ignores the current filter / search.
+    expect(drivers.rosterSummary).toHaveBeenCalledWith(exclude);
+    expect(page.summary).toEqual({ total: 12, withActiveViolations: 3 });
   });
 
   it('honours an allowed sort and computes totalPages', async () => {
@@ -194,6 +216,32 @@ describe('DriverRosterService.roster', () => {
   });
 });
 
+describe('DriverRosterService — invalid stored timezone (BE-003)', () => {
+  const NOW = new Date('2026-09-12T15:00:00Z');
+  const events = [duty('drv_1', '2026-09-12T10:00:00Z', 3, 1)];
+
+  it('roster skips only the driver with an invalid zone; everyone else keeps engine clocks', async () => {
+    const bad = makeDriver({ id: 'drv_bad', homeTerminalTimezone: 'Mars/Olympus_Mons' });
+    const drivers = makeDriversRepo([makeDriver(), bad]);
+    const { service: hos } = makeHos(events);
+    const spy = jest.spyOn(hos, 'computeCurrentStates');
+    const service = new DriverRosterService(drivers as unknown as DriversRepository, hos);
+    const page = await service.roster(query(), NOW);
+    expect((spy.mock.calls[0][0] as Array<{ id: string }>).map((d) => d.id)).toEqual(['drv_1']);
+    expect(page.items.map((i) => [i.driver.id, i.dutyStatus])).toEqual([
+      ['drv_1', 'DRIVING'],
+      ['drv_bad', 'OFF_DUTY'],
+    ]);
+  });
+
+  it('clocks answers 503 for a driver with an invalid zone instead of crashing', async () => {
+    const drivers = makeDriversRepo([makeDriver({ homeTerminalTimezone: 'Not/AZone' })]);
+    const { service: hos } = makeHos(events);
+    const service = new DriverRosterService(drivers as unknown as DriversRepository, hos);
+    await expect(service.clocks('drv_1', NOW)).rejects.toMatchObject({ status: 503 });
+  });
+});
+
 describe('DriverRosterService.clocks', () => {
   it('throws DRIVER_NOT_FOUND for an unknown driver', async () => {
     const { service: hos } = makeHos([]);
@@ -216,6 +264,7 @@ describe('DriverRosterService.clocks', () => {
       shiftLimitSec: 14 * H,
       driveLimitSec: 11 * H,
       breakLimitSec: 8 * H,
+      hosRuleset: 'US_70_8_PROPERTY',
       dutyStatus: 'OFF_DUTY',
       statusSince: NOW.toISOString(),
       computedAt: NOW.toISOString(),

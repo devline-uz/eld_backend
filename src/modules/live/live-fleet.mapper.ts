@@ -6,6 +6,7 @@
  * Coordinates are passed through as stored: both `TelemetryPoint` and `EldEvent` are already
  * coarsened at ingest (1 mi / 10 mi under PC, §7.3 rule 9), so nothing here can leak a raw fix.
  */
+import { staleStatusCapAt } from '../drivers/lib/stale-status';
 import type { DutyStatus as HosDutyStatus } from '../hos/hos.types';
 
 /** The web's `DutyStatus` union (`web/src/shared/ui/Badge.tsx`). */
@@ -19,6 +20,12 @@ export type LiveDutyStatus =
   | 'ELD_OFFLINE'
   | 'IDLE'
   | 'INACTIVE';
+
+/** UI-004 — the stored `Vehicle.status` (the record), independent of what the ELD reports. */
+export type LiveRecordStatus = 'ACTIVE' | 'INACTIVE' | 'OUT_OF_SERVICE';
+
+/** UI-004 — whether the unit's ELD is talking to us at all. */
+export type LiveConnectivity = 'NO_DEVICE' | 'ELD_OFFLINE' | 'ONLINE';
 
 export interface LiveFleetUnit {
   vehicleId: string;
@@ -38,6 +45,17 @@ export interface LiveFleetUnit {
   shiftEndsAt: string | null;
   eldSerial: string | null;
   bleState: 'CONNECTED' | 'DISCONNECTED' | null;
+  /** UI-004 — `Vehicle.status`; OUT_OF_SERVICE / INACTIVE units read `dutyStatus: 'INACTIVE'`. */
+  recordStatus: LiveRecordStatus;
+  /** UI-004 — NO_DEVICE (no ELD paired), ELD_OFFLINE (silent > 30 min) or ONLINE. */
+  connectivity: LiveConnectivity;
+  /**
+   * UI-003 — the driver's HOS duty status is NOT live: either it is past its plausibility cap
+   * (BUG-002) or a DRIVING / ON-DUTY unit's ELD went silent. `dutyStatus` then reads ELD_OFFLINE.
+   */
+  isStale: boolean;
+  /** UI-003 — the cap instant (BUG-002) or the last signal heard from the unit; null when unknown / not stale. */
+  staleSince: string | null;
 }
 
 export interface LiveFleetResponse {
@@ -75,7 +93,7 @@ export interface LiveFleetInput {
   device: { serial: string; bleState: string; lastSeenAt: Date | null } | null;
   telemetry: LatestTelemetry | null;
   located: LatestLocatedEvent | null;
-  hos: { currentStatus: HosDutyStatus; driveRemainingSec: number; shiftEndsAt: Date | null } | null;
+  hos: { currentStatus: HosDutyStatus; statusSince?: Date; driveRemainingSec: number; shiftEndsAt: Date | null } | null;
   /** Active PC/YM indication (eventType 3) newer than the last duty-status record, if any. */
   special: 'PC' | 'YM' | null;
   now: Date;
@@ -100,9 +118,41 @@ export function isEldOffline(device: LiveFleetInput['device'], now: Date): boole
   return now.getTime() - device.lastSeenAt.getTime() > ELD_OFFLINE_AFTER_MS;
 }
 
+function recordStatusOf(status: string): LiveRecordStatus {
+  return status === 'OUT_OF_SERVICE' || status === 'INACTIVE' ? status : 'ACTIVE';
+}
+
+export function resolveConnectivity(device: LiveFleetInput['device'], now: Date): LiveConnectivity {
+  if (!device) return 'NO_DEVICE';
+  return isEldOffline(device, now) ? 'ELD_OFFLINE' : 'ONLINE';
+}
+
+/**
+ * UI-003 — when the assigned driver's duty status cannot be trusted as live:
+ * - BUG-002: the status is past its plausibility cap (16 h D / 24 h ON), whatever the device says;
+ * - a DRIVING / ON-DUTY unit whose ELD is silent (> 30 min), or a DRIVING unit that has sent no
+ *   telemetry for 30 min (a moving truck reports continuously; an on-duty one may sit engine-off).
+ * OFF / SB are kept as they are (a parked truck legitimately goes quiet); `connectivity` still
+ * says the ELD is offline. A unit without a device has nothing to go silent.
+ */
+export function resolveStaleness(input: LiveFleetInput, telemetryFresh: boolean): { isStale: boolean; staleSince: Date | null } {
+  const { driver, hos, device, telemetry, now } = input;
+  if (!driver || !hos) return { isStale: false, staleSince: null };
+  const capAt = hos.statusSince ? staleStatusCapAt(hos.currentStatus, hos.statusSince, now) : null;
+  if (capAt) return { isStale: true, staleSince: capAt };
+  const active = hos.currentStatus === 'D' || hos.currentStatus === 'ON';
+  if (active && device && (isEldOffline(device, now) || (hos.currentStatus === 'D' && !telemetryFresh))) {
+    return { isStale: true, staleSince: latest([device.lastSeenAt, telemetry?.time]) };
+  }
+  return { isStale: false, staleSince: null };
+}
+
 export function resolveDutyStatus(input: LiveFleetInput, telemetryFresh: boolean): LiveDutyStatus {
   const { driver, hos, device, special, telemetry, vehicle, now } = input;
+  // UI-004 — the record wins: an out-of-service or deactivated truck is not on the road.
+  if (recordStatusOf(vehicle.status) !== 'ACTIVE') return 'INACTIVE';
   if (driver && hos) {
+    if (resolveStaleness(input, telemetryFresh).isStale) return 'ELD_OFFLINE';
     if (special === 'PC' && hos.currentStatus === 'OFF') return 'PERSONAL_CONVEYANCE';
     if (special === 'YM' && hos.currentStatus === 'ON') return 'YARD_MOVE';
     if (hos.currentStatus === 'ON' && telemetryFresh && telemetry?.engineOn === true && telemetry.speedMph === 0) {
@@ -112,7 +162,7 @@ export function resolveDutyStatus(input: LiveFleetInput, telemetryFresh: boolean
   }
   // Nobody is signed in to this truck: the only thing worth saying is whether its ELD is alive.
   if (device && isEldOffline(device, now)) return 'ELD_OFFLINE';
-  return vehicle.status === 'ACTIVE' && device ? 'OFF_DUTY' : 'INACTIVE';
+  return device ? 'OFF_DUTY' : 'INACTIVE';
 }
 
 export function toLiveFleetUnit(input: LiveFleetInput): LiveFleetUnit {
@@ -137,6 +187,8 @@ export function toLiveFleetUnit(input: LiveFleetInput): LiveFleetUnit {
     (useEvent || (fix !== null && Math.abs(fix.at.getTime() - located.eventDateTime.getTime()) <= SPEED_FRESH_MS));
 
   const offline = isEldOffline(device, now);
+  const recordStatus = recordStatusOf(vehicle.status);
+  const stale = recordStatus === 'ACTIVE' ? resolveStaleness(input, telemetryFresh) : { isStale: false, staleSince: null };
   const lastSeen = latest([device?.lastSeenAt, telemetry?.time, located?.eventDateTime]);
 
   return {
@@ -157,6 +209,10 @@ export function toLiveFleetUnit(input: LiveFleetInput): LiveFleetUnit {
     shiftEndsAt: driver && hos?.shiftEndsAt ? hos.shiftEndsAt.toISOString() : null,
     eldSerial: device?.serial ?? null,
     bleState: device ? (!offline && device.bleState === 'CONNECTED' ? 'CONNECTED' : 'DISCONNECTED') : null,
+    recordStatus,
+    connectivity: resolveConnectivity(device, now),
+    isStale: stale.isStale,
+    staleSince: stale.staleSince ? stale.staleSince.toISOString() : null,
   };
 }
 

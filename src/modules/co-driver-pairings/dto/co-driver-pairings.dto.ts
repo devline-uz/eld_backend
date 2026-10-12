@@ -1,11 +1,12 @@
 import { z } from 'zod';
+import { MAX_LIST_PAGE } from '../../../common/dto/list-query.dto';
 
 const QueryBool = z.enum(['true', 'false']).transform((value) => value === 'true');
 
 /** §20 B-7 — team-driving pairing is a TIME-BOUNDED row, never a plain column on `Driver`
  * (hard rule). `GET /co-driver-pairings?vehicleId=&active=`. */
 export const CoDriverPairingListQueryDto = z.object({
-  page: z.coerce.number().int().min(1).default(1),
+  page: z.coerce.number().int().min(1).max(MAX_LIST_PAGE).default(1),
   limit: z.coerce.number().int().min(1).max(200).default(25),
   vehicleId: z.string().uuid().optional(),
   driverId: z.string().uuid().optional(),

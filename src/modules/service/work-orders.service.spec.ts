@@ -40,6 +40,17 @@ describe('WorkOrdersService (TZ §5.10 — defect resolution workflow tied to a 
       ).rejects.toBeInstanceOf(AppException);
     });
 
+    it('BE-019 — 404s for a soft-deleted vehicle and writes nothing', async () => {
+      vehicles.findById.mockResolvedValue({ id: 'veh_1', deletedAt: new Date() } as never);
+      await expect(
+        service.create(
+          { vehicleId: 'veh_1', title: 'Brake service', priority: 'NORMAL', keepOutOfService: false, notifyDriver: true, blockDispatchAssignment: false },
+          'user_1',
+        ),
+      ).rejects.toMatchObject({ code: 'VEHICLE_NOT_FOUND', status: 404 });
+      expect(repo.createSynced).not.toHaveBeenCalled();
+    });
+
     it('assigns a sequential number and attaches given defects', async () => {
       vehicles.findById.mockResolvedValue({ id: 'veh_1' } as never);
       repo.nextNumber.mockResolvedValue('WO-0002');

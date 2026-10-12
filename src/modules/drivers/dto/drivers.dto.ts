@@ -1,4 +1,7 @@
 import { z } from 'zod';
+import { MAX_LIST_PAGE } from '../../../common/dto/list-query.dto';
+import { RegionCodeSchema } from '../../../common/dto/region-code.dto';
+import { IanaTimezoneSchema } from '../../../common/dto/timezone.dto';
 
 export const DriverStatusEnum = z.enum(['ACTIVE', 'INACTIVE', 'TERMINATED']);
 export const HosRulesetEnum = z.enum([
@@ -10,13 +13,15 @@ export const HosRulesetEnum = z.enum([
 
 /** TZ §5.3 — driver identity, CDL, and the per-driver exception flags. */
 export const CreateDriverDto = z.object({
-  username: z.string().min(3).max(40),
-  firstName: z.string().min(1).max(80),
-  lastName: z.string().min(1).max(80),
+  // BE-015 — identity fields are trimmed; whitespace-only is rejected.
+  username: z.string().trim().min(3).max(40),
+  firstName: z.string().trim().min(1).max(80),
+  lastName: z.string().trim().min(1).max(80),
   email: z.string().email().optional(),
   phone: z.string().max(30).optional(),
-  cdlNumber: z.string().min(1).max(40),
-  cdlState: z.string().min(2).max(10),
+  cdlNumber: z.string().trim().min(1).max(40),
+  /** BE-017 — a US state / Canadian province code, upper-cased. */
+  cdlState: RegionCodeSchema,
 
   // Optional (product decision): the web panel may create a driver without a home terminal.
   // `Driver.homeTerminalName` is NOT NULL, so absent / blank is stored as `''` (see
@@ -24,9 +29,13 @@ export const CreateDriverDto = z.object({
   homeTerminalName: z.string().trim().max(120).optional(),
   // RODS day boundary follows this timezone, never Carrier.timezone (TZ §5.3).
   // Independent of `homeTerminalName` and always defaulted, so HOS never depends on the name.
-  homeTerminalTimezone: z.string().min(1).max(64).default('America/New_York'),
+  // BE-003 — validated as a real IANA zone (HOS crashes on an unknown one).
+  homeTerminalTimezone: IanaTimezoneSchema.default('America/New_York'),
 
-  hosRuleset: HosRulesetEnum.default('US_70_8_PROPERTY'),
+  // UI-005 — no default here: absent ⇒ the carrier's `hosRuleset` (`DriversService`).
+  hosRuleset: HosRulesetEnum.optional().describe(
+    "UI-005 — optional. Omitted → the carrier's default HOS ruleset (POST /drivers and every row of POST /drivers/import).",
+  ),
   fleetManagerId: z.string().uuid().optional(),
 
   allowPersonalConveyance: z.boolean().default(false),
@@ -53,11 +62,12 @@ export type CreateDriverDto = z.infer<typeof CreateDriverDto>;
 
 export const UpdateDriverDto = CreateDriverDto.omit({ username: true, password: true, assignedVehicleId: true })
   .partial()
-  .extend({ status: DriverStatusEnum.optional() });
+  // Not the create-time description: on update an omitted ruleset is left unchanged.
+  .extend({ hosRuleset: HosRulesetEnum.optional(), status: DriverStatusEnum.optional() });
 export type UpdateDriverDto = z.infer<typeof UpdateDriverDto>;
 
 export const DriverListQueryDto = z.object({
-  page: z.coerce.number().int().min(1).default(1),
+  page: z.coerce.number().int().min(1).max(MAX_LIST_PAGE).default(1),
   limit: z.coerce.number().int().min(1).max(200).default(25),
   sort: z.string().max(60).optional(),
   q: z.string().max(200).optional(),

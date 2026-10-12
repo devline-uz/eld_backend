@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MAX_LIST_PAGE } from '../../../common/dto/list-query.dto';
 
 export const DefectStatusEnum = z.enum(['OPEN', 'IN_PROGRESS', 'REPAIRED', 'DEFERRED']);
 export const DefectSeverityEnum = z.enum(['MINOR', 'MAJOR', 'CRITICAL']);
@@ -12,7 +13,7 @@ export const RepairStatusEnum = z.enum(['NOT_REQUIRED', 'PENDING', 'REPAIRED', '
 // --- DVIR (web read + mechanic sign-off) ------------------------------------------------
 
 export const DvirListQueryDto = z.object({
-  page: z.coerce.number().int().min(1).default(1),
+  page: z.coerce.number().int().min(1).max(MAX_LIST_PAGE).default(1),
   limit: z.coerce.number().int().min(1).max(200).default(25),
   sort: z.string().max(60).optional(),
   vehicleId: z.string().uuid().optional(),
@@ -49,7 +50,7 @@ export type NextDriverReviewDto = z.infer<typeof NextDriverReviewDto>;
 // --- Defects -----------------------------------------------------------------------------
 
 export const DefectListQueryDto = z.object({
-  page: z.coerce.number().int().min(1).default(1),
+  page: z.coerce.number().int().min(1).max(MAX_LIST_PAGE).default(1),
   limit: z.coerce.number().int().min(1).max(200).default(25),
   sort: z.string().max(60).optional(),
   vehicleId: z.string().uuid().optional(),
@@ -133,7 +134,7 @@ export const UpdateWorkOrderDto = z.object({
 export type UpdateWorkOrderDto = z.infer<typeof UpdateWorkOrderDto>;
 
 export const WorkOrderListQueryDto = z.object({
-  page: z.coerce.number().int().min(1).default(1),
+  page: z.coerce.number().int().min(1).max(MAX_LIST_PAGE).default(1),
   limit: z.coerce.number().int().min(1).max(200).default(25),
   sort: z.string().max(60).optional(),
   q: z.string().max(200).optional(),
@@ -145,6 +146,16 @@ export type WorkOrderListQueryDto = z.infer<typeof WorkOrderListQueryDto>;
 
 // --- Maintenance schedules -----------------------------------------------------------------
 
+/** BE-008 — `MaintenanceSchedule.lastServiceMi` is INT4; same realistic cap as a unit's odometer. */
+const MAX_SERVICE_MI = 10_000_000;
+/** BE-021 — a service cannot have happened in the future (a few minutes of client clock skew allowed). */
+const FUTURE_SKEW_MS = 5 * 60 * 1000;
+const FUTURE_SERVICE_MESSAGE = 'Last service date cannot be in the future.';
+const PastServiceAt = z
+  .string()
+  .datetime({ offset: true })
+  .refine((value) => new Date(value).getTime() <= Date.now() + FUTURE_SKEW_MS, FUTURE_SERVICE_MESSAGE);
+
 export const CreateMaintenanceScheduleDto = z
   .object({
     vehicleId: z.string().uuid(),
@@ -153,8 +164,8 @@ export const CreateMaintenanceScheduleDto = z
     scheduleType: z.string().trim().min(1).max(40).optional(),
     intervalMi: z.number().int().min(1).max(2_000_000).optional(),
     intervalDays: z.number().int().min(1).max(3660).optional(),
-    lastServiceMi: z.number().int().min(0).optional(),
-    lastServiceAt: z.string().datetime({ offset: true }).optional(),
+    lastServiceMi: z.number().int().min(0).max(MAX_SERVICE_MI).optional(),
+    lastServiceAt: PastServiceAt.optional(),
     enabled: z.boolean().default(true),
   })
   .refine((v) => v.intervalMi !== undefined || v.intervalDays !== undefined, {
@@ -173,15 +184,15 @@ export const UpdateMaintenanceScheduleDto = z.object({
   reviewNote: z.string().trim().max(500).nullable().optional(),
   intervalMi: z.number().int().min(1).max(2_000_000).nullable().optional(),
   intervalDays: z.number().int().min(1).max(3660).nullable().optional(),
-  lastServiceMi: z.number().int().min(0).optional(),
-  lastServiceAt: z.string().datetime({ offset: true }).optional(),
+  lastServiceMi: z.number().int().min(0).max(MAX_SERVICE_MI).optional(),
+  lastServiceAt: PastServiceAt.optional(),
   enabled: z.boolean().optional(),
 });
 export type UpdateMaintenanceScheduleDto = z.infer<typeof UpdateMaintenanceScheduleDto>;
 
 export const MaintenanceScheduleListQueryDto = z.object({
   status: MaintenanceScheduleStatusEnum.optional(),
-  page: z.coerce.number().int().min(1).default(1),
+  page: z.coerce.number().int().min(1).max(MAX_LIST_PAGE).default(1),
   limit: z.coerce.number().int().min(1).max(200).default(25),
   vehicleId: z.string().uuid().optional(),
   enabled: z.coerce.boolean().optional(),
@@ -191,7 +202,7 @@ export type MaintenanceScheduleListQueryDto = z.infer<typeof MaintenanceSchedule
 
 /** Marks a schedule serviced now — resets `lastService*`/`nextDue*` from the interval. */
 export const CompleteMaintenanceDto = z.object({
-  serviceOdometerMi: z.number().int().min(0).optional(),
-  serviceAt: z.string().datetime({ offset: true }).optional(),
+  serviceOdometerMi: z.number().int().min(0).max(MAX_SERVICE_MI).optional(),
+  serviceAt: PastServiceAt.optional(),
 });
 export type CompleteMaintenanceDto = z.infer<typeof CompleteMaintenanceDto>;

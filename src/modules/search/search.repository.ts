@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../core/prisma/prisma.service';
+import { escapeLike } from '../../common/dto/list-query.dto';
 
 export interface SearchDriverRow {
   id: string;
@@ -27,10 +28,10 @@ export class SearchRepository {
     return this.prisma.driver.findMany({
       where: {
         OR: [
-          { firstName: { contains: q, mode: 'insensitive' } },
-          { lastName: { contains: q, mode: 'insensitive' } },
-          { username: { contains: q, mode: 'insensitive' } },
-          { cdlNumber: { contains: q, mode: 'insensitive' } },
+          { firstName: { contains: escapeLike(q), mode: 'insensitive' } },
+          { lastName: { contains: escapeLike(q), mode: 'insensitive' } },
+          { username: { contains: escapeLike(q), mode: 'insensitive' } },
+          { cdlNumber: { contains: escapeLike(q), mode: 'insensitive' } },
         ],
       },
       take: limit,
@@ -49,10 +50,10 @@ export class SearchRepository {
     return this.prisma.vehicle.findMany({
       where: {
         OR: [
-          { unitNumber: { contains: q, mode: 'insensitive' } },
-          { vin: { contains: q, mode: 'insensitive' } },
-          { make: { contains: q, mode: 'insensitive' } },
-          { model: { contains: q, mode: 'insensitive' } },
+          { unitNumber: { contains: escapeLike(q), mode: 'insensitive' } },
+          { vin: { contains: escapeLike(q), mode: 'insensitive' } },
+          { make: { contains: escapeLike(q), mode: 'insensitive' } },
+          { model: { contains: escapeLike(q), mode: 'insensitive' } },
         ],
       },
       take: limit,

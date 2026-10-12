@@ -26,6 +26,18 @@ function tripNumberTaken(): AppException {
   return AppException.conflict(TRIP_NUMBER_TAKEN_MESSAGE, { number: TRIP_NUMBER_TAKEN_MESSAGE });
 }
 
+/** BE-005 — a driver/unit/trailer on a (non-draft) trip needs a planned start, or the overlap
+ * check has no range to test and the trip would silently double-book its resources. */
+const START_REQUIRED_MESSAGE = 'Set a planned start before putting a driver, unit or trailer on this trip.';
+function plannedStartRequired(): AppException {
+  return new AppException(ERROR_CODES.VALIDATION_FAILED, START_REQUIRED_MESSAGE, 422, { plannedStartAt: START_REQUIRED_MESSAGE });
+}
+
+/** BE-001 — Prisma `P2025` ("record to connect/update not found") lost a race to the pre-check. */
+function isRecordNotFound(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { code?: string }).code === 'P2025';
+}
+
 /** Prisma `P2002` on `Trip.number` — a concurrent create that lost the race to the pre-check. */
 function isTripNumberUniqueViolation(err: unknown): boolean {
   if (typeof err !== 'object' || err === null || (err as { code?: string }).code !== 'P2002') return false;
@@ -144,6 +156,8 @@ export class TripsService {
 
     const { stops, driverId, vehicleId, trailerId, draft, ...rest } = dto;
     this.assertPlannedWindow(dto.plannedStartAt, dto.plannedEndAt);
+    if (driverId) await this.assertDriverAssignable(driverId);
+    if (vehicleId) await this.assertVehicleAssignable(vehicleId);
     if (trailerId) await this.assertTrailerAssignable(trailerId);
     const data: Prisma.TripCreateInput = {
       ...rest,
@@ -158,6 +172,8 @@ export class TripsService {
     // Drafts included — a draft with a unit/driver/trailer and a start reserves them (trip-schedule.ts).
     const window = this.windowOf(dto.plannedStartAt, dto.plannedEndAt);
     const holders = { vehicleId: vehicleId ?? null, driverId: driverId ?? null, trailerId: trailerId ?? null };
+    // BE-005 — a drafted trip may still be incomplete; it is checked again when published.
+    if (!window && !draft && this.hasHolder(holders)) throw plannedStartRequired();
     if (window && this.hasHolder(holders)) {
       return this.numberConflictOnDuplicate(
         this.withScheduleLocks(holders, async (db) => {
@@ -169,14 +185,33 @@ export class TripsService {
     return this.numberConflictOnDuplicate(this.repo.createWithStops(data, stopRows));
   }
 
-  /** Surface a `Trip.number` unique-index race as the same 409 the pre-check throws, not a 500. */
+  /** Surface a `Trip.number` unique-index race as the same 409 the pre-check throws, and a
+   * driver/unit deleted between the pre-check and the write (`P2025`) as a 422, never a 500. */
   private async numberConflictOnDuplicate<T>(write: Promise<T>): Promise<T> {
     try {
       return await write;
     } catch (err) {
       if (isTripNumberUniqueViolation(err)) throw tripNumberTaken();
+      if (isRecordNotFound(err)) throw this.relationGone();
       throw err;
     }
+  }
+
+  /** BE-001 — `P2025` on a trip update/assign: the trip itself vanished (hard delete race) → 404,
+   * otherwise the driver/unit being connected did → 422. */
+  private async mapUpdateError<T>(id: string, write: Promise<T>): Promise<T> {
+    try {
+      return await write;
+    } catch (err) {
+      if (!isRecordNotFound(err)) throw err;
+      if (!(await this.repo.findById({ id }))) throw new AppException(ERROR_CODES.NOT_FOUND, 'Trip not found.', 404);
+      throw this.relationGone();
+    }
+  }
+
+  private relationGone(): AppException {
+    const message = 'The selected driver or unit no longer exists.';
+    return new AppException(ERROR_CODES.VALIDATION_FAILED, message, 422, { driverId: message, vehicleId: message });
   }
 
   async update(id: string, dto: UpdateTripDto) {
@@ -209,6 +244,12 @@ export class TripsService {
           { from: trip.status, to: dto.status },
         );
       }
+      // BE-011 — ASSIGNED means "has a driver": a plain PATCH cannot get there without one
+      // (`POST /trips/:id/assign` is the way to add the driver).
+      if (dto.status === 'ASSIGNED' && !trip.driverId) {
+        const message = 'Assign a driver to this trip before marking it assigned.';
+        throw new AppException(ERROR_CODES.CONFLICT, message, 409, { from: trip.status, to: dto.status, driverId: message });
+      }
     }
 
     const timesChanged = dto.plannedStartAt !== undefined || dto.plannedEndAt !== undefined;
@@ -217,6 +258,9 @@ export class TripsService {
     if (timesChanged) this.assertPlannedWindow(plannedStartAt, plannedEndAt);
 
     const data: Prisma.TripUpdateInput = { ...dto };
+    // BE-011 — ASSIGNED -> PLANNED is an unassign: the driver comes off the trip (it is back on
+    // the unassigned-loads board, which lists PLANNED trips with no driver).
+    if (trip.status === 'ASSIGNED' && dto.status === 'PLANNED' && trip.driverId) data.driver = { disconnect: true };
     if (dto.status === 'IN_PROGRESS' && !trip.startedAt) data.startedAt = new Date();
     if (dto.status === 'DELIVERED' && !trip.completedAt) data.completedAt = new Date();
 
@@ -226,14 +270,23 @@ export class TripsService {
     const nextStatus = dto.status ?? trip.status;
     const publishing = trip.status === 'DRAFT' && nextStatus !== 'DRAFT';
     const window = this.windowOf(plannedStartAt, plannedEndAt);
-    const holders = { vehicleId: trip.vehicleId, driverId: trip.driverId, trailerId: trip.trailerId };
-    const updated =
+    const unassigning = data.driver !== undefined;
+    const holders = {
+      vehicleId: trip.vehicleId,
+      driverId: unassigning ? null : trip.driverId,
+      trailerId: trip.trailerId,
+    };
+    // BE-005 — publishing a draft that holds a driver/unit/trailer needs a range to check.
+    if (publishing && !window && this.hasHolder(holders)) throw plannedStartRequired();
+    const updated = await this.mapUpdateError(
+      id,
       window && this.hasHolder(holders) && (timesChanged || publishing) && UNIT_SCHEDULED_STATUSES.includes(nextStatus)
-        ? await this.withScheduleLocks(holders, async (db) => {
+        ? this.withScheduleLocks(holders, async (db) => {
             await this.assertHoldersFree(holders, window, id, db);
             return this.repo.update({ id }, data, db);
           })
-        : await this.repo.update({ id }, data);
+        : this.repo.update({ id }, data),
+    );
     if (dto.status && dto.status !== trip.status) {
       await this.publishStatusChanged(updated.id, updated.status, updated.etaAt);
     }
@@ -269,7 +322,10 @@ export class TripsService {
     if (trip.status !== 'PLANNED' && trip.status !== 'ASSIGNED') {
       throw new AppException(ERROR_CODES.CONFLICT, 'Only a planned or assigned trip can be (re)assigned.', 409);
     }
-    // Re-sending the trip's current trailer is fine even if it was deleted since; a NEW trailer must be live.
+    // Re-sending the trip's current driver/unit/trailer is fine even if it changed since; a NEW one
+    // must be live and assignable (BE-001: unknown -> 422, soft-deleted -> 422, inactive/OOS -> 409).
+    if (dto.driverId !== trip.driverId) await this.assertDriverAssignable(dto.driverId);
+    if (dto.vehicleId && dto.vehicleId !== trip.vehicleId) await this.assertVehicleAssignable(dto.vehicleId);
     if (dto.trailerId && dto.trailerId !== trip.trailerId) await this.assertTrailerAssignable(dto.trailerId);
     const data: Prisma.TripUpdateInput = {
       status: 'ASSIGNED',
@@ -284,13 +340,17 @@ export class TripsService {
       trailerId: dto.trailerId && dto.trailerId !== trip.trailerId ? dto.trailerId : null,
     };
     const window = this.windowOf(trip.plannedStartAt, trip.plannedEndAt);
-    const updated =
+    // BE-005 — without a planned start the driver/unit overlap check cannot run.
+    if (!window && this.hasHolder(holders)) throw plannedStartRequired();
+    const updated = await this.mapUpdateError(
+      id,
       window && this.hasHolder(holders)
-        ? await this.withScheduleLocks(holders, async (db) => {
+        ? this.withScheduleLocks(holders, async (db) => {
             await this.assertHoldersFree(holders, window, id, db);
             return this.repo.update({ id }, data, db);
           })
-        : await this.repo.update({ id }, data);
+        : this.repo.update({ id }, data),
+    );
     await this.publishStatusChanged(updated.id, updated.status, updated.etaAt);
     // §20 B-74 — `notify: false` skips the driver-app assignment notification entirely.
     if (dto.notify) {
@@ -306,6 +366,8 @@ export class TripsService {
     const assigned: Array<{ tripId: string; driverId: string }> = [];
     const pool = [...driverIds];
     for (const load of loads) {
+      // BE-005 — a load with no planned start cannot be assigned (no range to overlap-check).
+      if (!load.plannedStartAt) continue;
       const driverId = pool.shift();
       if (!driverId) break;
       try {
@@ -414,6 +476,38 @@ export class TripsService {
     // `Trip.trailerId` has no relation, so the number comes from the trailer row itself.
     const trailerNumber = await this.repo.findTrailerNumber(trailerId, db);
     throw scheduleConflict('trailer', trailerNumber ? `Trailer ${trailerNumber}` : 'This trailer', conflict, { trailerNumber });
+  }
+
+  /** BE-001 — the driver must exist and be live (422, keyed `driverId` like the trailer check) and
+   * ACTIVE (409: an INACTIVE/TERMINATED driver cannot be dispatched). */
+  private async assertDriverAssignable(driverId: string): Promise<void> {
+    const driver = await this.repo.findDriverForTrip(driverId);
+    if (!driver || driver.deletedAt) {
+      const message = driver ? 'This driver has been deleted and cannot be assigned.' : 'Driver not found.';
+      throw new AppException(ERROR_CODES.DRIVER_NOT_FOUND, message, 422, { driverId: message });
+    }
+    if (driver.status !== 'ACTIVE') {
+      const message = `This driver is ${driver.status.toLowerCase()} and cannot be assigned a trip.`;
+      throw new AppException(ERROR_CODES.CONFLICT, message, 409, { driverId: message });
+    }
+  }
+
+  /** BE-001 — the unit must exist and be live (422) and in service (409 `VEHICLE_OUT_OF_SERVICE`,
+   * the same hard rule as `POST /vehicles/:id/assign-driver`); an INACTIVE unit is a 409 too. */
+  private async assertVehicleAssignable(vehicleId: string): Promise<void> {
+    const vehicle = await this.repo.findVehicleForTrip(vehicleId);
+    if (!vehicle || vehicle.deletedAt) {
+      const message = vehicle ? 'This unit has been deleted and cannot be assigned.' : 'Vehicle not found.';
+      throw new AppException(ERROR_CODES.VEHICLE_NOT_FOUND, message, 422, { vehicleId: message });
+    }
+    if (vehicle.status === 'OUT_OF_SERVICE') {
+      const message = 'This unit is out of service and cannot be assigned a trip.';
+      throw new AppException(ERROR_CODES.VEHICLE_OUT_OF_SERVICE, message, 409, { vehicleId: message });
+    }
+    if (vehicle.status !== 'ACTIVE') {
+      const message = 'This unit is inactive and cannot be assigned a trip.';
+      throw new AppException(ERROR_CODES.CONFLICT, message, 409, { vehicleId: message });
+    }
   }
 
   /** `Trip.trailerId` has no FK, so an unknown id would otherwise be stored silently; a

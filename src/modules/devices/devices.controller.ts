@@ -34,7 +34,7 @@ export class DevicesController {
   @ApiQuery({ name: 'bleState', required: false })
   @ApiQuery({ name: 'vehicleId', required: false, description: 'B-35 — join a single unit\'s device (device<->vehicle binding lives only on Device.vehicleId).' })
   @ApiOperation({ summary: 'Lists PT30/PT40 devices with connected/offline BLE state, firmware, PT SDK 6.11 TrackerInfo and system variables.' })
-  @ApiOkResponse({ schema: { example: { items: [{ id: 'dev_1', serial: 'PT30_A86E', model: 'PT30', bleState: 'CONNECTED', firmware: 'L108', firmwareOutdated: false, productName: 'PT30', bleFirmware: '1.4.2', imei: null, reportedVin: '1FUJGLDR7CLBP8834', sdkVersion: '6.11.1', appPlatform: 'ANDROID', connectionType: 'BLE', busType: 'J1939', lastInfoAt: '2026-10-10T12:00:00.000Z', periodicConnectedSec: 30, periodicNoBleSec: 30, periodicDisconnectedMin: 30, harshAccelMg: 0, harshBrakeMg: 450, harshCornerMg: 0, systemVars: { PERIODIC_EVENT_GAP: 30, PERIODIC_EVENT_GAP_NOBLE: 30, EVENTS_STORED: 1, DRIVING_ACCL: 0, DRIVING_BRAKING: 450, DRIVING_CORNERING: 0, HSI_MODE: 1 } }], page: 1, limit: 25, total: 1, totalPages: 1 } } })
+  @ApiOkResponse({ description: "UI-012 (additive): items[].connection 'CONNECTED'|'DISCONNECTED' is the EFFECTIVE link (stored bleState CONNECTED and lastSeenAt within 30 min). connectionCounts {total, connected, disconnected, offlineOver24h} over the whole inventory (RETIRED excluded; list filters ignored).", schema: { example: { items: [{ id: 'dev_1', serial: 'PT30_A86E', model: 'PT30', bleState: 'CONNECTED', firmware: 'L108', firmwareOutdated: false, productName: 'PT30', bleFirmware: '1.4.2', imei: null, reportedVin: '1FUJGLDR7CLBP8834', sdkVersion: '6.11.1', appPlatform: 'ANDROID', connectionType: 'BLE', busType: 'J1939', lastInfoAt: '2026-10-10T12:00:00.000Z', periodicConnectedSec: 30, periodicNoBleSec: 30, periodicDisconnectedMin: 30, harshAccelMg: 0, harshBrakeMg: 450, harshCornerMg: 0, systemVars: { PERIODIC_EVENT_GAP: 30, PERIODIC_EVENT_GAP_NOBLE: 30, EVENTS_STORED: 1, DRIVING_ACCL: 0, DRIVING_BRAKING: 450, DRIVING_CORNERING: 0, HSI_MODE: 1 }, connection: 'CONNECTED' }], page: 1, limit: 25, total: 1, totalPages: 1, connectionCounts: { total: 12, connected: 7, disconnected: 5, offlineOver24h: 2 } } } })
   @ApiStandardErrors()
   list(@Query(zodBody(DeviceListQueryDto)) query: DeviceListQueryDto) {
     return this.devices.list(query);
@@ -47,6 +47,15 @@ export class DevicesController {
   @ApiStandardErrors()
   export() {
     return this.devices.exportAll();
+  }
+
+  @Get('counts')
+  @Perm('devices', 'READ')
+  @ApiOperation({ summary: 'UI-012 — fleet-wide device connection counts (RETIRED excluded; list filters ignored). `connected` = stored CONNECTED and seen within 30 min.' })
+  @ApiOkResponse({ schema: { example: { total: 12, connected: 7, disconnected: 5, offlineOver24h: 2 } } })
+  @ApiStandardErrors()
+  counts() {
+    return this.devices.connectionCounts();
   }
 
   @Get(':id')

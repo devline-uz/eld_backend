@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { isValidIanaTimezone } from '../../common/dto/timezone.dto';
 import type { HosState } from '../hos/hos.types';
 import { HosRecalcService } from '../hos-recalc/hos-recalc.service';
 import { withEffectiveAdverse } from '../drivers/lib/adverse-driving';
@@ -47,7 +48,9 @@ export class LiveFleetService {
       this.repo.latestTelemetry(vehicleIds, until),
       this.repo.latestLocatedEvents(vehicleIds, until),
       this.repo.activeSpecialDriving(driverIds, new Date(now.getTime() - SPECIAL_LOOKBACK_MS), until),
-      this.hos.computeCurrentStates(drivers, now).catch((err: unknown) => {
+      // BE-003 — a driver with an invalid stored timezone is skipped on its own (no clocks for that
+      // unit) instead of the engine throwing and every unit losing its clocks.
+      this.hos.computeCurrentStates(drivers.filter((d) => this.hosComputable(d)), now).catch((err: unknown) => {
         // The map is still useful without HOS clocks; never fail the whole fleet on the engine.
         this.logger.error({ err }, 'live fleet: HOS state computation failed — clocks omitted');
         return new Map<string, HosState>();
@@ -71,5 +74,11 @@ export class LiveFleetService {
       .sort((a, b) => compareUnitNumbers(a.unitNumber, b.unitNumber));
 
     return { items, generatedAt: now.toISOString() };
+  }
+
+  private hosComputable(driver: { id: string; homeTerminalTimezone: string }): boolean {
+    if (isValidIanaTimezone(driver.homeTerminalTimezone)) return true;
+    this.logger.warn({ driverId: driver.id, timezone: driver.homeTerminalTimezone }, 'live fleet: invalid home-terminal timezone — HOS clocks omitted');
+    return false;
   }
 }

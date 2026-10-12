@@ -66,7 +66,7 @@ describe('toLiveFleetUnit (GET /live/fleet, web/tz.md §20 B-3)', () => {
       [
         'vehicleId', 'unitNumber', 'driverId', 'driverName', 'driverPhone', 'dutyStatus', 'speedMph',
         'headingDeg', 'odometerMi', 'lat', 'lon', 'locationLabel', 'lastSeenAt', 'driveRemainingSec',
-        'shiftEndsAt', 'eldSerial', 'bleState',
+        'shiftEndsAt', 'eldSerial', 'bleState', 'recordStatus', 'connectivity', 'isStale', 'staleSince',
       ].sort(),
     );
     expect(unit).toMatchObject({
@@ -85,6 +85,67 @@ describe('toLiveFleetUnit (GET /live/fleet, web/tz.md §20 B-3)', () => {
       shiftEndsAt: '2026-09-14T21:10:00.000Z',
       eldSerial: 'PT30_A86E',
       bleState: 'CONNECTED',
+      recordStatus: 'ACTIVE',
+      connectivity: 'ONLINE',
+      isStale: false,
+      staleSince: null,
+    });
+  });
+
+  describe('UI-003 — an assigned unit whose status is not live reads ELD_OFFLINE', () => {
+    it('a DRIVING status past its 16 h cap (BUG-002) is ELD_OFFLINE even with a live device', () => {
+      const statusSince = new Date(NOW.getTime() - 17 * 3600_000);
+      const unit = toLiveFleetUnit(input({ hos: { currentStatus: 'D', statusSince, driveRemainingSec: 0, shiftEndsAt: null } }));
+      expect(unit).toMatchObject({
+        dutyStatus: 'ELD_OFFLINE',
+        isStale: true,
+        staleSince: new Date(statusSince.getTime() + 16 * 3600_000).toISOString(),
+        connectivity: 'ONLINE',
+      });
+    });
+
+    it('a DRIVING unit whose ELD is silent > 30 min is ELD_OFFLINE, stale since the last signal', () => {
+      const unit = toLiveFleetUnit(
+        input({ device: { serial: 's', bleState: 'CONNECTED', lastSeenAt: minsAgo(50) }, telemetry: { ...input().telemetry!, time: minsAgo(45) } }),
+      );
+      expect(unit).toMatchObject({ dutyStatus: 'ELD_OFFLINE', isStale: true, staleSince: minsAgo(45).toISOString(), connectivity: 'ELD_OFFLINE' });
+    });
+
+    it('a DRIVING unit with no telemetry for 30 min is ELD_OFFLINE although the device heartbeat is fresh', () => {
+      const unit = toLiveFleetUnit(input({ telemetry: { ...input().telemetry!, time: minsAgo(31) } }));
+      expect(unit.dutyStatus).toBe('ELD_OFFLINE');
+      expect(unit.isStale).toBe(true);
+    });
+
+    it('an ON-duty unit with a silent ELD is ELD_OFFLINE', () => {
+      const unit = toLiveFleetUnit(
+        input({ hos: { currentStatus: 'ON', driveRemainingSec: 0, shiftEndsAt: null }, device: { serial: 's', bleState: 'CONNECTED', lastSeenAt: minsAgo(40) } }),
+      );
+      expect(unit.dutyStatus).toBe('ELD_OFFLINE');
+    });
+
+    it('OFF / SB keep their duty status when the ELD goes quiet; connectivity still says so', () => {
+      const unit = toLiveFleetUnit(
+        input({ hos: { currentStatus: 'OFF', driveRemainingSec: 0, shiftEndsAt: null }, device: { serial: 's', bleState: 'CONNECTED', lastSeenAt: minsAgo(300) } }),
+      );
+      expect(unit).toMatchObject({ dutyStatus: 'OFF_DUTY', isStale: false, staleSince: null, connectivity: 'ELD_OFFLINE' });
+    });
+
+    it('a driving unit without any ELD is not marked stale (nothing to go silent)', () => {
+      const unit = toLiveFleetUnit(input({ device: null, telemetry: null }));
+      expect(unit).toMatchObject({ dutyStatus: 'DRIVING', isStale: false, connectivity: 'NO_DEVICE' });
+    });
+  });
+
+  describe('UI-004 — the vehicle record status wins over the driver duty status', () => {
+    it.each(['OUT_OF_SERVICE', 'INACTIVE'] as const)('a %s unit with a driving driver reads INACTIVE and exposes recordStatus', (status) => {
+      const unit = toLiveFleetUnit(input({ vehicle: { id: 'v', unitNumber: '1', status, odometerMi: 1 } }));
+      expect(unit).toMatchObject({ dutyStatus: 'INACTIVE', recordStatus: status, isStale: false, connectivity: 'ONLINE' });
+    });
+
+    it('distinguishes a no-device unit from an out-of-service one via connectivity / recordStatus', () => {
+      const noDevice = toLiveFleetUnit(input({ driver: null, hos: null, device: null }));
+      expect(noDevice).toMatchObject({ dutyStatus: 'INACTIVE', recordStatus: 'ACTIVE', connectivity: 'NO_DEVICE' });
     });
   });
 

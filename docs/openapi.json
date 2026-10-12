@@ -9807,7 +9807,7 @@
         ],
         "responses": {
           "200": {
-            "description": "",
+            "description": "UI-005/UI-015 (additive): items[].driver.hosRuleset 'US_70_8_PROPERTY'|'US_60_7_PROPERTY'|'US_70_8_PASSENGER'|'US_60_7_PASSENGER'; summary {total, withActiveViolations} over every live driver (filters / search / page ignored).",
             "content": {
               "application/json": {
                 "schema": {
@@ -9826,7 +9826,8 @@
                           "allowPersonalConveyance": true,
                           "allowYardMove": true,
                           "shortHaulException": false,
-                          "splitSleeperEnabled": false
+                          "splitSleeperEnabled": false,
+                          "hosRuleset": "US_70_8_PROPERTY"
                         },
                         "dutyStatus": "DRIVING",
                         "unit": {
@@ -9845,7 +9846,11 @@
                     "page": 1,
                     "limit": 25,
                     "total": 1,
-                    "totalPages": 1
+                    "totalPages": 1,
+                    "summary": {
+                      "total": 57,
+                      "withActiveViolations": 3
+                    }
                   }
                 }
               }
@@ -10040,7 +10045,7 @@
         ],
         "responses": {
           "200": {
-            "description": "",
+            "description": "UI-005 (additive): hosRuleset — the ruleset every limit comes from (same enum as Driver.hosRuleset).",
             "content": {
               "application/json": {
                 "schema": {
@@ -10056,7 +10061,8 @@
                     "breakLimitSec": 28800,
                     "dutyStatus": "DRIVING",
                     "statusSince": "2026-09-12T18:00:00.000Z",
-                    "computedAt": "2026-09-12T20:00:00.000Z"
+                    "computedAt": "2026-09-12T20:00:00.000Z",
+                    "hosRuleset": "US_70_8_PROPERTY"
                   }
                 }
               }
@@ -11061,6 +11067,62 @@
                           "path": "field",
                           "code": "invalid_type",
                           "message": "Required"
+                        }
+                      ]
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "CONFLICT — the driver still has open trips (DRAFT / PLANNED / ASSIGNED / IN_PROGRESS); details.openTrips [{id, number, status}] (max 20). Reassign or cancel them first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 409,
+                    "code": "CONFLICT",
+                    "message": "This driver still has open trips (TRP-1001). Reassign or cancel them first.",
+                    "details": {
+                      "openTrips": [
+                        {
+                          "id": "trp_1",
+                          "number": "TRP-1001",
+                          "status": "ASSIGNED"
                         }
                       ]
                     },
@@ -14391,7 +14453,7 @@
         ],
         "responses": {
           "200": {
-            "description": "",
+            "description": "UI-004 (additive): statusCounts {ACTIVE, INACTIVE, OUT_OF_SERVICE, total} over the whole fleet (list filters ignored; soft-deleted excluded).",
             "content": {
               "application/json": {
                 "schema": {
@@ -14407,7 +14469,13 @@
                     "page": 1,
                     "limit": 25,
                     "total": 1,
-                    "totalPages": 1
+                    "totalPages": 1,
+                    "statusCounts": {
+                      "ACTIVE": 40,
+                      "INACTIVE": 3,
+                      "OUT_OF_SERVICE": 2,
+                      "total": 45
+                    }
                   }
                 }
               }
@@ -15869,6 +15937,62 @@
                           "path": "field",
                           "code": "invalid_type",
                           "message": "Required"
+                        }
+                      ]
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "CONFLICT — the unit still has open trips (DRAFT / PLANNED / ASSIGNED / IN_PROGRESS); details.openTrips [{id, number, status}] (max 20). Reassign or cancel them first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 409,
+                    "code": "CONFLICT",
+                    "message": "This unit still has open trips (TRP-1001). Reassign or cancel them first.",
+                    "details": {
+                      "openTrips": [
+                        {
+                          "id": "trp_1",
+                          "number": "TRP-1001",
+                          "status": "ASSIGNED"
                         }
                       ]
                     },
@@ -17498,7 +17622,7 @@
             }
           },
           "404": {
-            "description": "VEHICLE_NOT_FOUND — Vehicle not found.",
+            "description": "VEHICLE_NOT_FOUND — Vehicle not found; DRIVER_NOT_FOUND — Driver not found or deleted.",
             "content": {
               "application/json": {
                 "schema": {
@@ -17545,7 +17669,7 @@
             }
           },
           "409": {
-            "description": "VEHICLE_OUT_OF_SERVICE — Unit is OUT_OF_SERVICE — assign a driver only after the critical defect is closed.",
+            "description": "One of: VEHICLE_OUT_OF_SERVICE — Unit is OUT_OF_SERVICE — assign a driver only after the critical defect is closed; CONFLICT (details.status) — \"Vehicle is inactive and cannot be assigned a driver.\"; CONFLICT — \"Driver is inactive|terminated and cannot be assigned a unit.\"; CONFLICT — \"Vehicle is already assigned to another driver.\"",
             "content": {
               "application/json": {
                 "schema": {
@@ -40209,7 +40333,7 @@
         },
         "responses": {
           "201": {
-            "description": "",
+            "description": "Created. For type DIRECT an existing conversation between the two participants is returned instead of creating a duplicate.",
             "content": {
               "application/json": {
                 "schema": {
@@ -40316,7 +40440,7 @@
             }
           },
           "422": {
-            "description": "VALIDATION_FAILED — Request validation failed.",
+            "description": "VALIDATION_FAILED — wrong participant count for the conversation type (DIRECT needs exactly one other participant; at least one participant otherwise) or unknown recipients (details.driverIds).",
             "content": {
               "application/json": {
                 "schema": {
@@ -40354,15 +40478,9 @@
                   "example": {
                     "statusCode": 422,
                     "code": "VALIDATION_FAILED",
-                    "message": "Request validation failed.",
+                    "message": "A direct conversation needs exactly one other participant.",
                     "details": {
-                      "issues": [
-                        {
-                          "path": "field",
-                          "code": "invalid_type",
-                          "message": "Required"
-                        }
-                      ]
+                      "driverIds": "A direct conversation needs exactly one other participant."
                     },
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
@@ -41433,7 +41551,7 @@
         ],
         "responses": {
           "200": {
-            "description": "",
+            "description": "UI-012 (additive): items[].connection 'CONNECTED'|'DISCONNECTED' is the EFFECTIVE link (stored bleState CONNECTED and lastSeenAt within 30 min). connectionCounts {total, connected, disconnected, offlineOver24h} over the whole inventory (RETIRED excluded; list filters ignored).",
             "content": {
               "application/json": {
                 "schema": {
@@ -41469,13 +41587,20 @@
                           "DRIVING_BRAKING": 450,
                           "DRIVING_CORNERING": 0,
                           "HSI_MODE": 1
-                        }
+                        },
+                        "connection": "CONNECTED"
                       }
                     ],
                     "page": 1,
                     "limit": 25,
                     "total": 1,
-                    "totalPages": 1
+                    "totalPages": 1,
+                    "connectionCounts": {
+                      "total": 12,
+                      "connected": 7,
+                      "disconnected": 5,
+                      "offlineOver24h": 2
+                    }
                   }
                 }
               }
@@ -42076,6 +42201,195 @@
           }
         ],
         "summary": "Exports all devices as the same shape `POST /devices/import` accepts.",
+        "tags": [
+          "devices"
+        ],
+        "x-figma-screens": [
+          {
+            "id": "web/settings-eld-devices",
+            "title": "Settings · ELD devices",
+            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.22 (Settings sub-nav); referenced again on p.28"
+          }
+        ]
+      }
+    },
+    "/api/devices/counts": {
+      "get": {
+        "operationId": "DevicesController_counts",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "total": 12,
+                    "connected": 7,
+                    "disconnected": 5,
+                    "offlineOver24h": 2
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHORIZED — Authentication required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 401,
+                    "code": "UNAUTHORIZED",
+                    "message": "Authentication required.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN — Insufficient permissions for this action.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 403,
+                    "code": "FORBIDDEN",
+                    "message": "Insufficient permissions for this action.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "VALIDATION_FAILED — Request validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 422,
+                    "code": "VALIDATION_FAILED",
+                    "message": "Request validation failed.",
+                    "details": {
+                      "issues": [
+                        {
+                          "path": "field",
+                          "code": "invalid_type",
+                          "message": "Required"
+                        }
+                      ]
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "UI-012 — fleet-wide device connection counts (RETIRED excluded; list filters ignored). `connected` = stored CONNECTED and seen within 30 min.",
         "tags": [
           "devices"
         ],
@@ -56804,7 +57118,7 @@
             }
           },
           "409": {
-            "description": "Field-level conflict — one of: CONFLICT (details.number: \"A trip with this number already exists.\"); TRIP_SCHEDULE_CONFLICT (details.vehicleId: \"Unit 1 is already assigned to another trip (TRP-1001) from 2026-10-10 12:00 UTC to 2026-10-20 12:00 UTC.\"); TRIP_SCHEDULE_CONFLICT (details.driverId: \"Driver John Smith is already assigned to another trip (TRP-1001) from 2026-10-10 12:00 UTC to 2026-10-20 12:00 UTC.\"); TRIP_SCHEDULE_CONFLICT (details.trailerId: \"Trailer T-12 is already assigned to another trip (TRP-1001) from 2026-10-10 12:00 UTC to 2026-10-20 12:00 UTC.\").",
+            "description": "Field-level conflict — one of: CONFLICT (details.number: \"A trip with this number already exists.\"); TRIP_SCHEDULE_CONFLICT (details.vehicleId: \"Unit 1 is already assigned to another trip (TRP-1001) from 2026-10-10 12:00 UTC to 2026-10-20 12:00 UTC.\"); TRIP_SCHEDULE_CONFLICT (details.driverId: \"Driver John Smith is already assigned to another trip (TRP-1001) from 2026-10-10 12:00 UTC to 2026-10-20 12:00 UTC.\"); TRIP_SCHEDULE_CONFLICT (details.trailerId: \"Trailer T-12 is already assigned to another trip (TRP-1001) from 2026-10-10 12:00 UTC to 2026-10-20 12:00 UTC.\"). Also: VEHICLE_OUT_OF_SERVICE (details.vehicleId: \"This unit is out of service and cannot be assigned a trip.\"); CONFLICT (details.vehicleId: \"This unit is inactive and cannot be assigned a trip.\"); CONFLICT (details.driverId: \"This driver is inactive|terminated and cannot be assigned a trip.\").",
             "content": {
               "application/json": {
                 "schema": {
@@ -56854,7 +57168,7 @@
             }
           },
           "422": {
-            "description": "TRAILER_NOT_FOUND — trailerId is unknown or names a deleted trailer.",
+            "description": "One of: DRIVER_NOT_FOUND (details.driverId: \"Driver not found.\" / \"This driver has been deleted and cannot be assigned.\"); VEHICLE_NOT_FOUND (details.vehicleId: \"Vehicle not found.\" / \"This unit has been deleted and cannot be assigned.\"); TRAILER_NOT_FOUND (details.trailerId); VALIDATION_FAILED (details.plannedStartAt when a planned start is required, or other field errors).",
             "content": {
               "application/json": {
                 "schema": {
@@ -56891,8 +57205,11 @@
                   },
                   "example": {
                     "statusCode": 422,
-                    "code": "TRAILER_NOT_FOUND",
-                    "message": "trailerId is unknown or names a deleted trailer.",
+                    "code": "DRIVER_NOT_FOUND",
+                    "message": "Driver not found.",
+                    "details": {
+                      "driverId": "Driver not found."
+                    },
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
                   }
@@ -58120,7 +58437,7 @@
             }
           },
           "409": {
-            "description": "Field-level conflict — one of: CONFLICT (details.status: \"Only a planned or assigned trip can be (re)assigned.\"); TRIP_SCHEDULE_CONFLICT (details.vehicleId: \"The new unit already has another trip in this trip's time range.\"); TRIP_SCHEDULE_CONFLICT (details.driverId: \"The new driver already has another trip in this trip's time range.\"); TRIP_SCHEDULE_CONFLICT (details.trailerId: \"The new trailer already has another trip in this trip's time range.\").",
+            "description": "Field-level conflict — one of: CONFLICT (details.status: \"Only a planned or assigned trip can be (re)assigned.\"); TRIP_SCHEDULE_CONFLICT (details.vehicleId: \"The new unit already has another trip in this trip's time range.\"); TRIP_SCHEDULE_CONFLICT (details.driverId: \"The new driver already has another trip in this trip's time range.\"); TRIP_SCHEDULE_CONFLICT (details.trailerId: \"The new trailer already has another trip in this trip's time range.\"). Also: VEHICLE_OUT_OF_SERVICE (details.vehicleId: \"This unit is out of service and cannot be assigned a trip.\"); CONFLICT (details.vehicleId: \"This unit is inactive and cannot be assigned a trip.\"); CONFLICT (details.driverId: \"This driver is inactive|terminated and cannot be assigned a trip.\").",
             "content": {
               "application/json": {
                 "schema": {
@@ -58170,7 +58487,7 @@
             }
           },
           "422": {
-            "description": "TRAILER_NOT_FOUND — trailerId is unknown or names a deleted trailer.",
+            "description": "One of: DRIVER_NOT_FOUND (details.driverId: \"Driver not found.\" / \"This driver has been deleted and cannot be assigned.\"); VEHICLE_NOT_FOUND (details.vehicleId: \"Vehicle not found.\" / \"This unit has been deleted and cannot be assigned.\"); TRAILER_NOT_FOUND (details.trailerId); VALIDATION_FAILED (details.plannedStartAt when a planned start is required, or other field errors).",
             "content": {
               "application/json": {
                 "schema": {
@@ -58207,8 +58524,11 @@
                   },
                   "example": {
                     "statusCode": 422,
-                    "code": "TRAILER_NOT_FOUND",
-                    "message": "trailerId is unknown or names a deleted trailer.",
+                    "code": "DRIVER_NOT_FOUND",
+                    "message": "Driver not found.",
+                    "details": {
+                      "driverId": "Driver not found."
+                    },
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
                   }
@@ -60874,7 +61194,7 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": "",
+            "description": "UI-003/UI-004 (additive): recordStatus 'ACTIVE'|'INACTIVE'|'OUT_OF_SERVICE' (stored Vehicle.status); connectivity 'NO_DEVICE'|'ELD_OFFLINE'|'ONLINE' (ELD_OFFLINE = silent > 30 min); isStale boolean (duty status past its plausibility cap, or a DRIVING/ON_DUTY unit whose ELD went silent); staleSince ISO string|null. dutyStatus semantics: a stale assigned D/ON unit reads ELD_OFFLINE; an OUT_OF_SERVICE/INACTIVE record reads INACTIVE. speedMph is null when telemetry is older than 30 min.",
             "content": {
               "application/json": {
                 "schema": {
@@ -60897,7 +61217,11 @@
                         "driveRemainingSec": 0,
                         "shiftEndsAt": "2026-09-12T15:59:34.000Z",
                         "eldSerial": "PT30_A86E",
-                        "bleState": "CONNECTED"
+                        "bleState": "CONNECTED",
+                        "recordStatus": "ACTIVE",
+                        "connectivity": "ONLINE",
+                        "isStale": false,
+                        "staleSince": null
                       }
                     ],
                     "generatedAt": "2026-09-12T15:39:10.000Z"
@@ -61086,7 +61410,7 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": "",
+            "description": "UI-003/UI-004 (additive): recordStatus 'ACTIVE'|'INACTIVE'|'OUT_OF_SERVICE' (stored Vehicle.status); connectivity 'NO_DEVICE'|'ELD_OFFLINE'|'ONLINE' (ELD_OFFLINE = silent > 30 min); isStale boolean (duty status past its plausibility cap, or a DRIVING/ON_DUTY unit whose ELD went silent); staleSince ISO string|null. dutyStatus semantics: a stale assigned D/ON unit reads ELD_OFFLINE; an OUT_OF_SERVICE/INACTIVE record reads INACTIVE. speedMph is null when telemetry is older than 30 min. vehicles.inactive / vehicles.outOfService: fleet-wide record-status counts. liveFleet.counts.moving counts DRIVING units that are not stale.",
             "content": {
               "application/json": {
                 "schema": {
@@ -61096,7 +61420,11 @@
                         {
                           "vehicleId": "veh_1",
                           "unitNumber": "101",
-                          "dutyStatus": "DRIVING"
+                          "dutyStatus": "DRIVING",
+                          "recordStatus": "ACTIVE",
+                          "connectivity": "ONLINE",
+                          "isStale": false,
+                          "staleSince": null
                         }
                       ],
                       "generatedAt": "2026-09-16T15:39:10.000Z",
@@ -61133,7 +61461,9 @@
                     },
                     "vehicles": {
                       "active": 40,
-                      "total": 45
+                      "total": 45,
+                      "inactive": 3,
+                      "outOfService": 2
                     },
                     "generatedAt": "2026-09-16T15:39:10.000Z"
                   }
@@ -70530,7 +70860,12 @@
             "default": "America/New_York"
           },
           "hosRuleset": {
-            "$ref": "#/components/schemas/HosRulesetEnum2"
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/HosRulesetEnum2"
+              }
+            ],
+            "description": "UI-005 — optional. Omitted → the carrier's default HOS ruleset (POST /drivers and every row of POST /drivers/import)."
           },
           "fleetManagerId": {
             "type": "string",

@@ -114,7 +114,7 @@ describe('ActiveViolationsService (BUG-003)', () => {
   it('never writes from a STALE status and drops its rows after the cap (BUG-002)', async () => {
     // DRIVING since 2026-10-10 10:00Z — past the 16 h plausibility cap (2026-10-11 02:00Z).
     const since = new Date('2026-10-10T10:00:00Z');
-    const { service, hos, repo } = setup({ rows: [openDriving({ since })], state: state({ statusSince: since }) });
+    const { service, hos, repo } = setup({ rows: [openDriving({ since })], state: state({ statusSince: since, violations: [] }) });
     const counts = await service.openCountsByDriver(['drv-1'], NOW);
     expect(hos.recalculate).not.toHaveBeenCalled();
     expect(repo.countByDriver).toHaveBeenCalledWith({
@@ -125,6 +125,40 @@ describe('ActiveViolationsService (BUG-003)', () => {
     const isActive = await service.activeFilter('drv-1', NOW);
     expect(isActive({ status: 'OPEN', occurredAt: new Date('2026-10-10T22:00:00Z') })).toBe(true);
     expect(isActive({ status: 'OPEN', occurredAt: new Date('2026-10-12T04:00:00Z') })).toBe(false);
+  });
+
+  it('UI-002a — files what a STALE driver crossed BEFORE the cap, reading the engine at the cap', async () => {
+    const since = new Date('2026-10-10T10:00:00Z');
+    const capAt = new Date('2026-10-11T02:00:00Z');
+    const preCap = violation({ type: 'DRIVING_11', logDate: '2026-10-10', occurredAt: new Date('2026-10-10T21:00:00Z') });
+    const { service, hos, repo } = setup({ rows: [openDriving({ since })], state: state({ statusSince: since, violations: [preCap] }) });
+    await service.openCountsByDriver(['drv-1'], NOW);
+    expect(hos.computeCurrentState).toHaveBeenNthCalledWith(2, 'drv-1', capAt);
+    expect(hos.recalculate).toHaveBeenCalledWith({ driverId: 'drv-1', fromDate: '2026-10-10' }, capAt);
+    // The post-cap exclusion still applies.
+    expect(repo.countByDriver).toHaveBeenCalledWith({
+      AND: [{ driverId: { in: ['drv-1'] }, status: 'OPEN' }, { NOT: { driverId: 'drv-1', occurredAt: { gt: capAt } } }],
+    });
+  });
+
+  it('UI-002a — a STALE driver whose pre-cap violation is already filed writes nothing', async () => {
+    const since = new Date('2026-10-10T10:00:00Z');
+    const preCap = violation({ logDate: '2026-10-10', occurredAt: new Date('2026-10-10T21:00:00Z') });
+    const { service, hos } = setup({
+      rows: [openDriving({ since })],
+      state: state({ statusSince: since, violations: [preCap] }),
+      stored: [row({ logDate: new Date('2026-10-10T00:00:00Z') })],
+    });
+    await service.refresh(NOW);
+    expect(hos.recalculate).not.toHaveBeenCalled();
+  });
+
+  it('UI-002a — a failed write for a STALE driver still drops the rows after the cap', async () => {
+    const since = new Date('2026-10-10T10:00:00Z');
+    const preCap = violation({ logDate: '2026-10-10', occurredAt: new Date('2026-10-10T21:00:00Z') });
+    const { service, hos } = setup({ rows: [openDriving({ since })], state: state({ statusSince: since, violations: [preCap] }) });
+    hos.recalculate.mockRejectedValueOnce(new Error('boom'));
+    await expect(service.refresh(NOW)).resolves.toEqual([{ NOT: { driverId: 'drv-1', occurredAt: { gt: new Date('2026-10-11T02:00:00Z') } } }]);
   });
 
   it('a failed engine check leaves the stored rows as they are', async () => {

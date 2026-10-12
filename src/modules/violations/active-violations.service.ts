@@ -41,8 +41,8 @@ interface DriverCheck {
  * clocks read "limit exceeded" while every list read 0. Before answering, this service checks
  * exactly those drivers and, when the engine holds a violation no row carries yet, runs the
  * existing idempotent `HosRecalcService.recalculate` (upsert on (driverId, logDate, type)) —
- * the same write the ingest path and the worker sweep make. A stale status is never written
- * from. Mobile paths and the shared engine are untouched.
+ * the same write the ingest path and the worker sweep make. A stale status is only written up to
+ * its cap (UI-002a). Mobile paths and the shared engine are untouched.
  */
 @Injectable()
 export class ActiveViolationsService {
@@ -124,31 +124,38 @@ export class ActiveViolationsService {
   }
 
   private async sync(row: OpenDrivingRow, now: Date): Promise<Date | null> {
+    let capAt: Date | null = null;
     try {
-      const current = await this.hos.computeCurrentState(row.driverId, now);
+      let current = await this.hos.computeCurrentState(row.driverId, now);
       if (!current || current.state.currentStatus !== 'D') return null;
+      // BUG-002 — an ELD that stopped reporting is not a driver still driving: nothing is filed
+      // AFTER the cap. UI-002a — what the driver crossed BEFORE it (11 h, 14 h, 30-min break) is
+      // still real, so the engine is read — and, when needed, the rows written — AT the cap.
+      capAt = staleStatusCapAt(current.state.currentStatus, current.state.statusSince, now);
+      const at = capAt ?? now;
+      if (capAt) {
+        current = await this.hos.computeCurrentState(row.driverId, capAt);
+        if (!current) return capAt;
+      }
       const { state, timezone } = current;
-      // BUG-002 — an ELD that stopped reporting is not a driver still driving: nothing is filed.
-      const capAt = staleStatusCapAt(state.currentStatus, state.statusSince, now);
-      if (capAt) return capAt;
 
-      const todayKey = dayKey(timezone, now);
-      const earliest = addDays(todayKey, -ACTIVE_VIOLATIONS_LOOKBACK_DAYS);
+      const todayKey = dayKey(timezone, at);
+      const earliest = addDays(dayKey(timezone, now), -ACTIVE_VIOLATIONS_LOOKBACK_DAYS);
       const start = dayKey(timezone, row.since);
       const fromKey = start < earliest ? earliest : start;
       const expected = state.violations.filter((violation) => violation.logDate >= fromKey);
-      if (expected.length === 0) return null;
+      if (expected.length === 0) return capAt;
 
       const stored = await this.hosRepo.findViolations(row.driverId, utcDate(fromKey), utcDate(todayKey));
       // OPEN is filed, RESOLVED was closed by a human (never reopened) — AUTO_CLEARED is neither.
       const filed = new Set(stored.filter((s) => s.status !== 'AUTO_CLEARED').map((s) => `${dayKey('UTC', s.logDate)}|${s.type}`));
-      if (expected.every((violation) => filed.has(`${violation.logDate}|${violation.type}`))) return null;
+      if (expected.every((violation) => filed.has(`${violation.logDate}|${violation.type}`))) return capAt;
 
-      await this.hos.recalculate({ driverId: row.driverId, fromDate: fromKey }, now);
-      return null;
+      await this.hos.recalculate({ driverId: row.driverId, fromDate: fromKey }, at);
+      return capAt;
     } catch (err) {
       this.logger.error({ err, driverId: row.driverId }, 'active violations: engine check failed — stored rows used as they are');
-      return null;
+      return capAt;
     }
   }
 }

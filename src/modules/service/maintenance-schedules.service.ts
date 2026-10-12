@@ -64,7 +64,8 @@ export class MaintenanceSchedulesService {
 
   async create(dto: CreateMaintenanceScheduleDto): Promise<MaintenanceSchedule> {
     const vehicle = await this.vehicles.findById({ id: dto.vehicleId });
-    if (!vehicle) throw new AppException(ERROR_CODES.VEHICLE_NOT_FOUND, 'Vehicle not found.', 404, { vehicleId: dto.vehicleId });
+    // BE-019 — a soft-deleted unit is gone for the web; nothing new may be attached to it.
+    if (!vehicle || vehicle.deletedAt) throw new AppException(ERROR_CODES.VEHICLE_NOT_FOUND, 'Vehicle not found.', 404, { vehicleId: dto.vehicleId });
 
     const lastServiceAt = dto.lastServiceAt ? new Date(dto.lastServiceAt) : null;
     const due = computeDue({

@@ -7,8 +7,15 @@ import { z } from 'zod';
  * the Figma fleet screens (`Vehicles`, `Drivers`, `Settings > ELD devices`) — while
  * `AuditRepository`/future `EldEvent` reads keep `BaseRepository.paginate`'s cursor form.
  */
+/**
+ * BE-007 — upper bound for every web list's `page`. Unbounded, `?page=99999999999` became an
+ * `OFFSET` past Postgres' bigint / Prisma's int range and surfaced as a 500; 10,000 pages × the
+ * 200-row max limit is far beyond any fleet table.
+ */
+export const MAX_LIST_PAGE = 10_000;
+
 export const ListQueryDto = z.object({
-  page: z.coerce.number().int().min(1).default(1),
+  page: z.coerce.number().int().min(1).max(MAX_LIST_PAGE).default(1),
   limit: z.coerce.number().int().min(1).max(200).default(25),
   /** `"field:asc"` or `"field:desc"`; unknown fields fall back to the caller's default. */
   sort: z.string().max(60).optional(),
@@ -41,4 +48,13 @@ export interface OffsetPage<T> {
 
 export function toOffsetPage<T>(items: T[], total: number, page: number, limit: number): OffsetPage<T> {
   return { items, page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) };
+}
+
+/**
+ * BE-014 — Prisma's `contains` / `startsWith` put the value into `LIKE '%…%'` WITHOUT escaping
+ * (verified against Postgres: `q=%` matched every row, `q=_` any one char, a lone `\` nothing).
+ * Escape the LIKE metacharacters with Postgres' default escape `\` so web search is literal.
+ */
+export function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, '\\$&');
 }
