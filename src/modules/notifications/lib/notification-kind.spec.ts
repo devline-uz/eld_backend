@@ -52,6 +52,10 @@ describe('deriveObjectRef', () => {
     });
   });
 
+  it('resolves Driver for alert.eld_status_stale (BUG-002, no device serial on the payload)', () => {
+    expect(deriveObjectRef('alert.eld_status_stale', { driverId: 'drv_1' })).toEqual({ objectType: 'Driver', objectId: 'drv_1' });
+  });
+
   it('returns undefined when the payload has no identifiable subject', () => {
     expect(deriveObjectRef('alert.unknown_event', {})).toBeUndefined();
   });
@@ -83,6 +87,7 @@ describe('deriveNotificationBody (§20 B-58)', () => {
     expect(deriveNotificationBody('alert.hos_violation', {})).toBe('An HOS violation was detected.');
     expect(deriveNotificationBody('alert.trip_assigned', {})).toBe('A new trip was assigned.');
     expect(deriveNotificationBody('alert.eld_disconnected', {})).toBe('An ELD device disconnected.');
+    expect(deriveNotificationBody('alert.eld_status_stale', {})).toBe('ELD connection lost: a duty status stopped updating.');
   });
 
   it('never returns raw JSON, even for an unknown event', () => {

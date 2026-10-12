@@ -119,3 +119,12 @@ export const VerifyDriverEmailDto = z.object({
   token: z.string().min(1),
 });
 export type VerifyDriverEmailDto = z.infer<typeof VerifyDriverEmailDto>;
+
+/** BUG-001 — `POST /drivers/:id/hos/adverse-driving`: invoke §395.1(b)(1) for one RODS day. */
+export const InvokeAdverseDrivingDto = z.object({
+  /** RODS day (home-terminal timezone); defaults to the driver's current day. */
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD').optional(),
+  /** §395.1(b)(1) — the required note describing the adverse conditions encountered. */
+  annotation: z.string().trim().min(4).max(255),
+});
+export type InvokeAdverseDrivingDto = z.infer<typeof InvokeAdverseDrivingDto>;

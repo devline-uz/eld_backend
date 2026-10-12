@@ -216,12 +216,33 @@ model Driver {
   documents              DriverDocument[]
   savedSignature         DriverSavedSignature?
   dayDetails             DriverDayDetails[]
+  adverseInvocations     AdverseDrivingInvocation[]
 
   @@index([status])
   // Partial unique indexes (WHERE "deletedAt" IS NULL) live in the migration SQL only; whitelisted
   // in src/core/prisma/custom-indexes.ts so `npm run migrate:dev` never drops them.
   @@index([username])
   @@index([email])
+}
+
+/// 49 CFR §395.1(b)(1) — adverse driving conditions INVOKED for one RODS day (home-terminal day,
+/// same `logDate` key as `DailyLog`), with the required annotation. `Driver.adverseDrivingEnabled`
+/// only PERMITS the exception; the +2 h drive / shift extension applies on a day with a row here.
+/// Written by the web panel (`POST /drivers/:id/hos/adverse-driving`).
+model AdverseDrivingInvocation {
+  id            String   @id @default(uuid())
+  driverId      String
+  logDate       DateTime @db.Date
+  annotation    String   @db.VarChar(255)
+  /// Who invoked it: a back-office `User.id` or the `Driver.id` itself.
+  invokedById   String?
+  invokedByType String   @default("user")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  driver Driver @relation(fields: [driverId], references: [id], onDelete: Cascade)
+
+  @@unique([driverId, logDate])
 }
 
 /// Co-driver pairing is TIME-bounded, not a permanent field (team driving history must persist).

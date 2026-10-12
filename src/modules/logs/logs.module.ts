@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { AuditModule } from '../audit/audit.module';
 import { IngestModule } from '../ingest/ingest.module';
+import { ViolationsModule } from '../violations/violations.module';
 import { LogsController } from './logs.controller';
 import { LogsRepository } from './logs.repository';
 import { LogsService } from './logs.service';
@@ -14,7 +15,7 @@ import { RodsEventWriter } from './rods-event-writer';
  * allocator and the partition guard are §7.3 rule 8 machinery and exist exactly once.
  */
 @Module({
-  imports: [IngestModule, AuditModule],
+  imports: [IngestModule, AuditModule, ViolationsModule],
   controllers: [LogsController, MobileLogsController, MobileLogsExportController],
   providers: [LogsService, LogsRepository, RodsEventWriter, MobileLogsExportService],
   exports: [LogsService, LogsRepository, RodsEventWriter],

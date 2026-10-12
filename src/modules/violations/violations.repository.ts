@@ -25,6 +25,12 @@ export class ViolationsRepository {
     return { items: items as ViolationWithDriver[], total };
   }
 
+  /** BUG-003 — `HosViolation` rows matching `where`, counted per driver. */
+  async countByDriver(where: Prisma.HosViolationWhereInput): Promise<Map<string, number>> {
+    const rows = await this.prisma.hosViolation.groupBy({ by: ['driverId'], where, _count: { _all: true } });
+    return new Map(rows.map((row) => [row.driverId, row._count._all]));
+  }
+
   findById(id: string): Promise<HosViolation | null> {
     return this.prisma.hosViolation.findUnique({ where: { id } });
   }

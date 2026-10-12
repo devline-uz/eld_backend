@@ -4,7 +4,7 @@ import type { LiveFleetService } from '../live/live-fleet.service';
 import type { NotificationsService } from '../notifications/notifications.service';
 import type { UnidentifiedService } from '../unidentified/unidentified.service';
 import type { VehiclesService } from '../vehicles/vehicles.service';
-import type { ViolationsService } from '../violations/violations.service';
+import type { ActiveViolationsService } from '../violations/active-violations.service';
 
 describe('DashboardService — reuses each feature module\'s own service via Promise.all', () => {
   const liveFleet = {
@@ -32,7 +32,7 @@ describe('DashboardService — reuses each feature module\'s own service via Pro
 
   const service = new DashboardService(
     liveFleet as unknown as LiveFleetService,
-    violations as unknown as ViolationsService,
+    violations as unknown as ActiveViolationsService,
     unidentified as unknown as UnidentifiedService,
     notifications as unknown as NotificationsService,
     carrier as unknown as CarrierService,

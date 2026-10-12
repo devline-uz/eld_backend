@@ -1,7 +1,8 @@
 import { Injectable } from '@nestjs/common';
-import type { Driver, DriverDocument, Prisma } from '@prisma/client';
+import type { AdverseDrivingInvocation, Driver, DriverDocument, Prisma } from '@prisma/client';
 import { BaseRepository, ModelDelegate } from '../../core/prisma/base.repository';
 import { PrismaService } from '../../core/prisma/prisma.service';
+import { findAdverseInvokedToday } from './lib/adverse-driving';
 
 export interface DriverListFilter {
   status?: Driver['status'];
@@ -211,6 +212,21 @@ export class DriversRepository extends BaseRepository<
 
   deleteDocument(id: string): Promise<DriverDocument> {
     return this.prisma.driverDocument.delete({ where: { id } });
+  }
+
+  /** BUG-001 — ids of the permitted drivers with adverse driving invoked for their current RODS day. */
+  findAdverseInvokedToday(drivers: Array<Pick<Driver, 'id' | 'homeTerminalTimezone' | 'adverseDrivingEnabled'>>, now: Date): Promise<Set<string>> {
+    return findAdverseInvokedToday(this.prisma, drivers, now);
+  }
+
+  /** BUG-001 — one invocation per (driver, RODS day); re-invoking replaces the annotation. */
+  upsertAdverseInvocation(data: { driverId: string; logDate: Date; annotation: string; invokedById: string | null; invokedByType: string }): Promise<AdverseDrivingInvocation> {
+    const { driverId, logDate, ...rest } = data;
+    return this.prisma.adverseDrivingInvocation.upsert({
+      where: { driverId_logDate: { driverId, logDate } },
+      create: data,
+      update: rest,
+    });
   }
 
   /** B-094 — revokes every live `DriverSession` (refresh token) of one driver. */

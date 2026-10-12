@@ -61,11 +61,13 @@ function makeHos(events: Row[], dailyLogs: Array<{ driverId: string; logDate: Da
   return { repo, service: new HosRecalcService(repo as unknown as HosRecalcRepository) };
 }
 
-function makeDriversRepo(items: Array<ReturnType<typeof makeDriver>>, open: Record<string, number> = {}) {
+function makeDriversRepo(items: Array<ReturnType<typeof makeDriver>>, open: Record<string, number> = {}, adverseInvoked: string[] = []) {
   return {
     listRoster: jest.fn().mockResolvedValue({ items, total: items.length }),
     countOpenViolations: jest.fn(async () => new Map(Object.entries(open))),
     findById: jest.fn(async ({ id }: { id: string }) => items.find((d) => d.id === id) ?? null),
+    findAdverseInvokedToday: jest.fn(async () => new Set(adverseInvoked)),
+    upsertAdverseInvocation: jest.fn(async (data: Record<string, unknown>) => ({ id: 'adv_1', createdAt: new Date('2026-09-12T15:00:00Z'), ...data })),
   };
 }
 
@@ -119,7 +121,8 @@ describe('DriverRosterService.roster', () => {
     expect(Object.keys(page).sort()).toEqual(['items', 'limit', 'page', 'total', 'totalPages']);
     expect(page).toMatchObject({ page: 1, limit: 25, total: 2, totalPages: 1 });
     const [first, second] = page.items;
-    expect(Object.keys(first).sort()).toEqual(['driver', 'dutyStatus', 'emailVerified', 'hos', 'openViolations', 'unit']);
+    expect(Object.keys(first).sort()).toEqual(['driver', 'dutyStatus', 'emailVerified', 'hos', 'isStale', 'limits', 'openViolations', 'staleSince', 'unit']);
+    expect(first.limits).toEqual({ driveLimitSec: 11 * H, shiftLimitSec: 14 * H, cycleLimitSec: 70 * H });
     expect(first.driver).not.toHaveProperty('passwordHash');
     expect(first.driver).toEqual({
       id: 'drv_1',
@@ -216,6 +219,8 @@ describe('DriverRosterService.clocks', () => {
       dutyStatus: 'OFF_DUTY',
       statusSince: NOW.toISOString(),
       computedAt: NOW.toISOString(),
+      isStale: false,
+      staleSince: null,
     });
   });
 
@@ -239,12 +244,29 @@ describe('DriverRosterService.clocks', () => {
     expect(clocks.statusSince).toBe('2026-09-12T03:30:00.000Z');
   });
 
-  it('adverse driving and 60/7 limits come from the ruleset, short-haul removes nothing from the limit', async () => {
+  it('adverse driving (invoked today) and 60/7 limits come from the ruleset, short-haul removes nothing from the limit', async () => {
     const { service: hos } = makeHos([]);
     const driver = makeDriver({ hosRuleset: 'US_60_7_PROPERTY', adverseDrivingEnabled: true, shortHaulException: true });
-    const service = new DriverRosterService(makeDriversRepo([driver]) as unknown as DriversRepository, hos);
+    const service = new DriverRosterService(makeDriversRepo([driver], {}, ['drv_1']) as unknown as DriversRepository, hos);
     const clocks = await service.clocks('drv_1', new Date('2026-09-12T15:00:00Z'));
     expect(clocks).toMatchObject({ driveLimitSec: 13 * H, shiftLimitSec: 16 * H, cycleLimitSec: 60 * H, breakLimitSec: 8 * H });
+  });
+
+  it('BUG-001: adverseDrivingEnabled alone is only a permission — no +2 h until it is invoked for the day', async () => {
+    // 10 h off, ON 06:00 local, driving 07:00-19:00 local (12 h), now 19:00 local.
+    const NOW = new Date('2026-09-12T23:00:00Z');
+    const events = [duty('drv_1', '2026-09-11T20:00:00Z', 1, 1), duty('drv_1', '2026-09-12T10:00:00Z', 4, 2), duty('drv_1', '2026-09-12T11:00:00Z', 3, 3)];
+    const driver = makeDriver({ adverseDrivingEnabled: true });
+
+    const plain = new DriverRosterService(makeDriversRepo([driver]) as unknown as DriversRepository, makeHos(events).service);
+    expect(await plain.clocks('drv_1', NOW)).toMatchObject({ driveLimitSec: 11 * H, shiftLimitSec: 14 * H, driveRemainingSec: 0 });
+    const [entry] = (await plain.roster(query(), NOW)).items;
+    expect(entry.limits).toEqual({ driveLimitSec: 11 * H, shiftLimitSec: 14 * H, cycleLimitSec: 70 * H });
+    expect(entry.hos.driveRemainingSec).toBe(0);
+
+    const invoked = new DriverRosterService(makeDriversRepo([driver], {}, ['drv_1']) as unknown as DriversRepository, makeHos(events).service);
+    expect(await invoked.clocks('drv_1', NOW)).toMatchObject({ driveLimitSec: 13 * H, shiftLimitSec: 16 * H, driveRemainingSec: 1 * H });
+    expect((await invoked.roster(query(), NOW)).items[0].limits).toEqual({ driveLimitSec: 13 * H, shiftLimitSec: 16 * H, cycleLimitSec: 70 * H });
   });
 
   it('PC shows OFF_DUTY and YM shows ON_DUTY', async () => {
@@ -258,5 +280,92 @@ describe('DriverRosterService.clocks', () => {
       expect(clocks.dutyStatus).toBe(expected);
       expect(clocks.driveRemainingSec).toBe(11 * H);
     }
+  });
+});
+
+describe('DriverRosterService — BUG-002 stuck duty status', () => {
+  // DRIVING since 2026-10-08T08:28Z with no further event; "today" is four days later.
+  const SINCE = '2026-10-08T08:28:00Z';
+  const NOW = new Date('2026-10-12T12:00:00Z');
+  const events = [duty('drv_1', '2026-10-07T20:00:00Z', 1, 1), duty('drv_1', SINCE, 3, 2)];
+  const makeQueue = () => ({ add: jest.fn().mockResolvedValue({}) });
+
+  it('freezes the clocks at the 16 h DRIVING cap, flags the status stale and alerts once', async () => {
+    const { service: hos } = makeHos(events);
+    const queue = makeQueue();
+    const service = new DriverRosterService(makeDriversRepo([makeDriver()]) as unknown as DriversRepository, hos, queue as never);
+
+    const clocks = await service.clocks('drv_1', NOW);
+    expect(clocks).toMatchObject({ dutyStatus: 'DRIVING', statusSince: '2026-10-08T08:28:00.000Z', isStale: true, staleSince: '2026-10-09T00:28:00.000Z' });
+    // Cycle is counted only up to the cap (16 h), not four days.
+    expect(clocks.cycleRemainingSec).toBe(70 * H - 16 * H);
+
+    await service.clocks('drv_1', new Date('2026-10-12T12:05:00Z'));
+    await service.roster(query(), NOW);
+    expect(queue.add).toHaveBeenCalledTimes(1);
+    expect(queue.add).toHaveBeenCalledWith(
+      'alert.eld_status_stale',
+      expect.objectContaining({ driverId: 'drv_1', dutyStatus: 'DRIVING', staleSince: '2026-10-09T00:28:00.000Z', title: 'ELD connection lost' }),
+      expect.objectContaining({ jobId: `hos-status-stale-drv_1-${new Date(SINCE).getTime()}` }),
+    );
+  });
+
+  it('marks the roster row stale', async () => {
+    const { service: hos } = makeHos(events);
+    const service = new DriverRosterService(makeDriversRepo([makeDriver()]) as unknown as DriversRepository, hos, makeQueue() as never);
+    const page = await service.roster(query(), NOW);
+    expect(page.items[0]).toMatchObject({ dutyStatus: 'DRIVING', isStale: true, staleSince: '2026-10-09T00:28:00.000Z' });
+  });
+
+  it('a driving status under the cap is not stale and raises nothing', async () => {
+    const { service: hos } = makeHos(events);
+    const queue = makeQueue();
+    const service = new DriverRosterService(makeDriversRepo([makeDriver()]) as unknown as DriversRepository, hos, queue as never);
+    const clocks = await service.clocks('drv_1', new Date('2026-10-08T15:00:00Z'));
+    expect(clocks).toMatchObject({ isStale: false, staleSince: null });
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it('a long OFF_DUTY (home time) is never stale', async () => {
+    const { service: hos } = makeHos([duty('drv_1', '2026-10-01T00:00:00Z', 1, 1)]);
+    const service = new DriverRosterService(makeDriversRepo([makeDriver()]) as unknown as DriversRepository, hos, makeQueue() as never);
+    const clocks = await service.clocks('drv_1', NOW);
+    expect(clocks).toMatchObject({ dutyStatus: 'OFF_DUTY', isStale: false });
+  });
+
+  it('a failed enqueue does not fail the read and is retried on the next request', async () => {
+    const { service: hos } = makeHos(events);
+    const queue = { add: jest.fn().mockRejectedValueOnce(new Error('redis down')).mockResolvedValue({}) };
+    const service = new DriverRosterService(makeDriversRepo([makeDriver()]) as unknown as DriversRepository, hos, queue as never);
+    await expect(service.clocks('drv_1', NOW)).resolves.toMatchObject({ isStale: true });
+    await service.clocks('drv_1', NOW);
+    expect(queue.add).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('DriverRosterService.invokeAdverseDriving (BUG-001)', () => {
+  const NOW = new Date('2026-09-12T15:00:00Z');
+  const actor = { id: 'usr_1', type: 'user' as const };
+
+  it('records the annotated invocation for the driver\'s current RODS day by default', async () => {
+    const drivers = makeDriversRepo([makeDriver({ adverseDrivingEnabled: true })]);
+    const service = new DriverRosterService(drivers as unknown as DriversRepository, makeHos([]).service);
+    const res = await service.invokeAdverseDriving('drv_1', { annotation: 'Unforeseen snow on I-80' }, actor, NOW);
+    expect(drivers.upsertAdverseInvocation).toHaveBeenCalledWith({
+      driverId: 'drv_1',
+      logDate: new Date('2026-09-12T00:00:00.000Z'),
+      annotation: 'Unforeseen snow on I-80',
+      invokedById: 'usr_1',
+      invokedByType: 'user',
+    });
+    expect(res).toMatchObject({ driverId: 'drv_1', date: '2026-09-12', annotation: 'Unforeseen snow on I-80' });
+  });
+
+  it('refuses a driver without the permission, a future day and an unknown driver', async () => {
+    const service = new DriverRosterService(makeDriversRepo([makeDriver()]) as unknown as DriversRepository, makeHos([]).service);
+    await expect(service.invokeAdverseDriving('drv_1', { annotation: 'Fog bank' }, actor, NOW)).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+    await expect(service.invokeAdverseDriving('nope', { annotation: 'Fog bank' }, actor, NOW)).rejects.toBeInstanceOf(AppException);
+    const permitted = new DriverRosterService(makeDriversRepo([makeDriver({ adverseDrivingEnabled: true })]) as unknown as DriversRepository, makeHos([]).service);
+    await expect(permitted.invokeAdverseDriving('drv_1', { annotation: 'Fog bank', date: '2026-09-13' }, actor, NOW)).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
   });
 });
