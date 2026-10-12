@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { IanaTimezoneSchema } from '../../../common/dto/timezone.dto';
 
 export const HosRulesetEnum = z.enum(['US_70_8_PROPERTY', 'US_60_7_PROPERTY', 'US_70_8_PASSENGER', 'US_60_7_PASSENGER']);
 export const DistanceUnitEnum = z.enum(['MILES', 'KILOMETERS']);
@@ -37,7 +38,8 @@ export const UpdateCarrierDto = z.object({
   dotNumber: z.string().min(1).max(20).optional(),
   mcNumber: z.string().max(20).optional(),
   ein: z.string().max(20).optional(),
-  timezone: z.string().min(1).max(60).optional(),
+  /** BE-003 — a real IANA zone (fallback day boundary for HOS / reports). */
+  timezone: IanaTimezoneSchema.optional(),
   hosRuleset: HosRulesetEnum.optional(),
   distanceUnit: DistanceUnitEnum.optional(),
   cycleRestart: z.boolean().optional(),

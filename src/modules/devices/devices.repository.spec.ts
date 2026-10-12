@@ -60,4 +60,16 @@ describe('DevicesRepository', () => {
     await repo.listAll();
     expect(device.findMany).toHaveBeenCalledWith({ orderBy: { serial: 'asc' } });
   });
+
+  it('UI-012 — connectionCounts counts the non-retired inventory: effective CONNECTED and silent > 24 h', async () => {
+    device.count.mockResolvedValueOnce(10).mockResolvedValueOnce(6).mockResolvedValueOnce(2);
+    const since = new Date('2026-10-12T11:30:00Z');
+    const before = new Date('2026-10-11T12:00:00Z');
+    await expect(repo.connectionCounts(since, before)).resolves.toEqual({ total: 10, connected: 6, offlineOver24h: 2 });
+    expect(device.count).toHaveBeenNthCalledWith(1, { where: { status: { not: 'RETIRED' } } });
+    expect(device.count).toHaveBeenNthCalledWith(2, { where: { status: { not: 'RETIRED' }, bleState: 'CONNECTED', lastSeenAt: { gte: since } } });
+    expect(device.count).toHaveBeenNthCalledWith(3, {
+      where: { status: { not: 'RETIRED' }, OR: [{ lastSeenAt: null }, { lastSeenAt: { lt: before } }] },
+    });
+  });
 });

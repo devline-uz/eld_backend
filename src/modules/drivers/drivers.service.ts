@@ -1,12 +1,13 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { randomBytes, randomInt } from 'node:crypto';
-import type { Driver, DriverDocument, Prisma } from '@prisma/client';
+import type { Driver, DriverDocument, HosRuleset, Prisma } from '@prisma/client';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
 import { OffsetPage, parseSort, toOffsetPage } from '../../common/dto/list-query.dto';
 import { AppConfigService } from '../../core/config/config.service';
 import { STORAGE_PORT, StoragePort } from '../../core/storage/storage.port';
 import { AttachmentsService } from '../attachments/attachments.service';
+import { CarrierRepository } from '../carrier/carrier.repository';
 import { hashPassword } from '../auth/lib/password.util';
 import { TokenService } from '../auth/token.service';
 import { MAIL_PORT, MailPort } from '../transfers/mail.port';
@@ -114,7 +115,18 @@ export class DriversService {
     @Inject(MAIL_PORT) private readonly mail: MailPort,
     @Inject(STORAGE_PORT) private readonly storage: StoragePort,
     private readonly attachments: AttachmentsService,
+    /** UI-005 — read-only: the carrier's default `hosRuleset` for a driver created without one. */
+    @Optional() private readonly carrier?: CarrierRepository,
   ) {}
+
+  /**
+   * UI-005 — a driver created / imported without `hosRuleset` gets the CARRIER's ruleset
+   * (Settings → Carrier), not a hard-coded 70/8. No carrier row yet ⇒ undefined ⇒ the column
+   * default (US_70_8_PROPERTY). Existing drivers are never touched.
+   */
+  private async carrierHosRuleset(): Promise<HosRuleset | undefined> {
+    return (await this.carrier?.get())?.hosRuleset ?? undefined;
+  }
 
   async list(query: DriverListQueryDto): Promise<OffsetPage<DriverView>> {
     const orderBy = parseSort(query.sort, SORTABLE_FIELDS, { registeredAt: 'desc' });
@@ -186,13 +198,22 @@ export class DriversService {
     if (vehicle.driver && !vehicle.driver.deletedAt) throw driverConflict('assignedVehicleId');
   }
 
+  /** BE-010 — an unknown `fleetManagerId` is a field-level 422, not a Prisma `P2025` 500. */
+  private async assertFleetManagerExists(fleetManagerId: string | null | undefined): Promise<void> {
+    if (!fleetManagerId) return;
+    if (await this.drivers.fleetManagerExists(fleetManagerId)) return;
+    const message = 'Fleet manager not found.';
+    throw new AppException(ERROR_CODES.VALIDATION_FAILED, message, 422, { fleetManagerId: message });
+  }
+
   async create(dto: CreateDriverDto): Promise<DriverView & { inviteCode?: string }> {
     const data = this.normalizeCreate(dto);
     await this.assertUniquesAvailable(data);
     await this.assertVehicleAssignable(dto.assignedVehicleId);
+    await this.assertFleetManagerExists(dto.fleetManagerId);
 
     const passwordHash = await hashPassword(dto.password ?? randomBytes(16).toString('hex'));
-    const input = this.toCreateInput(data, passwordHash);
+    const input = this.toCreateInput({ ...data, hosRuleset: data.hosRuleset ?? (await this.carrierHosRuleset()) }, passwordHash);
     const created = await this.conflictOnDuplicate(
       dto.assignedVehicleId ? this.drivers.createWithVehicle(input, dto.assignedVehicleId) : this.drivers.create(input),
     );
@@ -200,7 +221,7 @@ export class DriversService {
     // §20 B-82 — `sendInvitation` (default true, matching the previous always-on behavior).
     let inviteCode: string | undefined;
     if (dto.sendInvitation && created.email) {
-      inviteCode = await this.dispatchOneTimeCode(created, 'Your OneBook ELD driver app invitation code');
+      inviteCode = await this.sendInvitation(created, dto.password !== undefined);
     }
     return { ...toView(created), inviteCode };
   }
@@ -209,6 +230,7 @@ export class DriversService {
     await this.getRaw(id);
     const data = this.normalizeUpdate(dto);
     await this.assertUniquesAvailable(data, id);
+    await this.assertFleetManagerExists(dto.fleetManagerId);
     const updated = await this.conflictOnDuplicate(this.drivers.update({ id }, this.toUpdateInput(data)));
     return toView(updated);
   }
@@ -220,6 +242,13 @@ export class DriversService {
    * (partial unique indexes cover live rows only); driver-app login also ignores it. */
   async remove(id: string): Promise<DriverView> {
     await this.getRaw(id);
+    // BE-013 — never leave a live trip pointing at a deleted driver: the dispatcher reassigns or
+    // cancels those trips first (least destructive; nothing is silently unassigned).
+    const openTrips = await this.drivers.findOpenTrips(id);
+    if (openTrips.length > 0) {
+      const numbers = openTrips.map((t) => t.number).join(', ');
+      throw AppException.conflict(`This driver still has open trips (${numbers}). Reassign or cancel them first.`, { openTrips });
+    }
     const updated = await this.drivers.update(
       { id },
       { status: 'TERMINATED', deletedAt: new Date(), assignedVehicle: { disconnect: true } },
@@ -245,6 +274,8 @@ export class DriversService {
   async importMany(dto: ImportDriversDto): Promise<ImportSummary> {
     const options = dto.options ?? DEFAULT_IMPORT_OPTIONS;
     const summary: ImportSummary = { imported: 0, updated: 0, skipped: 0, failed: [] };
+    // UI-005 — read once per import; only NEW rows without a ruleset take it.
+    let carrierRuleset: Promise<HosRuleset | undefined> | null = null;
     for (let index = 0; index < dto.drivers.length; index += 1) {
       const row = this.applyImportDefaults(dto.drivers[index], options);
       try {
@@ -264,6 +295,7 @@ export class DriversService {
           const { username: _username, password: _password, assignedVehicleId: _unit, ...updateRow } = row;
           const data = this.normalizeUpdate(updateRow);
           await this.assertUniquesAvailable(data, existing.id);
+          await this.assertFleetManagerExists(updateRow.fleetManagerId);
           await this.conflictOnDuplicate(this.drivers.update({ id: existing.id }, this.toUpdateInput(data)));
           summary.updated += 1;
         } else {
@@ -271,14 +303,16 @@ export class DriversService {
           // The username was just looked up (no live driver has it) — check the rest.
           await this.assertUniquesAvailable({ ...data, username: undefined });
           await this.assertVehicleAssignable(row.assignedVehicleId);
+          await this.assertFleetManagerExists(row.fleetManagerId);
           const passwordHash = await hashPassword(row.password ?? randomBytes(16).toString('hex'));
-          const input = this.toCreateInput(data, passwordHash);
+          carrierRuleset ??= this.carrierHosRuleset();
+          const input = this.toCreateInput({ ...data, hosRuleset: data.hosRuleset ?? (await carrierRuleset) }, passwordHash);
           const created = await this.conflictOnDuplicate(
             row.assignedVehicleId ? this.drivers.createWithVehicle(input, row.assignedVehicleId) : this.drivers.create(input),
           );
           summary.imported += 1;
           if (options.sendInvitations && created.email) {
-            await this.dispatchOneTimeCode(created, 'Your OneBook ELD driver app invitation code');
+            await this.sendInvitation(created, row.password !== undefined);
           }
         }
       } catch (err) {
@@ -413,6 +447,24 @@ export class DriversService {
   private generateOneTimeCode(): string {
     // randomInt's upper bound is exclusive — 1_000_000 keeps 999999 reachable.
     return String(randomInt(100000, 1_000_000));
+  }
+
+  /**
+   * BE-004 — an invitation never replaces a password the admin typed in: with `passwordSet` the
+   * driver only gets a "your account is ready" email (no code, password untouched); without one
+   * the one-time code becomes the initial password, as before.
+   */
+  private async sendInvitation(driver: Driver, passwordSet: boolean): Promise<string | undefined> {
+    const subject = 'Your OneBook ELD driver app invitation code';
+    if (!passwordSet) return this.dispatchOneTimeCode(driver, subject);
+    if (!driver.email) return undefined;
+    await this.mail.send({
+      to: driver.email,
+      subject: 'Your OneBook ELD driver app account',
+      text: `Your carrier created your OneBook ELD driver app account. Username: ${driver.username}. Sign in with the password your carrier gave you.`,
+      attachments: [],
+    });
+    return undefined;
   }
 
   /** Shared by `create({ sendInvitation: true })` and the drivers-import `sendInvitations`

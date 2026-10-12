@@ -3,6 +3,7 @@ import type { Device, Prisma } from '@prisma/client';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
 import { OffsetPage, parseSort, toOffsetPage } from '../../common/dto/list-query.dto';
+import { ELD_OFFLINE_AFTER_MS, isEldOffline } from '../live/live-fleet.mapper';
 import { VehiclesRepository } from '../vehicles/vehicles.repository';
 import {
   CreateDeviceDto,
@@ -20,11 +21,28 @@ import { buildSystemVars, DeviceSystemVars } from './system-vars.util';
 
 const SORTABLE_FIELDS = ['serial', 'model', 'status', 'bleState', 'lastSeenAt', 'createdAt'] as const;
 
+/** UI-012 — a device silent this long counts as "offline > 24 h". */
+export const DEVICE_LONG_OFFLINE_MS = 24 * 60 * 60 * 1000;
+
+export type DeviceConnection = 'CONNECTED' | 'DISCONNECTED';
+
 export type DeviceView = Device & {
   firmwareOutdated: boolean;
   /** PT SDK 6.11 system variables the app applies to this device (D-135). */
   systemVars: DeviceSystemVars;
+  /**
+   * UI-012 — the EFFECTIVE link: CONNECTED only when the stored `bleState` is CONNECTED and the
+   * device was heard from within 30 min (the same line as Live Fleet's ELD_OFFLINE).
+   */
+  connection: DeviceConnection;
 };
+
+export interface DeviceConnectionCounts {
+  total: number;
+  connected: number;
+  disconnected: number;
+  offlineOver24h: number;
+}
 
 export interface ImportSummary {
   imported: number;
@@ -32,11 +50,18 @@ export interface ImportSummary {
   failed: Array<{ index: number; error: string }>;
 }
 
-function toView(device: Device): DeviceView {
+export function effectiveConnection(device: Pick<Device, 'bleState' | 'lastSeenAt'>, now: Date): DeviceConnection {
+  return device.bleState === 'CONNECTED' && !isEldOffline({ serial: '', bleState: device.bleState, lastSeenAt: device.lastSeenAt ?? null }, now)
+    ? 'CONNECTED'
+    : 'DISCONNECTED';
+}
+
+function toView(device: Device, now: Date = new Date()): DeviceView {
   return {
     ...device,
     firmwareOutdated: isFirmwareOutdated(device.firmware),
     systemVars: buildSystemVars(device),
+    connection: effectiveConnection(device, now),
   };
 }
 
@@ -48,15 +73,28 @@ export class DevicesService {
     private readonly vehicles: VehiclesRepository,
   ) {}
 
-  async list(query: DeviceListQueryDto): Promise<OffsetPage<DeviceView>> {
+  /** UI-012 — the page plus `connectionCounts` over the whole inventory (filters ignored). */
+  async list(query: DeviceListQueryDto, now: Date = new Date()): Promise<OffsetPage<DeviceView> & { connectionCounts: DeviceConnectionCounts }> {
     const orderBy = parseSort(query.sort, SORTABLE_FIELDS, { serial: 'asc' });
-    const { items, total } = await this.devices.list(
-      { status: query.status, bleState: query.bleState, vehicleId: query.vehicleId, q: query.q },
-      query.page,
-      query.limit,
-      orderBy,
+    const [{ items, total }, connectionCounts] = await Promise.all([
+      this.devices.list(
+        { status: query.status, bleState: query.bleState, vehicleId: query.vehicleId, q: query.q },
+        query.page,
+        query.limit,
+        orderBy,
+      ),
+      this.connectionCounts(now),
+    ]);
+    return { ...toOffsetPage(items.map((d) => toView(d, now)), total, query.page, query.limit), connectionCounts };
+  }
+
+  /** UI-012 — `GET /devices/counts`: CONNECTED (effective) / DISCONNECTED / silent > 24 h. */
+  async connectionCounts(now: Date = new Date()): Promise<DeviceConnectionCounts> {
+    const { total, connected, offlineOver24h } = await this.devices.connectionCounts(
+      new Date(now.getTime() - ELD_OFFLINE_AFTER_MS),
+      new Date(now.getTime() - DEVICE_LONG_OFFLINE_MS),
     );
-    return toOffsetPage(items.map(toView), total, query.page, query.limit);
+    return { total, connected, disconnected: total - connected, offlineOver24h };
   }
 
   async get(id: string): Promise<DeviceView> {
@@ -135,7 +173,8 @@ export class DevicesService {
   async pair(id: string, dto: PairDeviceDto): Promise<DeviceView> {
     const device = await this.getRaw(id);
     const vehicle = await this.vehicles.findById({ id: dto.vehicleId });
-    if (!vehicle) throw new AppException(ERROR_CODES.VEHICLE_NOT_FOUND, 'Vehicle not found.', 404);
+    // BE-019 — a soft-deleted unit cannot take a device (web `POST /devices/:id/pair` only).
+    if (!vehicle || vehicle.deletedAt) throw new AppException(ERROR_CODES.VEHICLE_NOT_FOUND, 'Vehicle not found.', 404);
     const existingForVehicle = await this.devices.findByVehicleId(dto.vehicleId);
     if (existingForVehicle && existingForVehicle.id !== device.id) {
       throw new AppException(ERROR_CODES.DEVICE_ALREADY_PAIRED, 'This unit already has a device paired.', 409);

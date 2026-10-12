@@ -75,6 +75,38 @@ export class MessagingRepository {
     });
   }
 
+  /** BE-010 — which of `ids` are live (not soft-deleted) drivers. Web `POST /conversations` /
+   * `/messages/broadcast` only; the mobile chat never calls it. */
+  async findLiveDriverIds(ids: string[]): Promise<Set<string>> {
+    if (ids.length === 0) return new Set();
+    const rows = await this.prisma.driver.findMany({ where: { id: { in: ids }, deletedAt: null }, select: { id: true } });
+    return new Set(rows.map((r) => r.id));
+  }
+
+  /** BE-010 — which of `ids` are existing panel users. */
+  async findUserIds(ids: string[]): Promise<Set<string>> {
+    if (ids.length === 0) return new Set();
+    const rows = await this.prisma.user.findMany({ where: { id: { in: ids } }, select: { id: true } });
+    return new Set(rows.map((r) => r.id));
+  }
+
+  /** BE-012 — the existing 1:1 DIRECT conversation between exactly `a` and `b`, if any (web). */
+  findDirectBetween(a: Participant, b: Participant) {
+    const whereOf = (p: Participant) => (p.userId ? { userId: p.userId } : { driverId: p.driverId });
+    return this.prisma.conversation.findFirst({
+      where: {
+        type: 'DIRECT',
+        AND: [
+          { participants: { some: whereOf(a) } },
+          { participants: { some: whereOf(b) } },
+          { participants: { every: { OR: [whereOf(a), whereOf(b)] } } },
+        ],
+      },
+      orderBy: { createdAt: 'asc' },
+      include: { participants: true },
+    });
+  }
+
   findById(id: string) {
     return this.prisma.conversation.findUnique({ where: { id }, include: { participants: true } });
   }

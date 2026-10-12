@@ -36,8 +36,11 @@ export class CoDriverPairingsService {
       this.drivers.findById({ id: dto.coDriverId }),
       this.vehicles.findById({ id: dto.vehicleId }),
     ]);
-    if (!primary || !coDriver) throw new AppException(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.', 404);
-    if (!vehicle) throw new AppException(ERROR_CODES.VEHICLE_NOT_FOUND, 'Vehicle not found.', 404);
+    // BE-019 — soft-deleted drivers / units are gone for the web and cannot be paired.
+    if (!primary || !coDriver || primary.deletedAt || coDriver.deletedAt) {
+      throw new AppException(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.', 404);
+    }
+    if (!vehicle || vehicle.deletedAt) throw new AppException(ERROR_CODES.VEHICLE_NOT_FOUND, 'Vehicle not found.', 404);
 
     const existing = await this.pairings.findActiveForCoDriver(dto.coDriverId, dto.vehicleId);
     if (existing) throw AppException.conflict('This co-driver already has an active pairing on this unit.');

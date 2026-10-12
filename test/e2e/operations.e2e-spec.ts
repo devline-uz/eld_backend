@@ -36,7 +36,7 @@ describe('Operations — trips / geofences / alert-rules / notifications (e2e)',
 
     // Deliberately NOT johnsmith — B-023 / seed-shape.spec.ts pins his exact RODS shape.
     const driver = await prisma.driver.findFirstOrThrow({
-      where: { status: 'ACTIVE', username: { not: 'johnsmith' } },
+      where: { status: 'ACTIVE', deletedAt: null, username: { not: 'johnsmith' } },
       orderBy: { username: 'asc' },
     });
     driverId = driver.id;
@@ -53,10 +53,13 @@ describe('Operations — trips / geofences / alert-rules / notifications (e2e)',
 
   it('creates a trip PLANNED, assigns a driver, and advances it through the lifecycle', async () => {
     const number = `E2E-TRIP-${Date.now()}`;
+    // BE-005 — a trip needs a planned start before a driver can be assigned; a random far-future
+    // day keeps reruns from colliding with each other or the seed.
+    const plannedStartAt = new Date(Date.UTC(2032, 0, 1) + Math.floor(Math.random() * 3000) * 86_400_000).toISOString();
     const created = await request(server())
       .post('/api/trips')
       .set('Authorization', `Bearer ${token}`)
-      .send({ number, commodity: 'General freight' });
+      .send({ number, commodity: 'General freight', plannedStartAt, plannedEndAt: new Date(Date.parse(plannedStartAt) + 4 * 3_600_000).toISOString() });
     expect(created.status).toBe(201);
     const tripId = created.body.data.id as string;
     createdTripIds.push(tripId);
@@ -91,6 +94,7 @@ describe('Operations — trips / geofences / alert-rules / notifications (e2e)',
     const vehicle = await prisma.vehicle.findFirstOrThrow({
       where: {
         deletedAt: null,
+        status: 'ACTIVE',
         trips: { none: { status: { in: ['DRAFT', 'PLANNED', 'ASSIGNED', 'IN_PROGRESS'] }, plannedEndAt: null } },
       },
       orderBy: { unitNumber: 'asc' },

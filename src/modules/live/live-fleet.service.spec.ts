@@ -87,6 +87,20 @@ describe('LiveFleetService.snapshot', () => {
   });
 });
 
+describe('LiveFleetService — invalid stored timezone (BE-003)', () => {
+  it('leaves the bad driver out of the HOS batch instead of losing every unit\'s clocks', async () => {
+    const { repo, hos, service } = setup();
+    const bad = { ...driver, id: 'drv_bad', homeTerminalTimezone: 'Nowhere/Land' };
+    const vehicles = (await repo.findVehicles()) as object[];
+    repo.findVehicles.mockClear();
+    repo.findVehicles.mockResolvedValueOnce([...vehicles, { id: 'veh_200', unitNumber: '200', status: 'ACTIVE', odometerMi: 1, device: null, driver: bad }]);
+    const res = await service.snapshot(NOW);
+    expect(hos.computeCurrentStates).toHaveBeenCalledWith([driver], NOW);
+    expect(res.items.find((u) => u.unitNumber === '101')).toMatchObject({ driveRemainingSec: 39_600 });
+    expect(res.items.find((u) => u.unitNumber === '200')).toMatchObject({ driveRemainingSec: null });
+  });
+});
+
 describe('LiveFleetController', () => {
   it('GET /live/fleet requires liveFleet:READ and delegates to the service', async () => {
     expect(Reflect.getMetadata(PERM_METADATA_KEY, LiveFleetController.prototype.fleet)).toEqual({ key: 'liveFleet', level: 'READ' });

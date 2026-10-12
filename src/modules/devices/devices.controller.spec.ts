@@ -13,6 +13,7 @@ describe('DevicesController permissions', () => {
   it.each([
     ['list', 'READ'],
     ['export', 'READ'],
+    ['counts', 'READ'],
     ['get', 'READ'],
     ['create', 'FULL'],
     ['import', 'FULL'],
@@ -31,6 +32,7 @@ describe('DevicesController — delegates to DevicesService', () => {
   const service = {
     list: jest.fn().mockResolvedValue({ items: [], page: 1, limit: 25, total: 0, totalPages: 0 }),
     exportAll: jest.fn().mockResolvedValue([]),
+    connectionCounts: jest.fn().mockResolvedValue({ total: 0, connected: 0, disconnected: 0, offlineOver24h: 0 }),
     get: jest.fn().mockResolvedValue({ id: 'dev_1' }),
     create: jest.fn().mockResolvedValue({ id: 'dev_1' }),
     importMany: jest.fn().mockResolvedValue({ imported: 0, updated: 0, failed: [] }),
@@ -42,6 +44,11 @@ describe('DevicesController — delegates to DevicesService', () => {
     unpair: jest.fn().mockResolvedValue({ id: 'dev_1' }),
   };
   const controller = new DevicesController(service as never);
+
+  it('counts (UI-012)', async () => {
+    await expect(controller.counts()).resolves.toEqual({ total: 0, connected: 0, disconnected: 0, offlineOver24h: 0 });
+    expect(service.connectionCounts).toHaveBeenCalledWith();
+  });
 
   it('list', async () => {
     const query = { page: 1, limit: 25 } as never;

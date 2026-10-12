@@ -1,9 +1,11 @@
 import { InjectQueue } from '@nestjs/bullmq';
+import type { HosRuleset } from '@prisma/client';
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import type { Queue } from 'bullmq';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
 import { parseSort } from '../../common/dto/list-query.dto';
+import { isValidIanaTimezone } from '../../common/dto/timezone.dto';
 import { QUEUES } from '../../core/queue/queue.constants';
 import { resolveLimits } from '../hos/engine/limits';
 import type { DutyStatus, HosState } from '../hos/hos.types';
@@ -58,6 +60,8 @@ export interface DriverRosterEntry {
     allowYardMove: boolean;
     shortHaulException: boolean;
     splitSleeperEnabled: boolean;
+    /** UI-005 — the driver's HOS ruleset (e.g. US_70_8_PROPERTY). */
+    hosRuleset: HosRuleset;
   };
   dutyStatus: WebDutyStatus;
   unit: { id: string; unitNumber: string } | null;
@@ -80,6 +84,12 @@ export interface DriverRosterPage {
   limit: number;
   total: number;
   totalPages: number;
+  /**
+   * UI-015 — header counts over EVERY driver (filters / search / page ignored): `total` live
+   * drivers and `withActiveViolations` — the same definition the `hasOpenViolation` segment
+   * and `openViolations` use.
+   */
+  summary: { total: number; withActiveViolations: number };
 }
 
 /** `GET /drivers/:id/hos` — web `DriverHosResponse`, plus the current duty status. */
@@ -95,6 +105,8 @@ export interface DriverHosClocks {
   shiftLimitSec: number;
   driveLimitSec: number;
   breakLimitSec: number;
+  /** UI-005 — the ruleset every limit above comes from. */
+  hosRuleset: HosRuleset;
   dutyStatus: WebDutyStatus;
   statusSince: string;
   computedAt: string;
@@ -128,18 +140,29 @@ export class DriverRosterService {
   async roster(query: DriverRosterQueryDto, now: Date = new Date()): Promise<DriverRosterPage> {
     const orderBy = parseSort(query.sort, SORTABLE_FIELDS, { lastName: 'asc' });
     // BUG-003 — rows in step with the live engine BEFORE `hasOpenViolation` filters on them.
-    await this.activeViolations?.refresh(now);
-    const { items: rows, total } = await this.drivers.listRoster(
-      { status: query.status, q: query.q, terminal: query.terminal, hasOpenViolation: query.hasOpenViolation, exempt: query.exempt },
-      query.page,
-      query.limit,
-      orderBy,
-    );
+    // UI-015 — and the same stale-cap exclusions applied to the segment and the header count.
+    const violationExclude = (await this.activeViolations?.refresh(now)) ?? [];
+    const [{ items: rows, total }, summary] = await Promise.all([
+      this.drivers.listRoster(
+        {
+          status: query.status,
+          q: query.q,
+          terminal: query.terminal,
+          hasOpenViolation: query.hasOpenViolation,
+          exempt: query.exempt,
+          ...(violationExclude.length > 0 && { violationExclude }),
+        },
+        query.page,
+        query.limit,
+        orderBy,
+      ),
+      this.drivers.rosterSummary(violationExclude),
+    ]);
     // BUG-001 — the +2 h adverse extension only on a day it was invoked (§395.1(b)(1)).
     const items = withEffectiveAdverse(rows, await this.drivers.findAdverseInvokedToday(rows, now));
     const ids = items.map((d) => d.id);
     const [states, openCounts] = await Promise.all([
-      this.hos.computeCurrentStates(items, now),
+      this.hos.computeCurrentStates(this.hosComputable(items), now),
       this.activeViolations ? this.activeViolations.openCountsByDriver(ids, now) : this.drivers.countOpenViolations(ids),
     ]);
     const stale = await this.capStaleStatuses(items, states, now);
@@ -152,6 +175,7 @@ export class DriverRosterService {
       limit: query.limit,
       total,
       totalPages: Math.max(1, Math.ceil(total / query.limit)),
+      summary,
     };
   }
 
@@ -160,7 +184,7 @@ export class DriverRosterService {
     if (!row) throw new AppException(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.', 404);
     // BUG-001 — `adverseDrivingEnabled` is the permission; the limits grow only on an invoked day.
     const [driver] = withEffectiveAdverse([row], await this.drivers.findAdverseInvokedToday([row], now));
-    const states = await this.hos.computeCurrentStates([driver], now);
+    const states = await this.hos.computeCurrentStates(this.hosComputable([driver]), now);
     // B-055: the batch omits a driver whose history exceeds the per-driver cap — never guess.
     if (!states.get(driver.id)) throw new AppException(ERROR_CODES.SERVICE_UNAVAILABLE, 'HOS clocks are unavailable for this driver.', 503);
     const stale = (await this.capStaleStatuses([driver], states, now)).get(driver.id) ?? NOT_STALE;
@@ -180,6 +204,7 @@ export class DriverRosterService {
       shiftLimitSec: limits.shiftLimitSec,
       driveLimitSec: limits.driveLimitSec,
       breakLimitSec: limits.breakAfterSec,
+      hosRuleset: driver.hosRuleset,
       dutyStatus: toWebDutyStatus(state.currentStatus),
       statusSince: state.statusSince.toISOString(),
       computedAt: now.toISOString(),
@@ -270,6 +295,17 @@ export class DriverRosterService {
     }
   }
 
+  /** BE-003 — drivers whose stored home-terminal zone is not a valid IANA zone are left out of the
+   * HOS batch (their row shows the default clocks / `clocks` answers 503) so one bad row never
+   * fails the whole roster. New writes are already rejected by the DTO. */
+  private hosComputable<T extends { id: string; homeTerminalTimezone: string }>(drivers: T[]): T[] {
+    return drivers.filter((driver) => {
+      if (isValidIanaTimezone(driver.homeTerminalTimezone)) return true;
+      this.logger.warn({ driverId: driver.id, timezone: driver.homeTerminalTimezone }, 'driver roster: invalid home-terminal timezone — HOS clocks omitted');
+      return false;
+    });
+  }
+
   private toEntry(driver: DriverWithUnit, state: HosState | undefined, openViolations: number, stale: StaleInfo): DriverRosterEntry {
     const limits = resolveLimits(driver.hosRuleset, { driverId: driver.id, adverseDrivingEnabled: driver.adverseDrivingEnabled });
     return {
@@ -286,6 +322,7 @@ export class DriverRosterService {
         allowYardMove: driver.allowYardMove,
         shortHaulException: driver.shortHaulException,
         splitSleeperEnabled: driver.splitSleeperEnabled,
+        hosRuleset: driver.hosRuleset,
       },
       dutyStatus: state ? toWebDutyStatus(state.currentStatus) : 'OFF_DUTY',
       unit: driver.assignedVehicle ? { id: driver.assignedVehicle.id, unitNumber: driver.assignedVehicle.unitNumber } : null,

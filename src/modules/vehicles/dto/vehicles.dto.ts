@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { MAX_LIST_PAGE } from '../../../common/dto/list-query.dto';
+import { OptionalRegionCodeSchema } from '../../../common/dto/region-code.dto';
 
 export const VehicleStatusEnum = z.enum(['ACTIVE', 'INACTIVE', 'OUT_OF_SERVICE']);
 export const FuelTypeEnum = z.enum(['DIESEL', 'GASOLINE', 'CNG', 'LNG', 'ELECTRIC']);
@@ -18,19 +20,24 @@ export const VinField = z
   .pipe(z.string().regex(VIN_PATTERN, VIN_MESSAGE));
 
 /** TZ §5.3 — unit inventory fields ("Unit inventory — ELD serial, VIN, odometer" screen). */
+/** BE-008 — `Vehicle.odometerMi` is INT4; 10 million miles is far past any real dash reading. */
+export const MAX_ODOMETER_MI = 10_000_000;
+
 export const CreateVehicleDto = z.object({
-  unitNumber: z.string().min(1).max(40),
+  /** BE-015 — trimmed; whitespace-only is rejected. */
+  unitNumber: z.string().trim().min(1).max(40),
   vin: VinField,
   make: z.string().max(60).optional(),
   model: z.string().max(60).optional(),
   year: z.number().int().min(1900).max(2100).optional(),
   /** Unique together with `plateState` among live units (trim/case-insensitive); `null`/`''` = no plate. */
   licensePlate: z.string().max(20).nullable().optional(),
-  plateState: z.string().max(10).nullable().optional(),
+  /** BE-017 — a US state / Canadian province code (upper-cased); `null`/`''` = none. */
+  plateState: OptionalRegionCodeSchema.nullable().optional(),
   fuelType: FuelTypeEnum.default('DIESEL'),
   sleeperBerth: z.boolean().default(false),
   // TZ §4.3 step 1 — the dash odometer the user reads off the panel when adding the unit.
-  odometerMi: z.number().int().min(0).default(0),
+  odometerMi: z.number().int().min(0).max(MAX_ODOMETER_MI).default(0),
   busType: BusTypeEnum.optional(),
   notes: z.string().max(500).optional(),
   /** Vehicle group (`/vehicle-groups`); `null` on update removes the unit from its group. */
@@ -54,7 +61,7 @@ export type UpdateVehicleDto = z.infer<typeof UpdateVehicleDto>;
  * recomputed from it (§4.3's `computeOdometerOffsetMi`).
  */
 export const CalibrateOdometerDto = z.object({
-  odometerMi: z.number().int().min(0),
+  odometerMi: z.number().int().min(0).max(MAX_ODOMETER_MI),
 });
 export type CalibrateOdometerDto = z.infer<typeof CalibrateOdometerDto>;
 
@@ -90,7 +97,7 @@ export type VehicleTelemetryQueryDto = z.infer<typeof VehicleTelemetryQueryDto>;
 export const VehicleListQueryFields = ['unitNumber', 'vin', 'make', 'model', 'createdAt'] as const;
 
 export const VehicleListQueryDto = z.object({
-  page: z.coerce.number().int().min(1).default(1),
+  page: z.coerce.number().int().min(1).max(MAX_LIST_PAGE).default(1),
   limit: z.coerce.number().int().min(1).max(200).default(25),
   sort: z.string().max(60).optional(),
   q: z.string().max(200).optional(),
@@ -128,7 +135,7 @@ export const ImportVehiclesDto = z.object({
 export type ImportVehiclesDto = z.infer<typeof ImportVehiclesDto>;
 
 export const CreateTrailerDto = z.object({
-  number: z.string().min(1).max(40),
+  number: z.string().trim().min(1).max(40),
   vin: z.string().max(17).optional(),
 });
 export type CreateTrailerDto = z.infer<typeof CreateTrailerDto>;
@@ -149,7 +156,7 @@ export type ImportTrailersDto = z.infer<typeof ImportTrailersDto>;
 export const TrailerListSortFields = ['number', 'vin', 'status'] as const;
 
 export const TrailerListQueryDto = z.object({
-  page: z.coerce.number().int().min(1).default(1),
+  page: z.coerce.number().int().min(1).max(MAX_LIST_PAGE).default(1),
   limit: z.coerce.number().int().min(1).max(200).default(25),
   sort: z.string().max(60).optional(),
   q: z.string().max(200).optional(),

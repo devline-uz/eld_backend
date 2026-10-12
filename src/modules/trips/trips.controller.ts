@@ -4,11 +4,27 @@ import { Audit } from '../../common/decorators/audit.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { FigmaScreen } from '../../common/decorators/figma-screen.decorator';
 import { Perm } from '../../common/decorators/perm.decorator';
-import { apiError, ApiStandardErrors, ERROR_CODES } from '../../common/errors';
+import { apiError, type ApiErrorSpec, ApiStandardErrors, ERROR_CODES } from '../../common/errors';
 import { zodBody } from '../../common/pipes/zod-validation.pipe';
 import type { ContextUser } from '../../core/context/request-context';
 import { AssignTripDto, CreateTripDto, TripListQueryDto, UpdateTripDto } from './dto/trips.dto';
 import { TripsService } from './trips.service';
+
+/** Record-status 409s every trip assignment can raise, beyond the field-level schedule conflicts. */
+const TRIP_ASSIGNEE_CONFLICTS =
+  'Also: VEHICLE_OUT_OF_SERVICE (details.vehicleId: "This unit is out of service and cannot be assigned a trip."); CONFLICT (details.vehicleId: "This unit is inactive and cannot be assigned a trip."); CONFLICT (details.driverId: "This driver is inactive|terminated and cannot be assigned a trip.").';
+
+function withTripAssigneeConflicts(spec: ApiErrorSpec): ApiErrorSpec {
+  return { ...spec, description: `${spec.description} ${TRIP_ASSIGNEE_CONFLICTS}` };
+}
+
+/** Swagger keeps one response per status — the 422 example is the first, the description lists all. */
+const TRIP_ASSIGNEE_NOT_FOUND: ApiErrorSpec = {
+  ...apiError.unprocessable(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.'),
+  details: { driverId: 'Driver not found.' },
+  description:
+    'One of: DRIVER_NOT_FOUND (details.driverId: "Driver not found." / "This driver has been deleted and cannot be assigned."); VEHICLE_NOT_FOUND (details.vehicleId: "Vehicle not found." / "This unit has been deleted and cannot be assigned."); TRAILER_NOT_FOUND (details.trailerId); VALIDATION_FAILED (details.plannedStartAt when a planned start is required, or other field errors).',
+};
 
 /** TZ §11.5 — dispatch & trip lifecycle, gated by `trips` (DISPATCHER has FULL — §6.4). */
 @FigmaScreen('web/dispatch-trips')
@@ -56,13 +72,13 @@ export class TripsController {
   @ApiStandardErrors({
     errors: [
       // Swagger keeps one response per status — `fieldConflicts` lists both 409s.
-      apiError.fieldConflicts([
+      withTripAssigneeConflicts(apiError.fieldConflicts([
         { code: ERROR_CODES.CONFLICT, field: 'number', message: 'A trip with this number already exists.' },
         { code: ERROR_CODES.TRIP_SCHEDULE_CONFLICT, field: 'vehicleId', message: 'Unit 1 is already assigned to another trip (TRP-1001) from 2026-10-10 12:00 UTC to 2026-10-20 12:00 UTC.' },
         { code: ERROR_CODES.TRIP_SCHEDULE_CONFLICT, field: 'driverId', message: 'Driver John Smith is already assigned to another trip (TRP-1001) from 2026-10-10 12:00 UTC to 2026-10-20 12:00 UTC.' },
         { code: ERROR_CODES.TRIP_SCHEDULE_CONFLICT, field: 'trailerId', message: 'Trailer T-12 is already assigned to another trip (TRP-1001) from 2026-10-10 12:00 UTC to 2026-10-20 12:00 UTC.' },
-      ]),
-      apiError.unprocessable(ERROR_CODES.TRAILER_NOT_FOUND, 'trailerId is unknown or names a deleted trailer.'),
+      ])),
+      TRIP_ASSIGNEE_NOT_FOUND,
     ],
   })
   create(@Body(zodBody(CreateTripDto)) dto: CreateTripDto, @CurrentUser() actor: ContextUser) {
@@ -115,13 +131,13 @@ export class TripsController {
   @ApiStandardErrors({
     errors: [
       apiError.notFound(ERROR_CODES.NOT_FOUND, 'Trip not found.'),
-      apiError.fieldConflicts([
+      withTripAssigneeConflicts(apiError.fieldConflicts([
         { code: ERROR_CODES.CONFLICT, field: 'status', message: 'Only a planned or assigned trip can be (re)assigned.' },
         { code: ERROR_CODES.TRIP_SCHEDULE_CONFLICT, field: 'vehicleId', message: "The new unit already has another trip in this trip's time range." },
         { code: ERROR_CODES.TRIP_SCHEDULE_CONFLICT, field: 'driverId', message: "The new driver already has another trip in this trip's time range." },
         { code: ERROR_CODES.TRIP_SCHEDULE_CONFLICT, field: 'trailerId', message: "The new trailer already has another trip in this trip's time range." },
-      ]),
-      apiError.unprocessable(ERROR_CODES.TRAILER_NOT_FOUND, 'trailerId is unknown or names a deleted trailer.'),
+      ])),
+      TRIP_ASSIGNEE_NOT_FOUND,
     ],
   })
   assign(@Param('id') id: string, @Body(zodBody(AssignTripDto)) dto: AssignTripDto) {

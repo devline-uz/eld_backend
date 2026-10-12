@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { Prisma, VehicleStatus, WorkOrder } from '@prisma/client';
 import { BaseRepository, ModelDelegate } from '../../core/prisma/base.repository';
 import { PrismaService } from '../../core/prisma/prisma.service';
+import { escapeLike } from '../../common/dto/list-query.dto';
 
 export interface WorkOrderListFilter {
   vehicleId?: string;
@@ -88,7 +89,7 @@ export class WorkOrdersRepository extends BaseRepository<
       ...(filter.vehicleId && { vehicleId: filter.vehicleId }),
       ...(filter.status && { status: filter.status }),
       ...(filter.priority && { priority: filter.priority }),
-      ...(filter.q && { OR: [{ number: { contains: filter.q, mode: 'insensitive' } }, { title: { contains: filter.q, mode: 'insensitive' } }] }),
+      ...(filter.q && { OR: [{ number: { contains: escapeLike(filter.q), mode: 'insensitive' } }, { title: { contains: escapeLike(filter.q), mode: 'insensitive' } }] }),
     };
     const [items, total] = await Promise.all([
       this.prisma.workOrder.findMany({ where, orderBy, skip: (page - 1) * limit, take: limit }),

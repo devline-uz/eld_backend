@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MAX_LIST_PAGE } from '../../../common/dto/list-query.dto';
 import { isKnownJurisdiction } from '../lib/jurisdiction';
 
 /** TZ §11.6 / §15 — the report kinds v1 ships. `SAFETY`/`UNIDENTIFIED` exist on the
@@ -35,7 +36,7 @@ export type GenerateReportDto = z.infer<typeof GenerateReportDto>;
 export const ReportListQueryDto = z.object({
   type: z.enum(GENERATABLE_REPORT_TYPES).optional(),
   status: z.enum(['QUEUED', 'RUNNING', 'READY', 'FAILED']).optional(),
-  page: z.coerce.number().int().min(1).default(1),
+  page: z.coerce.number().int().min(1).max(MAX_LIST_PAGE).default(1),
   limit: z.coerce.number().int().min(1).max(200).default(25),
 });
 export type ReportListQueryDto = z.infer<typeof ReportListQueryDto>;
@@ -155,7 +156,7 @@ export const ActivitySummaryQueryDto = boundedRange(
       .string()
       .regex(/^(name|days|offSec|sbSec|drivingSec|onSec|distanceMi|violations|certifiedDays):(asc|desc)$/)
       .default('name:asc'),
-    page: z.coerce.number().int().min(1).default(1),
+    page: z.coerce.number().int().min(1).max(MAX_LIST_PAGE).default(1),
     limit: z.coerce.number().int().min(1).max(200).default(25),
   }),
   MAX_REPORT_RANGE_DAYS,

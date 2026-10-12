@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MAX_LIST_PAGE } from '../../../common/dto/list-query.dto';
 import { MAX_TRANSFER_RANGE_DAYS } from '../pre-send-checks';
 
 /** tz.md §10.3 — `outputFileComment` is capped at 60 characters (Appendix A header field). */
@@ -27,7 +28,7 @@ export type CreateTransferDto = z.infer<typeof CreateTransferDto>;
 export const TransferListQueryDto = z.object({
   driverId: z.string().uuid().optional(),
   status: z.enum(['QUEUED', 'TEST_ONLY', 'SENT', 'ACCEPTED', 'REJECTED', 'FAILED', 'ALL']).default('ALL'),
-  page: z.coerce.number().int().min(1).default(1),
+  page: z.coerce.number().int().min(1).max(MAX_LIST_PAGE).default(1),
   limit: z.coerce.number().int().min(1).max(200).default(25),
 });
 export type TransferListQueryDto = z.infer<typeof TransferListQueryDto>;

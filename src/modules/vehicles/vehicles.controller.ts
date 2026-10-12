@@ -57,7 +57,7 @@ export class VehiclesController {
   @ApiQuery({ name: 'status', required: false })
   @ApiQuery({ name: 'groupId', required: false, description: 'A vehicle-group id, or `none` for ungrouped units.' })
   @ApiOperation({ summary: 'Lists vehicles — unit number, VIN, odometer, status (TZ §5.3 "Vehicles" screen).' })
-  @ApiOkResponse({ schema: { example: { items: [{ id: 'veh_1', unitNumber: '#101', vin: '1FUJA6CV88LW12345', status: 'ACTIVE' }], page: 1, limit: 25, total: 1, totalPages: 1 } } })
+  @ApiOkResponse({ description: 'UI-004 (additive): statusCounts {ACTIVE, INACTIVE, OUT_OF_SERVICE, total} over the whole fleet (list filters ignored; soft-deleted excluded).', schema: { example: { items: [{ id: 'veh_1', unitNumber: '#101', vin: '1FUJA6CV88LW12345', status: 'ACTIVE' }], page: 1, limit: 25, total: 1, totalPages: 1, statusCounts: { ACTIVE: 40, INACTIVE: 3, OUT_OF_SERVICE: 2, total: 45 } } } })
   @ApiStandardErrors()
   list(@Query(zodBody(VehicleListQueryDto)) query: VehicleListQueryDto) {
     return this.vehicles.list(query);
@@ -165,7 +165,16 @@ export class VehiclesController {
   @Audit({ object: 'Vehicle', action: 'DELETE' })
   @ApiOperation({ summary: 'Soft-deletes a unit (status -> INACTIVE, unassigns its driver). Never hard-deletes — see bugs.md B-009.' })
   @ApiOkResponse({ description: 'Soft-deleted — status INACTIVE, driver unassigned.', schema: { example: { id: 'veh_1', status: 'INACTIVE', assignedDriverId: null } } })
-  @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.VEHICLE_NOT_FOUND, 'Vehicle not found.')] })
+  @ApiStandardErrors({
+    errors: [
+      apiError.notFound(ERROR_CODES.VEHICLE_NOT_FOUND, 'Vehicle not found.'),
+      {
+        ...apiError.conflict(ERROR_CODES.CONFLICT, 'This unit still has open trips (TRP-1001). Reassign or cancel them first.'),
+        details: { openTrips: [{ id: 'trp_1', number: 'TRP-1001', status: 'ASSIGNED' }] },
+        description: 'CONFLICT — the unit still has open trips (DRAFT / PLANNED / ASSIGNED / IN_PROGRESS); details.openTrips [{id, number, status}] (max 20). Reassign or cancel them first.',
+      },
+    ],
+  })
   remove(@Param('id') id: string) {
     return this.vehicles.remove(id);
   }
@@ -186,7 +195,19 @@ export class VehiclesController {
   @Audit({ object: 'Vehicle', action: 'ASSIGN_DRIVER' })
   @ApiOperation({ summary: 'Assigns a driver to this unit. Blocked while the unit is OUT_OF_SERVICE. Requires vehicles:FULL or trips:FULL (B-13).' })
   @ApiCreatedResponse({ schema: { example: { id: 'veh_1', unitNumber: '101', assignedDriverId: 'drv_1' } } })
-  @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.VEHICLE_NOT_FOUND, 'Vehicle not found.'), apiError.conflict(ERROR_CODES.VEHICLE_OUT_OF_SERVICE, 'Unit is OUT_OF_SERVICE — assign a driver only after the critical defect is closed.')] })
+  @ApiStandardErrors({
+    errors: [
+      {
+        ...apiError.notFound(ERROR_CODES.VEHICLE_NOT_FOUND, 'Vehicle not found.'),
+        description: 'VEHICLE_NOT_FOUND — Vehicle not found; DRIVER_NOT_FOUND — Driver not found or deleted.',
+      },
+      {
+        ...apiError.conflict(ERROR_CODES.VEHICLE_OUT_OF_SERVICE, 'Unit is OUT_OF_SERVICE — assign a driver only after the critical defect is closed.'),
+        description:
+          'One of: VEHICLE_OUT_OF_SERVICE — Unit is OUT_OF_SERVICE — assign a driver only after the critical defect is closed; CONFLICT (details.status) — "Vehicle is inactive and cannot be assigned a driver."; CONFLICT — "Driver is inactive|terminated and cannot be assigned a unit."; CONFLICT — "Vehicle is already assigned to another driver."',
+      },
+    ],
+  })
   assignDriver(@Param('id') id: string, @Body(zodBody(AssignDriverDto)) dto: AssignDriverDto) {
     return this.vehicles.assignDriver(id, dto);
   }

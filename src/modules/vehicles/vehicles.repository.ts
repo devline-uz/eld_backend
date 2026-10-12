@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { Prisma, Vehicle } from '@prisma/client';
 import { BaseRepository, ModelDelegate } from '../../core/prisma/base.repository';
 import { PrismaService } from '../../core/prisma/prisma.service';
+import { escapeLike } from '../../common/dto/list-query.dto';
 
 export interface VehicleListFilter {
   status?: Vehicle['status'];
@@ -26,6 +27,14 @@ export type VehicleWrite =
 
 export interface VehicleListPage {
   items: Vehicle[];
+  total: number;
+}
+
+/** UI-004 — live (not soft-deleted) units per record status, over the whole fleet. */
+export interface VehicleStatusCounts {
+  ACTIVE: number;
+  INACTIVE: number;
+  OUT_OF_SERVICE: number;
   total: number;
 }
 
@@ -86,11 +95,11 @@ export class VehiclesRepository extends BaseRepository<
       ...(filter.groupId && { groupId: filter.groupId === 'none' ? null : filter.groupId }),
       ...(filter.q && {
         OR: [
-          { unitNumber: { contains: filter.q, mode: 'insensitive' } },
-          { vin: { contains: filter.q, mode: 'insensitive' } },
-          { make: { contains: filter.q, mode: 'insensitive' } },
-          { model: { contains: filter.q, mode: 'insensitive' } },
-          { licensePlate: { contains: filter.q, mode: 'insensitive' } },
+          { unitNumber: { contains: escapeLike(filter.q), mode: 'insensitive' } },
+          { vin: { contains: escapeLike(filter.q), mode: 'insensitive' } },
+          { make: { contains: escapeLike(filter.q), mode: 'insensitive' } },
+          { model: { contains: escapeLike(filter.q), mode: 'insensitive' } },
+          { licensePlate: { contains: escapeLike(filter.q), mode: 'insensitive' } },
         ],
       }),
     };
@@ -99,6 +108,27 @@ export class VehiclesRepository extends BaseRepository<
       this.prisma.vehicle.count({ where }),
     ]);
     return { items, total };
+  }
+
+  /** UI-004 — global record-status counts; independent of any list filter / search / page. */
+  async countByStatus(): Promise<VehicleStatusCounts> {
+    const rows = await this.prisma.vehicle.groupBy({ by: ['status'], where: { deletedAt: null }, _count: { _all: true } });
+    const counts: VehicleStatusCounts = { ACTIVE: 0, INACTIVE: 0, OUT_OF_SERVICE: 0, total: 0 };
+    for (const row of rows) {
+      counts[row.status] = row._count._all;
+      counts.total += row._count._all;
+    }
+    return counts;
+  }
+
+  /** BE-013 — unfinished trips (draft → in progress) that still point at this unit. */
+  findOpenTrips(vehicleId: string): Promise<Array<{ id: string; number: string; status: string }>> {
+    return this.prisma.trip.findMany({
+      where: { vehicleId, status: { in: ['DRAFT', 'PLANNED', 'ASSIGNED', 'IN_PROGRESS'] } },
+      select: { id: true, number: true, status: true },
+      orderBy: { plannedStartAt: 'asc' },
+      take: 20,
+    });
   }
 
   async groupExists(id: string): Promise<boolean> {
