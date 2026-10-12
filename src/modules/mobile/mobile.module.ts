@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { AuditModule } from '../audit/audit.module';
 import { AuthModule } from '../auth/auth.module';
+import { CarrierModule } from '../carrier/carrier.module';
 import { MessagingModule } from '../messaging/messaging.module';
 import { RodsLoginModule } from '../logs/rods-login-recorder';
 import { IngestModule } from '../ingest/ingest.module';
@@ -21,9 +22,10 @@ import { MobileCatalogRepository } from './mobile-catalog.repository';
 import { MobileSavedSignatureService } from './mobile-saved-signature.service';
 import { MobileContactsController } from './mobile-contacts.controller';
 import { MobileContactsService } from './mobile-contacts.service';
-import { MobileDeviceConfigController, MobileDeviceController } from './mobile-device.controller';
+import { MobileDeviceConfigController, MobileDeviceController, MobileVirtualDeviceController } from './mobile-device.controller';
 import { MobileDeviceRepository } from './mobile-device.repository';
 import { MobileDeviceService } from './mobile-device.service';
+import { MobileVirtualDeviceService } from './mobile-virtual-device.service';
 import { MobileDutyStatusController } from './mobile-duty-status.controller';
 import { MobileDvirController } from './mobile-dvir.controller';
 import { MobileDvirHistoryController } from './mobile-dvir-history.controller';
@@ -61,7 +63,7 @@ import { SignatureService } from './signature.service';
  * is their shared DB-access point, kept separate from `MobileRepository` on purpose.
  */
 @Module({
-  imports: [AttachmentsModule, HosRecalcModule, LogsModule, IngestModule, AuditModule, AuthModule, MessagingModule, RodsLoginModule],
+  imports: [AttachmentsModule, HosRecalcModule, LogsModule, IngestModule, AuditModule, AuthModule, MessagingModule, RodsLoginModule, CarrierModule],
   controllers: [
     MobileAppConfigController,
     MobileBootstrapController,
@@ -82,6 +84,7 @@ import { SignatureService } from './signature.service';
     MobileMaintenanceController,
     MobileDeviceController,
     MobileDeviceConfigController,
+    MobileVirtualDeviceController,
   ],
   providers: [
     MobileRepository,
@@ -113,6 +116,8 @@ import { SignatureService } from './signature.service';
     // MG-BLE-1/2 (wave 4) — driver reports the observed PT30 BLE MAC.
     MobileDeviceRepository,
     MobileDeviceService,
+    // pt30_pt40/tz.md §9.3 — PT Emulator (Virtual ELD) registration.
+    MobileVirtualDeviceService,
   ],
   exports: [MobileRepository, SignatureService, MobileFleetOpsRepository],
 })

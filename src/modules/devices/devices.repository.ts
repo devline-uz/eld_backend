@@ -7,6 +7,8 @@ export interface DeviceListFilter {
   status?: Device['status'];
   bleState?: Device['bleState'];
   vehicleId?: string;
+  /** pt30_pt40/tz.md §9.3 — `Device.isVirtual` filter. */
+  isVirtual?: boolean;
   q?: string;
 }
 
@@ -57,6 +59,7 @@ export class DevicesRepository extends BaseRepository<
       status: filter.status ?? { not: 'RETIRED' },
       ...(filter.bleState && { bleState: filter.bleState }),
       ...(filter.vehicleId && { vehicleId: filter.vehicleId }),
+      ...(filter.isVirtual !== undefined && { isVirtual: filter.isVirtual }),
       ...(filter.q && {
         OR: [
           { serial: { contains: filter.q, mode: 'insensitive' } },

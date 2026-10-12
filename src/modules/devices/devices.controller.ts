@@ -33,8 +33,9 @@ export class DevicesController {
   @ApiQuery({ name: 'status', required: false })
   @ApiQuery({ name: 'bleState', required: false })
   @ApiQuery({ name: 'vehicleId', required: false, description: 'B-35 — join a single unit\'s device (device<->vehicle binding lives only on Device.vehicleId).' })
+  @ApiQuery({ name: 'virtual', required: false, enum: ['true', 'false'], description: 'pt30_pt40/tz.md §9.3 — true: only PT Emulator (Virtual ELD) devices, false: only real PT30/PT40. Every row carries `isVirtual`.' })
   @ApiOperation({ summary: 'Lists PT30/PT40 devices with connected/offline BLE state, firmware, PT SDK 6.11 TrackerInfo and system variables.' })
-  @ApiOkResponse({ schema: { example: { items: [{ id: 'dev_1', serial: 'PT30_A86E', model: 'PT30', bleState: 'CONNECTED', firmware: 'L108', firmwareOutdated: false, productName: 'PT30', bleFirmware: '1.4.2', imei: null, reportedVin: '1FUJGLDR7CLBP8834', sdkVersion: '6.11.1', appPlatform: 'ANDROID', connectionType: 'BLE', busType: 'J1939', lastInfoAt: '2026-10-10T12:00:00.000Z', periodicConnectedSec: 30, periodicNoBleSec: 30, periodicDisconnectedMin: 30, harshAccelMg: 0, harshBrakeMg: 450, harshCornerMg: 0, systemVars: { PERIODIC_EVENT_GAP: 30, PERIODIC_EVENT_GAP_NOBLE: 30, EVENTS_STORED: 1, DRIVING_ACCL: 0, DRIVING_BRAKING: 450, DRIVING_CORNERING: 0, HSI_MODE: 1 } }], page: 1, limit: 25, total: 1, totalPages: 1 } } })
+  @ApiOkResponse({ schema: { example: { items: [{ id: 'dev_1', serial: 'PT30_A86E', model: 'PT30', isVirtual: false, bleState: 'CONNECTED', firmware: 'L108', firmwareOutdated: false, productName: 'PT30', bleFirmware: '1.4.2', imei: null, reportedVin: '1FUJGLDR7CLBP8834', sdkVersion: '6.11.1', appPlatform: 'ANDROID', connectionType: 'BLE', busType: 'J1939', lastInfoAt: '2026-10-10T12:00:00.000Z', periodicConnectedSec: 30, periodicNoBleSec: 30, periodicDisconnectedMin: 30, harshAccelMg: 0, harshBrakeMg: 450, harshCornerMg: 0, systemVars: { PERIODIC_EVENT_GAP: 30, PERIODIC_EVENT_GAP_NOBLE: 30, EVENTS_STORED: 1, DRIVING_ACCL: 0, DRIVING_BRAKING: 450, DRIVING_CORNERING: 0, HSI_MODE: 1 } }], page: 1, limit: 25, total: 1, totalPages: 1 } } })
   @ApiStandardErrors()
   list(@Query(zodBody(DeviceListQueryDto)) query: DeviceListQueryDto) {
     return this.devices.list(query);
@@ -43,7 +44,7 @@ export class DevicesController {
   @Get('export')
   @Perm('devices', 'READ')
   @ApiOperation({ summary: 'Exports all devices as the same shape `POST /devices/import` accepts.' })
-  @ApiOkResponse({ description: 'Every device in the import payload shape.', schema: { example: { devices: [{ serial: 'PT30_A86E', model: 'PT30', bleMac: 'A4:C1:38:12:9F:6E', firmwareVersion: 'L108' }] } } })
+  @ApiOkResponse({ description: 'Every device in the import payload shape.', schema: { example: { devices: [{ serial: 'PT30_A86E', isVirtual: false, model: 'PT30', bleMac: 'A4:C1:38:12:9F:6E', firmwareVersion: 'L108' }] } } })
   @ApiStandardErrors()
   export() {
     return this.devices.exportAll();
@@ -52,7 +53,7 @@ export class DevicesController {
   @Get(':id')
   @Perm('devices', 'READ')
   @ApiOperation({ summary: 'Gets one device.' })
-  @ApiOkResponse({ schema: { example: { id: 'dev_1', serial: 'PT30_A86E', model: 'PT30', status: 'ASSIGNED', vehicleId: 'veh_1', bleState: 'CONNECTED', firmware: 'L108', firmwareOutdated: false, lastSeenAt: '2026-09-11T15:41:00.000Z', productName: 'PT30', bleFirmware: '1.4.2', imei: null, reportedVin: '1FUJGLDR7CLBP8834', sdkVersion: '6.11.1', appPlatform: 'ANDROID', connectionType: 'BLE', busType: 'J1939', lastInfoAt: '2026-10-10T12:00:00.000Z', periodicConnectedSec: 30, periodicNoBleSec: 30, periodicDisconnectedMin: 30, harshAccelMg: 0, harshBrakeMg: 450, harshCornerMg: 0, systemVars: { PERIODIC_EVENT_GAP: 30, PERIODIC_EVENT_GAP_NOBLE: 30, EVENTS_STORED: 1, DRIVING_ACCL: 0, DRIVING_BRAKING: 450, DRIVING_CORNERING: 0, HSI_MODE: 1 } } } })
+  @ApiOkResponse({ schema: { example: { id: 'dev_1', serial: 'PT30_A86E', model: 'PT30', isVirtual: false, status: 'ASSIGNED', vehicleId: 'veh_1', bleState: 'CONNECTED', firmware: 'L108', firmwareOutdated: false, lastSeenAt: '2026-09-11T15:41:00.000Z', productName: 'PT30', bleFirmware: '1.4.2', imei: null, reportedVin: '1FUJGLDR7CLBP8834', sdkVersion: '6.11.1', appPlatform: 'ANDROID', connectionType: 'BLE', busType: 'J1939', lastInfoAt: '2026-10-10T12:00:00.000Z', periodicConnectedSec: 30, periodicNoBleSec: 30, periodicDisconnectedMin: 30, harshAccelMg: 0, harshBrakeMg: 450, harshCornerMg: 0, systemVars: { PERIODIC_EVENT_GAP: 30, PERIODIC_EVENT_GAP_NOBLE: 30, EVENTS_STORED: 1, DRIVING_ACCL: 0, DRIVING_BRAKING: 450, DRIVING_CORNERING: 0, HSI_MODE: 1 } } } })
   @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.DEVICE_NOT_FOUND, 'Device not found.')] })
   get(@Param('id') id: string) {
     return this.devices.get(id);
@@ -72,7 +73,12 @@ export class DevicesController {
   @Audit({ object: 'Device', action: 'REGISTER' })
   @ApiOperation({ summary: 'Registers a PT30/PT40 device (TZ §5.4). Optional PT SDK targets: `periodicNoBleSec` 10–480 s, `harshAccelMg`/`harshBrakeMg`/`harshCornerMg` 0–8192 mG (0 = off).' })
   @ApiCreatedResponse({ schema: { example: { id: 'dev_9', serial: 'PT30_1C4F', model: 'PT30', status: 'UNASSIGNED', bleState: 'DISCONNECTED' } } })
-  @ApiStandardErrors({ errors: [apiError.conflict(ERROR_CODES.CONFLICT, 'A device with this serial is already registered.')] })
+  @ApiStandardErrors({
+    errors: [
+      apiError.conflict(ERROR_CODES.CONFLICT, 'A device with this serial is already registered.'),
+      apiError.unprocessable(ERROR_CODES.VIRTUAL_SERIAL_RESERVED, 'Serials starting with "V" are reserved for virtual (PT Emulator) devices.'),
+    ],
+  })
   create(@Body(zodBody(CreateDeviceDto)) dto: CreateDeviceDto) {
     return this.devices.create(dto);
   }
@@ -82,7 +88,12 @@ export class DevicesController {
   @Audit({ object: 'Device', action: 'IMPORT' })
   @ApiOperation({ summary: 'Bulk-imports devices; upserts by `serial`.' })
   @ApiCreatedResponse({ schema: { example: { imported: 5, updated: 1, failed: [] } } })
-  @ApiStandardErrors({ errors: [apiError.unprocessable(ERROR_CODES.IMPORT_FAILED, 'One or more rows could not be imported.')] })
+  @ApiStandardErrors({
+    errors: [
+      apiError.unprocessable(ERROR_CODES.IMPORT_FAILED, 'One or more rows could not be imported.'),
+      apiError.unprocessable(ERROR_CODES.VIRTUAL_SERIAL_RESERVED, 'A row has a "V…" serial (reserved for PT Emulator devices) — nothing was imported; `details.serials` lists them.'),
+    ],
+  })
   import(@Body(zodBody(ImportDevicesDto)) dto: ImportDevicesDto) {
     return this.devices.importMany(dto);
   }

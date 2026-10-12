@@ -28,10 +28,10 @@ const DRIVER = {
   assignedVehicleId: null,
 };
 
-function build(env: Record<string, string | undefined>) {
+function build(env: Record<string, string | undefined>, opts: { carrier?: unknown; virtualEldAllowed?: boolean } = {}) {
   const repo = {
     findDriver: jest.fn().mockResolvedValue(DRIVER),
-    findCarrier: jest.fn().mockResolvedValue(null),
+    findCarrier: jest.fn().mockResolvedValue(opts.carrier ?? null),
     findVehicle: jest.fn(),
     findActivePairing: jest.fn().mockResolvedValue(null),
     findDeviceByVehicle: jest.fn(),
@@ -40,7 +40,7 @@ function build(env: Record<string, string | undefined>) {
   };
   const hosRecalc = { computeCurrentState: jest.fn().mockResolvedValue(null) };
   const logs = { getInspectionPacket: jest.fn().mockResolvedValue({ days: [] }) };
-  const config = { get: jest.fn((key: string) => env[key]) };
+  const config = { get: jest.fn((key: string) => env[key]), virtualEldAllowed: opts.virtualEldAllowed ?? true };
   const fleetOps = {
     findAvailableVehicles: jest.fn().mockResolvedValue([]),
     findLatestDutyStatus: jest.fn().mockResolvedValue(null),
@@ -102,5 +102,17 @@ describe('MobileBootstrapService — driver.username (mobile wave 4, M-31 / D-12
   it('exposes the ELD username in the driver block', async () => {
     const result = await build({}).bootstrap('drv_1');
     expect(result.driver).toMatchObject({ id: 'drv_1', username: 'jdriver' });
+  });
+});
+
+describe('MobileBootstrapService — virtualEld (pt30_pt40/tz.md §9.3)', () => {
+  const carrier = { name: 'C', dotNumber: '1', addressLine1: null, city: null, state: null, zip: null, eldRegistrationId: null };
+
+  it('enabled only when the env allows it AND the carrier switch is on', async () => {
+    expect((await build({}, { carrier: { ...carrier, virtualEldEnabled: true } }).bootstrap('drv_1')).virtualEld).toEqual({ enabled: true });
+    expect((await build({}, { carrier: { ...carrier, virtualEldEnabled: false } }).bootstrap('drv_1')).virtualEld).toEqual({ enabled: false });
+    expect(
+      (await build({}, { carrier: { ...carrier, virtualEldEnabled: true }, virtualEldAllowed: false }).bootstrap('drv_1')).virtualEld,
+    ).toEqual({ enabled: false });
   });
 });

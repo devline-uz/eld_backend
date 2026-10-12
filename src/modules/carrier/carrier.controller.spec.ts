@@ -24,15 +24,15 @@ describe('CarrierController permissions', () => {
 
 describe('CarrierController — delegates to CarrierService', () => {
   const service = {
-    get: jest.fn().mockResolvedValue({ id: 'carrier' }),
+    view: jest.fn().mockResolvedValue({ id: 'carrier', virtualEldAvailable: true }),
     update: jest.fn().mockResolvedValue({ id: 'carrier', name: 'New Name' }),
     getTransferConfig: jest.fn().mockResolvedValue({ erodsMode: 'TEST' }),
   };
   const controller = new CarrierController(service as never);
 
-  it('get', async () => {
-    await controller.get();
-    expect(service.get).toHaveBeenCalled();
+  it('get returns the view with virtualEldAvailable (pt30_pt40/tz.md §9.3)', async () => {
+    await expect(controller.get()).resolves.toMatchObject({ virtualEldAvailable: true });
+    expect(service.view).toHaveBeenCalled();
   });
 
   it('getTransferConfig', async () => {

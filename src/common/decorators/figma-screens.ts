@@ -151,6 +151,7 @@ export const FIGMA_UNMAPPED_ROUTES: Record<string, string> = {
   'GET /api/mobile/support/tickets/{id}': 'Driver app M-30 ticket detail (MR-20) — mobile Figma export missing.',
   'POST /api/mobile/device/mac': 'Driver app BLE connect to the unit\'s PT30 — reports the observed MAC (MG-BLE-1/2, no screen of its own); mobile Figma export missing.',
   'GET /api/mobile/device-config': 'Driver app reads PT SDK system variables to apply to the PT30/PT40 on connect (D-135). Background, no screen of its own.',
+  'POST /api/mobile/virtual-devices': 'Driver app S-04 "Connect ELD" -> "Test qurilmalar (Emulator)" (pt30_pt40/tz.md §8.3); background call after PIN entry, no Figma frame yet.',
   // In-app notification inbox — a bell icon shown on every screen, not a screen of its own;
   // the role-guide exports do not capture it separately from the pages it overlays.
   'GET /api/notifications': 'In-app notification bell (TZ §14) — not a distinct screen in the role-guide export.',

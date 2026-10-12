@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { AppConfigService } from '../../core/config/config.service';
+import { VirtualEldPolicy } from '../carrier/virtual-eld.policy';
 
 export interface MobileAppConfig {
   minSupportedVersion: string | null;
@@ -13,6 +14,8 @@ export interface MobileAppConfig {
   /** Only computed when the caller sent `appVersion` and a minimum is configured. */
   updateRequired: boolean | null;
   updateAvailable: boolean | null;
+  /** pt30_pt40/tz.md §9.3 — Test PT30/40 (PT Emulator) mode: env allows it AND the carrier switch is on. */
+  virtualEld: { enabled: boolean };
 }
 
 /** Compares dotted numeric versions ("1.0.3", "1.2", "2.0.0+14"); non-numeric parts count as 0. */
@@ -30,14 +33,17 @@ export function compareVersions(a: string, b: string): number {
 /** MR-7 / MR-30 — values come only from env (`MOBILE_*`); unset = null, never a made-up default. */
 @Injectable()
 export class MobileAppConfigService {
-  constructor(private readonly config: AppConfigService) {}
+  constructor(
+    private readonly config: AppConfigService,
+    private readonly virtualEld: VirtualEldPolicy,
+  ) {}
 
   private str(key: Parameters<AppConfigService['get']>[0]): string | null {
     const v = this.config.get(key) as string | undefined;
     return v && v.trim() ? v.trim() : null;
   }
 
-  getAppConfig(platform: string | undefined, appVersion: string | undefined): MobileAppConfig {
+  async getAppConfig(platform: string | undefined, appVersion: string | undefined): Promise<MobileAppConfig> {
     const min = this.str('MOBILE_MIN_SUPPORTED_VERSION') ?? this.str('MOBILE_APP_MIN_VERSION');
     const latest = this.str('MOBILE_LATEST_VERSION') ?? this.str('MOBILE_APP_LATEST_VERSION');
     const platformUrl =
@@ -53,6 +59,7 @@ export class MobileAppConfigService {
       recommendedPt30Firmware: this.str('MOBILE_RECOMMENDED_PT30_FIRMWARE'),
       updateRequired: appVersion && min ? compareVersions(appVersion, min) < 0 : null,
       updateAvailable: appVersion && latest ? compareVersions(appVersion, latest) < 0 : null,
+      virtualEld: { enabled: await this.virtualEld.isEnabled() },
     };
   }
 

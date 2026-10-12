@@ -37,6 +37,11 @@ const INT = { type: 'integer' } as const;
 
 // ---------------------------------------------------------------- app config / legal (MobileAppConfigService)
 
+/** pt30_pt40/tz.md §9.3 — `virtualEld` block of `GET /mobile/app-config` and `GET /mobile/bootstrap`. */
+export class VirtualEldFlagView {
+  @ApiProperty({ type: Boolean, example: false }) enabled!: boolean;
+}
+
 export class MobileAppConfigResponse {
   @ApiProperty({ type: String, nullable: true, example: '1.0.0' }) minSupportedVersion!: string | null;
   @ApiProperty({ type: String, nullable: true, example: '1.0.3' }) latestVersion!: string | null;
@@ -48,6 +53,8 @@ export class MobileAppConfigResponse {
   @ApiProperty({ type: String, nullable: true }) recommendedPt30Firmware!: string | null;
   @ApiProperty({ type: Boolean, nullable: true, description: 'Null unless `appVersion` was sent and a minimum is configured.' }) updateRequired!: boolean | null;
   @ApiProperty({ type: Boolean, nullable: true, description: 'Null unless `appVersion` was sent and a latest version is configured.' }) updateAvailable!: boolean | null;
+  @ApiProperty({ type: () => VirtualEldFlagView, description: 'pt30_pt40/tz.md §9.3 — Test PT30/40 (PT Emulator) mode; `enabled` = env allows it AND the carrier switch is on.' })
+  virtualEld!: VirtualEldFlagView;
 }
 
 export class MobileLegalResponse {
@@ -205,6 +212,24 @@ export class DeviceSystemVarsView {
   @ApiProperty({ type: Number, enum: [1] }) HSI_MODE!: 1;
 }
 
+/** pt30_pt40/tz.md §9.3 — `POST /mobile/virtual-devices`: the same Device view as `GET /devices/:id`. */
+export class VirtualDeviceResponse {
+  @ApiProperty({ type: String, description: 'Send as `deviceId` to `POST /mobile/device/mac`.' }) id!: string;
+  @ApiProperty({ type: String, example: 'VPT30_A1B2' }) serial!: string;
+  @ApiProperty({ enum: DeviceModel, enumName: 'DeviceModel' }) model!: DeviceModel;
+  @ApiProperty({ type: Boolean, enum: [true] }) isVirtual!: true;
+  @ApiProperty({ type: String, nullable: true }) firmware!: string | null;
+  @ApiProperty({ type: String, nullable: true, description: 'The paired unit (the driver\'s current vehicle).' }) vehicleId!: string | null;
+  @ApiProperty({ enum: DeviceStatus, enumName: 'DeviceStatus' }) status!: DeviceStatus;
+  @ApiProperty({ enum: BleState, enumName: 'BleState' }) bleState!: BleState;
+  @ApiProperty({ type: String, nullable: true }) bleMacAddress!: string | null;
+  @ApiProperty({ type: String, nullable: true }) reportedVin!: string | null;
+  @ApiProperty({ ...DT, nullable: true }) pairedAt!: string | null;
+  @ApiProperty(DT) createdAt!: string;
+  @ApiProperty({ type: Boolean }) firmwareOutdated!: boolean;
+  @ApiProperty({ type: () => DeviceSystemVarsView }) systemVars!: DeviceSystemVarsView;
+}
+
 export class DeviceConfigResponse {
   @ApiProperty({ type: String, example: 'PT30_A86E' }) serial!: string;
   @ApiProperty({ enum: DeviceModel, enumName: 'DeviceModel' }) model!: DeviceModel;
@@ -292,6 +317,7 @@ export class BootstrapDeviceView {
   @ApiProperty({ ...DT, nullable: true }) pairedAt!: string | null;
   @ApiProperty(INT) periodicConnectedSec!: number;
   @ApiProperty(INT) periodicDisconnectedMin!: number;
+  @ApiProperty({ type: Boolean, description: 'pt30_pt40/tz.md §9 — PT Emulator device; the app shows a "TEST" label.' }) isVirtual!: boolean;
 }
 
 export class BootstrapCoDriverView {
@@ -367,6 +393,8 @@ export class MobileBootstrapResponse {
   pendingEditRequestCount!: number;
   @ApiProperty({ type: 'integer', minimum: 0, description: 'MB-13 — unidentified segments the carrier asked this driver to confirm (= `GET /unidentified/confirmation-requests` items).' })
   pendingUnidentifiedCount!: number;
+  @ApiProperty({ type: () => VirtualEldFlagView, description: 'pt30_pt40/tz.md §8.2 / §9.3 — when false the app must not connect to (and must drop) a PT Emulator.' })
+  virtualEld!: VirtualEldFlagView;
 }
 
 // ---------------------------------------------------------------- trip (MobileTripService)

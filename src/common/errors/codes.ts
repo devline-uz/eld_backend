@@ -181,6 +181,20 @@ export const ERROR_CODES = {
    * DELIVERED or CANCELLED. */
   TRIP_NOT_EDITABLE: 'TRIP_NOT_EDITABLE',
 
+  // --- Virtual ELD / PT Emulator (pt30_pt40/tz.md §9) ------------------------
+  /** 409 `PATCH /carrier { virtualEldEnabled: true }` while env `VIRTUAL_ELD_ALLOWED` is false. */
+  VIRTUAL_ELD_NOT_ALLOWED: 'VIRTUAL_ELD_NOT_ALLOWED',
+  /** 409 — the switch needs `erodsMode=TEST`: turning it on in PRODUCTION, or switching to
+   * PRODUCTION while it is on (test data must never reach FMCSA). */
+  VIRTUAL_ELD_REQUIRES_TEST_ERODS: 'VIRTUAL_ELD_REQUIRES_TEST_ERODS',
+  /** 422 `POST /devices` / `POST /devices/import` with a `V…` serial (reserved for the emulator). */
+  VIRTUAL_SERIAL_RESERVED: 'VIRTUAL_SERIAL_RESERVED',
+  /** 403 — a virtual device while the carrier switch is off (or the env disallows it):
+   * `POST /mobile/virtual-devices`, every `/ingest/*`, `GET /mobile/device-config`, `POST /mobile/device/mac`. */
+  VIRTUAL_ELD_DISABLED: 'VIRTUAL_ELD_DISABLED',
+  /** 409 `POST /mobile/virtual-devices` — the driver has no current unit to pair the emulator to. */
+  NO_ACTIVE_VEHICLE: 'NO_ACTIVE_VEHICLE',
+
   // --- geofences (TZ §20 B-93) ----------------------------------------------
   /** `GEOCODER_URL` is unset — `type: 'ADDRESS'` cannot be resolved to coordinates. */
   GEOCODER_NOT_CONFIGURED: 'GEOCODER_NOT_CONFIGURED',

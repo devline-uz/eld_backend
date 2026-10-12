@@ -9,6 +9,7 @@ import { RequestContext } from '../../core/context/request-context';
 import { EventBusService } from '../../core/events/event-bus.service';
 import { QUEUES } from '../../core/queue/queue.constants';
 import { AuditRepository } from '../audit/audit.repository';
+import { VirtualEldPolicy } from '../carrier/virtual-eld.policy';
 import { buildSystemVars, configVersion, DeviceSystemVars } from '../devices/system-vars.util';
 import { IngestService } from '../ingest/ingest.service';
 import { normalizeMac, type ReportDeviceMacDto } from './dto/mobile-device.dto';
@@ -57,6 +58,7 @@ export class MobileDeviceService {
     private readonly events: EventBusService,
     @InjectQueue(QUEUES.ALERT) private readonly alertQueue: Queue,
     private readonly ingest: IngestService,
+    private readonly virtualEld: VirtualEldPolicy,
   ) {}
 
   /**
@@ -92,6 +94,8 @@ export class MobileDeviceService {
         { deviceId: dto.deviceId },
       );
     }
+    // pt30_pt40/tz.md §9.3 — shared Virtual ELD gate (no-op for a real PT30/PT40).
+    await this.virtualEld.assertDeviceUsable(device);
 
     const reported = dto.macAddress;
     let stored = device.bleMacAddress;

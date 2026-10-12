@@ -3,6 +3,7 @@ import type { Device, Prisma } from '@prisma/client';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
 import { OffsetPage, parseSort, toOffsetPage } from '../../common/dto/list-query.dto';
+import { isReservedVirtualSerial } from '../carrier/virtual-eld.policy';
 import { VehiclesRepository } from '../vehicles/vehicles.repository';
 import {
   CreateDeviceDto,
@@ -26,13 +27,25 @@ export type DeviceView = Device & {
   systemVars: DeviceSystemVars;
 };
 
+/** `GET /devices/export` row — the import shape plus the read-only `isVirtual` flag (§9.3). */
+export type DeviceExportRow = CreateDeviceDto & { isVirtual: boolean };
+
+/** pt30_pt40/tz.md §9.1 — `V…` serials belong to the PT Emulator (`POST /mobile/virtual-devices`) only. */
+function virtualSerialReserved(serials: Array<{ index: number; serial: string }>): AppException {
+  return AppException.unprocessable(
+    ERROR_CODES.VIRTUAL_SERIAL_RESERVED,
+    'Serials starting with "V" are reserved for virtual (PT Emulator) devices.',
+    { serials },
+  );
+}
+
 export interface ImportSummary {
   imported: number;
   updated: number;
   failed: Array<{ index: number; error: string }>;
 }
 
-function toView(device: Device): DeviceView {
+export function toDeviceView(device: Device): DeviceView {
   return {
     ...device,
     firmwareOutdated: isFirmwareOutdated(device.firmware),
@@ -51,16 +64,16 @@ export class DevicesService {
   async list(query: DeviceListQueryDto): Promise<OffsetPage<DeviceView>> {
     const orderBy = parseSort(query.sort, SORTABLE_FIELDS, { serial: 'asc' });
     const { items, total } = await this.devices.list(
-      { status: query.status, bleState: query.bleState, vehicleId: query.vehicleId, q: query.q },
+      { status: query.status, bleState: query.bleState, vehicleId: query.vehicleId, isVirtual: query.virtual, q: query.q },
       query.page,
       query.limit,
       orderBy,
     );
-    return toOffsetPage(items.map(toView), total, query.page, query.limit);
+    return toOffsetPage(items.map(toDeviceView), total, query.page, query.limit);
   }
 
   async get(id: string): Promise<DeviceView> {
-    return toView(await this.getRaw(id));
+    return toDeviceView(await this.getRaw(id));
   }
 
   private async getRaw(id: string): Promise<Device> {
@@ -70,6 +83,7 @@ export class DevicesService {
   }
 
   async create(dto: CreateDeviceDto): Promise<DeviceView> {
+    if (isReservedVirtualSerial(dto.serial)) throw virtualSerialReserved([{ index: 0, serial: dto.serial }]);
     const existing = await this.devices.findBySerial(dto.serial);
     if (existing) throw AppException.conflict(`Device "${dto.serial}" already registered.`);
     const created = await this.devices.create({
@@ -86,7 +100,7 @@ export class DevicesService {
       autoFirmware: dto.autoFirmware,
       shareDiagnostics: dto.shareDiagnostics,
     });
-    return toView(created);
+    return toDeviceView(created);
   }
 
   /** §20 B-8 — derived from the latest recorded status/BLE data, never a live device round-trip.
@@ -99,13 +113,13 @@ export class DevicesService {
   async update(id: string, dto: UpdateDeviceDto): Promise<DeviceView> {
     await this.getRaw(id);
     const updated = await this.devices.update({ id }, this.toUpdateInput(dto));
-    return toView(updated);
+    return toDeviceView(updated);
   }
 
   async updateFirmware(id: string, dto: UpdateFirmwareDto): Promise<DeviceView> {
     await this.getRaw(id);
     const updated = await this.devices.update({ id }, { firmware: dto.firmware });
-    return toView(updated);
+    return toDeviceView(updated);
   }
 
   /** The app reports BLE connectivity; this just records what it says (TZ §5.4). */
@@ -119,7 +133,7 @@ export class DevicesService {
         ...(dto.storedEventsCount !== undefined && { storedEventsCount: dto.storedEventsCount }),
       },
     );
-    return toView(updated);
+    return toDeviceView(updated);
   }
 
   /** Soft-delete only — see bugs.md B-009 (hard `DELETE` breaks on the `EldEvent` FK's
@@ -128,7 +142,7 @@ export class DevicesService {
   async remove(id: string): Promise<DeviceView> {
     await this.getRaw(id);
     const updated = await this.devices.update({ id }, { status: 'RETIRED', vehicle: { disconnect: true }, pairedAt: null });
-    return toView(updated);
+    return toDeviceView(updated);
   }
 
   /** Hard rule — one device per unit (`@@unique([vehicleId])` in the schema is the backstop). */
@@ -144,7 +158,7 @@ export class DevicesService {
       { id },
       { vehicle: { connect: { id: dto.vehicleId } }, status: 'ASSIGNED', pairedAt: new Date() },
     );
-    return toView(updated);
+    return toDeviceView(updated);
   }
 
   async unpair(id: string): Promise<DeviceView> {
@@ -153,12 +167,13 @@ export class DevicesService {
       { id },
       { vehicle: { disconnect: true }, status: 'UNASSIGNED', pairedAt: null },
     );
-    return toView(updated);
+    return toDeviceView(updated);
   }
 
-  async exportAll(): Promise<CreateDeviceDto[]> {
+  async exportAll(): Promise<DeviceExportRow[]> {
     return (await this.devices.listAll()).map((d) => ({
       serial: d.serial,
+      isVirtual: d.isVirtual,
       bleMacAddress: d.bleMacAddress ?? undefined,
       model: d.model,
       firmware: d.firmware ?? undefined,
@@ -175,6 +190,12 @@ export class DevicesService {
 
   /** Upserts by `serial` (the device's natural key) so re-importing an export is idempotent. */
   async importMany(dto: ImportDevicesDto): Promise<ImportSummary> {
+    // §9.1 — the whole file is refused before any write (D-143): a partial import that silently
+    // dropped the V-rows would look like success to the operator.
+    const reserved = dto.devices
+      .map((row, index) => ({ index, serial: row.serial }))
+      .filter((row) => isReservedVirtualSerial(row.serial));
+    if (reserved.length) throw virtualSerialReserved(reserved);
     const summary: ImportSummary = { imported: 0, updated: 0, failed: [] };
     for (let index = 0; index < dto.devices.length; index += 1) {
       const row = dto.devices[index];

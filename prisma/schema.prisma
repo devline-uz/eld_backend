@@ -64,6 +64,12 @@ model Carrier {
   /// Carrier is a singleton row, so this belongs here rather than a dedicated table (D-0xx).
   notificationChannels Json? @default("{}")
 
+  /// pt30_pt40/tz.md §9.1 — "Test PT30/40" switch (Virtual ELD / PT Emulator). Only usable while
+  /// env VIRTUAL_ELD_ALLOWED is true and erodsMode = TEST (D-142).
+  virtualEldEnabled     Boolean   @default(false)
+  virtualEldUpdatedAt   DateTime?
+  virtualEldUpdatedById String?
+
   updatedAt DateTime @updatedAt
 }
 
@@ -435,11 +441,16 @@ model Device {
   pairedAt  DateTime?
   createdAt DateTime  @default(now())
 
+  /// pt30_pt40/tz.md §9.1 — PT Emulator ("Virtual ELD"). true <=> serial matches
+  /// `^VPT(30|40)_[A-Z0-9]{4,12}$`; created only by `POST /mobile/virtual-devices` (D-142).
+  isVirtual Boolean @default(false)
+
   vehicle   Vehicle?         @relation(fields: [vehicleId], references: [id])
   rawEvents DeviceRawEvent[]
 
   @@unique([vehicleId])
   @@index([status])
+  @@index([isVirtual])
   @@index([bleState, lastSeenAt])
 }
 
@@ -572,6 +583,9 @@ model TelemetryPoint {
   time      DateTime
   vehicleId String
   driverId  String?
+  /// pt30_pt40/tz.md §9.5 — the device that sent the point (no FK: partitioned, D-145), so PT Emulator
+  /// telemetry stays separable via `Device.isVirtual`. Null on rows written before 2026-10-12.
+  deviceId  String?
 
   /// Nullable since PT SDK 6.11 (VDB snapshots without a GPS lock).
   latitude   Decimal? @db.Decimal(9, 6)
@@ -628,6 +642,7 @@ model TelemetryPoint {
 
   @@id([time, vehicleId])
   @@index([vehicleId, time])
+  @@index([deviceId, time])
 }
 
 // ---------------------------------------------------------------------------

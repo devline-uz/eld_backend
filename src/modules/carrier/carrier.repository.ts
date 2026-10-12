@@ -33,4 +33,19 @@ export class CarrierRepository {
   update(data: Prisma.CarrierUpdateInput): Promise<Carrier> {
     return this.prisma.carrier.update({ where: { id: CARRIER_ID }, data });
   }
+
+  /** pt30_pt40/tz.md §9.3 — `virtualEldUpdatedBy` display name (back-office user). */
+  async findUserName(id: string): Promise<{ id: string; name: string } | null> {
+    const user = await this.prisma.user.findUnique({ where: { id }, select: { id: true, firstName: true, lastName: true } });
+    return user ? { id: user.id, name: `${user.firstName} ${user.lastName}`.trim() } : null;
+  }
+
+  /** pt30_pt40/tz.md §9.4 — every live, active driver gets `virtual_eld.changed` on their own room. */
+  async findActiveDriverIds(): Promise<string[]> {
+    const rows = await this.prisma.driver.findMany({
+      where: { status: 'ACTIVE', deletedAt: null },
+      select: { id: true },
+    });
+    return rows.map((r) => r.id);
+  }
 }

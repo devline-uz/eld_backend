@@ -363,6 +363,17 @@ Source: `../backend_tasks.md` (section numbers in brackets). Depends on: Phases 
 - [x] `docs/erods-changes-2026-10-08.md` — Unidentified title `Unidentified Vehicle Profile Records:` → `Unidentified Driver Profile Records:` (`segments.ts:31`), header trailer/shipping and Login/Logout rows
 - [x] Mobile #13 OpenAPI quality — every `/mobile/*` + `/auth/login/driver|refresh|me` + `/notifications*` 2xx has a typed enveloped schema (`@ApiEnvelopeResponse`, `*/dto/*.responses.ts`, named enums, nullable/optional per service), `POST /mobile/conversations` body = `StartConversationDto`, examples match current shapes (bootstrap `OBK001`, trip `source`, dvirs `trailerNumber/odometerMi`), e2e guard for typed schemas + real 2xx status, `docs/openapi.json` regenerated — D-131, B-152
 
+## Virtual ELD (PT Emulator) — `pt30_pt40/tz.md` §9 (2026-10-12)
+- [x] Migration `20261012100000_virtual_eld`: `Carrier.virtualEldEnabled/UpdatedAt/UpdatedById`, `Device.isVirtual` + index (additive, applied to dev via `migrate deploy`) — D-142
+- [x] Env `VIRTUAL_ELD_ALLOWED` (unset = not production) + `AppConfigService.virtualEldAllowed` — D-142
+- [x] `GET/PATCH /carrier`: `virtualEldEnabled`, `virtualEldAvailable`, `virtualEldUpdatedAt`, `virtualEldUpdatedBy{id,name}`; 409 `VIRTUAL_ELD_NOT_ALLOWED` / `VIRTUAL_ELD_REQUIRES_TEST_ERODS` (both directions); audit `carrier.virtual_eld.enabled|disabled`; realtime `carrier.updated` (fleet) + `virtual_eld.changed` (driver rooms)
+- [x] Devices: `isVirtual` in list/get/export, `?virtual=true|false`, 422 `VIRTUAL_SERIAL_RESERVED` on `POST /devices` and import (whole file) — D-143
+- [x] `POST /mobile/virtual-devices` (DriverGuard, idempotent, current unit, 403 `VIRTUAL_ELD_DISABLED`, 409 `NO_ACTIVE_VEHICLE`, never displaces a real ELD) — D-144
+- [x] One shared gate `VirtualEldPolicy` on every `/ingest/*`, `GET /mobile/device-config`, `POST /mobile/device/mac` — D-142
+- [x] `virtualEld.enabled` in `GET /mobile/bootstrap` + `GET /mobile/app-config`; `bootstrap.device.isVirtual`
+- [x] `TelemetryPoint.deviceId` (migration `20261012110000_telemetry_device_id`) + `npm run virtual-eld:purge -- --before=<date> [--dry-run]` (dev only, never RODS) — D-145
+- [x] Unit tests, `docs/openapi.json` regenerated, `docs/virtual-eld.md`
+
 ## Global gates
 From TZ §25 — apply across every phase, not just at the end:
 - [x] All endpoints documented in Swagger, with example responses

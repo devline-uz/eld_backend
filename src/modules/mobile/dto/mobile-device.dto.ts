@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { VIRTUAL_SERIAL_PATTERN } from '../../carrier/virtual-eld.policy';
 
 /** IEEE EUI-48 as `AA:BB:CC:DD:EE:FF`, `aa-bb-cc-dd-ee-ff` or `AABBCCDDEEFF` (one separator style). */
 const MAC_RE = /^[0-9A-Fa-f]{2}([:-]?)[0-9A-Fa-f]{2}(?:\1[0-9A-Fa-f]{2}){4}$/;
@@ -37,3 +38,20 @@ export const DeviceConfigQueryDto = z.object({
   serial: z.string().trim().min(1).max(60),
 });
 export type DeviceConfigQueryDto = z.infer<typeof DeviceConfigQueryDto>;
+
+/**
+ * pt30_pt40/tz.md §9.3 — `POST /mobile/virtual-devices`. `serial` must match §9.1
+ * (`^VPT(30|40)_[A-Z0-9]{4,12}$`, upper-cased first) and its `PT30`/`PT40` part must equal `model`.
+ */
+export const RegisterVirtualDeviceDto = z
+  .object({
+    serial: z.string().trim().toUpperCase().regex(VIRTUAL_SERIAL_PATTERN, 'serial must look like VPT30_A1B2 / VPT40_A1B2 (^VPT(30|40)_[A-Z0-9]{4,12}$).'),
+    model: z.enum(['PT30', 'PT40']),
+    firmware: z.string().trim().min(1).max(20).optional(),
+    vin: z.string().trim().min(1).max(20).optional(),
+  })
+  .refine((dto) => dto.serial.slice(1, 5) === dto.model, {
+    message: 'model must match the serial (VPT30_… -> PT30, VPT40_… -> PT40).',
+    path: ['model'],
+  });
+export type RegisterVirtualDeviceDto = z.infer<typeof RegisterVirtualDeviceDto>;

@@ -22,6 +22,7 @@ import {
   isVinMismatch,
   modelFromProductName,
 } from '../devices/system-vars.util';
+import { VirtualEldPolicy } from '../carrier/virtual-eld.policy';
 import { TelemetryService } from '../telemetry/telemetry.service';
 import { computeChecksum, verifyChecksum } from './checksum';
 import {
@@ -123,6 +124,7 @@ export class IngestService {
     @InjectQueue(QUEUES.HOS_RECALC) private readonly hosRecalcQueue: Queue,
     @InjectQueue(QUEUES.ALERT) private readonly alertQueue: Queue,
     @InjectQueue(QUEUES.SAFETY_DETECT) private readonly safetyDetectQueue: Queue,
+    private readonly virtualEld: VirtualEldPolicy,
   ) {}
 
   // =========================================================================
@@ -444,6 +446,7 @@ export class IngestService {
     const stored = await this.telemetry.store(dto.points, {
       vehicleId: ctx.vehicle.id,
       driverId,
+      deviceId: ctx.device.id,
       odometerOffsetMi: ctx.vehicle.odometerOffsetMi,
       pcActive,
     });
@@ -630,6 +633,7 @@ export class IngestService {
     if (!device) {
       throw new AppException(ERROR_CODES.UNKNOWN_DEVICE, `Unknown device "${deviceSerial}".`, 404);
     }
+    await this.virtualEld.assertDeviceUsable(device);
     if (!device.vehicleId) {
       throw AppException.forbidden('Device is not paired with any unit.', { deviceSerial });
     }
@@ -651,6 +655,9 @@ export class IngestService {
     if (!device) {
       throw new AppException(ERROR_CODES.UNKNOWN_DEVICE, `Unknown device "${deviceSerial}".`, 404);
     }
+    // pt30_pt40/tz.md §9.3 — a PT Emulator device is refused (403 VIRTUAL_ELD_DISABLED) while the
+    // carrier switch is off or the env disallows it. No-op (no DB read) for a real PT30/PT40.
+    await this.virtualEld.assertDeviceUsable(device);
 
     const vehicleId = claimedVehicleId ?? device.vehicleId;
     if (!vehicleId) {

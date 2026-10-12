@@ -2403,6 +2403,7 @@
     },
     "/api/carrier": {
       "get": {
+        "description": "pt30_pt40/tz.md §9.3: `virtualEldEnabled`, `virtualEldAvailable` (env VIRTUAL_ELD_ALLOWED; false -> hide the switch), `virtualEldUpdatedAt`, `virtualEldUpdatedBy: { id, name } | null` (back-office user who last flipped the switch).",
         "operationId": "CarrierController_get",
         "parameters": [],
         "responses": {
@@ -2416,7 +2417,12 @@
                     "name": "Acme Trucking",
                     "dotNumber": "1234567",
                     "eldIdentifier": "OBK001",
-                    "erodsMode": "TEST"
+                    "erodsMode": "TEST",
+                    "virtualEldEnabled": false,
+                    "virtualEldAvailable": true,
+                    "virtualEldUpdatedAt": null,
+                    "virtualEldUpdatedById": null,
+                    "virtualEldUpdatedBy": null
                   }
                 }
               }
@@ -2591,6 +2597,7 @@
         ]
       },
       "patch": {
+        "description": "`virtualEldEnabled` (pt30_pt40/tz.md §9) toggles Test PT30/40 (PT Emulator) mode: 409 `VIRTUAL_ELD_NOT_ALLOWED` when env `VIRTUAL_ELD_ALLOWED` is false; 409 `VIRTUAL_ELD_REQUIRES_TEST_ERODS` when it would be on together with `erodsMode=PRODUCTION` (either direction). A change is audited (`carrier.virtual_eld.enabled` / `.disabled`), pushed as `carrier.updated` on the `fleet` room and as `virtual_eld.changed { enabled }` on every active driver's `driver:{id}` room.",
         "operationId": "CarrierController_update",
         "parameters": [],
         "requestBody": {
@@ -2616,7 +2623,15 @@
                     "timezone": "America/New_York",
                     "eldIdentifier": "OBK001",
                     "eldRegistrationId": null,
-                    "erodsMode": "TEST"
+                    "erodsMode": "TEST",
+                    "virtualEldEnabled": true,
+                    "virtualEldAvailable": true,
+                    "virtualEldUpdatedAt": "2026-10-12T09:00:00.000Z",
+                    "virtualEldUpdatedById": "usr_1",
+                    "virtualEldUpdatedBy": {
+                      "id": "usr_1",
+                      "name": "Jane Admin"
+                    }
                   }
                 }
               }
@@ -2709,6 +2724,56 @@
                     "statusCode": 403,
                     "code": "FORBIDDEN",
                     "message": "Insufficient permissions for this action.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Field-level conflict — one of: VIRTUAL_ELD_NOT_ALLOWED (details.virtualEldEnabled: \"Virtual ELD is not allowed in this environment.\"); VIRTUAL_ELD_REQUIRES_TEST_ERODS (details.erodsMode: \"Test PT30/40 mode requires erodsMode=TEST.\").",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 409,
+                    "code": "VIRTUAL_ELD_NOT_ALLOWED",
+                    "message": "Virtual ELD is not allowed in this environment.",
+                    "details": {
+                      "virtualEldEnabled": "Virtual ELD is not allowed in this environment."
+                    },
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
                   }
@@ -2972,6 +3037,244 @@
             "id": "web/reports-fmcsa-audit-pack",
             "title": "Reports · FMCSA / DOT audit pack",
             "source": "eld.docs/web/OneBook-ELD-admin.pdf p.21"
+          }
+        ]
+      }
+    },
+    "/api/audit-log": {
+      "get": {
+        "operationId": "AuditController_list",
+        "parameters": [
+          {
+            "name": "objectType",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "objectId",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "actorId",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "items": [
+                      {
+                        "id": "42",
+                        "actorType": "USER",
+                        "actorName": "Sarah Chen",
+                        "actorEmail": "sarah.chen@universal-logistics.com",
+                        "action": "UPDATE",
+                        "objectType": "Role",
+                        "objectId": "role_1"
+                      }
+                    ],
+                    "nextCursor": null
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHORIZED — Authentication required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 401,
+                    "code": "UNAUTHORIZED",
+                    "message": "Authentication required.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN — Insufficient permissions for this action.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 403,
+                    "code": "FORBIDDEN",
+                    "message": "Insufficient permissions for this action.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "VALIDATION_FAILED — Request validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 422,
+                    "code": "VALIDATION_FAILED",
+                    "message": "Request validation failed.",
+                    "details": {
+                      "issues": [
+                        {
+                          "path": "field",
+                          "code": "invalid_type",
+                          "message": "Required"
+                        }
+                      ]
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Lists audit log entries, newest first, cursor-paginated (TZ §19).",
+        "tags": [
+          "audit-log"
+        ],
+        "x-figma-screens": [
+          {
+            "id": "web/settings-audit-log",
+            "title": "Settings · Audit log",
+            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.25"
           }
         ]
       }
@@ -7792,244 +8095,6 @@
             "id": "web/my-profile",
             "title": "My profile · Active sessions",
             "source": "eld.docs/web/OneBook-ELD-admin.pdf p.4"
-          }
-        ]
-      }
-    },
-    "/api/audit-log": {
-      "get": {
-        "operationId": "AuditController_list",
-        "parameters": [
-          {
-            "name": "objectType",
-            "required": false,
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "objectId",
-            "required": false,
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "actorId",
-            "required": false,
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "limit",
-            "required": false,
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "cursor",
-            "required": false,
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "example": {
-                    "items": [
-                      {
-                        "id": "42",
-                        "actorType": "USER",
-                        "actorName": "Sarah Chen",
-                        "actorEmail": "sarah.chen@universal-logistics.com",
-                        "action": "UPDATE",
-                        "objectType": "Role",
-                        "objectId": "role_1"
-                      }
-                    ],
-                    "nextCursor": null
-                  }
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "UNAUTHORIZED — Authentication required.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "statusCode",
-                    "code",
-                    "message",
-                    "traceId",
-                    "timestamp"
-                  ],
-                  "properties": {
-                    "statusCode": {
-                      "type": "number"
-                    },
-                    "code": {
-                      "type": "string",
-                      "description": "Stable code from common/errors/codes.ts (append-only)."
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "type": "object",
-                      "additionalProperties": true
-                    },
-                    "traceId": {
-                      "type": "string"
-                    },
-                    "timestamp": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  },
-                  "example": {
-                    "statusCode": 401,
-                    "code": "UNAUTHORIZED",
-                    "message": "Authentication required.",
-                    "traceId": "01J8X3QK9Z0000000000000000",
-                    "timestamp": "2026-09-11T15:41:00.000Z"
-                  }
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "FORBIDDEN — Insufficient permissions for this action.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "statusCode",
-                    "code",
-                    "message",
-                    "traceId",
-                    "timestamp"
-                  ],
-                  "properties": {
-                    "statusCode": {
-                      "type": "number"
-                    },
-                    "code": {
-                      "type": "string",
-                      "description": "Stable code from common/errors/codes.ts (append-only)."
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "type": "object",
-                      "additionalProperties": true
-                    },
-                    "traceId": {
-                      "type": "string"
-                    },
-                    "timestamp": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  },
-                  "example": {
-                    "statusCode": 403,
-                    "code": "FORBIDDEN",
-                    "message": "Insufficient permissions for this action.",
-                    "traceId": "01J8X3QK9Z0000000000000000",
-                    "timestamp": "2026-09-11T15:41:00.000Z"
-                  }
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "VALIDATION_FAILED — Request validation failed.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "statusCode",
-                    "code",
-                    "message",
-                    "traceId",
-                    "timestamp"
-                  ],
-                  "properties": {
-                    "statusCode": {
-                      "type": "number"
-                    },
-                    "code": {
-                      "type": "string",
-                      "description": "Stable code from common/errors/codes.ts (append-only)."
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "type": "object",
-                      "additionalProperties": true
-                    },
-                    "traceId": {
-                      "type": "string"
-                    },
-                    "timestamp": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  },
-                  "example": {
-                    "statusCode": 422,
-                    "code": "VALIDATION_FAILED",
-                    "message": "Request validation failed.",
-                    "details": {
-                      "issues": [
-                        {
-                          "path": "field",
-                          "code": "invalid_type",
-                          "message": "Required"
-                        }
-                      ]
-                    },
-                    "traceId": "01J8X3QK9Z0000000000000000",
-                    "timestamp": "2026-09-11T15:41:00.000Z"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "summary": "Lists audit log entries, newest first, cursor-paginated (TZ §19).",
-        "tags": [
-          "audit-log"
-        ],
-        "x-figma-screens": [
-          {
-            "id": "web/settings-audit-log",
-            "title": "Settings · Audit log",
-            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.25"
           }
         ]
       }
@@ -25066,7 +25131,10 @@
                       "minPt30Firmware": null,
                       "recommendedPt30Firmware": null,
                       "updateRequired": false,
-                      "updateAvailable": true
+                      "updateAvailable": true,
+                      "virtualEld": {
+                        "enabled": false
+                      }
                     },
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-10-08T15:41:00.000Z"
@@ -34256,7 +34324,7 @@
             }
           },
           "403": {
-            "description": "FORBIDDEN — Insufficient permissions for this action.",
+            "description": "pt30_pt40/tz.md §9.3 — only for a virtual (`VPT…`) device while the carrier switch is off or env VIRTUAL_ELD_ALLOWED=false.",
             "content": {
               "application/json": {
                 "schema": {
@@ -34293,8 +34361,8 @@
                   },
                   "example": {
                     "statusCode": 403,
-                    "code": "FORBIDDEN",
-                    "message": "Insufficient permissions for this action.",
+                    "code": "VIRTUAL_ELD_DISABLED",
+                    "message": "Test PT30/40 (Virtual ELD) mode is turned off for this carrier.",
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
                   }
@@ -34580,7 +34648,7 @@
             }
           },
           "403": {
-            "description": "FORBIDDEN — Device is not paired with any unit, or the driver is not associated with its unit.",
+            "description": "pt30_pt40/tz.md §9.3 — only for a virtual (`VPT…`) device while the carrier switch is off or env VIRTUAL_ELD_ALLOWED=false.",
             "content": {
               "application/json": {
                 "schema": {
@@ -34617,8 +34685,8 @@
                   },
                   "example": {
                     "statusCode": 403,
-                    "code": "FORBIDDEN",
-                    "message": "Device is not paired with any unit, or the driver is not associated with its unit.",
+                    "code": "VIRTUAL_ELD_DISABLED",
+                    "message": "Test PT30/40 (Virtual ELD) mode is turned off for this carrier.",
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
                   }
@@ -34736,6 +34804,300 @@
           }
         ],
         "summary": "PT SDK 6.11 — device config (system variables) for the ELD the driver is connected to.",
+        "tags": [
+          "mobile"
+        ]
+      }
+    },
+    "/api/mobile/virtual-devices": {
+      "post": {
+        "description": "Needs the carrier \"Test PT30/40\" switch on (else 403 `VIRTUAL_ELD_DISABLED`). `serial` must match `^VPT(30|40)_[A-Z0-9]{4,12}$` and agree with `model`. Creates the device (`isVirtual=true`) if missing, pairs it to `Driver.assignedVehicleId` (none -> 409 `NO_ACTIVE_VEHICLE`). The emulator moves with the phone: paired elsewhere -> re-paired here; another virtual device on this unit is released; a REAL ELD on this unit is never displaced (409 `DEVICE_ALREADY_PAIRED`). Repeating the call returns the same device unchanged. Afterwards the normal `/ingest/*` flow applies.",
+        "operationId": "MobileVirtualDeviceController_register",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterVirtualDeviceDto"
+              },
+              "examples": {
+                "default": {
+                  "value": {
+                    "serial": "VPT30_A1B2",
+                    "model": "PT30",
+                    "firmware": "V1.0.0",
+                    "vin": "1FUJGLDR7CLBP8834"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "data",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/VirtualDeviceResponse"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "Request trace id (same as the §20 error envelope)."
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "data": {
+                      "id": "0b6f1c2e-0000-4000-8000-000000000199",
+                      "serial": "VPT30_A1B2",
+                      "model": "PT30",
+                      "isVirtual": true,
+                      "firmware": "V1.0.0",
+                      "vehicleId": "0b6f1c2e-0000-4000-8000-000000000201",
+                      "status": "ASSIGNED",
+                      "bleState": "DISCONNECTED",
+                      "bleMacAddress": null,
+                      "reportedVin": "1FUJGLDR7CLBP8834",
+                      "pairedAt": "2026-10-12T09:00:00.000Z",
+                      "createdAt": "2026-10-12T09:00:00.000Z",
+                      "firmwareOutdated": false,
+                      "systemVars": {
+                        "PERIODIC_EVENT_GAP": 30,
+                        "PERIODIC_EVENT_GAP_NOBLE": 30,
+                        "EVENTS_STORED": 1,
+                        "DRIVING_ACCL": 0,
+                        "DRIVING_BRAKING": 0,
+                        "DRIVING_CORNERING": 0,
+                        "HSI_MODE": 1
+                      }
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-10-08T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHORIZED — Authentication required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 401,
+                    "code": "UNAUTHORIZED",
+                    "message": "Authentication required.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "pt30_pt40/tz.md §9.3 — only for a virtual (`VPT…`) device while the carrier switch is off or env VIRTUAL_ELD_ALLOWED=false.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 403,
+                    "code": "VIRTUAL_ELD_DISABLED",
+                    "message": "Test PT30/40 (Virtual ELD) mode is turned off for this carrier.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Field-level conflict — one of: NO_ACTIVE_VEHICLE (details.vehicle: \"Select a vehicle before connecting a test (virtual) ELD.\"); DEVICE_ALREADY_PAIRED (details.vehicleId: \"This unit already has a real ELD paired.\").",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 409,
+                    "code": "NO_ACTIVE_VEHICLE",
+                    "message": "Select a vehicle before connecting a test (virtual) ELD.",
+                    "details": {
+                      "vehicle": "Select a vehicle before connecting a test (virtual) ELD."
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "VALIDATION_FAILED — serial must look like VPT30_A1B2 and match model.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 422,
+                    "code": "VALIDATION_FAILED",
+                    "message": "serial must look like VPT30_A1B2 and match model.",
+                    "details": {
+                      "issues": [
+                        {
+                          "path": "field",
+                          "code": "invalid_type",
+                          "message": "Required"
+                        }
+                      ]
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "pt30_pt40/tz.md §9.3 — register a PT Emulator (Virtual ELD) and pair it to the driver's current unit (idempotent).",
         "tags": [
           "mobile"
         ]
@@ -42048,6 +42410,19 @@
         "operationId": "DevicesController_list",
         "parameters": [
           {
+            "name": "virtual",
+            "required": false,
+            "in": "query",
+            "description": "pt30_pt40/tz.md §9.3 — true: only PT Emulator (Virtual ELD) devices, false: only real PT30/PT40. Every row carries `isVirtual`.",
+            "schema": {
+              "enum": [
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
             "name": "vehicleId",
             "required": false,
             "in": "query",
@@ -42125,6 +42500,7 @@
                         "id": "dev_1",
                         "serial": "PT30_A86E",
                         "model": "PT30",
+                        "isVirtual": false,
                         "bleState": "CONNECTED",
                         "firmware": "L108",
                         "firmwareOutdated": false,
@@ -42503,7 +42879,7 @@
             }
           },
           "422": {
-            "description": "VALIDATION_FAILED — Request validation failed.",
+            "description": "VIRTUAL_SERIAL_RESERVED — Serials starting with \"V\" are reserved for virtual (PT Emulator) devices.",
             "content": {
               "application/json": {
                 "schema": {
@@ -42540,17 +42916,8 @@
                   },
                   "example": {
                     "statusCode": 422,
-                    "code": "VALIDATION_FAILED",
-                    "message": "Request validation failed.",
-                    "details": {
-                      "issues": [
-                        {
-                          "path": "field",
-                          "code": "invalid_type",
-                          "message": "Required"
-                        }
-                      ]
-                    },
+                    "code": "VIRTUAL_SERIAL_RESERVED",
+                    "message": "Serials starting with \"V\" are reserved for virtual (PT Emulator) devices.",
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
                   }
@@ -42591,6 +42958,7 @@
                     "devices": [
                       {
                         "serial": "PT30_A86E",
+                        "isVirtual": false,
                         "model": "PT30",
                         "bleMac": "A4:C1:38:12:9F:6E",
                         "firmwareVersion": "L108"
@@ -42793,6 +43161,7 @@
                     "id": "dev_1",
                     "serial": "PT30_A86E",
                     "model": "PT30",
+                    "isVirtual": false,
                     "status": "ASSIGNED",
                     "vehicleId": "veh_1",
                     "bleState": "CONNECTED",
@@ -43907,7 +44276,7 @@
             }
           },
           "422": {
-            "description": "IMPORT_FAILED — One or more rows could not be imported.",
+            "description": "VIRTUAL_SERIAL_RESERVED — A row has a \"V…\" serial (reserved for PT Emulator devices) — nothing was imported; `details.serials` lists them.",
             "content": {
               "application/json": {
                 "schema": {
@@ -43944,8 +44313,8 @@
                   },
                   "example": {
                     "statusCode": 422,
-                    "code": "IMPORT_FAILED",
-                    "message": "One or more rows could not be imported.",
+                    "code": "VIRTUAL_SERIAL_RESERVED",
+                    "message": "A row has a \"V…\" serial (reserved for PT Emulator devices) — nothing was imported; `details.serials` lists them.",
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
                   }
@@ -66487,6 +66856,18 @@
           "readAt"
         ]
       },
+      "VirtualEldFlagView": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "example": false
+          }
+        },
+        "required": [
+          "enabled"
+        ]
+      },
       "MobileAppConfigResponse": {
         "type": "object",
         "properties": {
@@ -66533,6 +66914,14 @@
             "type": "boolean",
             "nullable": true,
             "description": "Null unless `appVersion` was sent and a latest version is configured."
+          },
+          "virtualEld": {
+            "description": "pt30_pt40/tz.md §9.3 — Test PT30/40 (PT Emulator) mode; `enabled` = env allows it AND the carrier switch is on.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/VirtualEldFlagView"
+              }
+            ]
           }
         },
         "required": [
@@ -66545,7 +66934,8 @@
           "minPt30Firmware",
           "recommendedPt30Firmware",
           "updateRequired",
-          "updateAvailable"
+          "updateAvailable",
+          "virtualEld"
         ]
       },
       "MobileLegalResponse": {
@@ -66838,6 +67228,10 @@
           },
           "periodicDisconnectedMin": {
             "type": "integer"
+          },
+          "isVirtual": {
+            "type": "boolean",
+            "description": "pt30_pt40/tz.md §9 — PT Emulator device; the app shows a \"TEST\" label."
           }
         },
         "required": [
@@ -66850,7 +67244,8 @@
           "bleMacAddress",
           "pairedAt",
           "periodicConnectedSec",
-          "periodicDisconnectedMin"
+          "periodicDisconnectedMin",
+          "isVirtual"
         ]
       },
       "DutyStatus": {
@@ -67958,6 +68353,14 @@
             "type": "integer",
             "minimum": 0,
             "description": "MB-13 — unidentified segments the carrier asked this driver to confirm (= `GET /unidentified/confirmation-requests` items)."
+          },
+          "virtualEld": {
+            "description": "pt30_pt40/tz.md §8.2 / §9.3 — when false the app must not connect to (and must drop) a PT Emulator.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/VirtualEldFlagView"
+              }
+            ]
           }
         },
         "required": [
@@ -67974,7 +68377,8 @@
           "syncConfig",
           "appUpdate",
           "pendingEditRequestCount",
-          "pendingUnidentifiedCount"
+          "pendingUnidentifiedCount",
+          "virtualEld"
         ]
       },
       "SyncRejectedView": {
@@ -70217,6 +70621,94 @@
           "autoFirmware",
           "shareDiagnostics",
           "configVersion"
+        ]
+      },
+      "VirtualDeviceResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Send as `deviceId` to `POST /mobile/device/mac`."
+          },
+          "serial": {
+            "type": "string",
+            "example": "VPT30_A1B2"
+          },
+          "model": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DeviceModel"
+              }
+            ]
+          },
+          "isVirtual": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "firmware": {
+            "type": "string",
+            "nullable": true
+          },
+          "vehicleId": {
+            "type": "string",
+            "nullable": true,
+            "description": "The paired unit (the driver's current vehicle)."
+          },
+          "status": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DeviceStatus"
+              }
+            ]
+          },
+          "bleState": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/BleState"
+              }
+            ]
+          },
+          "bleMacAddress": {
+            "type": "string",
+            "nullable": true
+          },
+          "reportedVin": {
+            "type": "string",
+            "nullable": true
+          },
+          "pairedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "firmwareOutdated": {
+            "type": "boolean"
+          },
+          "systemVars": {
+            "$ref": "#/components/schemas/DeviceSystemVarsView"
+          }
+        },
+        "required": [
+          "id",
+          "serial",
+          "model",
+          "isVirtual",
+          "firmware",
+          "vehicleId",
+          "status",
+          "bleState",
+          "bleMacAddress",
+          "reportedVin",
+          "pairedAt",
+          "createdAt",
+          "firmwareOutdated",
+          "systemVars"
         ]
       },
       "EditRequestResolution": {
@@ -74748,6 +75240,36 @@
           "platform"
         ]
       },
+      "RegisterVirtualDeviceDto": {
+        "type": "object",
+        "properties": {
+          "serial": {
+            "type": "string",
+            "pattern": "^VPT(30|40)_[A-Z0-9]{4,12}$"
+          },
+          "model": {
+            "type": "string",
+            "enum": [
+              "PT30",
+              "PT40"
+            ]
+          },
+          "firmware": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 20
+          },
+          "vin": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 20
+          }
+        },
+        "required": [
+          "serial",
+          "model"
+        ]
+      },
       "RejectUnidentifiedDto": {
         "type": "object",
         "properties": {
@@ -75888,6 +76410,9 @@
           },
           "erodsMode": {
             "$ref": "#/components/schemas/ErodsModeEnum"
+          },
+          "virtualEldEnabled": {
+            "type": "boolean"
           }
         }
       },

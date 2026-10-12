@@ -20,6 +20,8 @@ export interface TelemetryRow {
   time: Date;
   vehicleId: string;
   driverId: string | null;
+  /** pt30_pt40/tz.md §9.5 (D-145) — sending device; keeps PT Emulator data separable. */
+  deviceId: string | null;
   /** `null` when the point carried no GPS fix (SDK 6.11 VDB snapshot without lock). */
   latitude: number | null;
   longitude: number | null;
@@ -70,6 +72,8 @@ export interface TelemetryRow {
 export interface TelemetryContext {
   vehicleId: string;
   driverId: string | null;
+  /** pt30_pt40/tz.md §9.5 (D-145) — the device that sent the batch. */
+  deviceId?: string | null;
   /** §4.3 — `true = device + offset`. */
   odometerOffsetMi: number;
   /** §7.3 rule 9 — active Personal Conveyance coarsens the position to 10 miles. */
@@ -90,6 +94,7 @@ export function toTelemetryRow(point: TelemetryPointDto, ctx: TelemetryContext):
     time: point.time,
     vehicleId: ctx.vehicleId,
     driverId: ctx.driverId,
+    deviceId: ctx.deviceId ?? null,
     latitude: coords?.lat ?? null,
     longitude: coords?.lon ?? null,
     speedMph: opt(point.speedKmh, kmhToMph),

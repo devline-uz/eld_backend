@@ -2,7 +2,8 @@ import type { Device, Vehicle } from '@prisma/client';
 import { AppException } from '../../common/errors/app.exception';
 import { computeChecksum } from './checksum';
 import { DIAGNOSTIC, MALFUNCTION, RECORD_ORIGIN } from './event-codes';
-import { IngestEventsDto } from './dto/ingest.dto';
+import { IngestBleStateDto, IngestDeviceStatusDto, IngestEventsDto, IngestTelemetryDto } from './dto/ingest.dto';
+import { VirtualEldPolicy } from '../carrier/virtual-eld.policy';
 import { IngestService } from './ingest.service';
 
 const VEHICLE_ID = '11111111-1111-4111-8111-111111111111';
@@ -91,6 +92,8 @@ function makeService(overrides: Record<string, unknown> = {}): {
   const hosQueue = { add: jest.fn(async (name: string, data: unknown) => recalcJobs.push({ name, data })) };
   const alertQueue = { add: jest.fn(async () => undefined) };
   const safetyDetectQueue = { add: jest.fn(async () => undefined) };
+  // pt30_pt40/tz.md §9.3 — pass-through gate unless a test injects the real policy.
+  const virtualEld = (overrides.virtualEld as object | undefined) ?? { assertDeviceUsable: jest.fn(async () => undefined) };
 
   const service = new IngestService(
     repo as never,
@@ -99,6 +102,7 @@ function makeService(overrides: Record<string, unknown> = {}): {
     hosQueue as never,
     alertQueue as never,
     safetyDetectQueue as never,
+    virtualEld as never,
   );
   return { service, captured, repo, alerts, recalcJobs, published };
 }
@@ -372,6 +376,43 @@ describe('IngestService — TZ §7', () => {
     // dash 23,100 − device 5,058 = 18,042
     expect(captured.vehicleUpdates[0].odometerOffsetMi).toBe(23_100 - 5058);
     expect(captured.rows[0].totalVehicleMiles).toBe(23_100);
+  });
+});
+
+describe('IngestService — Virtual ELD gate (pt30_pt40/tz.md §9.3)', () => {
+  const virtualDevice = { ...device, serial: 'VPT30_A1B2', isVirtual: true };
+  const realPolicy = (enabled: boolean) =>
+    new VirtualEldPolicy({ virtualEldAllowed: true } as never, { get: jest.fn(async () => ({ virtualEldEnabled: enabled })) } as never);
+  const calls = (service: IngestService) => ({
+    events: () => service.ingestEvents(IngestEventsDto.parse({ deviceSerial: 'VPT30_A1B2', vehicleId: VEHICLE_ID, batch: [withChecksum()] }), DRIVER_ID),
+    telemetry: () =>
+      service.ingestTelemetry(IngestTelemetryDto.parse({ deviceSerial: 'VPT30_A1B2', vehicleId: VEHICLE_ID, points: [{ time: '2026-10-10T12:00:00Z' }] }), DRIVER_ID),
+    bleState: () => service.recordBleState(IngestBleStateDto.parse({ deviceSerial: 'VPT30_A1B2', state: 'CONNECTED', at: '2026-10-10T12:00:00Z' }), DRIVER_ID),
+    deviceStatus: () => service.recordDeviceStatus(IngestDeviceStatusDto.parse({ deviceSerial: 'VPT30_A1B2', storedEventsCount: 0 }), DRIVER_ID),
+    deviceConfig: () => service.resolveOwnedDevice('VPT30_A1B2', DRIVER_ID),
+  });
+
+  it.each(['events', 'telemetry', 'bleState', 'deviceStatus', 'deviceConfig'] as const)(
+    '%s from a virtual device -> 403 VIRTUAL_ELD_DISABLED while the switch is off, nothing written',
+    async (name) => {
+      const { service, repo } = makeService({ findDeviceBySerial: jest.fn(async () => virtualDevice), virtualEld: realPolicy(false) });
+      await expect(calls(service)[name]()).rejects.toMatchObject({ code: 'VIRTUAL_ELD_DISABLED', status: 403 });
+      expect(repo.insertEvents).not.toHaveBeenCalled();
+      expect(repo.updateDeviceOutsideTx).not.toHaveBeenCalled();
+    },
+  );
+
+  it('a virtual device ingests normally while the switch is on', async () => {
+    const { service, captured } = makeService({ findDeviceBySerial: jest.fn(async () => virtualDevice), virtualEld: realPolicy(true) });
+    const result = await service.ingestEvents(IngestEventsDto.parse({ deviceSerial: 'VPT30_A1B2', vehicleId: VEHICLE_ID, batch: [withChecksum()] }), DRIVER_ID);
+    expect(result.accepted).toBe(1);
+    expect(captured.rows).toHaveLength(1);
+  });
+
+  it('a real device is unaffected even with the switch off', async () => {
+    const { service, captured } = makeService({ virtualEld: realPolicy(false) });
+    await service.ingestEvents(batch([withChecksum()]), DRIVER_ID);
+    expect(captured.rows).toHaveLength(1);
   });
 });
 

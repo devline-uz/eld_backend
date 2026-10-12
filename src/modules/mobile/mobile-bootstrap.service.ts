@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
 import { AppConfigService } from '../../core/config/config.service';
+import { resolveVirtualEldEnabled } from '../carrier/virtual-eld.policy';
 import { HosRecalcService } from '../hos-recalc/hos-recalc.service';
 import { HOS_ENGINE_VERSION } from '../hos/hos.constants';
 import { toMobileShape } from '../hos-state/hos-drift';
@@ -118,6 +119,7 @@ export class MobileBootstrapService {
             pairedAt: device.pairedAt,
             periodicConnectedSec: device.periodicConnectedSec,
             periodicDisconnectedMin: device.periodicDisconnectedMin,
+            isVirtual: device.isVirtual,
           }
         : null,
       coDriver:
@@ -172,6 +174,8 @@ export class MobileBootstrapService {
       pendingEditRequestCount,
       /** MB-13 — same set as `GET /unidentified/confirmation-requests`. */
       pendingUnidentifiedCount,
+      /** pt30_pt40/tz.md §8.2 / §9.3 — Test PT30/40 (PT Emulator) mode: env allows it AND the carrier switch is on. */
+      virtualEld: { enabled: resolveVirtualEldEnabled(this.config.virtualEldAllowed, carrier) },
     };
   }
 
