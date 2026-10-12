@@ -14,17 +14,31 @@ export function realtimeChannel(queuePrefix: string, redisDb: number): string {
 /** Same room grammar `RealtimeGateway` accepts from clients (TZ §12.4). */
 const RELAY_ROOM_PATTERN = /^(fleet|violations|vehicle:[\w-]+|driver:[\w-]+|user:[\w-]+|conversation:[\w-]+)$/;
 const RELAY_EVENT_PATTERN = /^[\w.:-]{1,100}$/;
+/** Upper bound on the rooms one multi-room push may name (a conversation's participants plus
+ * its own room) — anything larger is a malformed/hostile relay message, not a real fan-out. */
+const MAX_RELAY_ROOMS = 200;
+
+function isRelayRoom(room: unknown): room is string {
+  return typeof room === 'string' && RELAY_ROOM_PATTERN.test(room);
+}
 
 /** B-097 — a relayed message is untrusted bytes off the network, not an in-process object:
  * anything not shaped exactly like a `realtime.push` payload is dropped, never emitted. */
 export function isRelayPayload(value: unknown): value is RealtimePushPayload {
   if (!value || typeof value !== 'object') return false;
   const { room, event } = value as Record<string, unknown>;
-  return typeof room === 'string' && RELAY_ROOM_PATTERN.test(room) && typeof event === 'string' && RELAY_EVENT_PATTERN.test(event);
+  const roomOk = Array.isArray(room)
+    ? room.length > 0 && room.length <= MAX_RELAY_ROOMS && room.every(isRelayRoom)
+    : isRelayRoom(room);
+  return roomOk && typeof event === 'string' && RELAY_EVENT_PATTERN.test(event);
 }
 
 export interface RealtimePushPayload {
-  room: string;
+  /** One room, or several: `server.to([...rooms]).emit()` delivers ONCE per socket even when a
+   * socket is in more than one of them (Socket.IO unions the rooms), so a multi-room push never
+   * double-delivers — e.g. `message.new` to `conversation:{id}` + every participant's identity
+   * room reaches a client that is also subscribed to the conversation room exactly once. */
+  room: string | string[];
   event: string;
   payload: unknown;
 }
