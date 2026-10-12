@@ -36,3 +36,18 @@ export class MeResponse {
   @ApiPropertyOptional({ type: String, nullable: true, description: 'User only.' }) carrierName?: string | null;
   @ApiPropertyOptional({ type: String, nullable: true, description: 'Driver: home terminal zone; user: carrier zone.' }) homeTerminalTimezone?: string | null;
 }
+
+/** `POST /auth/password/reset-code` — web "Forgot password?" step 1. */
+export class PasswordResetCodeSentResponse {
+  @ApiProperty({ type: Boolean, enum: [true] }) success!: true;
+  @ApiProperty({ type: String, description: 'The account email as stored (send it back on confirm).' }) email!: string;
+  @ApiProperty({ type: Number, description: 'Seconds until the emailed code expires (900).' }) expiresInSec!: number;
+  @ApiProperty({ type: Number, description: 'Seconds before "Resend code" is accepted (60).' }) resendAfterSec!: number;
+  @ApiPropertyOptional({ type: String, description: 'The code itself — only with DEV_ECHO_SECRETS=true outside NODE_ENV=production.' })
+  code?: string;
+}
+
+/** `POST /auth/password/reset-code/confirm` — web "Forgot password?" step 2. */
+export class PasswordResetCompletedResponse {
+  @ApiProperty({ type: Boolean, enum: [true] }) success!: true;
+}

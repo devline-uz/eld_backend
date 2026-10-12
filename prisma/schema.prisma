@@ -99,6 +99,7 @@ model User {
 
   role                Role                  @relation(fields: [roleId], references: [id])
   sessions            Session[]
+  passwordResetCodes  PasswordResetCode[]
   managedDrivers      Driver[]              @relation("DriverFleetManager")
   reviewedMaintenance MaintenanceSchedule[] @relation("MaintenanceReviewedBy")
   apiKeys             ApiKey[]
@@ -132,6 +133,23 @@ model Session {
   user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, revokedAt])
+}
+
+/// Web "Forgot password?" — a 6-digit one-time code emailed to a back-office `User` to prove
+/// ownership of the address before a self-service password reset. Only the HMAC of the code is
+/// stored; a row is single-use (`consumedAt`), short-lived (`expiresAt`) and locked after
+/// `attempts` reaches the service's limit. Never used for drivers (mobile has its own flow).
+model PasswordResetCode {
+  id         String    @id @default(uuid())
+  userId     String
+  codeHash   String
+  attempts   Int       @default(0)
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, consumedAt])
 }
 
 /// Driver-side refresh-token session (tz §6.1: driver JWT access 24h / refresh 90d).

@@ -8,10 +8,12 @@ import { zodBody } from '../../common/pipes/zod-validation.pipe';
 import { ApiEnvelopeResponse } from '../../common/swagger/api-envelope';
 import type { ContextUser } from '../../core/context/request-context';
 import { AuthService } from './auth.service';
-import { DriverLoginResponse, MeResponse, TokenPairResponse } from './dto/auth.responses';
+import { DriverLoginResponse, MeResponse, PasswordResetCodeSentResponse, PasswordResetCompletedResponse, TokenPairResponse } from './dto/auth.responses';
+import { PasswordResetCodeService } from './password-reset-code.service';
 import { apiError, ApiStandardErrors, ERROR_CODES } from '../../common/errors';
 import { FigmaScreen } from '../../common/decorators/figma-screen.decorator';
 import {
+  ConfirmPasswordResetCodeDto,
   DriverLoginDto,
   DriverForgotPasswordDto,
   ForgotPasswordDto,
@@ -19,6 +21,7 @@ import {
   LoginDto,
   LogoutDto,
   RefreshTokenDto,
+  RequestPasswordResetCodeDto,
   ResetPasswordDto,
   VerifyEmailChangeDto,
 } from './dto/auth.dto';
@@ -28,7 +31,10 @@ import {
 @ApiTags('auth')
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly auth: AuthService) {}
+  constructor(
+    private readonly auth: AuthService,
+    private readonly resetCodes: PasswordResetCodeService,
+  ) {}
 
   @Public()
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
@@ -120,6 +126,62 @@ export class AuthController {
   async resetPassword(@Body(zodBody(ResetPasswordDto)) dto: ResetPasswordDto) {
     await this.auth.resetPassword(dto.token, dto.newPassword);
     return { success: true };
+  }
+
+  @Public()
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Post('password/reset-code')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Web "Forgot password?" step 1 — emails a 6-digit code to an ACTIVE back-office user.',
+    description:
+      'Back-office `User` accounts only (drivers use `/auth/driver/password/*`). Unknown, INVITED or DISABLED email → 404 ' +
+      '(the product shows "No account found with this email"). The code is stored as an HMAC, expires in 15 minutes, ' +
+      'allows 5 wrong guesses and replaces any earlier code. Calling again within 60 s → 429 with `details.retryAfterSec`. ' +
+      'Refused with 403 PASSWORD_LOGIN_DISABLED when AUTH_MODE=production, exactly like `POST /auth/login`.',
+  })
+  @ApiEnvelopeResponse(PasswordResetCodeSentResponse, {
+    description: 'Code emailed. `code` is present only with DEV_ECHO_SECRETS=true outside production.',
+    example: { success: true, email: 'sarah.chen@universal-logistics.example', expiresInSec: 900, resendAfterSec: 60 },
+  })
+  @ApiStandardErrors({
+    public: true,
+    errors: [
+      apiError.notFound(ERROR_CODES.NOT_FOUND, 'No account found with this email.'),
+      { status: 403, code: ERROR_CODES.PASSWORD_LOGIN_DISABLED, message: 'AUTH_MODE=production — password sign-in (and reset) is off; use Google.' },
+      { status: 503, code: ERROR_CODES.SERVICE_UNAVAILABLE, message: "We couldn't send the email right now." },
+      apiError.rateLimited('5 requests per minute per IP, and one code per account per 60 s (`details.retryAfterSec`).'),
+    ],
+  })
+  requestPasswordResetCode(@Body(zodBody(RequestPasswordResetCodeDto)) dto: RequestPasswordResetCodeDto, @Req() req: Request) {
+    return this.resetCodes.requestCode(dto.email, AuthService.meta(req));
+  }
+
+  @Public()
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post('password/reset-code/confirm')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Web "Forgot password?" step 2 — verifies the emailed code and sets the new password.',
+    description:
+      'On success the code is consumed, the password is re-hashed (Argon2id) and every refresh session of the user is revoked. ' +
+      'Wrong code → 422 RESET_CODE_INVALID (`details.code`, `details.attemptsRemaining`); expired / used / locked after 5 wrong ' +
+      'guesses → 422 RESET_CODE_EXPIRED. Password policy: 8–128 characters (422 VALIDATION_FAILED).',
+  })
+  @ApiEnvelopeResponse(PasswordResetCompletedResponse, { description: 'Password changed.', example: { success: true } })
+  @ApiStandardErrors({
+    public: true,
+    errors: [
+      // One spec per status (Nest overwrites same-status responses): RESET_CODE_EXPIRED and
+      // VALIDATION_FAILED share this 422 and are spelled out in the operation description.
+      { status: 422, code: ERROR_CODES.RESET_CODE_INVALID, message: 'Incorrect code. 4 attempts left.' },
+      { status: 403, code: ERROR_CODES.PASSWORD_LOGIN_DISABLED, message: 'AUTH_MODE=production — password sign-in (and reset) is off; use Google.' },
+      apiError.rateLimited('10 requests per minute per IP.'),
+    ],
+  })
+  async confirmPasswordResetCode(@Body(zodBody(ConfirmPasswordResetCodeDto)) dto: ConfirmPasswordResetCodeDto, @Req() req: Request) {
+    await this.resetCodes.resetWithCode(dto.email, dto.code, dto.newPassword, AuthService.meta(req));
+    return { success: true as const };
   }
 
   @Public()
