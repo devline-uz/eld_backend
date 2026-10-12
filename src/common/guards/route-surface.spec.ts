@@ -23,6 +23,10 @@ const PUBLIC_ROUTES = new Set([
   'POST /auth/refresh',
   'POST /auth/password/forgot',
   'POST /auth/password/reset',
+  // Web "Forgot password?" — the caller has no session by definition; ownership of the address
+  // is proven by the emailed 6-digit code (HMAC at rest, 15 min, 5 guesses), throttled 5/10 per min.
+  'POST /auth/password/reset-code',
+  'POST /auth/password/reset-code/confirm',
   // B-84 — email re-verification token is self-authenticating (same convention as
   // password/reset above); no bearer token exists yet if the caller followed the link cold.
   'POST /auth/email/verify',
