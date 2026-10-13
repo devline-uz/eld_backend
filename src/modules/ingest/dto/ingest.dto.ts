@@ -22,6 +22,14 @@ const isoDateTime = z
   .datetime({ offset: true })
   .transform((value) => new Date(value));
 
+/**
+ * B-166 — the PT30's own clock as the app read it right before sending this request (ISO-8601,
+ * with offset). The server compares it to its UTC: |drift| > 10 min → malfunction `T` once,
+ * back within 10 min → `T` cleared. Omitted → no timing check (event timestamps are never used:
+ * they measure delivery latency through the phone gateway, not drift).
+ */
+const deviceTime = isoDateTime.optional();
+
 const latitude = z.number().min(-90).max(90);
 const longitude = z.number().min(-180).max(180);
 
@@ -47,7 +55,9 @@ export const IngestEventDto = z.object({
   diagnosticCode: z.string().max(1).nullish(),
   annotation: z.string().max(60).nullish(),
   comment: z.string().max(500).nullish(),
-  /** §7.3 rule 4 — verified, never a rejection reason. */
+  /** §7.3 rule 4 — verified, never a rejection reason. Optional: when absent the server computes
+   * and stores it with an informational `CHECKSUM_MISSING` warning (B-165); only a SENT value that
+   * disagrees logs diagnostic 3 + `CHECKSUM_MISMATCH`. */
   checksum: z.string().max(128).nullish(),
 });
 export type IngestEventDto = z.infer<typeof IngestEventDto>;
@@ -196,6 +206,7 @@ export const IngestBleStateDto = z.object({
   at: isoDateTime.optional(),
   /** SDK 6.11 — `USB` when the Android app is tethered; stored on `Device.connectionType`. */
   connectionType: ConnectionTypeEnum.optional(),
+  deviceTime,
 });
 export type IngestBleStateDto = z.infer<typeof IngestBleStateDto>;
 
@@ -226,6 +237,7 @@ export const IngestDeviceStatusDto = z.object({
   recordsLost: z.boolean().default(false),
   /** Consecutive failed transfer attempts reported by the app → §7.8 malfunction `S`. */
   consecutiveTransferFailures: z.number().int().min(0).max(1000).default(0),
+  deviceTime,
 });
 export type IngestDeviceStatusDto = z.infer<typeof IngestDeviceStatusDto>;
 

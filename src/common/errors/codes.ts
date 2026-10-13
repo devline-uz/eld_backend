@@ -87,6 +87,8 @@ export const ERROR_CODES = {
 
   // --- ingest (TZ §7) ------------------------------------------------------
   CHECKSUM_MISMATCH: 'CHECKSUM_MISMATCH',
+  /** B-165 — informational ingest warning: no checksum sent, server computed and stored one. */
+  CHECKSUM_MISSING: 'CHECKSUM_MISSING',
   DUPLICATE_EVENT: 'DUPLICATE_EVENT',
   EVENT_SEQUENCE_IMMUTABLE: 'EVENT_SEQUENCE_IMMUTABLE',
   EVENT_OUT_OF_RANGE: 'EVENT_OUT_OF_RANGE',

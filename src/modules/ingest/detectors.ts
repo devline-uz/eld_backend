@@ -45,9 +45,16 @@ const diagnostic = (code: DiagnosticCode, reason: string): DetectedCode => ({
 // Per-event checks (run inside the ingest transaction, on the event itself)
 // ---------------------------------------------------------------------------
 
-/** §7.3 rule 5 — drift is measured against server UTC and PERSISTED whether or not it trips. */
-export function clockDriftSec(eventDateTime: Date, serverNow: Date): number {
-  return Math.round((eventDateTime.getTime() - serverNow.getTime()) / 1000);
+/**
+ * §7.3 rule 5 / App. A 4.3.1.5 — device clock offset from server UTC.
+ *
+ * B-166: the first argument MUST be a clock reading taken "now" on the device (the app's
+ * `deviceTime` on `/ingest/device-status` / `/ingest/ble-state`), never an event's
+ * `eventDateTime`: events arrive minutes-to-hours late through the phone gateway, so
+ * `eventDateTime - serverNow` measures delivery latency, not drift.
+ */
+export function clockDriftSec(deviceTime: Date, serverNow: Date): number {
+  return Math.round((deviceTime.getTime() - serverNow.getTime()) / 1000);
 }
 
 /** §7.8 `T` — |drift| strictly greater than 10 minutes. */
@@ -70,6 +77,34 @@ export function detectMissingData(input: MissingDataInput): DetectedCode | null 
   if (input.missingFields.length) reasons.push(`missing: ${input.missingFields.join(',')}`);
   if (input.odometerAnomaly) reasons.push('odometer anomaly');
   return reasons.length ? diagnostic(DIAGNOSTIC.MISSING_DATA, reasons.join('; ')) : null;
+}
+
+/** `M:T` / `D:3` — the key both the window de-dup and the active-state check use. */
+export function codeKey(code: Pick<DetectedCode, 'kind' | 'code'>): string {
+  return `${code.kind === 'malfunction' ? 'M' : 'D'}:${code.code}`;
+}
+
+/**
+ * App. A 4.5.1.7 / 4.6 — a malfunction or data diagnostic is recorded once when detected and once
+ * when cleared. A code is ACTIVE when its latest eventType-7 record (oldest → newest input) is a
+ * "logged" one (7/1, 7/3) and nothing later cleared it (7/2, 7/4). Returns `codeKey`s.
+ */
+export function activeCodeKeys(
+  events: readonly { eventCode: number; malfunctionCode: string | null; diagnosticCode: string | null }[],
+): Set<string> {
+  const active = new Set<string>();
+  for (const e of events) {
+    if (e.malfunctionCode && (e.eventCode === 1 || e.eventCode === 2)) {
+      const key = `M:${e.malfunctionCode}`;
+      if (e.eventCode === 1) active.add(key);
+      else active.delete(key);
+    } else if (e.diagnosticCode && (e.eventCode === 3 || e.eventCode === 4)) {
+      const key = `D:${e.diagnosticCode}`;
+      if (e.eventCode === 3) active.add(key);
+      else active.delete(key);
+    }
+  }
+  return active;
 }
 
 // ---------------------------------------------------------------------------

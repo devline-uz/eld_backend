@@ -80,6 +80,7 @@ function makeService(overrides: Record<string, unknown> = {}): {
       powerDataMissing: false,
     })),
     findLoggedCodesInWindow: jest.fn(async () => new Set<string>()),
+    findActiveCodes: jest.fn(async () => new Set<string>()),
     ...(overrides as Record<string, jest.Mock>),
   };
 
@@ -208,23 +209,99 @@ describe('IngestService — TZ §7', () => {
     expect(captured.rows[0].checksum).toMatch(/^[0-9a-f]{16}$/);
   });
 
-  it('§7.3 rule 5 — clock drift over 10 minutes stores the event, flags T, persists timeDriftSec', async () => {
-    const { service, captured } = makeService();
-    const at = new Date(Date.now() + 20 * 60 * 1000).toISOString();
-    const result = await service.ingestEvents(
-      batch([withChecksum({ eventDateTime: at })]),
-      DRIVER_ID,
-    );
-    expect(captured.rows[0].malfunctionCode).toBe(MALFUNCTION.TIMING);
-    expect(captured.rows[0].timeDriftSec as number).toBeGreaterThan(600);
-    expect(result.warnings.some((w) => w.code === 'CLOCK_DRIFT')).toBe(true);
+  describe('B-165 — checksum absent vs mismatched; diagnostic 3 de-duplicated', () => {
+    const codeRows = (rows: Array<Record<string, unknown>>) => rows.filter((r) => r.eventType === 7);
+
+    it('no checksum → stored, NO diagnostic, one informational CHECKSUM_MISSING warning', async () => {
+      const { service, captured } = makeService();
+      const result = await service.ingestEvents(batch([baseEvent()]), DRIVER_ID);
+      expect(result.accepted).toBe(1);
+      expect(codeRows(captured.rows)).toHaveLength(0);
+      expect(captured.rows[0].diagnosticCode).toBeNull();
+      expect(captured.rows[0].checksum).toMatch(/^[0-9a-f]{16}$/);
+      expect(result.diagnostics).toEqual([]);
+      expect(result.warnings).toEqual([
+        expect.objectContaining({ code: 'CHECKSUM_MISSING', informational: true }),
+      ]);
+    });
+
+    it('mismatch → exactly one 7/3 and CHECKSUM_MISMATCH', async () => {
+      const { service, captured } = makeService();
+      const result = await service.ingestEvents(batch([baseEvent({ checksum: 'deadbeefdeadbeef' })]), DRIVER_ID);
+      const generated = codeRows(captured.rows);
+      expect(generated).toHaveLength(1);
+      expect(generated[0]).toMatchObject({ eventCode: 3, diagnosticCode: DIAGNOSTIC.MISSING_DATA, driverId: DRIVER_ID });
+      expect(result.warnings.map((w) => w.code)).toEqual(['CHECKSUM_MISMATCH']);
+      expect(result.warnings[0].informational).toBeUndefined();
+    });
+
+    it('5 bad events in one batch → ONE 7/3 for the driver, every event row still flagged', async () => {
+      const { service, captured } = makeService();
+      const t0 = Date.now() - 60 * 60 * 1000;
+      const events = Array.from({ length: 5 }, (_, i) =>
+        baseEvent({ uuid: `evt-bad-${i}`, checksum: 'deadbeefdeadbeef', eventDateTime: new Date(t0 + i * 60_000).toISOString() }),
+      );
+      const result = await service.ingestEvents(batch(events), DRIVER_ID);
+      expect(codeRows(captured.rows)).toHaveLength(1);
+      expect(captured.rows.filter((r) => r.eventType === 1 && r.diagnosticCode === '3')).toHaveLength(5);
+      expect(result.warnings.filter((w) => w.code === 'CHECKSUM_MISMATCH')).toHaveLength(5);
+      expect(result.accepted).toBe(6);
+    });
+
+    it('an already ACTIVE 7/3 for the driver → no new 7/3', async () => {
+      const { service, captured, repo } = makeService({ findActiveCodes: jest.fn(async () => new Set(['D:3'])) });
+      await service.ingestEvents(batch([baseEvent({ checksum: 'deadbeefdeadbeef' })]), DRIVER_ID);
+      expect(codeRows(captured.rows)).toHaveLength(0);
+      expect(repo.findActiveCodes).toHaveBeenCalledWith(
+        expect.anything(),
+        { driverId: DRIVER_ID, vehicleId: VEHICLE_ID },
+        { diagnostic: ['3'] },
+      );
+    });
+
+    it('an app-sent eventType 7 record keeps its own code (no diagnostic stamped on it)', async () => {
+      const { service, captured } = makeService();
+      await service.ingestEvents(
+        batch([baseEvent({ eventType: 7, eventCode: 1, malfunctionCode: 'P', checksum: 'deadbeefdeadbeef', latitude: null, longitude: null })]),
+        DRIVER_ID,
+      );
+      const own = captured.rows.find((r) => r.uuid === 'evt-0001');
+      expect(own).toMatchObject({ malfunctionCode: 'P', diagnosticCode: null });
+    });
+
+    it('engine power 6/x without checksum gets no diagnostic', async () => {
+      const { service, captured } = makeService();
+      await service.ingestEvents(batch([baseEvent({ eventType: 6, eventCode: 3 })]), DRIVER_ID);
+      expect(codeRows(captured.rows)).toHaveLength(0);
+      expect(captured.rows[0]).toMatchObject({ diagnosticCode: null, malfunctionCode: null });
+    });
   });
 
-  it('persists timeDriftSec even when the clock is fine', async () => {
-    const { service, captured } = makeService();
-    await service.ingestEvents(batch([withChecksum()]), DRIVER_ID);
-    expect(captured.rows[0].timeDriftSec).toBeDefined();
-    expect(captured.rows[0].malfunctionCode).toBeNull();
+  describe('B-166 — no timing malfunction from late-delivered events', () => {
+    it('a stored event delivered 709 s late → no T, timeDriftSec null, plain warnings', async () => {
+      const { service, captured } = makeService();
+      const at = new Date(Date.now() - 709 * 1000).toISOString();
+      const result = await service.ingestEvents(
+        batch([withChecksum({ eventDateTime: at, wasStoredOnDevice: true })]),
+        DRIVER_ID,
+      );
+      expect(captured.rows.every((r) => r.malfunctionCode !== MALFUNCTION.TIMING)).toBe(true);
+      expect(captured.rows[0].timeDriftSec).toBeNull();
+      expect(result.malfunctions).toEqual([]);
+      expect(result.warnings).toEqual([]);
+    });
+
+    it('a live event hours late / 20 min ahead → still no T', async () => {
+      const { service, captured } = makeService();
+      await service.ingestEvents(
+        batch([
+          withChecksum({ uuid: 'evt-late', eventDateTime: new Date(Date.now() - 5 * 3600_000).toISOString() }),
+          withChecksum({ uuid: 'evt-ahead', eventDateTime: new Date(Date.now() + 20 * 60_000).toISOString() }),
+        ]),
+        DRIVER_ID,
+      );
+      expect(captured.rows.some((r) => r.malfunctionCode === MALFUNCTION.TIMING)).toBe(false);
+    });
   });
 
   it('§7.3 rule 7 — totalVehicleMiles = kmToMi(raw) + offset, raw km kept for audit', async () => {
@@ -488,6 +565,56 @@ describe('IngestService — BLE state and device status (§7.6, §7.7)', () => {
     expect(result.codes).toEqual(
       expect.arrayContaining([`M:${MALFUNCTION.DATA_RECORDING}`, `M:${MALFUNCTION.DATA_TRANSFER}`]),
     );
+  });
+});
+
+describe('IngestService — B-166 device clock drift from deviceTime (§7.8 T, App. A 4.6.1.3)', () => {
+  const status = (deviceTime?: string) =>
+    IngestDeviceStatusDto.parse({ deviceSerial: 'PT30_A86E', storedEventsCount: 0, ...(deviceTime && { deviceTime }) });
+  const timingRows = (rows: Array<Record<string, unknown>>) =>
+    rows.filter((r) => r.eventType === 7 && r.malfunctionCode === MALFUNCTION.TIMING);
+
+  it('deviceTime 15 min off → ONE 7/1 T + alert; a repeat while T is active logs nothing', async () => {
+    let active = new Set<string>();
+    const h = makeService({ findActiveCodes: jest.fn(async () => active) });
+    const off = () => new Date(Date.now() - 15 * 60_000).toISOString();
+
+    const first = await h.service.recordDeviceStatus(status(off()), DRIVER_ID);
+    expect(first.clockDriftSec).toBeLessThan(-600);
+    expect(first.codes).toContain('M:T');
+    expect(timingRows(h.captured.rows)).toEqual([
+      expect.objectContaining({ eventCode: 1, driverId: DRIVER_ID, vehicleId: VEHICLE_ID }),
+    ]);
+    expect(h.alerts).toContain('alert.eld_malfunction');
+
+    active = new Set(['M:T']);
+    await h.service.recordDeviceStatus(status(off()), DRIVER_ID);
+    expect(timingRows(h.captured.rows)).toHaveLength(1);
+  });
+
+  it('back within 10 min while T is active → one 7/2 clear record', async () => {
+    const h = makeService({ findActiveCodes: jest.fn(async () => new Set(['M:T'])) });
+    const result = await h.service.recordDeviceStatus(status(new Date().toISOString()), DRIVER_ID);
+    expect(result.codes).not.toContain('M:T');
+    expect(timingRows(h.captured.rows)).toEqual([expect.objectContaining({ eventCode: 2 })]);
+  });
+
+  it('no deviceTime → no timing check at all', async () => {
+    const h = makeService();
+    const result = await h.service.recordDeviceStatus(status(), DRIVER_ID);
+    expect(result.clockDriftSec).toBeNull();
+    expect(h.repo.findActiveCodes).not.toHaveBeenCalled();
+    expect(timingRows(h.captured.rows)).toHaveLength(0);
+  });
+
+  it('ble-state deviceTime 15 min ahead → T once', async () => {
+    const h = makeService();
+    const result = await h.service.recordBleState(
+      IngestBleStateDto.parse({ deviceSerial: 'PT30_A86E', state: 'CONNECTED', deviceTime: new Date(Date.now() + 15 * 60_000).toISOString() }),
+      DRIVER_ID,
+    );
+    expect(result.clockDriftSec).toBeGreaterThan(600);
+    expect(timingRows(h.captured.rows)).toHaveLength(1);
   });
 });
 

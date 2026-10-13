@@ -14,6 +14,7 @@ import { createHash } from 'node:crypto';
  *   2. The value stored on `EldEvent.checksum` is always the one computed HERE, so a stored
  *      record can be re-verified later even if the app sent a corrupt one. A mismatch is never
  *      a rejection: the event is stored, diagnostic `3` is attached, the batch answers 202.
+ *      A MISSING checksum (B-165) is not a mismatch: no diagnostic, informational warning only.
  */
 
 export const CHECKSUM_ALGORITHM = 'sha256/16';
@@ -69,7 +70,11 @@ export interface ChecksumVerdict {
   expected: string;
   /** What the app sent, if anything. */
   supplied?: string;
-  /** False when the app sent a value and it disagrees, or sent none at all (§7.8 diagnostic 3). */
+  /**
+   * False ONLY when the app sent a value and it disagrees (§7.8 diagnostic 3). B-165: an absent
+   * checksum is not corruption evidence — the PT30 SDK has no checksum field — so `MISSING` is
+   * `ok: true` and only an informational warning; the server-computed value is stored either way.
+   */
   ok: boolean;
   reason?: 'MISSING' | 'MISMATCH';
 }
@@ -77,7 +82,7 @@ export interface ChecksumVerdict {
 export function verifyChecksum(fields: ChecksumFields, supplied?: string | null): ChecksumVerdict {
   const expected = computeChecksum(fields);
   if (supplied === undefined || supplied === null || supplied.trim() === '') {
-    return { expected, ok: false, reason: 'MISSING' };
+    return { expected, ok: true, reason: 'MISSING' };
   }
   const normalized = supplied.trim().toLowerCase();
   return normalized === expected

@@ -142,17 +142,28 @@ describe('Ingest (e2e, TZ §7)', () => {
     expect(stored!.diagnosticCode).toBe('3');
   });
 
-  it('§7.3 rule 5 — a drifted device clock is stored, flagged T, drift persisted', async () => {
-    const drifted = event({ eventDateTime: new Date(Date.now() + 25 * 60_000).toISOString() });
+  it('B-166 — a late/early eventDateTime is stored WITHOUT T (latency is not drift)', async () => {
+    const early = event({ eventDateTime: new Date(Date.now() - 25 * 60_000).toISOString(), wasStoredOnDevice: true });
     const res = await request(server())
       .post('/api/ingest/events')
       .set('Authorization', `Bearer ${token}`)
-      .send({ deviceSerial, vehicleId, batch: [drifted] });
+      .send({ deviceSerial, vehicleId, batch: [early] });
 
-    expect(res.status).toBe(202);
-    const stored = await prisma.eldEvent.findFirst({ where: { uuid: drifted.uuid as string } });
-    expect(stored!.malfunctionCode).toBe('T');
-    expect(stored!.timeDriftSec).toBeGreaterThan(600);
+    expect(res.status).toBe(200);
+    const stored = await prisma.eldEvent.findFirst({ where: { uuid: early.uuid as string } });
+    expect(stored!.malfunctionCode).toBeNull();
+    expect(stored!.timeDriftSec).toBeNull();
+  });
+
+  it('B-166 — device-status deviceTime 25 min off logs malfunction T', async () => {
+    const res = await request(server())
+      .post('/api/ingest/device-status')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ deviceSerial, storedEventsCount: 0, deviceTime: new Date(Date.now() + 25 * 60_000).toISOString() });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.codes).toContain('M:T');
+    expect(res.body.data.clockDriftSec).toBeGreaterThan(600);
   });
 
   it('rejects a schema violation with 422 — the only reason an event is ever refused', async () => {

@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { Device, DeviceRawEvent, EldEvent, Prisma, Vehicle } from '@prisma/client';
 import { BaseRepository, ModelDelegate } from '../../core/prisma/base.repository';
 import { PrismaService } from '../../core/prisma/prisma.service';
-import { AUTO_CHECK_WINDOW_SEC } from './detectors';
+import { activeCodeKeys, AUTO_CHECK_WINDOW_SEC } from './detectors';
 import { EVENT_SEQUENCE_MIN, EVENT_TYPE, LOGIN_CODE, PC_YM_CODE, nextSequenceId } from './event-codes';
 import type { UnitSessionWindow } from './ownership';
 
@@ -266,6 +266,35 @@ export class IngestRepository extends BaseRepository<
   // --- §7.8 windowed auto-checks ------------------------------------------
 
   /** Codes already logged in the window, so a malfunction is not re-recorded per batch. */
+  /**
+   * B-165/B-166 — `codeKey`s (`M:T`, `D:3`) currently ACTIVE (logged, not cleared) for one
+   * driver profile; `driverId: null` is the unidentified profile of `vehicleId`. Only the newest
+   * 500 matching eventType-7 rows are read — a code toggling more often than that is moot.
+   */
+  async findActiveCodes(
+    client: IngestTx | null,
+    scope: { driverId: string | null; vehicleId: string },
+    codes: { malfunction?: string[]; diagnostic?: string[] },
+  ): Promise<Set<string>> {
+    const or: Prisma.EldEventWhereInput[] = [];
+    if (codes.malfunction?.length) or.push({ malfunctionCode: { in: codes.malfunction } });
+    if (codes.diagnostic?.length) or.push({ diagnosticCode: { in: codes.diagnostic } });
+    if (!or.length) return new Set();
+    const db = client ?? this.prisma;
+    const rows = await db.eldEvent.findMany({
+      where: {
+        eventType: EVENT_TYPE.MALFUNCTION_DIAGNOSTIC,
+        recordStatus: 1,
+        ...(scope.driverId ? { driverId: scope.driverId } : { driverId: null, vehicleId: scope.vehicleId }),
+        OR: or,
+      },
+      orderBy: [{ eventDateTime: 'desc' }, { eventSequenceId: 'desc' }],
+      take: 500,
+      select: { eventCode: true, malfunctionCode: true, diagnosticCode: true },
+    });
+    return activeCodeKeys(rows.reverse());
+  }
+
   async findLoggedCodesInWindow(vehicleId: string, since: Date): Promise<Set<string>> {
     const rows = await this.prisma.eldEvent.findMany({
       where: {

@@ -29,6 +29,7 @@ import { TelemetryService } from '../telemetry/telemetry.service';
 import { computeChecksum, verifyChecksum } from './checksum';
 import {
   clockDriftSec,
+  codeKey,
   detectMissingData,
   isBleDisconnectedTooLong,
   isDeviceBacklog,
@@ -60,6 +61,8 @@ export interface IngestWarning {
   uuid?: string;
   code: string;
   detail: string;
+  /** B-165 — informational only (e.g. `CHECKSUM_MISSING`); does not turn the answer into 202. */
+  informational?: boolean;
 }
 
 export interface DeviceStatusResult {
@@ -73,6 +76,8 @@ export interface DeviceStatusResult {
   /** PT SDK system variables the app must apply to the device on every heartbeat (D-135). */
   systemVars: DeviceSystemVars;
   configVersion: string;
+  /** B-166 — `deviceTime - server UTC` in seconds; `null` when the app sent no `deviceTime`. */
+  clockDriftSec: number | null;
 }
 
 export interface IngestEventsResult {
@@ -157,6 +162,12 @@ export class IngestService {
       let offsetMi = ctx.vehicle.odometerOffsetMi;
       let calibratedNow: number | null = null;
       let odometerAnomalySeen = false;
+      let checksumMissing = 0;
+      // B-165 / App. A 4.5.1.7 — at most ONE diagnostic-3 record per driver profile per batch.
+      const missingByOwner = new Map<
+        string,
+        { ownerId: string | null; at: Date; timezoneOffset: number; reasons: Set<string> }
+      >();
 
       for (const event of fresh) {
         // --- §7.3 rule 9 — Personal Conveyance state drives location precision.
@@ -165,28 +176,22 @@ export class IngestService {
         }
 
         // --- §7.3 rule 4 — checksum computed and verified (never a rejection).
+        // B-165: an ABSENT checksum (PT30 SDK has none) is not corruption — the server value is
+        // stored, no diagnostic; only a value that was sent and disagrees is diagnostic 3.
         const verdict = verifyChecksum(event, event.checksum);
-        if (!verdict.ok) {
+        if (verdict.reason === 'MISSING') {
+          checksumMissing += 1;
+        } else if (!verdict.ok) {
           warnings.push({
             uuid: event.uuid,
             code: ERROR_CODES.CHECKSUM_MISMATCH,
-            detail:
-              verdict.reason === 'MISSING'
-                ? 'No checksum supplied; server-computed checksum stored, diagnostic 3 logged.'
-                : `Checksum mismatch (expected ${verdict.expected}, got ${verdict.supplied}).`,
+            detail: `Checksum mismatch (expected ${verdict.expected}, got ${verdict.supplied}); diagnostic 3 logged.`,
           });
         }
 
-        // --- §7.3 rule 5 / §7.8 T — clock drift, single 10-minute threshold.
-        const driftSec = clockDriftSec(event.eventDateTime, now);
-        const timing = isTimingMalfunction(driftSec);
-        if (timing) {
-          warnings.push({
-            uuid: event.uuid,
-            code: 'CLOCK_DRIFT',
-            detail: `Device clock is ${driftSec}s from server UTC; malfunction T logged.`,
-          });
-        }
+        // --- §7.3 rule 5 / §7.8 T — B-166: NOT evaluated here. `eventDateTime - receivedAt` is
+        // gateway delivery latency (stored events, offline phone), not device clock drift. Drift
+        // comes from `deviceTime` on /ingest/device-status and /ingest/ble-state.
 
         // --- §4.3 / §7.3 rule 7 — odometer.
         let totalVehicleMiles: number | null = null;
@@ -217,7 +222,7 @@ export class IngestService {
           lastRawKm = rawKm;
         }
 
-        // --- §7.8 diagnostic 3 — checksum / mandatory data / odometer.
+        // --- §7.8 diagnostic 3 — checksum mismatch / mandatory data / odometer.
         const missingFields = mandatoryFieldsMissing(event);
         const missing = detectMissingData({
           checksumOk: verdict.ok,
@@ -258,6 +263,21 @@ export class IngestService {
 
         const sequenceKey = ownerId ?? UNIDENTIFIED_KEY(ctx.vehicle.id);
 
+        if (missing) {
+          const pending = missingByOwner.get(sequenceKey);
+          if (pending) pending.reasons.add(missing.reason);
+          else {
+            missingByOwner.set(sequenceKey, {
+              ownerId,
+              at: event.eventDateTime,
+              timezoneOffset: event.timezoneOffset,
+              reasons: new Set([missing.reason]),
+            });
+          }
+        }
+        // An app-sent eventType 7 record keeps its own malfunction/diagnostic code untouched.
+        const isCodeRecord = event.eventType === EVENT_TYPE.MALFUNCTION_DIAGNOSTIC;
+
         prepared.push({
           sequenceKey,
           rule,
@@ -288,9 +308,11 @@ export class IngestService {
             totalVehicleMiles,
             rawDeviceOdometerKm: rawKm,
             totalEngineHours: event.totalEngineHours ?? null,
-            malfunctionCode: timing ? MALFUNCTION.TIMING : (event.malfunctionCode ?? null),
-            diagnosticCode: missing ? DIAGNOSTIC.MISSING_DATA : (event.diagnosticCode ?? null),
-            timeDriftSec: driftSec,
+            malfunctionCode: event.malfunctionCode ?? null,
+            diagnosticCode:
+              missing && !isCodeRecord ? DIAGNOSTIC.MISSING_DATA : (event.diagnosticCode ?? null),
+            // B-166 / D-150 — drift is not measurable from a late-delivered event; left null.
+            timeDriftSec: null,
             annotation: event.annotation ?? null,
             comment: event.comment ?? null,
             wasStoredOnDevice: event.wasStoredOnDevice,
@@ -301,21 +323,32 @@ export class IngestService {
           },
         });
 
-        // §5.5 / §7.8 — a malfunction or diagnostic is itself an eventType 7 record.
-        if (timing) {
-          generated.push(
-            this.buildCodeEvent(ctx, ownerId, event.eventDateTime, event.timezoneOffset, {
-              kind: 'malfunction',
-              code: MALFUNCTION.TIMING,
-              reason: `clock drift ${driftSec}s`,
-            }),
-          );
-        }
-        if (missing) {
-          generated.push(
-            this.buildCodeEvent(ctx, ownerId, event.eventDateTime, event.timezoneOffset, missing),
-          );
-        }
+      }
+
+      // §5.5 / §7.8 — a diagnostic is itself an eventType 7 record. App. A 4.5.1.7: recorded when
+      // DETECTED, not per offending event — one per driver profile per batch, and none while the
+      // profile already has an active (uncleared) diagnostic 3 (B-165).
+      for (const pending of missingByOwner.values()) {
+        const active = await this.repo.findActiveCodes(
+          tx,
+          { driverId: pending.ownerId, vehicleId: ctx.vehicle.id },
+          { diagnostic: [DIAGNOSTIC.MISSING_DATA] },
+        );
+        if (active.has(codeKey({ kind: 'diagnostic', code: DIAGNOSTIC.MISSING_DATA }))) continue;
+        generated.push(
+          this.buildCodeEvent(ctx, pending.ownerId, pending.at, pending.timezoneOffset, {
+            kind: 'diagnostic',
+            code: DIAGNOSTIC.MISSING_DATA,
+            reason: [...pending.reasons].join('; '),
+          }),
+        );
+      }
+      if (checksumMissing > 0) {
+        warnings.push({
+          code: ERROR_CODES.CHECKSUM_MISSING,
+          detail: `${checksumMissing} event(s) carried no checksum; server-computed checksum stored, no diagnostic.`,
+          informational: true,
+        });
       }
 
       const all = [...prepared, ...generated];
@@ -516,9 +549,15 @@ export class IngestService {
   async recordBleState(
     dto: IngestBleStateDto,
     driverId: string,
-  ): Promise<{ bleState: string; connectionType: string | null; disconnectedAlert: boolean }> {
+  ): Promise<{
+    bleState: string;
+    connectionType: string | null;
+    disconnectedAlert: boolean;
+    clockDriftSec: number | null;
+  }> {
     const ctx = await this.resolveContext(dto.deviceSerial, driverId);
     const now = dto.at ?? new Date();
+    const clock = await this.checkDeviceClock(ctx, dto.deviceTime, new Date());
 
     // OUT_OF_RANGE is normal (driver walked away with the phone) — the alert is time-based.
     const disconnectedAlert = isBleDisconnectedTooLong(dto.state, ctx.device.lastSeenAt, now);
@@ -547,6 +586,7 @@ export class IngestService {
       bleState: dto.state,
       connectionType: dto.connectionType ?? ctx.device.connectionType ?? null,
       disconnectedAlert,
+      clockDriftSec: clock.driftSec,
     };
   }
 
@@ -623,11 +663,13 @@ export class IngestService {
           },
         )
       : [];
+    const clock = await this.checkDeviceClock(ctx, dto.deviceTime, now);
 
     return {
       storedEventsCount: dto.storedEventsCount,
       backlogAlert,
-      codes: codes.map((c) => `${c.kind === 'malfunction' ? 'M' : 'D'}:${c.code}`),
+      codes: [...codes.map(codeKey), ...(clock.timing ? [codeKey({ kind: 'malfunction', code: MALFUNCTION.TIMING })] : [])],
+      clockDriftSec: clock.driftSec,
       model: device.model,
       vinMismatch,
       systemVars: buildSystemVars(device),
@@ -765,6 +807,49 @@ export class IngestService {
     return [segment.id];
   }
 
+  /**
+   * B-166 / §7.8 `T` / App. A 4.6.1.3 — the device clock (`deviceTime`, read by the app off the
+   * PT30 just before the request) is cross-checked against server UTC. |drift| > 10 min logs ONE
+   * 7/1 `T` while none is active for the driver; back within 10 min with `T` active logs 7/2.
+   * No `deviceTime` → nothing is checked.
+   */
+  private async checkDeviceClock(
+    ctx: IngestContext,
+    deviceTime: Date | undefined,
+    now: Date,
+  ): Promise<{ driftSec: number | null; timing: boolean }> {
+    if (!deviceTime) return { driftSec: null, timing: false };
+    const driftSec = clockDriftSec(deviceTime, now);
+    const timing = isTimingMalfunction(driftSec);
+    const vehicleId = ctx.device.vehicleId;
+    if (!vehicleId) return { driftSec, timing };
+
+    const key = codeKey({ kind: 'malfunction', code: MALFUNCTION.TIMING });
+    const active = await this.repo.findActiveCodes(
+      null,
+      { driverId: ctx.driverId, vehicleId },
+      { malfunction: [MALFUNCTION.TIMING] },
+    );
+    const isActive = active.has(key);
+    if (timing === isActive) return { driftSec, timing };
+
+    const code: DetectedCode = {
+      kind: 'malfunction',
+      code: MALFUNCTION.TIMING,
+      reason: timing ? `device clock drift ${driftSec}s` : `device clock resynced (${driftSec}s)`,
+    };
+    await this.repo.runInTransaction(async (tx) => {
+      const row = this.buildCodeEvent({ device: ctx.device, vehicle: { id: vehicleId } }, ctx.driverId, now, 0, code, !timing);
+      await this.assignSequenceIds(tx, [row]);
+      await this.repo.ensurePartitions(tx, [monthStart(now)]);
+      await this.repo.insertEvents(tx, [row.row]);
+    });
+    if (timing) {
+      await this.raiseAlert('alert.eld_malfunction', { vehicleId, code: code.code, reason: code.reason });
+    }
+    return { driftSec, timing };
+  }
+
   /** §7.8 — windowed malfunction/diagnostic detection, logged once per 24-hour window. */
   private async runAutoChecks(
     ctx: { device: Device; vehicle: Pick<Vehicle, 'id'>; driverId: string },
@@ -787,9 +872,7 @@ export class IngestService {
     if (!detected.length) return [];
 
     const alreadyLogged = await this.repo.findLoggedCodesInWindow(ctx.vehicle.id, since);
-    const fresh = detected.filter(
-      (c) => !alreadyLogged.has(`${c.kind === 'malfunction' ? 'M' : 'D'}:${c.code}`),
-    );
+    const fresh = detected.filter((c) => !alreadyLogged.has(codeKey(c)));
     if (!fresh.length) return detected;
 
     await this.repo.runInTransaction(async (tx) => {
@@ -826,15 +909,20 @@ export class IngestService {
     at: Date,
     timezoneOffset: number,
     code: DetectedCode,
+    cleared = false,
   ): PreparedEvent {
     const isMalfunction = code.kind === 'malfunction';
-    const uuid = `auto-${code.kind}-${code.code}-${ctx.vehicle.id}-${at.getTime()}`;
+    const uuid = `auto-${code.kind}${cleared ? '-clear' : ''}-${code.code}-${ctx.vehicle.id}-${at.getTime()}`;
     const base = {
       uuid,
       eventType: EVENT_TYPE.MALFUNCTION_DIAGNOSTIC,
       eventCode: isMalfunction
-        ? MALFUNCTION_EVENT_CODE.MALFUNCTION_LOGGED
-        : MALFUNCTION_EVENT_CODE.DIAGNOSTIC_LOGGED,
+        ? cleared
+          ? MALFUNCTION_EVENT_CODE.MALFUNCTION_CLEARED
+          : MALFUNCTION_EVENT_CODE.MALFUNCTION_LOGGED
+        : cleared
+          ? MALFUNCTION_EVENT_CODE.DIAGNOSTIC_CLEARED
+          : MALFUNCTION_EVENT_CODE.DIAGNOSTIC_LOGGED,
       eventDateTime: at,
       timezoneOffset,
       recordStatus: 1,

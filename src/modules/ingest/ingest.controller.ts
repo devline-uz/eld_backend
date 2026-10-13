@@ -58,13 +58,17 @@ export class IngestController {
       'Uploads a batch of §395 ELD events from the app (max 500 events / 1 MB, one transaction).',
   })
   @ApiOkResponse({
-    description: 'Stored. Duplicates by `uuid` are counted, not re-inserted.',
+    description:
+      'Stored. Duplicates by `uuid` are counted, not re-inserted. `checksum` is optional: when omitted the server ' +
+      'computes and stores it and adds ONE informational warning `CHECKSUM_MISSING` (`informational: true`, no ' +
+      'diagnostic, still 200). Clock drift is NOT derived from `eventDateTime` (events arrive late) — see `deviceTime` ' +
+      'on /ingest/device-status and /ingest/ble-state; `timeDriftSec` on stored events is null.',
     schema: {
       example: {
         accepted: 118,
         duplicates: 2,
         sequenceIds: { 'drv_1': [1042, 1043] },
-        warnings: [],
+        warnings: [{ code: 'CHECKSUM_MISSING', detail: '118 event(s) carried no checksum; server-computed checksum stored, no diagnostic.', informational: true }],
         malfunctions: [],
         diagnostics: [],
         unidentifiedSegmentIds: [],
@@ -75,7 +79,8 @@ export class IngestController {
   @ApiResponse({
     status: 202,
     description:
-      'ACCEPTED_WITH_WARNINGS — stored, but at least one event had a bad checksum, a drifted clock or an implausible odometer (§7.3 rules 4/5, §4.3).',
+      'ACCEPTED_WITH_WARNINGS — stored, but at least one event had a SENT checksum that did not match (CHECKSUM_MISMATCH) or an implausible odometer (ODOMETER_ANOMALY) (§7.3 rule 4, §4.3). ' +
+      'Diagnostic 3 is logged as ONE eventType 7 record per driver per batch, and not again while one is active (App. A 4.5.1.7).',
     schema: {
       example: {
         accepted: 120,
@@ -104,7 +109,8 @@ export class IngestController {
   ): Promise<IngestEventsResult> {
     assertPayloadSize(req);
     const result = await this.ingest.ingestEvents(dto, driverId);
-    if (result.warnings.length) res.status(202);
+    // B-165 — informational warnings (CHECKSUM_MISSING) alone keep the plain 200.
+    if (result.warnings.some((w) => !w.informational)) res.status(202);
     return result;
   }
 
@@ -185,10 +191,15 @@ export class IngestController {
 
   @Post('ble-state')
   @HttpCode(200)
-  @ApiOperation({ summary: 'Reports a BLE state transition (§7.6): CONNECTED / OUT_OF_RANGE / DISCONNECTED; optional `connectionType` BLE|USB (SDK 6.11).' })
+  @ApiOperation({
+    summary: 'Reports a BLE state transition (§7.6): CONNECTED / OUT_OF_RANGE / DISCONNECTED; optional `connectionType` BLE|USB (SDK 6.11).',
+    description:
+      'Optional `deviceTime` (ISO-8601) = the PT30 clock read just before sending. |deviceTime − server UTC| > 600 s logs malfunction T once ' +
+      '(7/1, not repeated while active); back within 600 s clears it (7/2). Omitted → no timing check. `clockDriftSec` echoes the measured drift.',
+  })
   @FigmaScreen('web/settings-eld-devices')
-  @ApiBody({ schema: { example: { deviceSerial: 'PT30_A86E', state: 'CONNECTED', at: '2026-10-10T12:00:00Z', connectionType: 'USB' } } })
-  @ApiOkResponse({ description: 'BLE transition recorded; > 30 min unconnected raises alert.eld_disconnected.', schema: { example: { bleState: 'CONNECTED', connectionType: 'USB', disconnectedAlert: false } } })
+  @ApiBody({ schema: { example: { deviceSerial: 'PT30_A86E', state: 'CONNECTED', at: '2026-10-10T12:00:00Z', connectionType: 'USB', deviceTime: '2026-10-10T12:00:01Z' } } })
+  @ApiOkResponse({ description: 'BLE transition recorded; > 30 min unconnected raises alert.eld_disconnected.', schema: { example: { bleState: 'CONNECTED', connectionType: 'USB', disconnectedAlert: false, clockDriftSec: 1 } } })
   @ApiStandardErrors({ errors: [apiError.forbidden('DRIVER_CONTEXT_REQUIRED — ingest accepts a driver token only.')] })
   bleState(
     @Body(zodBody(IngestBleStateDto)) dto: IngestBleStateDto,
@@ -203,7 +214,9 @@ export class IngestController {
     summary: 'Reports stored-event backlog, firmware and SDK TrackerInfo (§7.7); answers the system variables to apply.',
     description:
       '`productName` `PT40*` -> model PT40, `PT30*` -> PT30. `reportedVin` differing from the paired unit VIN -> `vinMismatch: true` ' +
-      '(never blocks; `alert.device_vin_mismatch` once per new VIN). `systemVars` are the PT SDK SetSystemVar targets.',
+      '(never blocks; `alert.device_vin_mismatch` once per new VIN). `systemVars` are the PT SDK SetSystemVar targets. ' +
+      'Optional `deviceTime` (ISO-8601, PT30 clock read just before sending): |drift| > 600 s logs malfunction T once (7/1, `codes` gets `M:T`), ' +
+      'back within 600 s clears it (7/2); omitted → no timing check. `clockDriftSec` = deviceTime − server UTC (null without deviceTime).',
   })
   @FigmaScreen('web/settings-eld-devices')
   @ApiBody({
@@ -211,7 +224,7 @@ export class IngestController {
       example: {
         deviceSerial: 'PT30_A86E', storedEventsCount: 12, mainFirmware: 'L108', bleFirmware: '1.4.2', sdkVersion: '6.11.1',
         productName: 'PT40-C', imei: '356938035643809', reportedVin: '1FUJGLDR7CLBP8834', connectionType: 'BLE', busType: 'J1939',
-        appPlatform: 'ANDROID', recordsLost: false, consecutiveTransferFailures: 0,
+        appPlatform: 'ANDROID', recordsLost: false, consecutiveTransferFailures: 0, deviceTime: '2026-10-13T15:04:05Z',
       },
     },
   })
@@ -219,7 +232,7 @@ export class IngestController {
     description: 'Backlog recorded; > 100 stored events raises alert.device_backlog.',
     schema: {
       example: {
-        storedEventsCount: 12, backlogAlert: false, codes: [], model: 'PT40', vinMismatch: false,
+        storedEventsCount: 12, backlogAlert: false, codes: [], clockDriftSec: 2, model: 'PT40', vinMismatch: false,
         systemVars: { PERIODIC_EVENT_GAP: 30, PERIODIC_EVENT_GAP_NOBLE: 30, EVENTS_STORED: 1, DRIVING_ACCL: 0, DRIVING_BRAKING: 450, DRIVING_CORNERING: 0, HSI_MODE: 1 },
         configVersion: '3f9a1c0b7d2e',
       },

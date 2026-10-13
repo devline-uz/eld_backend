@@ -1,4 +1,5 @@
 import {
+  activeCodeKeys,
   CLOCK_DRIFT_LIMIT_SEC,
   clockDriftSec,
   detectMissingData,
@@ -36,6 +37,15 @@ describe('ingest/detectors — §7.8 automatic checks', () => {
       expect(isTimingMalfunction(600)).toBe(false);
       expect(isTimingMalfunction(601)).toBe(true);
       expect(isTimingMalfunction(-601)).toBe(true);
+    });
+  });
+
+  describe('activeCodeKeys — logged once, cleared once (App. A 4.5.1.7)', () => {
+    it('a code is active until a later clear record', () => {
+      const e = (eventCode: number, m: string | null, d: string | null) => ({ eventCode, malfunctionCode: m, diagnosticCode: d });
+      expect([...activeCodeKeys([e(1, 'T', null), e(3, null, '3')])].sort()).toEqual(['D:3', 'M:T']);
+      expect([...activeCodeKeys([e(1, 'T', null), e(2, 'T', null), e(3, null, '3'), e(4, null, '3')])]).toEqual([]);
+      expect([...activeCodeKeys([e(1, 'T', null), e(2, 'T', null), e(1, 'T', null)])]).toEqual(['M:T']);
     });
   });
 

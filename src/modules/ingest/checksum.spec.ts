@@ -52,8 +52,10 @@ describe('ingest/checksum (TZ §7.3 rule 4, §23)', () => {
     expect(verdict.expected).toBe(computeChecksum(base));
   });
 
-  it('treats an absent checksum as missing data, not as a rejection', () => {
-    expect(verifyChecksum(base, undefined)).toMatchObject({ ok: false, reason: 'MISSING' });
-    expect(verifyChecksum(base, '   ')).toMatchObject({ ok: false, reason: 'MISSING' });
+  it('treats an absent checksum as informational (B-165), not as a rejection or mismatch', () => {
+    // B-165 — absent is not a mismatch: ok, no diagnostic, server value stored.
+    expect(verifyChecksum(base, undefined)).toMatchObject({ ok: true, reason: 'MISSING' });
+    expect(verifyChecksum(base, null)).toMatchObject({ ok: true, reason: 'MISSING' });
+    expect(verifyChecksum(base, '   ')).toMatchObject({ ok: true, reason: 'MISSING' });
   });
 });

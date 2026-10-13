@@ -563,8 +563,10 @@ model EldEvent {
   malfunctionCode String?
   diagnosticCode  String?
 
-  /// §7.3 rule 5 / §7.8 `T` — signed device-clock drift from server UTC, persisted on every
-  /// event whose drift was measurable (not only on the ones that exceeded the 10-minute limit).
+  /// §7.3 rule 5 / §7.8 `T` — signed device-clock drift from server UTC. B-166 / D-150: NOT
+  /// measurable from a late-delivered event (eventDateTime − receivedAt is gateway latency), so
+  /// ingest writes null; drift is measured from `deviceTime` on device-status / ble-state.
+  /// Rows before 2026-10-13 may hold the old latency value.
   timeDriftSec Int?
 
   annotation   String?     @db.VarChar(60)
