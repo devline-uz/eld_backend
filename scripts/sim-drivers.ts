@@ -523,6 +523,15 @@ class DriverSimulator {
         d.sim.violation = d.slot <= this.args.violationDrivers;
       }
       if (now - d.sim.simAt > 10 * 60_000) resumeAfterGap(d.sim, now);
+      if (this.args.quickStart) {
+        d.sim.quickStartPending = true;
+        // Already in a long pre-trip from an earlier run: cut it to 1–3 min.
+        const quickUntil = now + (1 + ((d.slot - 1) % 3)) * 60_000;
+        if (d.sim.phase === 'PRETRIP' && d.sim.phaseUntil !== null && d.sim.phaseUntil > quickUntil) {
+          d.sim.phaseUntil = quickUntil;
+          d.sim.quickStartPending = false;
+        }
+      }
       if (d.stoppedManually && d.sim.phase === 'REST') {
         d.sim.phaseUntil = now + ((d.slot - 1) % 12) * 10_000;
         d.stoppedManually = false;

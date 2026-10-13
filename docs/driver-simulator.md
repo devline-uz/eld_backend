@@ -54,7 +54,7 @@ pm2 delete eld-sim
 | `--stop` | — | hammani OFF DUTY, BLE DISCONNECTED |
 | `--cleanup` | — | `--stop` + `POST /devices/:id/unpair` + `POST /mobile/release-vehicle` (faqat sim tanlagan unitlar); state `.cleaned-*.json` ga ko'chadi |
 | `--dry-run` | — | hech narsa yozmaydi |
-| `--quick-start` | — | birinchi pre-trip 1–3 daq (demo uchun tez D) |
+| `--quick-start` | — | har ishga tushirishda birinchi pre-trip 1–3 daq (demo uchun tez D); kruiz 50–60 mph |
 | `--violation-drivers N` | 0 | birinchi N slot tanaffussiz, 12.5 soat haydash / 15.5 soat smenagacha → BREAK_30, DRIVING_11, SHIFT_14 (real vaqtda!) |
 | `--backfill-hours H` | 0 | faqat yangi haydovchi sozlanganda: bugungi tarixni o'tgan vaqt bilan yozadi (max 14). **Diqqat:** server >10 daq eski hodisaga `malfunction T` qo'yadi (202 + warning) |
 | `--duration S` | 0 | S soniyadan keyin OFF qilib chiqadi |

@@ -141,6 +141,8 @@ export interface DriverSim {
   nextStop: StopKind;
   deviceSeq: number;
   shiftsStarted: number;
+  /** Set by the CLI for `--quick-start`: the next pre-trip is 1–3 min (once per run). */
+  quickStartPending?: boolean;
 }
 
 const MPH_TO_KMH = 1.609344;
@@ -252,7 +254,7 @@ export function initDriver(input: InitInput): DriverSim {
     deviceSeq: 0,
     shiftsStarted: 0,
   };
-  d.cruiseMph = between(d, 57, 68);
+  d.cruiseMph = between(d, CRUISE_MIN_MPH, CRUISE_MAX_MPH);
   d.engineHours = round(between(d, 3000, 12000), 2);
   d.fuelPct = Math.round(between(d, 55, 95));
   findRoute(d.routeId); // fail fast on a bad id
@@ -386,7 +388,8 @@ function startShift(d: DriverSim, at: number, opts: EngineOptions, out: SimActio
   out.push({ kind: 'deviceEvent', event: makeDeviceEvent(d, 'EV_ENGINE_ON', at) });
   out.push(duty(d, 'ON', at)); // driver taps ON DUTY for the pre-trip
   emitPoint(d, at, true, out);
-  const first = d.shiftsStarted === 0;
+  const first = d.shiftsStarted === 0 || d.quickStartPending === true;
+  d.quickStartPending = false;
   d.shiftsStarted += 1;
   const preMin = first && opts.quickStart ? between(d, 1, 3) : between(d, 10, 15);
   d.phase = 'PRETRIP';
@@ -471,14 +474,21 @@ function endShift(d: DriverSim, at: number, out: SimAction[]): void {
   d.shiftStartAt = null;
 }
 
+const CRUISE_MIN_MPH = 52;
+const CRUISE_MAX_MPH = 58;
+
 function targetSpeed(d: DriverSim, at: number, dtSec: number): number {
   if (d.phase === 'STOPPING') return 0;
   if (d.phase !== 'DRIVING') return 0;
   if (d.slowUntil !== null && at < d.slowUntil) return d.slowMph;
   d.slowUntil = null;
-  // ~4 slowdowns per hour (traffic, work zones, grades).
-  if (rand(d) < (dtSec / H) * 4) {
-    d.slowMph = between(d, 22, 45);
+  // Older state files carry a 57–68 mph cruise; keep every truck in the 50–60 mph band.
+  if (d.cruiseMph < CRUISE_MIN_MPH || d.cruiseMph > CRUISE_MAX_MPH) {
+    d.cruiseMph = between(d, CRUISE_MIN_MPH, CRUISE_MAX_MPH);
+  }
+  // ~2 slowdowns per hour (traffic, work zones, grades).
+  if (rand(d) < (dtSec / H) * 2) {
+    d.slowMph = between(d, 42, 49);
     d.slowUntil = at + between(d, 2, 6) * MIN_MS;
     return d.slowMph;
   }
@@ -492,6 +502,11 @@ function integrate(d: DriverSim, dtSec: number, at: number, opts: EngineOptions,
   if (d.speedMph < target) d.speedMph = Math.min(target, d.speedMph + 1.2 * dtSec);
   else d.speedMph = Math.max(target, d.speedMph - 2.0 * dtSec);
   if (d.speedMph < 0.3 && target === 0) d.speedMph = 0;
+  // Live Fleet shows the last point: send one as soon as the truck reaches cruise, so the
+  // ~6 mph departure point does not linger on the map for a whole point interval.
+  if (d.phase === 'DRIVING' && before < CRUISE_MIN_MPH - 2 && d.speedMph >= CRUISE_MIN_MPH - 2) {
+    emitPoint(d, at, true, out);
+  }
 
   const avgMph = (before + d.speedMph) / 2;
   const deltaMi = (avgMph * dtSec) / H;
