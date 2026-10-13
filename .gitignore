@@ -11,3 +11,4 @@ secrets/
 prisma/generated/
 !.env.development.example
 !.env.production.example
+scripts/sim/.state/
