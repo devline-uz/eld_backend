@@ -1,3 +1,4 @@
+import { describeLocation } from '../../common/geo-location/location-description';
 import {
   compareUnitNumbers,
   ELD_OFFLINE_AFTER_MS,
@@ -217,14 +218,35 @@ describe('toLiveFleetUnit (GET /live/fleet, web/tz.md §20 B-3)', () => {
     expect(unit).toMatchObject({ lat: 39.1, lon: -84.5, locationLabel: '0.64 mi N of Florence, KY', lastSeenAt: minsAgo(5).toISOString() });
   });
 
-  it('does not attach an old place name to a much newer telemetry fix', () => {
+  it('labels a newer telemetry fix from the fix coordinates, never from an older located event', () => {
+    const geo = describeLocation(38.99, -84.63);
+    expect(geo).toMatch(/^\d*(mi \w+ )?[A-Z]{2} /);
+    for (const mins of [10, 300]) {
+      const unit = toLiveFleetUnit(
+        input({ located: { eventDateTime: minsAgo(mins), latitude: 1, longitude: 1, locationName: '4mi SSE TX Addison' } }),
+      );
+      expect(unit.lat).toBe(38.99);
+      expect(unit.locationLabel).toBe(geo);
+    }
+  });
+
+  it('uses the event locationName when the position comes from the newer event', () => {
     const unit = toLiveFleetUnit(
-      input({ located: { eventDateTime: minsAgo(300), latitude: 1, longitude: 1, locationName: 'Somewhere old' } }),
+      input({
+        telemetry: { ...input().telemetry!, time: minsAgo(20), fixTime: minsAgo(20) },
+        located: { eventDateTime: minsAgo(3), latitude: 39.1, longitude: -84.5, locationName: 'Yard 4' },
+      }),
     );
-    expect(unit.lat).toBe(38.99);
-    expect(unit.locationLabel).toBeNull();
-    const near = toLiveFleetUnit(input({ located: { eventDateTime: minsAgo(10), latitude: 1, longitude: 1, locationName: 'Near' } }));
-    expect(near.locationLabel).toBe('Near');
+    expect(unit).toMatchObject({ lat: 39.1, lon: -84.5, locationLabel: 'Yard 4' });
+  });
+
+  it('describes a fix at 10 mi precision while personal conveyance is active', () => {
+    const unit = toLiveFleetUnit(input({ special: 'PC' }));
+    expect(unit.locationLabel).toBe(describeLocation(38.99, -84.63, { reducedPrecision: true }));
+  });
+
+  it('has no label without a fix and without a located event', () => {
+    expect(toLiveFleetUnit(input({ telemetry: null, located: null })).locationLabel).toBeNull();
   });
 
   it('isEldOffline treats a never-seen device as offline and no device as not offline', () => {

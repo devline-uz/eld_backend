@@ -6,6 +6,7 @@
  * Coordinates are passed through as stored: both `TelemetryPoint` and `EldEvent` are already
  * coarsened at ingest (1 mi / 10 mi under PC, §7.3 rule 9), so nothing here can leak a raw fix.
  */
+import { describeLocation, resolveLocationText } from '../../common/geo-location/location-description';
 import { staleStatusCapAt } from '../drivers/lib/stale-status';
 import type { DutyStatus as HosDutyStatus } from '../hos/hos.types';
 
@@ -39,6 +40,10 @@ export interface LiveFleetUnit {
   odometerMi: number | null;
   lat: number | null;
   lon: number | null;
+  /**
+   * Place text describing the marker (`lat`/`lon`): the RODS event's locationName when the marker
+   * comes from that event, else the offline geo-location of the telemetry fix (`4mi SSE TX Addison`).
+   */
   locationLabel: string | null;
   lastSeenAt: string | null;
   driveRemainingSec: number | null;
@@ -181,10 +186,16 @@ export function toLiveFleetUnit(input: LiveFleetInput): LiveFleetUnit {
     : fix
       ? { lat: fix.lat, lon: fix.lon }
       : { lat: null, lon: null };
-  // A place name only describes the fix when it is the fix, or within the freshness window of it.
-  const labelMatches =
-    !!located &&
-    (useEvent || (fix !== null && Math.abs(fix.at.getTime() - located.eventDateTime.getTime()) <= SPEED_FRESH_MS));
+  // The label must describe the marker. Position from a RODS event -> that event's stored
+  // locationName (computed from its coordinates when blank); position from a telemetry fix -> the
+  // same offline geo-location ingest uses, computed from the fix (never an older event's name).
+  // PC (§4.7.3): ingest already coarsened the stored coordinates to 10 mi, so describe at 10 mi too.
+  const reducedPrecision = input.special === 'PC';
+  const locationLabel = useEvent
+    ? resolveLocationText(located.locationName, located.latitude, located.longitude, { reducedPrecision })
+    : fix
+      ? describeLocation(fix.lat, fix.lon, { reducedPrecision })
+      : null;
 
   const offline = isEldOffline(device, now);
   const recordStatus = recordStatusOf(vehicle.status);
@@ -203,7 +214,7 @@ export function toLiveFleetUnit(input: LiveFleetInput): LiveFleetUnit {
     odometerMi: telemetry?.odometerMi ?? vehicle.odometerMi ?? null,
     lat: position.lat,
     lon: position.lon,
-    locationLabel: labelMatches ? (located.locationName ?? null) : null,
+    locationLabel,
     lastSeenAt: lastSeen ? lastSeen.toISOString() : null,
     driveRemainingSec: driver && hos ? hos.driveRemainingSec : null,
     shiftEndsAt: driver && hos?.shiftEndsAt ? hos.shiftEndsAt.toISOString() : null,
