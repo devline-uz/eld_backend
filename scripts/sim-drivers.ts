@@ -54,7 +54,7 @@ function parseArgs(argv: string[]): Args {
   const a: Args = {
     drivers: 30,
     intervalSec: 10,
-    pointEverySec: 60,
+    pointEverySec: 15, // Live Fleet demo: a marker step every 15 s (app contract is 60 s; counted as denserThanContract)
     once: false,
     stop: false,
     cleanup: false,

@@ -85,18 +85,34 @@ const opt = <T>(value: T | null | undefined, map: (v: T) => number): number | nu
 
 /** "Absent parameter is `null`, not an error" (§5.6 note) — every optional field passes through. */
 export function toTelemetryRow(point: TelemetryPointDto, ctx: TelemetryContext): TelemetryRow {
-  // A half pair is not a position: both coordinates or neither (SDK 6.11 points without a fix).
-  const coords = hasPosition(point)
-    ? coarsenLocation({ lat: point.latitude, lon: point.longitude }, ctx.pcActive ? 'TEN_MILE' : 'ONE_MILE')
-    : null;
+  return { ...toTelemetryRowBase(point, ctx), ...telemetryCoords(point, ctx.pcActive) };
+}
 
+/**
+ * Map position of a telemetry point (D-149). Telemetry is the Live Fleet breadcrumb, not a RODS
+ * record, so it keeps the fix (6 decimals); the Appendix A 1-mile precision still applies to every
+ * RODS record (`rods-event-writer.ts`, device events). Personal Conveyance stays 10-mile coarse.
+ */
+export function telemetryCoords(
+  point: { latitude?: number | null; longitude?: number | null },
+  pcActive: boolean,
+): { latitude: number | null; longitude: number | null } {
+  // A half pair is not a position: both coordinates or neither (SDK 6.11 points without a fix).
+  if (!hasPosition(point)) return { latitude: null, longitude: null };
+  const c = pcActive
+    ? coarsenLocation({ lat: point.latitude, lon: point.longitude }, 'TEN_MILE')
+    : { lat: point.latitude, lon: point.longitude };
+  return { latitude: Math.round(c.lat * 1e6) / 1e6, longitude: Math.round(c.lon * 1e6) / 1e6 };
+}
+
+function toTelemetryRowBase(point: TelemetryPointDto, ctx: TelemetryContext): TelemetryRow {
   return {
     time: point.time,
     vehicleId: ctx.vehicleId,
     driverId: ctx.driverId,
     deviceId: ctx.deviceId ?? null,
-    latitude: coords?.lat ?? null,
-    longitude: coords?.lon ?? null,
+    latitude: null,
+    longitude: null,
     speedMph: opt(point.speedKmh, kmhToMph),
     headingDeg: point.headingDeg ?? null,
     odometerMi: opt(point.odometerKm, (km) => applyOdometerOffsetMi(kmToMi(km), ctx.odometerOffsetMi)),

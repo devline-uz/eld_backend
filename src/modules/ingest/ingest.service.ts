@@ -11,6 +11,7 @@ import {
   computeOdometerOffsetMi,
   distanceMi,
   isOdometerAnomaly,
+  kmhToMph,
   kmToMi,
 } from '../../common/units';
 import { EventBusService } from '../../core/events/event-bus.service';
@@ -23,6 +24,7 @@ import {
   modelFromProductName,
 } from '../devices/system-vars.util';
 import { VirtualEldPolicy } from '../carrier/virtual-eld.policy';
+import { telemetryCoords } from '../telemetry/telemetry.mapper';
 import { TelemetryService } from '../telemetry/telemetry.service';
 import { computeChecksum, verifyChecksum } from './checksum';
 import {
@@ -49,6 +51,7 @@ import {
   IngestEventDto,
   IngestEventsDto,
   IngestTelemetryDto,
+  TelemetryPointDto,
 } from './dto/ingest.dto';
 import { IngestRepository, IngestTx } from './ingest.repository';
 import { resolveStoredEventOwner } from './ownership';
@@ -458,10 +461,22 @@ export class IngestService {
     }
 
     if (stored.accepted > 0) {
+      // D-149 — the frame carries the batch's latest fix so Live Fleet patches the marker in place,
+      // and it also goes to `fleet` so the map moves every unit, not only the selected one.
+      const last = latestFix(dto.points);
       await this.events.publish('realtime.push', {
-        room: `vehicle:${ctx.vehicle.id}`,
+        room: [`vehicle:${ctx.vehicle.id}`, 'fleet'],
         event: 'telemetry.point',
-        payload: { vehicleId: ctx.vehicle.id, count: stored.accepted },
+        payload: {
+          vehicleId: ctx.vehicle.id,
+          count: stored.accepted,
+          ...(last && {
+            ...telemetryCoords(last, pcActive),
+            speedMph: last.speedKmh === null || last.speedKmh === undefined ? null : kmhToMph(last.speedKmh),
+            headingDeg: last.headingDeg ?? null,
+            time: last.time,
+          }),
+        },
       });
       // Phase 10 — harsh-event + geofence detection runs in the worker container, never
       // inline in the request (TZ §3.3). Best-effort: a Redis blip must not fail ingest.
@@ -920,4 +935,14 @@ function latestVin(points: IngestTelemetryDto['points']): string | null {
 
 function monthStart(date: Date): string {
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-01`;
+}
+
+/** Latest point of a batch that carries a GPS fix (both coordinates), or `null`. */
+function latestFix(points: TelemetryPointDto[]): TelemetryPointDto | null {
+  let best: TelemetryPointDto | null = null;
+  for (const p of points) {
+    if (p.latitude === null || p.latitude === undefined || p.longitude === null || p.longitude === undefined) continue;
+    if (!best || p.time > best.time) best = p;
+  }
+  return best;
 }

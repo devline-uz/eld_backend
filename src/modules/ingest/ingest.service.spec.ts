@@ -31,6 +31,7 @@ function makeService(overrides: Record<string, unknown> = {}): {
   alerts: string[];
   recalcJobs: Array<{ name: string; data: unknown }>;
   published: string[];
+  events: { publish: jest.Mock<Promise<void>, [string, unknown?]> };
 } {
   const captured: Captured = { rows: [], segments: [], vehicleUpdates: [] };
   const alerts: string[] = [];
@@ -84,7 +85,7 @@ function makeService(overrides: Record<string, unknown> = {}): {
 
   const telemetry = { store: jest.fn(async () => ({ accepted: 1, duplicates: 0, denserThanContract: 0 })) };
   const events = {
-    publish: jest.fn(async (name: string) => {
+    publish: jest.fn(async (name: string, _payload?: unknown) => {
       published.push(name);
       if (name.startsWith('alert.')) alerts.push(name);
     }),
@@ -104,7 +105,7 @@ function makeService(overrides: Record<string, unknown> = {}): {
     safetyDetectQueue as never,
     virtualEld as never,
   );
-  return { service, captured, repo, alerts, recalcJobs, published };
+  return { service, captured, repo, alerts, recalcJobs, published, events };
 }
 
 function batch(events: Array<Record<string, unknown>>): IngestEventsDto {
@@ -596,5 +597,28 @@ describe('IngestService — PT SDK 6.11 (D-135)', () => {
     expect(job.points[0].latitude).toBeNull();
     expect(job.deviceHarsh).toEqual({ accel: false, brake: true, corner: false });
     expect(repo.updateDeviceOutsideTx).toHaveBeenCalledWith('dev_1', expect.objectContaining({ reportedVin: '1FUJGLDR7CLBP8834' }));
+  });
+
+  it('telemetry.point carries the latest fix (uncoarsened) to the vehicle and fleet rooms (D-149)', async () => {
+    const { service, events } = sdkService();
+    await service.ingestTelemetry(
+      {
+        deviceSerial: 'PT30_A86E',
+        vehicleId: VEHICLE_ID,
+        points: [
+          { time: new Date('2026-10-10T12:00:00Z'), isTransition: false, latitude: 39.9, longitude: -83.0, speedKmh: 80 },
+          { time: new Date('2026-10-10T12:01:00Z'), isTransition: false, latitude: 39.961176, longitude: -82.998794, speedKmh: 96.6, headingDeg: 90 },
+        ],
+      },
+      DRIVER_ID,
+    );
+    const push = events.publish.mock.calls.find(([name]: [string, unknown?]) => name === 'realtime.push')?.[1] as {
+      room: string[];
+      event: string;
+      payload: Record<string, unknown>;
+    };
+    expect(push.event).toBe('telemetry.point');
+    expect(push.room).toEqual([`vehicle:${VEHICLE_ID}`, 'fleet']);
+    expect(push.payload).toMatchObject({ vehicleId: VEHICLE_ID, latitude: 39.961176, longitude: -82.998794, speedMph: 60, headingDeg: 90 });
   });
 });
