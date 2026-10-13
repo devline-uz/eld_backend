@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
 import { AppConfigService } from '../../core/config/config.service';
+import { resolveVirtualEldEnabled } from '../carrier/virtual-eld.policy';
 import { HosRecalcService } from '../hos-recalc/hos-recalc.service';
 import { HOS_ENGINE_VERSION } from '../hos/hos.constants';
 import { toMobileShape } from '../hos-state/hos-drift';
@@ -42,15 +43,21 @@ export class MobileBootstrapService {
     const driver = await this.repo.findDriver(driverId);
     if (!driver) throw new AppException(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.', 404, { driverId });
 
-    const [carrier, vehicle, pairing, hos, inspection, availableVehicles] = await Promise.all([
+    const [carrier, pairing, hos, inspection, availableVehicles, pendingEditRequestCount, pendingUnidentifiedCount] = await Promise.all([
       this.repo.findCarrier(),
-      driver.assignedVehicleId ? this.repo.findVehicle(driver.assignedVehicleId) : Promise.resolve(null),
       this.repo.findActivePairing(driverId),
       this.hosRecalc.computeCurrentState(driverId, now),
       this.logs.getInspectionPacket(driverId, now),
       // MB-2 (mobile/tz.md §21.1, screen M-03) — units this driver may pick from.
       this.fleetOps.findAvailableVehicles(driverId),
+      // MB-13 (2026-10-11) — badge counts for the "Carrier edit requests" / "Was this you?" screens.
+      this.repo.countPendingEditRequests(driverId),
+      this.repo.countPendingUnidentifiedConfirmations(driverId),
     ]);
+    // D-0xx — only the PRIMARY owns `Driver.assignedVehicleId`; the co-driver seat reads the unit
+    // off the active pairing so both team members see the truck/device after a seat switch.
+    const bootstrapVehicleId = driver.assignedVehicleId ?? pairing?.vehicleId ?? null;
+    const vehicle = bootstrapVehicleId ? await this.repo.findVehicle(bootstrapVehicleId) : null;
     const device = vehicle ? await this.repo.findDeviceByVehicle(vehicle.id) : null;
     // MB-3 (mobile/tz.md §21.1, screens S-11/S-18/S-19) — the co-driver's own identity + duty
     // status, not just the pairing row ids the response already carried.
@@ -115,6 +122,7 @@ export class MobileBootstrapService {
             pairedAt: device.pairedAt,
             periodicConnectedSec: device.periodicConnectedSec,
             periodicDisconnectedMin: device.periodicDisconnectedMin,
+            isVirtual: device.isVirtual,
           }
         : null,
       coDriver:
@@ -165,6 +173,12 @@ export class MobileBootstrapService {
       /** MB-19 — force-update banner (M-09). `null` when unconfigured, never a half-filled
        * object: an app must not show "update available" off bare defaults. */
       appUpdate: this.buildAppUpdate(),
+      /** MB-13 — same set as `GET /mobile/log-edit-requests?status=PENDING`. */
+      pendingEditRequestCount,
+      /** MB-13 — same set as `GET /unidentified/confirmation-requests`. */
+      pendingUnidentifiedCount,
+      /** pt30_pt40/tz.md §8.2 / §9.3 — Test PT30/40 (PT Emulator) mode: env allows it AND the carrier switch is on. */
+      virtualEld: { enabled: resolveVirtualEldEnabled(this.config.virtualEldAllowed, carrier) },
     };
   }
 

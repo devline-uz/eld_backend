@@ -1,4 +1,6 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
+import { EventBusService } from '../../core/events/event-bus.service';
+import { publishVehicleUnassigned } from '../vehicles/vehicle-assignment-events';
 import { randomBytes, randomInt } from 'node:crypto';
 import type { Driver, DriverDocument, HosRuleset, Prisma } from '@prisma/client';
 import { AppException } from '../../common/errors/app.exception';
@@ -117,6 +119,7 @@ export class DriversService {
     private readonly attachments: AttachmentsService,
     /** UI-005 — read-only: the carrier's default `hosRuleset` for a driver created without one. */
     @Optional() private readonly carrier?: CarrierRepository,
+    @Optional() private readonly events?: EventBusService,
   ) {}
 
   /**
@@ -241,7 +244,7 @@ export class DriversService {
    * `deletedAt` hides the row from every web read and frees its username / email for a new driver
    * (partial unique indexes cover live rows only); driver-app login also ignores it. */
   async remove(id: string): Promise<DriverView> {
-    await this.getRaw(id);
+    const before = await this.getRaw(id);
     // BE-013 — never leave a live trip pointing at a deleted driver: the dispatcher reassigns or
     // cancels those trips first (least destructive; nothing is silently unassigned).
     const openTrips = await this.drivers.findOpenTrips(id);
@@ -253,6 +256,7 @@ export class DriversService {
       { id },
       { status: 'TERMINATED', deletedAt: new Date(), assignedVehicle: { disconnect: true } },
     );
+    if (before.assignedVehicleId) await publishVehicleUnassigned(this.events, { driverId: id, vehicleId: before.assignedVehicleId });
     return toView(updated);
   }
 

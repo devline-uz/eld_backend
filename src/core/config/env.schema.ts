@@ -30,6 +30,8 @@ export const envSchema = z.object({
 
   // --- storage (TZ §17) ----------------------------------------------------
   S3_ENDPOINT: z.string().url().optional(),
+  /** MB-1 — browser/phone-reachable origin used ONLY to sign presigned GET/PUT URLs (path-style). Unset = sign with S3_ENDPOINT. */
+  S3_PUBLIC_ENDPOINT: z.string().url().optional(),
   S3_REGION: z.string().default('us-east-1'),
   S3_BUCKET: z.string().default('onebook-eld'),
   S3_ACCESS_KEY: z.string().optional(),
@@ -147,6 +149,15 @@ export const envSchema = z.object({
    * an `ADDRESS` type returns `422 GEOCODER_NOT_CONFIGURED` until an operator points this at
    * a self-hosted or public Nominatim instance (decisions.md). */
   GEOCODER_URL: z.string().url().optional(),
+
+  // --- Virtual ELD / PT Emulator (pt30_pt40/tz.md §9.2) ----------------------
+  /** Unset = allowed unless NODE_ENV=production (resolved by `AppConfigService.virtualEldAllowed`).
+   * `false` hides the web switch (`GET /carrier` -> `virtualEldAvailable:false`), refuses to turn it
+   * on (409 VIRTUAL_ELD_NOT_ALLOWED) and rejects every request from a virtual device (403). */
+  VIRTUAL_ELD_ALLOWED: z
+    .enum(['true', 'false'])
+    .optional()
+    .transform((v) => (v === undefined ? undefined : v === 'true')),
 
   // --- misc ----------------------------------------------------------------
   SEED_ANCHOR_DATE: z.string().optional(),

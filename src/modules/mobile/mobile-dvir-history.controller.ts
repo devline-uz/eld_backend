@@ -1,5 +1,6 @@
-import { Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { Controller, Get, Param, Query, Res, UseGuards } from '@nestjs/common';
+import { ApiBearerAuth, ApiOperation, ApiProduces, ApiResponse, ApiTags } from '@nestjs/swagger';
+import type { Response } from 'express';
 import { apiError, ApiStandardErrors, ERROR_CODES } from '../../common/errors';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { DriverGuard } from '../../common/guards/driver.guard';
@@ -25,7 +26,7 @@ export class MobileDvirHistoryController {
   @ApiOperation({ summary: 'M-10 — own DVIR history: defect count, condition and repair-status summary per submission.' })
   @ApiEnvelopeResponse(DvirSummaryResponse, {
     isArray: true,
-    example: [{ id: 'dvir_1', vehicleId: 'veh_1', type: 'PRE_TRIP', submittedAt: '2026-09-10T12:00:00.000Z', vehicleCondition: 'DEFECTS_FOUND', defectCount: 1, repairStatus: 'PENDING', trailerNumber: 'X53-1188', odometerMi: 84213 }],
+    example: [{ id: 'dvir_1', vehicleId: 'veh_1', type: 'PRE_TRIP', submittedAt: '2026-09-10T12:00:00.000Z', vehicleCondition: 'DEFECTS_FOUND', defectCount: 1, repairStatus: 'PENDING', trailerNumber: 'X53-1188', odometerMi: 84213, location: { lat: 41.75, lon: -87.98, name: '2mi ESE IL Darien' } }],
   })
   @ApiStandardErrors()
   list(@Query(zodBody(DvirHistoryQueryDto)) query: DvirHistoryQueryDto, @CurrentUser('id') driverId: string) {
@@ -51,19 +52,19 @@ export class MobileDvirHistoryController {
   }
 
   @Get(':id/pdf')
-  @ApiOperation({ summary: 'M-11 — per-DVIR PDF export. Not implemented yet: no single-DVIR PDF generator exists (see MobileDvirHistoryService) — every call answers 501 today; the 200 below documents the contract once a generator lands.' })
+  @ApiOperation({ summary: "M-11 / MB-4 — the driver's own DVIR as a §396.11 PDF (inspection header, defects, §396.13 mechanic review, driver signature). Raw bytes, not enveloped. Another driver's DVIR id answers 404." })
+  @ApiProduces('application/pdf')
   @ApiResponse({
     status: 200,
-    description: 'Future state once a single-DVIR PDF generator exists — every call answers 501 today (see below).',
+    description: 'Raw application/pdf bytes; `Content-Disposition: attachment; filename="dvir-<id>.pdf"`.',
     content: { 'application/pdf': { schema: { type: 'string', format: 'binary', example: '%PDF-1.4 ...' } } },
   })
-  @ApiStandardErrors({
-    errors: [
-      apiError.notFound(ERROR_CODES.DVIR_NOT_FOUND, 'DVIR not found.'),
-      { status: 501, code: ERROR_CODES.NOT_IMPLEMENTED, message: 'A single-DVIR PDF export is not implemented yet.' },
-    ],
-  })
-  pdf(@Param('id') id: string, @CurrentUser('id') driverId: string) {
-    return this.service.pdf(id, driverId);
+  @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.DVIR_NOT_FOUND, 'DVIR not found.')] })
+  async pdf(@Param('id') id: string, @CurrentUser('id') driverId: string, @Res() res: Response): Promise<void> {
+    const pdf = await this.service.pdf(id, driverId);
+    // Writing directly: a returned Buffer would be JSON-serialised by the Express adapter (see dvir-admin.controller).
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="dvir-${id}.pdf"`);
+    res.send(pdf);
   }
 }

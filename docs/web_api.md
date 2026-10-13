@@ -171,6 +171,7 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 - [Xabarlar](#bolim-messaging) — 6 ta
   - `GET /api/conversations` — Chaqiruvchining suhbatlari.
   - `POST /api/conversations` — Berilgan ishtirokchilar bilan shaxsiy yoki guruh suhbati ochadi.
+  - `POST /api/conversations/attachments` — MB-9: chat ovoz/fayl yuklash (multipart), `messaging` FULL.
   - `GET /api/conversations/{id}/messages` — Suhbatdagi xabarlar (chaqiruvchi ishtirokchi bo'lishi shart).
   - `POST /api/conversations/{id}/messages` — Suhbatga xabar yuboradi.
   - `POST /api/conversations/{id}/read` — Chaqiruvchi uchun suhbatni hozirgacha o'qilgan qiladi.
@@ -4378,6 +4379,22 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 ```
 
 **Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `422` VALIDATION_FAILED — Request validation failed.
+
+---
+
+### `POST /api/conversations/attachments`
+
+**Nima qiladi:** MB-9 — chat ovozli xabar (AAC/M4A) yoki fayl (PNG/JPEG/PDF) yuklaydi, <= 10 MB.
+
+- **Auth:** `Authorization: Bearer <access token>` · ruxsat `messaging` FULL · `multipart/form-data`
+- **Maydonlar:** `file` (majburiy), `kind` = `CHAT_AUDIO` | `CHAT_FILE` (majburiy), `durationSec` (ixtiyoriy, faqat CHAT_AUDIO).
+- Tur magic bytes bo'yicha tekshiriladi (e'lon qilingan Content-Type ishonchsiz). Kalit `chat/carrier/{userId}/{uuid}.{ext}`.
+
+**Javob `201`:** `{ "data": { "id": "att_1", "attachmentId": "att_1", "mimeType": "audio/mp4", "sizeBytes": 48211, "durationSec": 12, "kind": "CHAT_AUDIO" } }`
+
+**Xatolar:** `413` FILE_TOO_LARGE · `422` UNSUPPORTED_FILE_TYPE (tur kind'ga mos emas yoki bayt e'londan farq qiladi) · `422` VALIDATION_FAILED (file yo'q/bo'sh).
+
+Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": "att_1" }` yuboring. Xabar ro'yxati/yuborish javobida endi `type` (`TEXT|AUDIO|IMAGE|FILE`) va `attachment` (`{id,url,mimeType,sizeBytes,durationSec}` | `null`) bor, realtime `message.new` ham shunday. Yuklab olish: `GET /api/attachments/{id}/presign` — suhbat ishtirokchisi (haydovchi yoki xodim) bo'lmagan hech kim ola olmaydi (`404 ATTACHMENT_NOT_FOUND`); xodim bo'lsa ham, ruxsatlari qancha keng bo'lmasin.
 
 ---
 

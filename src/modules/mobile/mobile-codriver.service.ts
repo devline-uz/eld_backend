@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { EditorType, Prisma } from '@prisma/client';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
@@ -11,6 +11,8 @@ import type { CoDriverSwitchDto } from './dto/mobile-fleet-ops.dto';
 import { MobileFleetOpsRepository } from './mobile-fleet-ops.repository';
 import { MobileTripService } from './mobile-trip.service';
 import { MobileRepository } from './mobile.repository';
+import { EventBusService } from '../../core/events/event-bus.service';
+import { publishBootstrapChanged, publishVehicleUnassigned } from '../vehicles/vehicle-assignment-events';
 import { RodsLoginRecorder } from '../logs/rods-login-recorder';
 
 /**
@@ -32,6 +34,7 @@ export class MobileCoDriverService {
     private readonly audit: AuditRepository,
     private readonly trips: MobileTripService,
     private readonly loginRecords: RodsLoginRecorder,
+    @Optional() private readonly events?: EventBusService,
   ) {}
 
   /** MR-15 — the caller's active pairing (as either seat), or null. */
@@ -74,13 +77,13 @@ export class MobileCoDriverService {
     }
 
     const now = new Date();
-    await this.repo.endPairing(pairing.id, driverId, now);
-    await this.repo.createPairing({
-      primaryDriverId: coDriverId,
-      coDriverId: driverId,
+    await this.repo.switchSeats({
+      pairingId: pairing.id,
+      endedById: driverId,
+      now,
+      newPrimaryDriverId: coDriverId,
+      newCoDriverId: driverId,
       vehicleId: pairing.vehicleId,
-      startedAt: now,
-      startedById: driverId,
     });
     // D-130 — the co-driver taking the seat authenticates on the unit: §395 Appendix A 4.5.1.5
     // login (idempotent). The handing-over driver stays logged in as the co-driver (4.1.4(b)).
@@ -92,6 +95,9 @@ export class MobileCoDriverService {
       newCoDriverId: driverId,
     });
 
+    await publishBootstrapChanged(this.events, driverId, 'co_driver_switched');
+    await publishBootstrapChanged(this.events, coDriverId, 'co_driver_switched');
+
     return tokens;
   }
 
@@ -102,6 +108,8 @@ export class MobileCoDriverService {
     const now = new Date();
     await this.repo.endPairing(pairing.id, driverId, now);
     await this.repo.clearAssignedVehicle(driverId);
+    await publishVehicleUnassigned(this.events, { driverId, vehicleId: pairing.vehicleId });
+    await publishBootstrapChanged(this.events, pairing.primaryDriverId === driverId ? pairing.coDriverId : pairing.primaryDriverId, 'co_driver_switched');
     // D-130 — leaving the team ends this driver's ELD session on the unit (logout record).
     await this.loginRecords.logout(driverId, 'CO_DRIVER_LEAVE', { onlyVehicleId: pairing.vehicleId });
 

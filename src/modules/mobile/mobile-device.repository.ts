@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { Device } from '@prisma/client';
+import type { Device, Prisma } from '@prisma/client';
 import { PrismaService } from '../../core/prisma/prisma.service';
 
 /** MG-BLE-1/2 — the only device write a driver can cause: filling an EMPTY `bleMacAddress`. */
@@ -9,6 +9,37 @@ export class MobileDeviceRepository {
 
   findDevice(id: string): Promise<Device | null> {
     return this.prisma.device.findUnique({ where: { id } });
+  }
+
+  findBySerial(serial: string): Promise<Device | null> {
+    return this.prisma.device.findUnique({ where: { serial } });
+  }
+
+  findByVehicle(vehicleId: string): Promise<Device | null> {
+    return this.prisma.device.findUnique({ where: { vehicleId } });
+  }
+
+  /**
+   * pt30_pt40/tz.md §9.3 — pair a PT Emulator to `vehicleId` in one transaction: release the
+   * virtual device currently on that unit (if any, `releaseId`), then create or update the row.
+   */
+  pairVirtual(args: {
+    releaseId: string | null;
+    existingId: string | null;
+    create: Prisma.DeviceCreateInput;
+    update: Prisma.DeviceUpdateInput;
+  }): Promise<Device> {
+    return this.prisma.$transaction(async (tx) => {
+      if (args.releaseId) {
+        await tx.device.update({
+          where: { id: args.releaseId },
+          data: { vehicle: { disconnect: true }, status: 'UNASSIGNED', pairedAt: null },
+        });
+      }
+      return args.existingId
+        ? tx.device.update({ where: { id: args.existingId }, data: args.update })
+        : tx.device.create({ data: args.create });
+    });
   }
 
   /** Compare-and-set: writes only while the stored MAC is still empty; returns rows changed (0/1). */

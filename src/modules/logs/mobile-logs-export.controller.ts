@@ -1,5 +1,7 @@
 import { Controller, Get, Param, Query, Res, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
+import { resolveDriverTracker, type TrackableRequest } from '../../common/throttler/principal-tracker';
+import { ApiBearerAuth, ApiOkResponse, ApiProduces, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { Response } from 'express';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { apiError, ApiStandardErrors, ERROR_CODES } from '../../common/errors';
@@ -21,12 +23,16 @@ export class MobileLogsExportController {
   constructor(private readonly exporter: MobileLogsExportService) {}
 
   @Get(':date/export')
+  // B-161 — CSV/PDF rendering is CPU-heavy; 10/min per DRIVER (not per IP: a fleet shares a depot NAT).
+  @Throttle({ default: { limit: 10, ttl: 60_000, getTracker: (req: TrackableRequest) => resolveDriverTracker(req) } })
   @ApiOperation({
-    summary: "Downloads one of the driver's own RODS days. format=csv → text/csv (every §395 record of the day, home-terminal local time). format=pdf → 501 NOT_IMPLEMENTED for now.",
+    summary: "Downloads one of the driver's own RODS days. format=csv → text/csv (every §395 record of the day, home-terminal local time). format=pdf → application/pdf §395.8 daily-log sheet (header fields, 24 h graph grid, remarks).",
   })
+  @ApiProduces('text/csv', 'application/pdf')
   @ApiOkResponse({
-    description: 'Raw CSV (not wrapped in the success envelope), `Content-Disposition: attachment; filename="RODS_<date>.csv"`.',
+    description: 'Raw file (not wrapped in the success envelope), `Content-Disposition: attachment; filename="RODS_<date>.csv|pdf"`.',
     content: {
+      'application/pdf': { schema: { type: 'string', format: 'binary', example: '%PDF-1.4 ...' } },
       'text/csv': {
         schema: { type: 'string' },
         example: 'sequenceId,eventType,eventCode,eventDateTime,status,location,odometerMi,engineHours,origin,recordStatus,annotation\r\n17,1,3,2026-09-10 09:00:00,D,"New Haven, CT",993107,4321.4,ELD,ACTIVE,\r\n',
@@ -37,19 +43,19 @@ export class MobileLogsExportController {
     errors: [
       apiError.forbidden('Driver token required (DRIVER_CONTEXT_REQUIRED).'),
       apiError.notFound(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.'),
-      { status: 501, code: ERROR_CODES.NOT_IMPLEMENTED, message: 'PDF export of a RODS day is not available yet.' },
     ],
   })
   async exportDay(
     @Param(zodBody(LogExportDateParamDto)) params: LogExportDateParamDto,
     @Query(zodBody(LogExportFormatQueryDto)) query: LogExportFormatQueryDto,
     @CurrentUser() actor: ContextUser,
-    @Res({ passthrough: true }) res: Response,
-  ): Promise<string> {
+    @Res() res: Response,
+  ): Promise<void> {
     const file = await this.exporter.exportDay(actor.id, params.date, query.format);
     res.setHeader('Content-Type', file.contentType);
     res.setHeader('Content-Disposition', `attachment; filename="${file.fileName}"`);
-    // A string return value opts out of the JSON success envelope (TransformInterceptor).
-    return file.body;
+    // Written directly (no passthrough): the envelope interceptor is bypassed and a Buffer is
+    // never JSON-serialised by the Express adapter.
+    res.send(file.body);
   }
 }

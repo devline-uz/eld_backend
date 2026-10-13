@@ -66,8 +66,9 @@ export class MobileMessagingController {
 
   @Get(':id/messages')
   @ApiQuery({ name: 'limit', required: false })
-  @ApiQuery({ name: 'before', required: false })
-  @ApiOperation({ summary: 'Cursor-paginated message history for a conversation the driver participates in.' })
+  @ApiQuery({ name: 'before', required: false, description: 'Message id; returns strictly older messages, newest first.' })
+  @ApiQuery({ name: 'after', required: false, description: 'MB-8 reconnect catch-up: message id OR ISO-8601 instant; returns strictly newer messages, OLDEST first. Mutually exclusive with `before`.' })
+  @ApiOperation({ summary: 'Cursor-paginated message history for a conversation the driver participates in (`before` = older page, `after` = catch-up).' })
   @ApiEnvelopeResponse(MobileMessagePageResponse, { example: { items: [{ id: 'msg_1', conversationId: 'cnv_1', senderUserId: 'usr_1', senderDriverId: null, body: 'On schedule.', attachmentId: null, clientId: null, sentAt: '2026-09-11T15:00:00.000Z', deliveredAt: null, readAt: null, senderId: 'usr_1', senderType: 'STAFF', senderName: 'Jane Dispatcher' }], limit: 50 } })
   @ApiStandardErrors({
     errors: [

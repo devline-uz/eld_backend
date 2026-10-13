@@ -53,7 +53,15 @@ import { LogsRepository } from './logs.repository';
 import { RodsEventWriter } from './rods-event-writer';
 import { affectedHeaderRange, buildDailyLogHeaders, RODS_HEADER_LOOKBACK_DAYS } from './daily-log-header';
 import { ongoingViolationsAtDayStart } from './ongoing-violations';
-import { activeRecords, drivingIntervals, specialInEffectAt, statusInEffectAt, type RodsEvent } from './rods';
+import {
+  activeRecords,
+  buildRodsDay,
+  drivingIntervals,
+  specialInEffectAt,
+  statusInEffectAt,
+  type RodsEvent,
+  type RodsSegment,
+} from './rods';
 
 /** History pulled in around an edited instant so the edit rules see the neighbouring records. */
 const LOOKBACK_DAYS = 2;
@@ -541,16 +549,78 @@ export class LogsService {
     };
   }
 
-  async listEditRequests(driverId: string, query: EditRequestListQueryDto) {
+  async listEditRequests(driverId: string, query: EditRequestListQueryDto, now: Date = new Date()) {
     const driver = await this.requireDriver(driverId);
     const timezone = driver.homeTerminalTimezone;
     const from = query.from ? dayStart(timezone, query.from) : undefined;
     const to = query.to ? dayEnd(timezone, query.to) : undefined;
     const requests = await this.repo.findEditRequests(driverId, from, to);
     const markers = await this.repo.findSupersedingEvents(requests.map((row) => row.id));
-    const views = requests.map((request) => this.toEditRequestView(request, markers));
-    const filtered = query.status === 'ALL' ? views : views.filter((view) => view.status === query.status);
-    return { driverId, items: filtered };
+    const pairs = requests.map((request) => ({ request, view: this.toEditRequestView(request, markers) }));
+    const filtered = query.status === 'ALL' ? pairs : pairs.filter((pair) => pair.view.status === query.status);
+
+    // MB-10 — what the "Carrier edit requests" screen draws: the RODS day, the record being
+    // replaced, the day as it would look after accepting, and who asked.
+    const originalIds = filtered
+      .map((pair) => pair.request.supersedesId)
+      .filter((id): id is bigint => id !== null);
+    const [originals, requesters] = await Promise.all([
+      this.repo.findEventsByIds(originalIds),
+      this.repo.findUserNames(
+        [...new Set(filtered.map((pair) => pair.request.editedById).filter((id): id is string => Boolean(id)))],
+      ),
+    ]);
+    const originalById = new Map(originals.map((event) => [String(event.id), event]));
+    const editContexts = new Map<string, Awaited<ReturnType<LogsService['loadEditContext']>>>();
+    const dayWindows = new Map<string, RodsEvent[]>();
+
+    const items = [];
+    for (const { request, view } of filtered) {
+      const date = dayKey(timezone, request.eventDateTime);
+      const original = request.supersedesId === null ? null : (originalById.get(String(request.supersedesId)) ?? null);
+      const anchor = original ? original.eventDateTime : request.eventDateTime;
+
+      let dayEvents = dayWindows.get(date);
+      if (!dayEvents) {
+        dayEvents = await this.repo.findEvents(
+          driverId,
+          dayStart(timezone, addDays(date, -RODS_HEADER_LOOKBACK_DAYS)),
+          new Date(Math.max(dayEnd(timezone, addDays(date, 1)).getTime(), now.getTime())),
+        );
+        dayWindows.set(date, dayEvents);
+      }
+
+      let proposedGraph: RodsSegment[] = [];
+      if (view.status === 'PENDING' && (original || request.supersedesId === null)) {
+        const anchorKey = dayKey(timezone, anchor);
+        let context = editContexts.get(anchorKey);
+        if (!context) {
+          context = await this.loadEditContext(driverId, timezone, anchor, now);
+          editContexts.set(anchorKey, context);
+        }
+        const { rows } = this.planAcceptance(request, original, context, now);
+        proposedGraph = previewDay(dayEvents, rows, timezone, date, now);
+      }
+
+      items.push({
+        ...view,
+        /** MB-10 — RODS day of `proposedStart`, home-terminal zone. */
+        date,
+        original: original
+          ? {
+              status: original.eventType === 1 ? (DUTY_STATUS_BY_CODE[original.eventCode] ?? null) : null,
+              start: original.eventDateTime,
+              end: this.nextActiveDutyAfter(dayEvents, original.eventDateTime, original.id),
+              location: locationTextOf(original),
+            }
+          : null,
+        proposedGraph,
+        requestedBy: request.editedById
+          ? { id: request.editedById, name: requesters.get(request.editedById) ?? null }
+          : null,
+      });
+    }
+    return { driverId, items };
   }
 
   /** §9.1 step 3 — the driver accepts: new record active (1), old record inactive (2). */
@@ -560,52 +630,10 @@ export class LogsService {
     const now = new Date();
     const anchor = original ? original.eventDateTime : request.eventDateTime;
     const context = await this.loadEditContext(driver.id, timezone, anchor, now);
-
-    const proposedStatus = DUTY_STATUS_BY_CODE[request.eventCode];
-    const meta = parseProposalMeta(request.comment);
-    const proposedEnd = meta.proposedEnd;
-    const target = original
-      ? {
-          id: original.id,
-          eventType: original.eventType,
-          eventCode: original.eventCode,
-          eventDateTime: original.eventDateTime,
-          intervalEndAt: this.intervalEndOf(context.events, original, now),
-        }
-      : null;
+    const { rows, meta, immutability } = this.planAcceptance(request, original, context, now);
 
     // Re-checked at apply time: the timeline may have changed since the proposal was made.
-    this.assertDrivingImmutable(
-      checkEditProposal(
-        target ?? this.insertTarget(context.events, request.eventDateTime, now),
-        { proposedStatus, proposedStart: request.eventDateTime, proposedEnd },
-        context.driving,
-      ),
-    );
-
-    const rows = planAcceptEdit(
-      {
-        id: request.id,
-        eventType: request.eventType,
-        eventCode: request.eventCode,
-        eventDateTime: request.eventDateTime,
-      },
-      target,
-      {
-        status: proposedStatus,
-        startAt: request.eventDateTime,
-        endAt: proposedEnd,
-        annotation: request.annotation ?? request.editReason ?? 'Carrier edit accepted',
-        statusBeforeTarget: original ? statusInEffectAt(context.events, original.eventDateTime) : null,
-        // B-72 — a proposed interval on an empty day falls back to OFF (§395.8(a): no record
-        // is off duty), otherwise it would run on until the driver's next record.
-        statusAfterInterval: proposedEnd
-          ? (statusInEffectAt(context.events, proposedEnd) ?? (original ? null : 'OFF'))
-          : null,
-        special: meta.special,
-        specialClearAt: this.nextActiveDutyAfter(context.events, request.eventDateTime, original?.id ?? null),
-      },
-    );
+    this.assertDrivingImmutable(immutability);
 
     await this.repo.runInTransaction((tx) =>
       this.writer.append(
@@ -649,6 +677,60 @@ export class LogsService {
     });
 
     return { id: String(request.id), status: 'ACCEPTED' as const, applied: true };
+  }
+
+  /**
+   * §9.1 step 3 — what accepting `request` appends, computed against `context` (the same plan
+   * `acceptEditRequest` writes and `GET /mobile/log-edit-requests` previews as `proposedGraph`,
+   * MB-10). `immutability` is the §395.30(c)(2) verdict; the caller decides whether to throw.
+   */
+  private planAcceptance(
+    request: EldEvent,
+    original: EldEvent | null,
+    context: { events: RodsEvent[]; driving: ReturnType<typeof drivingIntervals> },
+    now: Date,
+  ) {
+    const proposedStatus = DUTY_STATUS_BY_CODE[request.eventCode];
+    const meta = parseProposalMeta(request.comment);
+    const proposedEnd = meta.proposedEnd;
+    const target = original
+      ? {
+          id: original.id,
+          eventType: original.eventType,
+          eventCode: original.eventCode,
+          eventDateTime: original.eventDateTime,
+          intervalEndAt: this.intervalEndOf(context.events, original, now),
+        }
+      : null;
+    const immutability = checkEditProposal(
+      target ?? this.insertTarget(context.events, request.eventDateTime, now),
+      { proposedStatus, proposedStart: request.eventDateTime, proposedEnd },
+      context.driving,
+    );
+    const rows = planAcceptEdit(
+      {
+        id: request.id,
+        eventType: request.eventType,
+        eventCode: request.eventCode,
+        eventDateTime: request.eventDateTime,
+      },
+      target,
+      {
+        status: proposedStatus,
+        startAt: request.eventDateTime,
+        endAt: proposedEnd,
+        annotation: request.annotation ?? request.editReason ?? 'Carrier edit accepted',
+        statusBeforeTarget: original ? statusInEffectAt(context.events, original.eventDateTime) : null,
+        // B-72 — a proposed interval on an empty day falls back to OFF (§395.8(a): no record
+        // is off duty), otherwise it would run on until the driver's next record.
+        statusAfterInterval: proposedEnd
+          ? (statusInEffectAt(context.events, proposedEnd) ?? (original ? null : 'OFF'))
+          : null,
+        special: meta.special,
+        specialClearAt: this.nextActiveDutyAfter(context.events, request.eventDateTime, original?.id ?? null),
+      },
+    );
+    return { rows, meta, immutability };
   }
 
   /** §9.1 step 3 — the driver rejects: the request is closed (4), the log is untouched. */
@@ -1218,7 +1300,13 @@ export class LogsService {
       event: 'log.edit_requested',
       payload,
     });
-    await this.raiseAlert('alert.edit_request', payload);
+    // MB-7 — `title`/`message` become the in-app row + FCM text (the alert pipeline otherwise
+    // falls back to a generic "Alert"). Identifiers only; no times or locations in the push.
+    await this.raiseAlert('alert.edit_request', {
+      ...payload,
+      title: 'Log edit request',
+      message: 'Your carrier proposed a change to your log. Review it in the app.',
+    });
   }
 
   private async loadPendingRequest(requestId: string, actor: ContextUser) {
@@ -1385,6 +1473,35 @@ function toNumberOrNull(value: unknown): number | null {
   if (value === null || value === undefined) return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+/**
+ * MB-10 — the RODS day `date` as it would read once `rows` (an accept plan) are appended: the
+ * rows get synthetic ids and sequence ids after every existing record, exactly as the writer
+ * hands them out (chronological, then plan order), and the day is rebuilt by `buildRodsDay`.
+ */
+export function previewDay(
+  events: RodsEvent[],
+  rows: AppendRow[],
+  timezone: string,
+  date: string,
+  now: Date,
+): RodsSegment[] {
+  const maxSequence = events.reduce((max, event) => Math.max(max, event.eventSequenceId), 0);
+  const ordered = rows
+    .map((row, index) => ({ row, index }))
+    .sort((a, b) => a.row.at.getTime() - b.row.at.getTime() || a.index - b.index);
+  const synthetic: RodsEvent[] = ordered.map(({ row }, index) => ({
+    id: BigInt(-(index + 1)),
+    eventType: row.eventType,
+    eventCode: row.eventCode,
+    eventDateTime: row.at,
+    recordStatus: row.recordStatus,
+    recordOrigin: row.recordOrigin,
+    eventSequenceId: maxSequence + 1 + index,
+    supersedesId: row.supersedesId,
+  }));
+  return buildRodsDay([...events, ...synthetic], timezone, date, now).segments;
 }
 
 function firstId(ids: Map<string, bigint>, rows: AppendRow[], kind?: string): bigint {

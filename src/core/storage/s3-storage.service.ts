@@ -21,6 +21,8 @@ import { PutObjectOptions, StoragePort } from './storage.port';
 @Injectable()
 export class S3StorageService implements StoragePort {
   private readonly client: S3Client;
+  /** MB-1 — signs presigned URLs against the public origin; same as `client` when unset. */
+  private readonly signingClient: S3Client;
   private readonly bucket: string;
   private readonly prefix: string;
   private readonly defaultTtl: number;
@@ -40,6 +42,18 @@ export class S3StorageService implements StoragePort {
       // PUT URL (`x-amz-checksum-crc32=AAAAAA==`), so a real upload fails with BadDigest.
       requestChecksumCalculation: 'WHEN_REQUIRED',
     });
+    // MB-1 — the signature covers the Host header, so the URL host must be the one the client
+    // calls; a second client with the public endpoint (always path-style: nginx maps /<bucket>/).
+    const publicEndpoint = config.get('S3_PUBLIC_ENDPOINT');
+    this.signingClient = publicEndpoint
+      ? new S3Client({
+          region: config.get('S3_REGION'),
+          endpoint: publicEndpoint,
+          forcePathStyle: true,
+          credentials: accessKeyId && secretAccessKey ? { accessKeyId, secretAccessKey } : undefined,
+          requestChecksumCalculation: 'WHEN_REQUIRED',
+        })
+      : this.client;
   }
 
   private withPrefix(key: string): string {
@@ -123,7 +137,7 @@ export class S3StorageService implements StoragePort {
     // PUT any Content-Type (stored XSS via `text/html` served from the bucket origin) and
     // any size. Binding both headers makes S3/MinIO reject a mismatching upload.
     return getSignedUrl(
-      this.client,
+      this.signingClient,
       new PutObjectCommand({
         Bucket: this.bucket,
         Key: this.withPrefix(key),
@@ -139,7 +153,7 @@ export class S3StorageService implements StoragePort {
 
   presignGet(key: string, ttlSec?: number): Promise<string> {
     return getSignedUrl(
-      this.client,
+      this.signingClient,
       new GetObjectCommand({ Bucket: this.bucket, Key: this.withPrefix(key) }),
       { expiresIn: ttlSec ?? this.defaultTtl },
     );

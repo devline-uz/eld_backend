@@ -61,6 +61,8 @@ export const DeviceListQueryDto = z.object({
   /** §20 B-35 — `GET /devices?vehicleId=` join so the web fleet table can resolve one unit's
    * device without pulling the whole registry (W-03 ELD SERIAL column, W-04 ELD device). */
   vehicleId: z.string().uuid().optional(),
+  /** pt30_pt40/tz.md §9.3 — `?virtual=true` only PT Emulator devices, `false` only real ones; unset = both. */
+  virtual: z.enum(['true', 'false']).transform((v) => v === 'true').optional(),
 });
 export type DeviceListQueryDto = z.infer<typeof DeviceListQueryDto>;
 

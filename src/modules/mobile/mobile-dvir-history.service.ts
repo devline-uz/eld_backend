@@ -4,6 +4,7 @@ import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
 import { locationTextOf } from '../../common/geo-location/location-description';
 import { STORAGE_PORT, StoragePort } from '../../core/storage/storage.port';
+import { DvirPdfBuilder } from '../service/dvir-pdf.builder';
 import { DvirWithDetail, MobileFleetOpsRepository } from './mobile-fleet-ops.repository';
 
 const PRESIGN_TTL_SEC = 15 * 60;
@@ -11,16 +12,15 @@ const PRESIGN_TTL_SEC = 15 * 60;
 /**
  * mobile/tz.md §21.1 MB-10, screens M-10/M-11/P-07 — the driver's own DVIR history.
  *
- * Read-only: `MobileDvirService` (§5.10) owns submission. `GET /mobile/dvirs/:id/pdf` has no
- * per-DVIR PDF generator to reuse yet — `ReportsModule`'s `DvirReportGenerator` only builds
- * the fleet-wide CSV job (`GET /reports/dvir`), never a single-record PDF with the signature
- * image embedded — so that route answers `501 NOT_IMPLEMENTED` until Phase 7/15 grows one.
+ * Read-only: `MobileDvirService` (§5.10) owns submission.
+ * MB-4: `GET /mobile/dvirs/:id/pdf` reuses the web `DvirPdfBuilder` (template `dvir-single`).
  */
 @Injectable()
 export class MobileDvirHistoryService {
   constructor(
     private readonly repo: MobileFleetOpsRepository,
     @Inject(STORAGE_PORT) private readonly storage: StoragePort,
+    private readonly pdfBuilder: DvirPdfBuilder,
   ) {}
 
   async list(driverId: string, days: number) {
@@ -35,12 +35,12 @@ export class MobileDvirHistoryService {
     return this.toDetailShape(dvir);
   }
 
-  async pdf(id: string, driverId: string): Promise<never> {
-    // Ownership is still checked before reporting "not implemented" — never leak that a DVIR
-    // id belonging to another driver exists.
-    const dvir = await this.repo.getOwnDvir(id, driverId);
+  /** MB-4 — the §396.11 PDF of one of the driver's own DVIRs (same template as the web `GET /dvir/:id/pdf`). */
+  async pdf(id: string, driverId: string): Promise<Buffer> {
+    // Ownership is part of the query — another driver's DVIR id answers 404, never 403.
+    const dvir = await this.repo.getOwnDvirForPdf(id, driverId);
     if (!dvir) throw new AppException(ERROR_CODES.DVIR_NOT_FOUND, 'DVIR not found.', 404, { id });
-    throw AppException.notImplemented('A single-DVIR PDF export');
+    return this.pdfBuilder.build(dvir);
   }
 
   private async toDetailShape(dvir: DvirWithDetail) {
@@ -68,10 +68,7 @@ export class MobileDvirHistoryService {
       submittedAt: dvir.submittedAt,
       odometerMi: dvir.odometerMi,
       // MR-14 — also returned when only a place name was captured (no GPS fix); lat/lon are then null.
-      location:
-        dvir.latitude !== null || dvir.longitude !== null || dvir.locationName
-          ? { lat: dvir.latitude === null ? null : Number(dvir.latitude), lon: dvir.longitude === null ? null : Number(dvir.longitude), name: locationTextOf(dvir) }
-          : null,
+      location: dvirLocationOf(dvir),
       trailerNumber: dvir.trailer?.number ?? dvir.trailerNumber ?? null,
       vehicleCondition: dvir.vehicleCondition,
       notes: dvir.notes,
@@ -99,6 +96,13 @@ export class MobileDvirHistoryService {
   }
 }
 
+/** MR-14 / MB-15 — shared by the list rows and the detail view; null when nothing was captured. */
+function dvirLocationOf(dvir: Dvir) {
+  return dvir.latitude !== null || dvir.longitude !== null || dvir.locationName
+    ? { lat: dvir.latitude === null ? null : Number(dvir.latitude), lon: dvir.longitude === null ? null : Number(dvir.longitude), name: locationTextOf(dvir) }
+    : null;
+}
+
 function toSummaryShape(dvir: Dvir & { _count: { defects: number }; trailer: { number: string } | null }) {
   return {
     id: dvir.id,
@@ -111,5 +115,7 @@ function toSummaryShape(dvir: Dvir & { _count: { defects: number }; trailer: { n
     // MR-14 (additive)
     trailerNumber: dvir.trailer?.number ?? dvir.trailerNumber ?? null,
     odometerMi: dvir.odometerMi,
+    // MB-15 (additive) — same object as the detail view's `location`.
+    location: dvirLocationOf(dvir),
   };
 }

@@ -18,6 +18,8 @@ import { LogsService } from './logs.service';
 import { ActiveViolationsService } from '../violations/active-violations.service';
 import { apiError, ApiStandardErrors, ERROR_CODES } from '../../common/errors';
 import { FigmaScreen } from '../../common/decorators/figma-screen.decorator';
+import { ApiEnvelopeResponse } from '../../common/swagger/api-envelope';
+import { EditRequestResolutionResponse } from './dto/logs.responses';
 
 /**
  * TZ §9 / §11.4 — the "HOS Logs" Figma section: the daily log grid, the §395.30 edit flow and
@@ -45,18 +47,13 @@ export class LogsController {
     summary:
       'Driver accepts a carrier edit (§395.30): the proposal becomes the active record and the original is marked Inactive — Changed.',
   })
-  @ApiCreatedResponse({
-    description: 'The proposal is now the active record; the original keeps recordStatus = 2 (Inactive — Changed).',
-    schema: {
-      example: {
-        id: 'edt_1',
-        status: 'ACCEPTED',
-        resolvedAt: '2026-09-11T15:41:00.000Z',
-        activeEventId: 'evt_9001',
-        supersededEventId: 'evt_8801',
-        recertificationRequired: true,
-      },
-    },
+  @ApiEnvelopeResponse(EditRequestResolutionResponse, {
+    status: 201,
+    description:
+      'MB-12 — the real `data` payload. The proposal is now the active record (recordStatus 1); the original is retired ' +
+      '(recordStatus 2, Inactive — Changed); the touched days lose their certification (re-certify, §395.30) and hos.recalc runs. ' +
+      'Body `{note?: string}` (optional, may be omitted). Refresh `GET /mobile/logs` for the new day.',
+    example: { id: '9120', status: 'ACCEPTED', applied: true },
   })
   @ApiStandardErrors({
     errors: [
@@ -76,7 +73,13 @@ export class LogsController {
   @Post('edit-requests/:id/reject')
   @UseGuards(DriverGuard)
   @ApiOperation({ summary: 'Driver rejects a carrier edit (§395.30): the request is closed, the log is unchanged.' })
-  @ApiCreatedResponse({ description: 'The request is closed and the log is untouched.', schema: { example: { id: 'edt_1', status: 'REJECTED', resolvedAt: '2026-09-11T15:41:00.000Z', driverComment: 'I was off duty, not on duty.' } } })
+  @ApiEnvelopeResponse(EditRequestResolutionResponse, {
+    status: 201,
+    description:
+      'MB-12 — the real `data` payload. The proposal gets a recordStatus 4 (Inactive — Change Rejected) marker; the log is untouched. ' +
+      'Body `{note?: string}` (optional, stored as the edit reason).',
+    example: { id: '9120', status: 'REJECTED', applied: false },
+  })
   @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.NOT_FOUND, 'Edit request not found.'), apiError.conflict(ERROR_CODES.EDIT_ALREADY_RESOLVED, 'This edit request was already accepted or rejected.')] })
   reject(
     @Param('id') id: string,

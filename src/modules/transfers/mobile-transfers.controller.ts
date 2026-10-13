@@ -27,7 +27,7 @@ export class MobileTransfersController {
     summary:
       "Driver-initiated eRODS transfer of the driver's own RODS: generates and validates the §395 Appendix A file, stores it, queues the send. TEST mode never sends to FMCSA (status TEST_ONLY).",
     description:
-      'The row is returned as it stands right after generation (`status = QUEUED`); the worker moves it to TEST_ONLY / SENT / ACCEPTED / REJECTED / FAILED and fills `referenceId` + `sentAt`. Poll `GET /mobile/transfers` for the receipt (S-10).',
+      'The row is returned as it stands right after generation (`status = QUEUED`); the worker moves it to TEST_ONLY / SENT / ACCEPTED / REJECTED / FAILED and fills `referenceId` + `sentAt`. Poll `GET /mobile/transfers` for the receipt (S-10). MB-18 — an offline roadside-inspection transfer is queued by the app and replayed on reconnect: send a `clientId` (idempotent — a replay returns the FIRST result, no second file or send; a clientId used by another operation is 409) and optionally `requestedAt` (device time of the request, echoed back). 4xx is final; retry only on 5xx/network.',
   })
   @ApiEnvelopeResponse(MobileTransferCreatedResponse, {
     status: 201,
@@ -45,6 +45,8 @@ export class MobileTransfersController {
       rangeEnd: '2026-09-10T00:00:00.000Z',
       warnings: ['ERODS_TEST_MODE'],
       counts: { header: 9, events: 42 },
+      clientId: '0b9d6f5e-0000-4000-8000-000000000002',
+      requestedAt: '2026-09-10T15:40:00.000Z',
     },
   })
   @ApiStandardErrors({

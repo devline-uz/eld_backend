@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { DateTime } from 'luxon';
 import type { Prisma, Vehicle } from '@prisma/client';
 import { AppException } from '../../common/errors/app.exception';
@@ -7,8 +7,9 @@ import { OffsetPage, parseSort, toOffsetPage } from '../../common/dto/list-query
 import { applyOdometerOffsetMi, computeOdometerOffsetMi } from '../../common/units/odometer';
 import { CarrierRepository } from '../carrier/carrier.repository';
 import { DriversRepository } from '../drivers/drivers.repository';
-import { FirebaseService } from '../../core/firebase/firebase.service';
-import { MobileRepository } from '../mobile/mobile.repository';
+import { PushService } from '../../core/firebase/push.service';
+import { EventBusService } from '../../core/events/event-bus.service';
+import { publishNotificationNew, publishVehicleAssigned, publishVehicleUnassigned } from './vehicle-assignment-events';
 import { NotificationsRepository } from '../notifications/notifications.repository';
 import { MAIL_PORT, MailPort } from '../transfers/mail.port';
 import { UsersRepository } from '../users/users.repository';
@@ -25,6 +26,7 @@ import {
 } from './lib/vehicle-uniques';
 import {
   AssignDriverDto,
+  UnassignDriverDto,
   BulkUpdateVehicleStatusDto,
   CalibrateOdometerDto,
   CreateVehicleDto,
@@ -124,9 +126,9 @@ export class VehiclesService {
     private readonly notifications: NotificationsRepository,
     private readonly carrier: CarrierRepository,
     private readonly users: UsersRepository,
-    private readonly mobile: MobileRepository,
-    private readonly firebase: FirebaseService,
+    private readonly push: PushService,
     @Inject(MAIL_PORT) private readonly mail: MailPort,
+    @Optional() private readonly events?: EventBusService,
   ) {}
 
   /** UI-004 — the page plus `statusCounts`: fleet-wide ACTIVE / INACTIVE / OUT_OF_SERVICE (filters ignored). */
@@ -300,7 +302,10 @@ export class VehiclesService {
       throw AppException.conflict(`This unit still has open trips (${numbers}). Reassign or cancel them first.`, { openTrips });
     }
     const driver = await this.drivers.findOne({ assignedVehicleId: id });
-    if (driver) await this.drivers.update({ id: driver.id }, { assignedVehicle: { disconnect: true } });
+    if (driver) {
+      await this.drivers.update({ id: driver.id }, { assignedVehicle: { disconnect: true } });
+      await publishVehicleUnassigned(this.events, { driverId: driver.id, vehicleId: id });
+    }
     const removed = await this.vehicles.update({ id }, { status: 'INACTIVE', deletedAt: new Date() });
     // A deleted unit gives its ELD device back, like its unit number / VIN / plate.
     await this.vehicles.releaseDevice(id);
@@ -363,6 +368,7 @@ export class VehiclesService {
       if (isUniqueViolation(err)) throw AppException.conflict('Vehicle is already assigned to another driver.');
       throw err;
     }
+    await publishVehicleAssigned(this.events, { driverId: dto.driverId, vehicleId, unitNumber: vehicle.unitNumber });
     if (dto.notify) {
       const title = 'New unit assignment';
       const body = `You've been assigned to unit ${vehicle.unitNumber}.`;
@@ -375,28 +381,58 @@ export class VehiclesService {
         objectId: vehicleId,
         category: 'assignment',
       });
+      await publishNotificationNew(this.events, dto.driverId, notification);
       // §12.7 — background app gets FCM too, not just the in-app inbox row (same
       // IN_APP + FCM pairing `AlertProcessor.send` uses for every other driver alert).
-      if (this.firebase.enabled) {
-        const tokens = await this.mobile.findPushTokens(dto.driverId);
-        await Promise.allSettled(
-          tokens.map((t) =>
-            this.firebase.sendToToken(
-              t.token,
-              { title, body },
-              { type: 'ASSIGNMENT', id: notification.id, driverId: dto.driverId },
-            ),
-          ),
-        );
-      }
+      await this.push.sendToDriver(
+        dto.driverId,
+        { title, body },
+        {
+          type: 'ASSIGNMENT',
+          id: notification.id,
+          driverId: dto.driverId,
+          objectType: notification.objectType,
+          objectId: notification.objectId,
+          category: notification.category,
+        },
+      );
     }
     return vehicle;
   }
 
-  async unassignDriver(vehicleId: string): Promise<Vehicle> {
+  /** Clears the unit's driver. `notify` (default true) tells the driver in-app + FCM, kind ASSIGNMENT. */
+  async unassignDriver(vehicleId: string, dto: UnassignDriverDto = { notify: true }): Promise<Vehicle> {
     const vehicle = await this.get(vehicleId);
     const driver = await this.drivers.findOne({ assignedVehicleId: vehicleId });
-    if (driver) await this.drivers.update({ id: driver.id }, { assignedVehicle: { disconnect: true } });
+    if (!driver) return vehicle;
+    await this.drivers.update({ id: driver.id }, { assignedVehicle: { disconnect: true } });
+    await publishVehicleUnassigned(this.events, { driverId: driver.id, vehicleId });
+    if (dto.notify) {
+      const title = 'Unit unassigned';
+      const body = `You've been unassigned from unit ${vehicle.unitNumber}.`;
+      const notification = await this.notifications.create({
+        driverId: driver.id,
+        type: 'ASSIGNMENT',
+        title,
+        body,
+        objectType: 'Vehicle',
+        objectId: vehicleId,
+        category: 'assignment',
+      });
+      await publishNotificationNew(this.events, driver.id, notification);
+      await this.push.sendToDriver(
+        driver.id,
+        { title, body },
+        {
+          type: 'ASSIGNMENT',
+          id: notification.id,
+          driverId: driver.id,
+          objectType: notification.objectType,
+          objectId: notification.objectId,
+          category: notification.category,
+        },
+      );
+    }
     return vehicle;
   }
 

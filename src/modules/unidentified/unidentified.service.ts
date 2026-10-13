@@ -3,6 +3,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { EditorType, type EldEvent, type Prisma, type UnidentifiedSegment } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { AppException } from '../../common/errors/app.exception';
+import { locationTextOf } from '../../common/geo-location/location-description';
 import { ERROR_CODES } from '../../common/errors/codes';
 import type { ContextUser } from '../../core/context/request-context';
 import { RequestContext } from '../../core/context/request-context';
@@ -27,9 +28,12 @@ import { UnidentifiedRepository } from './unidentified.repository';
  * TZ §5.9 / §7.4 / §23 — unidentified driving.
  *
  * Two invariants dominate this file:
- *   1. `recordOrigin` of an assigned record is `1` (automatically recorded by the ELD) and is
- *      NEVER `2`. Attribution does not make a record driver-entered (§23, §7.4). Rejecting an
- *      assignment puts the records back in the pool as `recordOrigin = 4`, `driverId = null`.
+ *   1. An attributed record is NEVER `recordOrigin = 2` — attribution does not make a record
+ *      driver-entered (§23, §7.4). A carrier assignment keeps `1` (automatically recorded by the
+ *      ELD, TZ §23). MB-3 / B-157 / D-137 — when the DRIVER assumes the records (accepts a confirmation
+ *      request or self-claims), Appendix A 4.4.4.2.4(e) requires `4` ("assumed from unidentified
+ *      driver profile"); Appendix A outranks tz.md. Rejecting an assignment puts the records back
+ *      in the pool as `recordOrigin = 4`, `driverId = null`.
  *   2. Device-stored events are never lost. `EldEvent` is append-only, so assignment appends
  *      an attributed copy and an "Inactive — Changed" marker; the original row, with its
  *      original `eventSequenceId` and checksum, stays in the table forever (§23).
@@ -83,7 +87,7 @@ export class UnidentifiedService {
    * record with `recordOrigin = 1` (never 2) and retires the pool record with an
    * "Inactive — Changed" marker. Writes `UNIDENTIFIED_ASSIGNED` to the audit log.
    */
-  async assign(id: string, dto: AssignUnidentifiedDto, actor: ContextUser) {
+  async assign(id: string, dto: AssignUnidentifiedDto, actor: ContextUser, opts: { driverAssumed?: boolean } = {}) {
     const segment = await this.requireSegment(id);
     if (segment.status === 'ASSIGNED') {
       throw new AppException(
@@ -115,7 +119,7 @@ export class UnidentifiedService {
     }
     return this.attribute(segment, pool, driver, dto.annotation ?? null, actor, {
       assignedById: actor.id,
-      confirmedByDriver: false,
+      confirmedByDriver: opts.driverAssumed === true,
     });
   }
 
@@ -166,18 +170,37 @@ export class UnidentifiedService {
       event: 'unidentified.confirmation_requested',
       payload,
     });
-    await this.raiseAlert('alert.unidentified_confirmation_requested', payload);
+    // MB-7 — title/message for the in-app row + FCM (identifiers only in `data`).
+    await this.raiseAlert('alert.unidentified_confirmation_requested', {
+      ...payload,
+      title: 'Was this you?',
+      message: 'Your carrier asked you to confirm unidentified driving time.',
+    });
     return this.toView(updated);
   }
 
-  /** B-83 — the driver-app list of segments a carrier asked THIS driver to confirm. */
+  /**
+   * B-83 — the driver-app list of segments a carrier asked THIS driver to confirm. MB-11 — each
+   * item also carries what the "Was this you?" card shows: start/end location (Appendix A 7.29
+   * text), the unit number and the start/end odometer, all read from the segment's own records.
+   */
   async listConfirmationRequests(actor: ContextUser) {
     const page = await this.repo.listSegments(
       { status: 'PENDING_CONFIRMATION', assignedDriverId: actor.id },
       1,
       200,
     );
-    return { items: page.items.map((item) => this.toView(item)) };
+    const segments = page.items;
+    const [events, units] = await Promise.all([
+      this.repo.findEventsByIds(segments.flatMap((segment) => segment.eventIds)),
+      this.repo.findVehicleUnitNumbers([...new Set(segments.map((segment) => segment.vehicleId))]),
+    ]);
+    return {
+      items: segments.map((segment) => ({
+        ...this.toView(segment),
+        ...confirmationCardOf(segment, events, units),
+      })),
+    };
   }
 
   /**
@@ -209,14 +232,16 @@ export class UnidentifiedService {
       annotation,
     }));
 
-    // 2) The attributed copies. `recordOrigin = 1` — §23: assignment never makes it 2.
+    // 2) The attributed copies — never origin 2 (§23). MB-3: a driver's own assumption is origin 4
+    //    (Appendix A 4.4.4.2.4(e)); a carrier assignment stays origin 1 (TZ §23).
+    const copyOrigin = opts.confirmedByDriver ? RECORD_ORIGIN.UNIDENTIFIED : RECORD_ORIGIN.ELD_AUTOMATIC;
     const copies: AppendRow[] = pool.map((event) => ({
       kind: 'NEW_ACTIVE',
       eventType: event.eventType,
       eventCode: event.eventCode,
       at: event.eventDateTime,
       recordStatus: RECORD_STATUS.ACTIVE,
-      recordOrigin: RECORD_ORIGIN.ELD_AUTOMATIC,
+      recordOrigin: copyOrigin,
       supersedesId: event.id,
       annotation,
     }));
@@ -281,10 +306,12 @@ export class UnidentifiedService {
         assignedDriverId: driver.id,
         assignedById: opts.assignedById,
         confirmedByDriver: opts.confirmedByDriver,
-        recordOrigin: RECORD_ORIGIN.ELD_AUTOMATIC,
+        recordOrigin: copyOrigin,
         events: pool.length,
       },
-      detail: 'Unidentified driving assigned; recordOrigin stays 1 (TZ §23, §7.4).',
+      detail: opts.confirmedByDriver
+        ? 'Unidentified driving assumed by the driver; recordOrigin 4 (Appendix A 4.4.4.2.4(e)).'
+        : 'Unidentified driving assigned; recordOrigin stays 1 (TZ §23, §7.4).',
     });
     // B-050 / B-059 — the attributed driving changes the driver's RODS: every day the segment
     // touches loses its certification (§395.8(f), re-certification required), the day totals are
@@ -340,7 +367,8 @@ export class UnidentifiedService {
       eventCode: event.eventCode,
       at: event.eventDateTime,
       recordStatus: RECORD_STATUS.INACTIVE_CHANGED,
-      recordOrigin: RECORD_ORIGIN.ELD_AUTOMATIC,
+      // The retired copy keeps what it was: 1 (carrier assignment) or 4 (driver assumption, MB-3).
+      recordOrigin: event.recordOrigin,
       supersedesId: event.id,
       annotation,
     }));
@@ -447,7 +475,7 @@ export class UnidentifiedService {
           { segmentId: id },
         );
       }
-      return this.assign(id, { driverId: actor.id, annotation: dto.annotation }, actor);
+      return this.assign(id, { driverId: actor.id, annotation: dto.annotation }, actor, { driverAssumed: true });
     }
     if (segment.assignedDriverId === actor.id) {
       return this.reject(id, { reason: dto.annotation }, actor);
@@ -461,7 +489,8 @@ export class UnidentifiedService {
 
   /**
    * B-83 — the asked driver answers a carrier's confirmation request. Accept: the records are
-   * attributed now (origin 1, never 2), `assignedById` stays the carrier user who decided.
+   * attributed now (origin 4 — the driver assumes them, Appendix A 4.4.4.2.4(e), MB-3; never 2),
+   * `assignedById` stays the carrier user who decided.
    * Decline: nothing was ever attributed, the segment goes back to `PENDING` for the carrier.
    * Only the driver who was asked may answer.
    */
@@ -617,6 +646,30 @@ export class UnidentifiedService {
       eventIds: segment.eventIds.map((id) => String(id)),
     };
   }
+}
+
+/**
+ * MB-11 — the "Was this you?" card fields of one segment. The stored segment location wins when
+ * set; otherwise the first / last record's location text (stored name, else the offline Appendix
+ * A 7.29 geo-location of the coarsened position). Odometer: first / last record that has one.
+ */
+export function confirmationCardOf(
+  segment: Pick<UnidentifiedSegment, 'vehicleId' | 'eventIds' | 'startLocation' | 'endLocation'>,
+  events: EldEvent[],
+  units: Map<string, string>,
+) {
+  const ids = new Set(segment.eventIds.map((id) => String(id)));
+  const own = events
+    .filter((event) => ids.has(String(event.id)))
+    .sort((a, b) => a.eventDateTime.getTime() - b.eventDateTime.getTime());
+  const withMiles = own.filter((event) => typeof event.totalVehicleMiles === 'number');
+  return {
+    startLocation: segment.startLocation ?? locationTextOf(own[0]),
+    endLocation: segment.endLocation ?? locationTextOf(own[own.length - 1]),
+    unitNumber: units.get(segment.vehicleId) ?? null,
+    startOdometerMi: withMiles.length ? withMiles[0].totalVehicleMiles : null,
+    endOdometerMi: withMiles.length ? withMiles[withMiles.length - 1].totalVehicleMiles : null,
+  };
 }
 
 /** Which original id a superseding record ultimately belongs to. */

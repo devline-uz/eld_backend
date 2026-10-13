@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { AttachmentsController } from './attachments.controller';
 import { AttachmentsRepository } from './attachments.repository';
+import { ChatAttachmentsService } from './chat-attachments.service';
 import { AttachmentsService } from './attachments.service';
 
 /**
@@ -10,7 +11,7 @@ import { AttachmentsService } from './attachments.service';
  */
 @Module({
   controllers: [AttachmentsController],
-  providers: [AttachmentsService, AttachmentsRepository],
-  exports: [AttachmentsService],
+  providers: [AttachmentsService, AttachmentsRepository, ChatAttachmentsService],
+  exports: [AttachmentsService, ChatAttachmentsService],
 })
 export class AttachmentsModule {}

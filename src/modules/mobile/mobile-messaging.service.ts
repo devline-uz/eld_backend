@@ -3,6 +3,7 @@ import type { Message, Prisma } from '@prisma/client';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
 import type { ContextUser } from '../../core/context/request-context';
+import { ChatAttachmentsService, ChatAttachmentView, MessageType } from '../attachments/chat-attachments.service';
 import { MessagingRepository } from '../messaging/messaging.repository';
 import { MessagingService } from '../messaging/messaging.service';
 import type { ListMessagesQueryDto, MobileSendMessageDto, StartConversationDto } from './dto/mobile-messaging.dto';
@@ -12,16 +13,21 @@ import { MobileRepository } from './mobile.repository';
 export type MobileSenderType = 'DRIVER' | 'STAFF' | 'SYSTEM';
 
 /** MR-18 — the message shape the app reads. Additive over the raw row (all old fields kept). */
-export type MobileMessage = Message & {
+export type MobileMessage = Omit<Message, 'type'> & {
   senderId: string | null;
   senderType: MobileSenderType;
   senderName: string | null;
+  /** MB-9 */
+  type: MessageType;
+  attachment: ChatAttachmentView | null;
 };
 
 export interface MobileParticipant {
   id: string;
   type: 'DRIVER' | 'STAFF';
   name: string | null;
+  /** Last time this participant read the thread (`ConversationParticipant.lastReadAt`). */
+  lastReadAt: Date | null;
 }
 
 export interface StartConversationResult {
@@ -31,7 +37,9 @@ export interface StartConversationResult {
 
 type NameMaps = { users: Map<string, string>; drivers: Map<string, string> };
 
-export function toMobileMessage(m: Message, names: NameMaps): MobileMessage {
+type Decorated = Omit<Message, 'type'> & { type: MessageType; attachment: ChatAttachmentView | null };
+
+export function toMobileMessage(m: Decorated, names: NameMaps): MobileMessage {
   if (m.senderDriverId) {
     return { ...m, senderId: m.senderDriverId, senderType: 'DRIVER', senderName: names.drivers.get(m.senderDriverId) ?? null };
   }
@@ -56,6 +64,7 @@ export class MobileMessagingService {
     private readonly messagingRepo: MessagingRepository,
     private readonly messaging: MessagingService,
     private readonly mobileRepo: MobileRepository,
+    private readonly chatAttachments: ChatAttachmentsService,
   ) {}
 
   /** MR-18 — each row gains `participants[]` and a non-null `title` (the other party's name for
@@ -73,13 +82,16 @@ export class MobileMessagingService {
       if (r.lastMessage?.senderDriverId) driverIds.add(r.lastMessage.senderDriverId);
     }
     const names = await this.repo.nameMaps([...userIds], [...driverIds]);
+    const decoratedLast = await this.chatAttachments.decorate(rows.map((r) => r.lastMessage).filter((m): m is Message => !!m));
+    const lastById = new Map(decoratedLast.map((m) => [m.id, m]));
     const items = rows.map(({ rawParticipants, ...row }) => {
       const participants = this.toParticipants(rawParticipants, names);
+      const last = row.lastMessage ? lastById.get(row.lastMessage.id) : undefined;
       return {
         ...row,
         title: this.conversationTitle(row, participants, driverId),
         participants,
-        lastMessage: row.lastMessage ? toMobileMessage(row.lastMessage, names) : null,
+        lastMessage: last ? toMobileMessage(last, names) : null,
       };
     });
     return { items };
@@ -87,8 +99,8 @@ export class MobileMessagingService {
 
   private toParticipants(raw: ConversationSummary['rawParticipants'], names: NameMaps): MobileParticipant[] {
     return raw.flatMap((p): MobileParticipant[] => {
-      if (p.driverId) return [{ id: p.driverId, type: 'DRIVER', name: names.drivers.get(p.driverId) ?? null }];
-      if (p.userId) return [{ id: p.userId, type: 'STAFF', name: names.users.get(p.userId) ?? null }];
+      if (p.driverId) return [{ id: p.driverId, type: 'DRIVER', name: names.drivers.get(p.driverId) ?? null, lastReadAt: p.lastReadAt ?? null }];
+      if (p.userId) return [{ id: p.userId, type: 'STAFF', name: names.users.get(p.userId) ?? null, lastReadAt: p.lastReadAt ?? null }];
       return [];
     });
   }
@@ -100,17 +112,22 @@ export class MobileMessagingService {
     return others.length ? others.join(', ') : null;
   }
 
-  private async enrich(messages: Message[]): Promise<MobileMessage[]> {
+  private async enrich(messages: Array<Omit<Message, 'type'>>): Promise<MobileMessage[]> {
     const names = await this.repo.nameMaps(
       [...new Set(messages.map((m) => m.senderUserId).filter((x): x is string => Boolean(x)))],
       [...new Set(messages.map((m) => m.senderDriverId).filter((x): x is string => Boolean(x)))],
     );
-    return messages.map((m) => toMobileMessage(m, names));
+    const decorated = await this.chatAttachments.decorate(messages);
+    return decorated.map((m) => toMobileMessage(m, names));
   }
 
   async listMessages(conversationId: string, driverId: string, query: ListMessagesQueryDto) {
     await this.assertParticipant(conversationId, driverId);
-    const items = await this.repo.listMessagesCursor(conversationId, query.limit, query.before);
+    // deliveredAt: the driver fetching the thread is the delivery of everything not authored by them.
+    await this.repo.markDelivered(conversationId, driverId).catch(() => 0);
+    const items = query.after
+      ? await this.repo.listMessagesAfter(conversationId, query.limit, query.after)
+      : await this.repo.listMessagesCursor(conversationId, query.limit, query.before);
     return { items: await this.enrich(items), limit: query.limit };
   }
 
@@ -194,14 +211,21 @@ export class MobileMessagingService {
   }
 
   async markRead(conversationId: string, driverId: string, now: Date = new Date()) {
-    await this.assertParticipant(conversationId, driverId);
-    return this.repo.markRead(conversationId, driverId, now);
+    const conversation = await this.assertParticipant(conversationId, driverId);
+    const result = await this.repo.markRead(conversationId, driverId, now);
+    await this.messaging.publishMessageRead(
+      conversationId,
+      { readerType: 'DRIVER', readerId: driverId, lastReadMessageId: result.lastReadMessageId ?? null, readAt: now },
+      conversation.participants,
+    );
+    return { messagesMarked: result.messagesMarked };
   }
 
-  private async assertParticipant(conversationId: string, driverId: string): Promise<void> {
+  private async assertParticipant(conversationId: string, driverId: string) {
     const conversation = await this.messagingRepo.findById(conversationId);
     if (!conversation) throw new AppException(ERROR_CODES.NOT_FOUND, 'Conversation not found.', 404);
     const ok = await this.messagingRepo.isParticipant(conversationId, { driverId });
     if (!ok) throw new AppException(ERROR_CODES.FORBIDDEN, 'Not a participant of this conversation.', 403);
+    return conversation;
   }
 }

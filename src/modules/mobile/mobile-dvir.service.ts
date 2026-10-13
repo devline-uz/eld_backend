@@ -15,6 +15,7 @@ import type { DvirSubmitDto, SignatureUploadDto } from './dto/mobile.dto';
 import { DvirPhotosRepository } from './dvir-photos.repository';
 import { MobileCatalogRepository } from './mobile-catalog.repository';
 import { MobileRepository } from './mobile.repository';
+import { ChatAttachmentsService } from '../attachments/chat-attachments.service';
 import { SignatureService } from './signature.service';
 
 /**
@@ -38,9 +39,23 @@ export class MobileDvirService {
     private readonly events: EventBusService,
     @InjectQueue(QUEUES.ALERT) private readonly alertQueue: Queue,
     private readonly catalog: MobileCatalogRepository,
+    private readonly chat: ChatAttachmentsService,
   ) {}
 
-  async uploadSignature(driverId: string, dto: SignatureUploadDto) {
+  async uploadSignature(driverId: string, dto: SignatureUploadDto, actor?: ContextUser) {
+    if (dto.purpose === 'CHAT_AUDIO' || dto.purpose === 'CHAT_FILE') {
+      // MB-9 — chat voice/file: magic-byte sniffed, <= 10 MB, `chat/carrier/{driverId}/` key, Attachment row.
+      const comma = dto.base64.indexOf(',');
+      const raw = dto.base64.startsWith('data:') && comma !== -1 ? dto.base64.slice(comma + 1) : dto.base64;
+      const stored = await this.chat.store({
+        buffer: Buffer.from(raw, 'base64'),
+        mimeType: dto.mimeType,
+        kind: dto.purpose,
+        durationSec: dto.durationSec,
+        uploader: actor ?? { id: driverId, type: 'driver' },
+      });
+      return { signatureImageId: stored.id, attachmentId: stored.id, key: stored.key, sha256: stored.sha256, sizeBytes: stored.sizeBytes };
+    }
     const prefix = dto.purpose === 'DVIR_PHOTO' ? 'dvir-photos' : dto.purpose === 'INVOICE' ? 'invoices' : 'signatures';
     const stored = await this.signatures.store(prefix, driverId, dto.base64, dto.mimeType);
     if (dto.purpose === 'INVOICE') {

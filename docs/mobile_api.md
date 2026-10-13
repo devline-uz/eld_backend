@@ -44,6 +44,7 @@ Jami: **72 ta endpoint**, 8 bo'lim.
   - `POST /api/auth/driver/password/reset` — Emaildagi kod bilan haydovchi parolini tiklaydi; haydovchining barcha sessiyalari bekor qilinadi.
   - `GET /api/auth/me` — Joriy autentifikatsiyalangan subyekt (token claim'lari) + web topbar maydonlari.
 - [Biriktirmalar](#bolim-attachments) — 1 ta
+  - `GET /api/mobile/attachments/{id}/presign` — MB-9: chat ovoz/fayl uchun 15 daqiqalik presigned GET (faqat suhbat ishtirokchisi).
   - `GET /api/attachments/{id}/presign` — Bitta biriktirma (rasm/fayl) uchun 15 daqiqalik presigned GET URL; DVIR/defekt/tiket bo'yicha ruxsat tekshiril
 - [Mobil ilova (/mobile)](#bolim-mobile) — 51 ta
   - `POST /api/mobile/transfers` — Haydovchi o'z RODS'i uchun eRODS transfer boshlaydi: Appendix A fayl yaratiladi, tekshiriladi, saqlanadi, yubo
@@ -805,6 +806,9 @@ MR-13 — when `odometerMi` / `engineHours` are omitted, the unit’s last recor
 
 **Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `422` VALIDATION_FAILED — The base64 payload decoded to zero bytes, application/pdf with a purpose other than INVOICE, or bytes without a %PDF-…
 
+
+**MB-9 (chat ovoz/fayl):** `purpose: "CHAT_AUDIO"` (`mimeType` `audio/aac` | `audio/mp4`/`audio/m4a`/`audio/x-m4a`, ixtiyoriy `durationSec` butun son) yoki `"CHAT_FILE"` (`image/png`, `image/jpeg`, `application/pdf`) — har biri <= 10 MB (decoded bayt; `FILE_TOO_LARGE` 413). Tur fayl bosh baytlaridan (magic bytes) tekshiriladi, e'lon qilingan `mimeType` mos kelmasa `UNSUPPORTED_FILE_TYPE` 422. Kalit: `chat/carrier/{driverId}/{uuid}.{ext}`. Javobdagi `attachmentId` ni `POST /mobile/conversations/{id}/messages` ga `attachmentId` sifatida bering (`body` bo'sh bo'lishi mumkin). Faqat yuklagan odam biriktira oladi, bitta fayl — bitta xabar.
+
 ---
 
 ### `POST /api/mobile/dvir`
@@ -1269,6 +1273,9 @@ MR-13 — when `odometerMi` / `engineHours` are omitted, the unit’s last recor
 
 **Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `422` VALIDATION_FAILED — Request validation failed.
 
+
+**MB-15:** har qatorda `location` — `{lat, lon, name}` yoki `null` (detail bilan bir xil shakl; `name` — Appendix A 7.29 matni yoki kiritilgan joy nomi).
+
 ---
 
 ### `GET /api/mobile/dvirs/{id}`
@@ -1723,6 +1730,7 @@ So'rov misoli:
 - **Auth:** `Authorization: Bearer <driver access token>`
 - **operationId:** `MobileMessagingController_startConversation` · original: _MR-3 — starts (or reuses) a conversation with a contact from `GET /mobile/contacts` and sends the first message._
 - **Izoh (backend):** `contactId` is a staff user id, the active co-driver id, or `"support"`. An existing DIRECT conversation with that contact is reused. Idempotent on `clientId` (uuid, required): a replay returns the first response. The thread shows in the admin panel conversations list; a `conversation.new` realtime event goes to the staff contact's `user:{id}` room and `message.new` to `conversation:{id}`.
+- **Realtime (MB-8):** when staff opens a conversation with a driver (`POST /conversations`, `POST /messages/broadcast`) a `conversation.new` event `{conversationId,type,title}` goes to the driver's `driver:{id}` room. Reconnect catch-up: `GET /api/mobile/conversations/{id}/messages?after=<messageId|ISO>` (oldest first).
 
 **Body** (`application/json`):
 
@@ -1812,6 +1820,9 @@ So'rov misoli:
 
 **Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Not a participant of this conversation. · `404` NOT_FOUND — Conversation not found. · `422` VALIDATION_FAILED — Request validation failed.
 
+
+**MB-9:** har xabarda `type` (`TEXT|AUDIO|IMAGE|FILE`) va `attachment` (`{id,url,mimeType,sizeBytes,durationSec}` yoki `null`; `url` — 15 daqiqalik presigned GET, `S3_PUBLIC_ENDPOINT` hosti bilan) bor; `conversations` ro'yxatidagi `lastMessage` ham shunday. Yuborishda `body` bo'sh bo'lishi mumkin, agar `attachmentId` (CHAT_AUDIO/CHAT_FILE yuklash natijasi) berilgan bo'lsa. Muddati o'tgan URL: `GET /api/mobile/attachments/{id}/presign` → `{url, expiresAt}`; ishtirokchi bo'lmagan haydovchiga `404 ATTACHMENT_NOT_FOUND`.
+
 ---
 
 ### `POST /api/mobile/conversations/{id}/messages`
@@ -1861,11 +1872,14 @@ So'rov misoli:
 
 **Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Not a participant of this conversation. · `404` NOT_FOUND — Conversation not found. · `422` VALIDATION_FAILED — Request validation failed.
 
+
+**MB-9:** har xabarda `type` (`TEXT|AUDIO|IMAGE|FILE`) va `attachment` (`{id,url,mimeType,sizeBytes,durationSec}` yoki `null`; `url` — 15 daqiqalik presigned GET, `S3_PUBLIC_ENDPOINT` hosti bilan) bor; `conversations` ro'yxatidagi `lastMessage` ham shunday. Yuborishda `body` bo'sh bo'lishi mumkin, agar `attachmentId` (CHAT_AUDIO/CHAT_FILE yuklash natijasi) berilgan bo'lsa. Muddati o'tgan URL: `GET /api/mobile/attachments/{id}/presign` → `{url, expiresAt}`; ishtirokchi bo'lmagan haydovchiga `404 ATTACHMENT_NOT_FOUND`.
+
 ---
 
 ### `POST /api/mobile/conversations/{id}/read`
 
-**Nima qiladi:** Suhbatni o'qilgan qiladi.
+**Nima qiladi:** Suhbatni o'qilgan qiladi. Realtime: `message.read {conversationId, readerType, readerId, lastReadMessageId, readAt}` (`conversation:{id}`, `driver:{id}`, `user:{id}` xonalariga). Typing: klient `typing {conversationId,isTyping}` yuboradi, boshqalar `typing {conversationId,userType,userId,isTyping}` oladi.
 
 - **Auth:** `Authorization: Bearer <driver access token>`
 - **operationId:** `MobileMessagingController_markRead` · original: _Marks the conversation read: sets the driver's lastReadAt and readAt on the other side's messages._

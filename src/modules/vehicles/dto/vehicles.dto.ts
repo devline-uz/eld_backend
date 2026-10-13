@@ -73,6 +73,10 @@ export const AssignDriverDto = z.object({
 });
 export type AssignDriverDto = z.infer<typeof AssignDriverDto>;
 
+/** `POST /vehicles/:id/unassign-driver` — optional body; `notify` (default true) tells the driver. */
+export const UnassignDriverDto = z.object({ notify: z.boolean().default(true) }).default({});
+export type UnassignDriverDto = z.infer<typeof UnassignDriverDto>;
+
 /** §20 B-71 — `PATCH /vehicles/bulk-status`, one transaction per row with per-row errors. */
 export const BulkUpdateVehicleStatusDto = z.object({
   ids: z.array(z.string().uuid()).min(1).max(500),

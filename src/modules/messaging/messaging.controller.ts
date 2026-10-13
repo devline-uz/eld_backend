@@ -28,12 +28,15 @@ import { zodBody } from '../../common/pipes/zod-validation.pipe';
 import { z } from 'zod';
 import { MAX_LIST_PAGE } from '../../common/dto/list-query.dto';
 import type { ContextUser } from '../../core/context/request-context';
+import { AppException } from '../../common/errors/app.exception';
 import {
   BroadcastMessageDto,
   CreateConversationDto,
   SendAudioMessageDto,
   SendMessageDto,
+  UploadChatAttachmentDto,
 } from './dto/messaging.dto';
+import { ChatAttachmentsService, MAX_CHAT_ATTACHMENT_BYTES } from '../attachments/chat-attachments.service';
 import { MESSAGE_AUDIO_MAX_BYTES } from './message-audio';
 import { MessagingService, UploadedAudioFile } from './messaging.service';
 
@@ -48,7 +51,10 @@ const PageQueryDto = z.object({
 @ApiBearerAuth()
 @Controller()
 export class MessagingController {
-  constructor(private readonly messaging: MessagingService) {}
+  constructor(
+    private readonly messaging: MessagingService,
+    private readonly chatAttachments: ChatAttachmentsService,
+  ) {}
 
   @Get('conversations')
   @Perm('messaging', 'READ')
@@ -91,22 +97,50 @@ export class MessagingController {
     return this.messaging.createConversation(dto, actor);
   }
 
+  @Post('conversations/attachments')
+  @Perm('messaging', 'FULL')
+  @Audit({ object: 'Attachment', action: 'CREATE' })
+  // Multer enforces the 10 MB cap while streaming (413 past it) — same pattern as the avatar upload.
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_CHAT_ATTACHMENT_BYTES, files: 1, fields: 5, parts: 6 } }))
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['file', 'kind'],
+      properties: {
+        file: { type: 'string', format: 'binary' },
+        kind: { type: 'string', enum: ['CHAT_AUDIO', 'CHAT_FILE'] },
+        durationSec: { type: 'integer', description: 'Voice-message length, CHAT_AUDIO only.' },
+      },
+    },
+  })
+  @ApiOperation({
+    summary: 'MB-9 — uploads a chat voice message (AAC/M4A) or file (PNG/JPEG/PDF), max 10 MB; returns the attachment id to pass as `attachmentId` to POST /conversations/:id/messages.',
+    description: 'Type is verified from the file\'s magic bytes, not the declared Content-Type. Stored under `chat/carrier/{uploaderId}/`. Read back via `GET /attachments/:id/presign` (conversation participants only).',
+  })
+  @ApiCreatedResponse({ schema: { example: { id: 'att_1', attachmentId: 'att_1', kind: 'CHAT_AUDIO', mimeType: 'audio/mp4', sizeBytes: 48211, durationSec: 12 } } })
+  @ApiStandardErrors({
+    errors: [
+      apiError.unprocessable(ERROR_CODES.UNSUPPORTED_FILE_TYPE, 'Type not allowed for this kind, or content does not match the declared type.'),
+      apiError.unprocessable(ERROR_CODES.VALIDATION_FAILED, 'Missing file, empty file or invalid kind.'),
+    ],
+  })
+  async uploadAttachment(
+    @UploadedFile() file: { buffer: Buffer; mimetype: string } | undefined,
+    @Body(zodBody(UploadChatAttachmentDto)) dto: UploadChatAttachmentDto,
+    @CurrentUser() actor: ContextUser,
+  ) {
+    if (!file) throw new AppException(ERROR_CODES.VALIDATION_FAILED, 'file is required.', 422, { file: 'Required.' });
+    const { key: _key, sha256: _sha, ...view } = await this.chatAttachments.store({ buffer: file.buffer, mimeType: file.mimetype, kind: dto.kind, durationSec: dto.durationSec, uploader: actor });
+    return view;
+  }
+
   @Get('conversations/:id/messages')
   @Perm('messaging', 'READ')
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
   @ApiOperation({ summary: 'Lists messages in a conversation (caller must be a participant).' })
-  @ApiOkResponse({
-    schema: {
-      example: {
-        items: [{ id: 'msg_1', body: 'On schedule.', sentAt: '2026-09-11T15:00:00.000Z' }],
-        page: 1,
-        limit: 50,
-        total: 1,
-        totalPages: 1,
-      },
-    },
-  })
+  @ApiOkResponse({ schema: { example: { items: [{ id: 'msg_1', body: 'On schedule.', type: 'TEXT', attachment: null, sentAt: '2026-09-11T15:00:00.000Z' }], page: 1, limit: 50, total: 1, totalPages: 1 } } })
   @ApiStandardErrors({
     errors: [
       apiError.notFound(ERROR_CODES.NOT_FOUND, 'Conversation not found.'),
@@ -124,10 +158,8 @@ export class MessagingController {
   @Post('conversations/:id/messages')
   @Perm('messaging', 'FULL')
   @Audit({ object: 'Message', action: 'CREATE' })
-  @ApiOperation({ summary: 'Sends a message into a conversation.' })
-  @ApiCreatedResponse({
-    schema: { example: { id: 'msg_2', body: 'Confirmed.', sentAt: '2026-09-11T15:05:00.000Z' } },
-  })
+  @ApiOperation({ summary: 'Sends a message into a conversation. MB-9: `body` may be empty when `attachmentId` (from POST /conversations/attachments) is given; the message carries `type` TEXT|AUDIO|IMAGE|FILE and `attachment{id,url,mimeType,sizeBytes,durationSec}`.' })
+  @ApiCreatedResponse({ schema: { example: { id: 'msg_2', body: 'Confirmed.', sentAt: '2026-09-11T15:05:00.000Z' } } })
   @ApiStandardErrors({
     errors: [
       apiError.notFound(ERROR_CODES.NOT_FOUND, 'Conversation not found.'),

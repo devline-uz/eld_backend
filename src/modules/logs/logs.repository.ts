@@ -53,6 +53,22 @@ export class LogsRepository extends BaseRepository<
     });
   }
 
+  /** MB-10 — the originals the listed edit requests point at. */
+  findEventsByIds(ids: bigint[]): Promise<EldEvent[]> {
+    if (!ids.length) return Promise.resolve([]);
+    return this.prisma.eldEvent.findMany({ where: { id: { in: ids } } });
+  }
+
+  /** MB-10 — `userId -> "First Last"` of the carrier users who proposed the edits. */
+  async findUserNames(ids: string[]): Promise<Map<string, string>> {
+    if (!ids.length) return new Map();
+    const rows = await this.prisma.user.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, firstName: true, lastName: true },
+    });
+    return new Map(rows.map((row) => [row.id, `${row.firstName} ${row.lastName}`.trim()]));
+  }
+
   findEventById(id: bigint): Promise<EldEvent | null> {
     return this.prisma.eldEvent.findFirst({ where: { id } });
   }

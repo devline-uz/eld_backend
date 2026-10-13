@@ -5,6 +5,7 @@ import { PrismaService } from '../../core/prisma/prisma.service';
 export interface RawParticipant {
   userId: string | null;
   driverId: string | null;
+  lastReadAt: Date | null;
 }
 
 export interface ConversationSummary {
@@ -35,7 +36,7 @@ export class MobileMessagingRepository {
         conversation: {
           include: {
             messages: { orderBy: { sentAt: 'desc' }, take: 1 },
-            participants: { select: { userId: true, driverId: true } },
+            participants: { select: { userId: true, driverId: true, lastReadAt: true } },
           },
         },
       },
@@ -48,7 +49,7 @@ export class MobileMessagingRepository {
         const unreadCount = await this.prisma.message.count({
           where: {
             conversationId: conversation.id,
-            senderDriverId: { not: driverId },
+            OR: [{ senderDriverId: null }, { senderDriverId: { not: driverId } }],
             ...(p.lastReadAt ? { sentAt: { gt: p.lastReadAt } } : {}),
           },
         });
@@ -79,20 +80,57 @@ export class MobileMessagingRepository {
     });
   }
 
-  /** §11.5 — sets the driver's own `lastReadAt` and stamps `readAt` on every message in the
-   *  conversation they did not author. */
-  async markRead(conversationId: string, driverId: string, now: Date): Promise<{ messagesMarked: number }> {
-    const [, updated] = await this.prisma.$transaction([
-      this.prisma.conversationParticipant.updateMany({
-        where: { conversationId, driverId },
-        data: { lastReadAt: now },
-      }),
-      this.prisma.message.updateMany({
-        where: { conversationId, senderDriverId: { not: driverId }, readAt: null },
-        data: { readAt: now },
-      }),
+  /** MB-8 — messages strictly newer than `after` (a message id or an ISO instant), ascending, for reconnect catch-up. */
+  async listMessagesAfter(conversationId: string, limit: number, after: string): Promise<Message[]> {
+    const isId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(after);
+    // Cursor scoped to THIS conversation: a foreign message id must not act as an oracle for its sentAt.
+    const cursor = isId ? await this.prisma.message.findFirst({ where: { id: after, conversationId } }) : null;
+    // Unknown id: fall back to the whole thread (ascending, capped) so the app never misses a message.
+    const instant = isId ? cursor?.sentAt : new Date(after);
+    return this.prisma.message.findMany({
+      where: {
+        conversationId,
+        ...(instant
+          ? cursor
+            ? { OR: [{ sentAt: { gt: cursor.sentAt } }, { sentAt: cursor.sentAt, id: { gt: cursor.id } }] }
+            : { sentAt: { gt: instant } }
+          : {}),
+      },
+      orderBy: [{ sentAt: 'asc' }, { id: 'asc' }],
+      take: limit,
+    });
+  }
+
+  /** Messages the driver did not author. Prisma `{ not }` drops NULL `senderDriverId` (staff
+   *  messages), so the NULL branch is explicit. */
+  private notFromDriver(driverId: string) {
+    return { OR: [{ senderDriverId: null }, { senderDriverId: { not: driverId } }] };
+  }
+
+  /** §11.5 — sets the driver's own `lastReadAt` and stamps `readAt` (and `deliveredAt` if still
+   *  null) on every message in the conversation they did not author. */
+  async markRead(
+    conversationId: string,
+    driverId: string,
+    now: Date,
+  ): Promise<{ messagesMarked: number; lastReadMessageId: string | null }> {
+    const others = { conversationId, ...this.notFromDriver(driverId) };
+    const [, , updated] = await this.prisma.$transaction([
+      this.prisma.conversationParticipant.updateMany({ where: { conversationId, driverId }, data: { lastReadAt: now } }),
+      this.prisma.message.updateMany({ where: { ...others, deliveredAt: null }, data: { deliveredAt: now } }),
+      this.prisma.message.updateMany({ where: { ...others, readAt: null }, data: { readAt: now } }),
     ]);
-    return { messagesMarked: updated.count };
+    const last = await this.prisma.message.findFirst({ where: others, orderBy: [{ sentAt: 'desc' }, { id: 'desc' }], select: { id: true } });
+    return { messagesMarked: updated.count, lastReadMessageId: last?.id ?? null };
+  }
+
+  /** `deliveredAt` — the driver fetched the thread: stamp staff/other-driver messages not yet delivered. */
+  async markDelivered(conversationId: string, driverId: string, now: Date = new Date()): Promise<number> {
+    const res = await this.prisma.message.updateMany({
+      where: { conversationId, deliveredAt: null, ...this.notFromDriver(driverId) },
+      data: { deliveredAt: now },
+    });
+    return res.count;
   }
 
   /** MR-18 — display names for message senders / participants in two batched queries. */

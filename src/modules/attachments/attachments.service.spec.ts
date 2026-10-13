@@ -9,7 +9,7 @@ function buildService(row: AttachmentOwnerRow | null) {
 }
 
 const dvirDriver = 'drv_1';
-const notUploaded = { uploadedById: null, uploadedByType: 'USER' as const, maintenanceInvoiceFor: [] };
+const notUploaded = { uploadedById: null, uploadedByType: 'USER' as const, maintenanceInvoiceFor: [], kind: null, messageId: null, message: null };
 const dvirRow: AttachmentOwnerRow = {
   id: 'att_1',
   key: 'dvir/photo.jpg',
@@ -109,7 +109,7 @@ describe('AttachmentsService.presignAttachment — M-39/M-41 maintenance invoice
     ticketId: null,
     uploadedById: 'drv_1',
     uploadedByType: 'DRIVER' as const,
-    maintenanceInvoiceFor: [],
+    maintenanceInvoiceFor: [], kind: null, messageId: null, message: null,
     dvir: null,
     defect: null,
     ticket: null,
@@ -140,5 +140,29 @@ describe('AttachmentsService.presignAttachment — M-39/M-41 maintenance invoice
 
     const unsubmitted = buildService(invoiceRow);
     await expect(unsubmitted.service.presignAttachment('att_inv', { id: 'usr_1', type: 'user', permissions: { maintenance: 'FULL' } })).rejects.toMatchObject({ code: 'ATTACHMENT_NOT_FOUND' });
+  });
+});
+
+describe('AttachmentsService chat attachments (MB-9)', () => {
+  const chatRow = (over: Record<string, unknown>): AttachmentOwnerRow => ({
+    id: 'att_c', key: 'chat/carrier/drv_1/att_c.m4a', dvirId: null, defectId: null, ticketId: null, dvir: null, defect: null, ticket: null,
+    maintenanceInvoiceFor: [], kind: 'CHAT_AUDIO', uploadedById: 'drv_1', uploadedByType: 'DRIVER' as const,
+    messageId: 'msg_1', message: { conversation: { participants: [{ userId: 'usr_1', driverId: null }, { userId: null, driverId: 'drv_1' }] } },
+    ...over,
+  });
+
+  it('lets a driver participant and a staff participant presign, nobody else', async () => {
+    const { service: svc } = buildService(chatRow({}));
+    await expect(svc.presignAttachment('att_c', { id: 'drv_1', type: 'driver' })).resolves.toHaveProperty('url');
+    await expect(svc.presignAttachment('att_c', { id: 'usr_1', type: 'user', permissions: {} })).resolves.toHaveProperty('url');
+    await expect(svc.presignAttachment('att_c', { id: 'drv_9', type: 'driver' })).rejects.toMatchObject({ code: 'ATTACHMENT_NOT_FOUND' });
+    // a back-office user with broad permissions who is NOT in the conversation is refused too
+    await expect(svc.presignAttachment('att_c', { id: 'usr_9', type: 'user', permissions: { dvir: 'FULL', support: 'FULL', maintenance: 'FULL', messaging: 'FULL' } })).rejects.toMatchObject({ code: 'ATTACHMENT_NOT_FOUND' });
+  });
+
+  it('an unsent chat upload is readable by its uploader only', async () => {
+    const { service: svc } = buildService(chatRow({ messageId: null, message: null }));
+    await expect(svc.presignAttachment('att_c', { id: 'drv_1', type: 'driver' })).resolves.toHaveProperty('url');
+    await expect(svc.presignAttachment('att_c', { id: 'usr_1', type: 'user', permissions: {} })).rejects.toMatchObject({ code: 'ATTACHMENT_NOT_FOUND' });
   });
 });

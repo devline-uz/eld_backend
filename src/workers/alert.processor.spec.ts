@@ -31,8 +31,7 @@ function buildProcessor(overrides: {
     },
     notification: { create: jest.fn(async (args: { data: Record<string, unknown> }) => ({ id: 'ntf_1', ...args.data })) },
   };
-  const mobile = { findPushTokens: jest.fn(async (): Promise<{ token: string }[]> => []) };
-  const firebase = { enabled: false, sendToToken: jest.fn() };
+  const push = { sendToDriver: jest.fn(async () => undefined) };
   const webhooks = { notify: jest.fn(async () => null) };
   const events = { publish: jest.fn(async () => undefined) };
 
@@ -40,12 +39,11 @@ function buildProcessor(overrides: {
     rules as never,
     deliveries as never,
     prisma as never,
-    mobile as never,
-    firebase as never,
+    push as never,
     webhooks as never,
     events as never,
   );
-  return { processor, rules, deliveries, prisma, mobile, firebase, webhooks, events, created, sentIds, suppressed };
+  return { processor, rules, deliveries, prisma, push, webhooks, events, created, sentIds, suppressed };
 }
 
 const baseRule = {
@@ -119,19 +117,17 @@ describe('AlertProcessor', () => {
 
   it('MB-13 — derives kind + objectType/objectId from the event name and includes kind in the FCM data payload', async () => {
     const rule = { ...baseRule, recipients: { driverIds: ['drv_1'] } };
-    const { processor, prisma, firebase, mobile } = buildProcessor({ rulesFound: [rule] });
-    firebase.enabled = true;
-    mobile.findPushTokens = jest.fn(async () => [{ token: 'tok_1' }]);
+    const { processor, prisma, push } = buildProcessor({ rulesFound: [rule] });
     await processor.process({ name: 'alert.trip_assigned', data: { driverId: 'drv_1', tripId: 'trip_9' } } as never);
 
     const expectedData: Record<string, unknown> = { kind: 'TRIP', objectType: 'Trip', objectId: 'trip_9' };
     expect(prisma.notification.create).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining(expectedData) as Record<string, unknown> }),
     );
-    expect(firebase.sendToToken).toHaveBeenCalledWith(
-      'tok_1',
+    expect(push.sendToDriver).toHaveBeenCalledWith(
+      'drv_1',
       expect.anything(),
-      expect.objectContaining({ type: rule.id, driverId: 'drv_1', kind: 'TRIP' }),
+      expect.objectContaining({ type: rule.id, driverId: 'drv_1', kind: 'TRIP', objectType: 'Trip', objectId: 'trip_9' }),
     );
   });
 
@@ -174,17 +170,14 @@ describe('AlertProcessor', () => {
 
   it('D-095 follow-up — a subjectDriver: true rule (the seeded default) resolves the driver off payload.driverId and pushes FCM', async () => {
     const rule = { ...baseRule, recipients: { subjectDriver: true } };
-    const { processor, prisma, firebase, mobile } = buildProcessor({ rulesFound: [rule] });
-    firebase.enabled = true;
-    mobile.findPushTokens = jest.fn(async () => [{ token: 'tok_bg' }]);
+    const { processor, prisma, push } = buildProcessor({ rulesFound: [rule] });
 
     await processor.process({ name: 'alert.edit_request', data: { driverId: 'drv_9', requestId: 'evt_1' } } as never);
 
     expect(prisma.notification.create).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ driverId: 'drv_9' }) as Record<string, unknown> }),
     );
-    expect(mobile.findPushTokens).toHaveBeenCalledWith('drv_9');
-    expect(firebase.sendToToken).toHaveBeenCalledWith('tok_bg', expect.anything(), expect.objectContaining({ driverId: 'drv_9' }));
+    expect(push.sendToDriver).toHaveBeenCalledWith('drv_9', expect.anything(), expect.objectContaining({ driverId: 'drv_9' }));
   });
 
   it('a subjectDriver: true rule sends nothing when the job payload carries no driverId', async () => {

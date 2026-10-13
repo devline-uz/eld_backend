@@ -79,6 +79,16 @@ export class UnidentifiedRepository extends BaseRepository<
     return this.prisma.driver.findUnique({ where: { id: driverId } });
   }
 
+  /** MB-11 — `vehicleId -> unitNumber` for the "Was this you?" cards (soft-deleted units too). */
+  async findVehicleUnitNumbers(ids: string[]): Promise<Map<string, string>> {
+    if (!ids.length) return new Map();
+    const rows = await this.prisma.vehicle.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, unitNumber: true },
+    });
+    return new Map(rows.map((row) => [row.id, row.unitNumber]));
+  }
+
   findEventsByIds(ids: bigint[]): Promise<EldEvent[]> {
     if (!ids.length) return Promise.resolve([]);
     return this.prisma.eldEvent.findMany({

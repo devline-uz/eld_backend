@@ -132,7 +132,8 @@ export function parseController(source: string, file: string): RouteInfo[] {
 
   const controllerDecorator = decorators.find((d) => decoratorName(d.source) === 'Controller');
   const controllerPath = controllerDecorator ? firstStringArg(controllerDecorator.source) : '';
-  const classIndex = source.indexOf('export class');
+  // The controller class, not a response DTO declared above it in the same file.
+  const classIndex = source.indexOf('export class', controllerDecorator?.at ?? 0);
   const classDecorators = decorators.filter((d) => d.at < classIndex).map((d) => d.source);
 
   for (let index = 0; index < decorators.length; index += 1) {

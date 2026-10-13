@@ -37,7 +37,7 @@ export class AttachmentsService {
 
   async presignAttachment(id: string, actor: ContextUser): Promise<PresignedUrl> {
     const attachment = await this.repo.findWithOwner(id);
-    if (!attachment || !(await this.mayViewAsync(attachment, actor))) {
+    if (!attachment || !this.mayView(attachment, actor)) {
       // Same 404 whether the row is missing or the caller may not see it — never confirm
       // that an attachment id belonging to someone else exists.
       throw new AppException(ERROR_CODES.ATTACHMENT_NOT_FOUND, 'Attachment not found.', 404, { id });
@@ -50,17 +50,18 @@ export class AttachmentsService {
     return { url, expiresAt: new Date(Date.now() + ttlSec * 1000).toISOString() };
   }
 
-  /** Voice messages — a chat clip is readable by every participant of its conversation (the
-   * same rule as `GET /conversations/:id/messages`); everything else goes through `mayView`. */
-  private async mayViewAsync(attachment: AttachmentOwnerRow, actor: ContextUser): Promise<boolean> {
-    if (attachment.messageId) {
-      const participant = actor.type === 'driver' ? { driverId: actor.id } : { userId: actor.id };
-      return this.repo.isMessageParticipant(attachment.messageId, participant);
-    }
-    return this.mayView(attachment, actor);
-  }
-
   private mayView(attachment: AttachmentOwnerRow, actor: ContextUser): boolean {
+    // MB-9 / web voice messages — a file linked to a chat message (CHAT_AUDIO/CHAT_FILE, or a web
+    // MESSAGE_AUDIO clip) is readable ONLY by that conversation's participants (driver or staff),
+    // whatever their permissions.
+    if (attachment.messageId) {
+      const participants = attachment.message?.conversation.participants ?? [];
+      return participants.some((p) => (actor.type === 'driver' ? p.driverId === actor.id : p.userId === actor.id));
+    }
+    // An unlinked chat upload: only the uploader.
+    if (attachment.kind === 'CHAT_AUDIO' || attachment.kind === 'CHAT_FILE') {
+      return attachment.uploadedById === actor.id && attachment.uploadedByType === (actor.type === 'driver' ? 'DRIVER' : 'USER');
+    }
     // M-39/M-41 — a driver may always read back a file THEY uploaded (maintenance invoice PDF, DVIR
     // photo not yet linked); never somebody else's.
     if (actor.type === 'driver' && attachment.uploadedByType === 'DRIVER' && attachment.uploadedById === actor.id) return true;

@@ -35,6 +35,7 @@ export class MobileAppConfigController {
       storeUrl: 'https://play.google.com/store/apps/details?id=com.onebook.eld_mobile',
       userManualUrl: null, privacyPolicyUrl: 'https://onebook.example/privacy', termsUrl: null,
       minPt30Firmware: null, recommendedPt30Firmware: null, updateRequired: false, updateAvailable: true,
+      virtualEld: { enabled: false },
     },
   })
   @ApiStandardErrors({ public: true, errors: [apiError.rateLimited('60 requests per minute per IP.')] })

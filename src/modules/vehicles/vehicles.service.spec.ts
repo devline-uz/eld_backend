@@ -1,8 +1,7 @@
 import { AppException } from '../../common/errors/app.exception';
-import type { FirebaseService } from '../../core/firebase/firebase.service';
+import type { PushService } from '../../core/firebase/push.service';
 import type { CarrierRepository } from '../carrier/carrier.repository';
 import { DriversRepository } from '../drivers/drivers.repository';
-import type { MobileRepository } from '../mobile/mobile.repository';
 import type { NotificationsRepository } from '../notifications/notifications.repository';
 import type { MailPort } from '../transfers/mail.port';
 import type { UsersRepository } from '../users/users.repository';
@@ -70,8 +69,8 @@ describe('VehiclesService', () => {
   let carrier: jest.Mocked<Pick<CarrierRepository, 'get'>>;
   let users: jest.Mocked<Pick<UsersRepository, 'findById'>>;
   let mail: jest.Mocked<MailPort>;
-  let mobile: jest.Mocked<Pick<MobileRepository, 'findPushTokens'>>;
-  let firebase: jest.Mocked<Pick<FirebaseService, 'enabled' | 'sendToToken'>>;
+  let push: jest.Mocked<Pick<PushService, 'sendToDriver'>>;
+  let events: { publish: jest.Mock<Promise<void>, [string, { room: string; event: string; payload: unknown }]> };
   let service: VehiclesService;
 
   beforeEach(() => {
@@ -105,21 +104,21 @@ describe('VehiclesService', () => {
       update: jest.fn(),
       findOne: jest.fn().mockResolvedValue(null),
     };
-    notifications = { create: jest.fn() };
+    notifications = { create: jest.fn().mockResolvedValue({ id: 'ntf_0' }) };
     carrier = { get: jest.fn().mockResolvedValue({ timezone: 'America/New_York' }) };
     users = { findById: jest.fn() };
     mail = { send: jest.fn().mockResolvedValue({ delivered: false, reference: 'not-configured' }) };
-    mobile = { findPushTokens: jest.fn().mockResolvedValue([]) };
-    firebase = { enabled: false, sendToToken: jest.fn().mockResolvedValue(undefined) };
+    push = { sendToDriver: jest.fn().mockResolvedValue(undefined) };
+    events = { publish: jest.fn<Promise<void>, [string, { room: string; event: string; payload: unknown }]>().mockResolvedValue(undefined) };
     service = new VehiclesService(
       vehiclesRepo as unknown as VehiclesRepository,
       driversRepo as unknown as DriversRepository,
       notifications as unknown as NotificationsRepository,
       carrier as unknown as CarrierRepository,
       users as unknown as UsersRepository,
-      mobile as unknown as MobileRepository,
-      firebase as unknown as FirebaseService,
+      push as unknown as PushService,
       mail,
+      events as never,
     );
   });
 
@@ -233,33 +232,29 @@ describe('VehiclesService', () => {
       expect(notifications.create).not.toHaveBeenCalled();
     });
 
-    it('pushes FCM to every active token when notify is true and Firebase is enabled (§12.7 background app)', async () => {
+    it('pushes FCM via PushService with the persisted deep-link fields (§12.7)', async () => {
       vehiclesRepo.findById.mockResolvedValue(makeVehicle() as never);
       driversRepo.findById.mockResolvedValue({ id: 'drv_1', status: 'ACTIVE', deletedAt: null, assignedVehicleId: null } as never);
       driversRepo.update.mockResolvedValue({} as never);
-      notifications.create.mockResolvedValue({ id: 'ntf_1' } as never);
-      (firebase as { enabled: boolean }).enabled = true;
-      mobile.findPushTokens.mockResolvedValue([{ token: 'tok_a' }, { token: 'tok_b' }] as never);
+      notifications.create.mockResolvedValue({ id: 'ntf_1', objectType: 'Vehicle', objectId: 'veh_1', category: 'assignment' } as never);
 
       await service.assignDriver('veh_1', { driverId: 'drv_1', notify: true });
 
-      expect(mobile.findPushTokens).toHaveBeenCalledWith('drv_1');
-      expect(firebase.sendToToken).toHaveBeenCalledTimes(2);
-      expect(firebase.sendToToken).toHaveBeenCalledWith(
-        'tok_a',
+      expect(push.sendToDriver).toHaveBeenCalledWith(
+        'drv_1',
         expect.objectContaining({ title: 'New unit assignment' }),
-        expect.objectContaining({ type: 'ASSIGNMENT', id: 'ntf_1', driverId: 'drv_1' }),
+        { type: 'ASSIGNMENT', id: 'ntf_1', driverId: 'drv_1', objectType: 'Vehicle', objectId: 'veh_1', category: 'assignment' },
       );
     });
 
-    it('never touches push tokens when Firebase is disabled', async () => {
+    it('does not push when notify is false', async () => {
       vehiclesRepo.findById.mockResolvedValue(makeVehicle() as never);
       driversRepo.findById.mockResolvedValue({ id: 'drv_1', status: 'ACTIVE', deletedAt: null, assignedVehicleId: null } as never);
       driversRepo.update.mockResolvedValue({} as never);
 
-      await service.assignDriver('veh_1', { driverId: 'drv_1', notify: true });
+      await service.assignDriver('veh_1', { driverId: 'drv_1', notify: false });
 
-      expect(mobile.findPushTokens).not.toHaveBeenCalled();
+      expect(push.sendToDriver).not.toHaveBeenCalled();
     });
   });
 
@@ -701,6 +696,60 @@ describe('VehiclesService', () => {
 
       expect(vehiclesRepo.findOpenCriticalDefectIds).not.toHaveBeenCalled();
       expect(vehiclesRepo.update).toHaveBeenCalled();
+    });
+  });
+
+  describe('realtime on assignment (B-0xx)', () => {
+    const published = () => events.publish.mock.calls.map((c) => [c[0], c[1].room, c[1].event, c[1].payload]);
+
+    it('assignDriver pushes vehicle.assigned, bootstrap.changed and notification.new to driver:{id}', async () => {
+      vehiclesRepo.findById.mockResolvedValue(makeVehicle() as never);
+      driversRepo.findById.mockResolvedValue({ id: 'drv_1', status: 'ACTIVE', deletedAt: null, assignedVehicleId: null } as never);
+      driversRepo.update.mockResolvedValue({} as never);
+      const row = { id: 'ntf_1', objectType: 'Vehicle', objectId: 'veh_1', category: 'assignment' };
+      notifications.create.mockResolvedValue(row as never);
+      await service.assignDriver('veh_1', { driverId: 'drv_1', notify: true });
+      const sent = published();
+      expect(sent.map((x) => x[2])).toEqual(['vehicle.assigned', 'bootstrap.changed', 'notification.new']);
+      expect(sent[0]).toEqual(['realtime.push', 'driver:drv_1', 'vehicle.assigned', expect.objectContaining({ driverId: 'drv_1', vehicleId: 'veh_1' })]);
+      expect(sent[1][3]).toEqual({ reason: 'vehicle_assigned' });
+      expect(sent[2][3]).toEqual({ notification: row });
+    });
+
+    it('assignDriver with notify=false still refreshes the app but sends no notification.new', async () => {
+      vehiclesRepo.findById.mockResolvedValue(makeVehicle() as never);
+      driversRepo.findById.mockResolvedValue({ id: 'drv_1', status: 'ACTIVE', deletedAt: null, assignedVehicleId: null } as never);
+      driversRepo.update.mockResolvedValue({} as never);
+      await service.assignDriver('veh_1', { driverId: 'drv_1', notify: false });
+      expect(published().map((x) => x[2])).toEqual(['vehicle.assigned', 'bootstrap.changed']);
+    });
+
+    it('unassignDriver pushes vehicle.unassigned + bootstrap.changed and notifies in-app + FCM', async () => {
+      vehiclesRepo.findById.mockResolvedValue(makeVehicle({ unitNumber: '103' }) as never);
+      driversRepo.findOne.mockResolvedValue({ id: 'drv_1' } as never);
+      driversRepo.update.mockResolvedValue({} as never);
+      notifications.create.mockResolvedValue({ id: 'ntf_2', objectType: 'Vehicle', objectId: 'veh_1', category: 'assignment' } as never);
+      await service.unassignDriver('veh_1');
+      expect(published().map((x) => [x[1], x[2]])).toEqual([
+        ['driver:drv_1', 'vehicle.unassigned'],
+        ['driver:drv_1', 'bootstrap.changed'],
+        ['driver:drv_1', 'notification.new'],
+      ]);
+      expect(published()[0][3]).toEqual({ driverId: 'drv_1', vehicleId: 'veh_1' });
+      expect(notifications.create).toHaveBeenCalledWith(
+        expect.objectContaining({ driverId: 'drv_1', type: 'ASSIGNMENT', body: "You've been unassigned from unit 103.", category: 'assignment' }),
+      );
+      expect(push.sendToDriver).toHaveBeenCalledTimes(1);
+    });
+
+    it('unassignDriver with notify=false sends no notification or FCM', async () => {
+      vehiclesRepo.findById.mockResolvedValue(makeVehicle() as never);
+      driversRepo.findOne.mockResolvedValue({ id: 'drv_1' } as never);
+      driversRepo.update.mockResolvedValue({} as never);
+      await service.unassignDriver('veh_1', { notify: false });
+      expect(notifications.create).not.toHaveBeenCalled();
+      expect(push.sendToDriver).not.toHaveBeenCalled();
+      expect(published().map((x) => x[2])).toEqual(['vehicle.unassigned', 'bootstrap.changed']);
     });
   });
 

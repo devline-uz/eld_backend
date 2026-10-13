@@ -34,8 +34,9 @@ function setup(opts: { device?: Partial<Device> | null; assignedVehicleId?: stri
       },
     })),
   };
-  const service = new MobileDeviceService(mobile as never, devices as never, audit as never, events as never, alertQueue as never, ingest as never);
-  return { service, mobile, devices, audit, events, alertQueue, ingest };
+  const virtualEld = { assertDeviceUsable: jest.fn(async () => undefined) };
+  const service = new MobileDeviceService(mobile as never, devices as never, audit as never, events as never, alertQueue as never, ingest as never, virtualEld as never);
+  return { service, mobile, devices, audit, events, alertQueue, ingest, virtualEld };
 }
 
 async function codeOf(promise: Promise<unknown>): Promise<{ code: string; status: number }> {

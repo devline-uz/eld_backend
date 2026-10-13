@@ -1,3 +1,4 @@
+import type { EventBusService } from '../../core/events/event-bus.service';
 import type { AuditRepository } from '../audit/audit.repository';
 import { MobileFleetOpsRepository } from './mobile-fleet-ops.repository';
 import { MobileRepository } from './mobile.repository';
@@ -22,13 +23,15 @@ function build() {
   };
   const audit = { insert: jest.fn().mockResolvedValue(undefined) };
   const loginRecords = { login: jest.fn().mockResolvedValue(1), logout: jest.fn().mockResolvedValue(1) };
+  const events = { publish: jest.fn<Promise<void>, [string, { room: string; event: string; payload: unknown }]>().mockResolvedValue(undefined) };
   const service = new MobileVehicleService(
     repo as unknown as MobileFleetOpsRepository,
     audit as unknown as AuditRepository,
     mobileRepo as unknown as MobileRepository,
     loginRecords as unknown as RodsLoginRecorder,
+    events as unknown as EventBusService,
   );
-  return { service, repo, audit, mobileRepo, loginRecords };
+  return { service, repo, audit, mobileRepo, loginRecords, events };
 }
 
 const VEHICLE = {
@@ -176,5 +179,30 @@ describe('MobileVehicleService (MB-2)', () => {
       await service.release('drv_1', {}, ACTOR);
       expect(repo.releaseVehicle).toHaveBeenCalledWith('drv_1', null, expect.any(Date));
     });
+  });
+});
+
+describe('MobileVehicleService realtime (B-0xx)', () => {
+  it('select() pushes vehicle.assigned + bootstrap.changed to the driver room', async () => {
+    const { service, repo, events } = build();
+    repo.findVehicleWithDevice.mockResolvedValue(VEHICLE);
+    repo.findVehicleHolder.mockResolvedValue(null);
+    await service.select('drv_1', { vehicleId: 'veh_1' }, ACTOR);
+    const sent = events.publish.mock.calls.map((c) => [c[1].room, c[1].event, c[1].payload]);
+    expect(sent).toEqual([
+      ['driver:drv_1', 'vehicle.assigned', { driverId: 'drv_1', vehicleId: 'veh_1', unitNumber: '104' }],
+      ['driver:drv_1', 'bootstrap.changed', { reason: 'vehicle_assigned' }],
+    ]);
+  });
+
+  it('release() pushes vehicle.unassigned + bootstrap.changed', async () => {
+    const { service, mobileRepo, events } = build();
+    mobileRepo.findDriver.mockResolvedValue({ id: 'drv_1', assignedVehicleId: 'veh_1' });
+    await service.release('drv_1', {}, ACTOR);
+    const sent = events.publish.mock.calls.map((c) => [c[1].room, c[1].event, c[1].payload]);
+    expect(sent).toEqual([
+      ['driver:drv_1', 'vehicle.unassigned', { driverId: 'drv_1', vehicleId: 'veh_1' }],
+      ['driver:drv_1', 'bootstrap.changed', { reason: 'vehicle_unassigned' }],
+    ]);
   });
 });

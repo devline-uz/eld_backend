@@ -167,6 +167,31 @@ export class MobileRepository extends BaseRepository<
     return this.prisma.device.findUnique({ where: { vehicleId } });
   }
 
+  /**
+   * MB-13 — carrier edit proposals still waiting for this driver: `recordStatus = 3` records with
+   * no accept / reject marker pointing at them (same rule as `GET /mobile/log-edit-requests`).
+   */
+  async countPendingEditRequests(driverId: string): Promise<number> {
+    const requests = await this.prisma.eldEvent.findMany({
+      where: { driverId, recordStatus: 3 },
+      select: { id: true },
+    });
+    if (!requests.length) return 0;
+    const resolved = await this.prisma.eldEvent.findMany({
+      where: { supersedesId: { in: requests.map((row) => row.id) } },
+      select: { supersedesId: true },
+    });
+    const answered = new Set(resolved.map((row) => String(row.supersedesId)));
+    return requests.filter((row) => !answered.has(String(row.id))).length;
+  }
+
+  /** MB-13 — unidentified segments a carrier asked THIS driver to confirm (`GET /unidentified/confirmation-requests`). */
+  countPendingUnidentifiedConfirmations(driverId: string): Promise<number> {
+    return this.prisma.unidentifiedSegment.count({
+      where: { status: 'PENDING_CONFIRMATION', assignedDriverId: driverId },
+    });
+  }
+
   findActivePairing(driverId: string): Promise<CoDriverPairing | null> {
     return this.prisma.coDriverPairing.findFirst({
       where: {

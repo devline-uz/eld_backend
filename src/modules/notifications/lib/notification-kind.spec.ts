@@ -20,9 +20,9 @@ describe('deriveNotificationKind', () => {
 });
 
 describe('deriveObjectRef', () => {
-  it('resolves EldEvent for alert.edit_request', () => {
+  it('resolves EditRequest for alert.edit_request', () => {
     expect(deriveObjectRef('alert.edit_request', { requestId: 'evt_1' })).toEqual({
-      objectType: 'EldEvent',
+      objectType: 'EditRequest',
       objectId: 'evt_1',
     });
   });

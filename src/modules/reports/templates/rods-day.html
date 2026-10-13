@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  body { font-family: Helvetica, Arial, sans-serif; font-size: 10px; color: #1a1a1a; }
+  h1 { font-size: 15px; margin: 0 0 2px; }
+  .sub { color: #555; margin-bottom: 8px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { border: 1px solid #999; padding: 3px 5px; text-align: left; vertical-align: top; }
+  th { background: #f2f2f2; width: 17%; font-weight: bold; }
+  .grid-wrap { margin: 12px 0 4px; display: flex; }
+  .labels { width: 150px; }
+  .labels div { box-sizing: border-box; border-bottom: 1px solid #999; padding: 8px 4px 0; font-size: 9px; }
+  .labels .head { height: 14px; border-bottom: none; padding: 0; }
+  .plot { flex: 1; }
+  .hours { display: flex; height: 14px; font-size: 8px; }
+  .hours div { box-sizing: border-box; border-left: 1px solid #999; padding-left: 1px; }
+  .area { position: relative; border: 1px solid #333; background-image: linear-gradient(to right, #bbb 1px, transparent 1px); background-size: 4.1667% 100%; }
+  .rowline { position: absolute; left: 0; right: 0; border-bottom: 1px solid #999; }
+  .seg { position: absolute; background: #0b3d91; }
+  .totals { width: 54px; }
+  .totals div { box-sizing: border-box; border-bottom: 1px solid #999; padding: 8px 4px 0; text-align: right; font-weight: bold; }
+  .totals .head { height: 14px; border-bottom: none; padding: 0; font-size: 8px; text-align: right; }
+  .remarks th { width: auto; }
+  .legal { color: #666; font-size: 8px; margin-top: 8px; }
+</style>
+</head>
+<body>
+  <h1>Driver's Daily Log — Record of Duty Status</h1>
+  <div class="sub">49 CFR §395.8 &nbsp;|&nbsp; {{date}} &nbsp;|&nbsp; Home terminal time ({{timezone}}) &nbsp;|&nbsp; 24-hour period starting at midnight</div>
+
+  <table>
+    <tr><th>Driver</th><td>{{driverName}}</td><th>Driver licence no.</th><td>{{driverLicense}}</td></tr>
+    <tr><th>Carrier</th><td>{{carrierName}}</td><th>USDOT no.</th><td>{{carrierDot}}</td></tr>
+    <tr><th>Main office</th><td>{{carrierAddress}}</td><th>Home terminal</th><td>{{homeTerminal}}</td></tr>
+    <tr><th>Truck / tractor</th><td>{{vehicles}}</td><th>Trailer(s)</th><td>{{trailers}}</td></tr>
+    <tr><th>Shipping document no.</th><td>{{shippingDocuments}}</td><th>Total miles driving today</th><td>{{totalMiles}}</td></tr>
+    <tr><th>Odometer (start / end)</th><td>{{startOdometer}} / {{endOdometer}}</td><th>Certified by driver</th><td>{{certified}}</td></tr>
+  </table>
+
+  <div class="grid-wrap">
+    <div class="labels">
+      <div class="head"></div>
+      {{#each rowTotals}}<div style="height:{{height}}px">{{label}}</div>{{/each}}
+    </div>
+    <div class="plot">
+      <div class="hours">{{#each hourLabels}}<div style="width:{{width}}%">{{label}}</div>{{/each}}</div>
+      <div class="area" style="height:{{graphHeight}}px">
+        <div class="rowline" style="top:29px"></div><div class="rowline" style="top:59px"></div><div class="rowline" style="top:89px"></div>
+        {{#each links}}<div class="seg" style="left:{{left}}%;top:{{top}}px;width:1px;height:{{height}}px"></div>{{/each}}
+        {{#each lines}}<div class="seg" style="left:{{left}}%;top:{{top}}px;width:{{width}}%;height:4px"></div>{{/each}}
+      </div>
+    </div>
+    <div class="totals">
+      <div class="head">Total (h:mm)</div>
+      {{#each rowTotals}}<div style="height:{{height}}px">{{total}}</div>{{/each}}
+    </div>
+  </div>
+  <div>Total hours accounted: <strong>{{totalHours}}</strong> of {{dayLengthHours}} &nbsp;|&nbsp; Edited records: {{hasEdits}}</div>
+
+  <table class="remarks" style="margin-top:10px">
+    <thead><tr><th>Time</th><th>Status</th><th>Duration</th><th>Location (remarks)</th><th>Odometer</th><th>Annotation</th></tr></thead>
+    <tbody>
+      {{#each remarks}}
+      <tr><td>{{time}}</td><td>{{status}}</td><td>{{duration}}</td><td>{{location}}</td><td>{{odometer}}</td><td>{{annotation}}</td></tr>
+      {{/each}}
+    </tbody>
+  </table>
+  <div class="legal">Generated {{generatedAt}} from the ELD record of duty status. Statuses: Off Duty (incl. personal conveyance), Sleeper Berth, Driving, On Duty not driving (incl. yard moves).</div>
+</body>
+</html>

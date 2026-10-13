@@ -28,6 +28,11 @@ export class AppConfigService {
     return !this.isProduction && this.env.DEV_ECHO_SECRETS;
   }
 
+  /** pt30_pt40/tz.md §9.2 — `VIRTUAL_ELD_ALLOWED`, defaulting to "not production" when unset. */
+  get virtualEldAllowed(): boolean {
+    return this.env.VIRTUAL_ELD_ALLOWED ?? !this.isProduction;
+  }
+
   get corsOrigins(): string[] {
     return this.env.CORS_ORIGINS.split(',')
       .map((o) => o.trim())

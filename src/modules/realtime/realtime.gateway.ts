@@ -15,8 +15,11 @@ import { RealtimePubSubService } from '../../core/events/realtime-pubsub.service
 import { RealtimeRoomAuthorizer } from './room-authorizer';
 
 interface AuthedSocket extends Socket {
-  data: { user?: ContextUser };
+  data: { user?: ContextUser; typing?: Map<string, { isTyping: boolean; at: number }> };
 }
+
+/** Same typing state re-sent inside this window is ignored. */
+const TYPING_DEDUPE_MS = 2000;
 
 /** Rooms a connected client may join, per TZ §12.4. Shape only — who may join which room is
  * decided by {@link RealtimeRoomAuthorizer}: `driver:{id}`/`user:{id}` belong to that
@@ -91,6 +94,36 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     if (typeof room !== 'string' || !ALLOWED_ROOM_PATTERN.test(room)) return { ok: false };
     if (!(await this.rooms.mayJoin(room, user))) return { ok: false };
     await socket.join(room);
+    return { ok: true };
+  }
+
+  /**
+   * Typing indicator. The sender must be allowed into `conversation:{id}` (same authorizer as
+   * `subscribe`); the event is relayed to the room EXCLUDING the sender. A repeat of the same
+   * state within 2 s is dropped (light rate limit).
+   */
+  @SubscribeMessage('typing')
+  async onTyping(
+    @ConnectedSocket() socket: AuthedSocket,
+    @MessageBody() body: { conversationId?: unknown; isTyping?: unknown },
+  ): Promise<{ ok: boolean }> {
+    const user = socket.data.user;
+    if (!user) return { ok: false };
+    const conversationId = body?.conversationId;
+    if (typeof conversationId !== 'string' || !/^[\w-]+$/.test(conversationId) || typeof body.isTyping !== 'boolean') return { ok: false };
+    const room = `conversation:${conversationId}`;
+    if (!(await this.rooms.mayJoin(room, user))) return { ok: false };
+    const isTyping = body.isTyping;
+    const last = (socket.data.typing ??= new Map<string, { isTyping: boolean; at: number }>()).get(conversationId);
+    const now = Date.now();
+    if (last && last.isTyping === isTyping && now - last.at < TYPING_DEDUPE_MS) return { ok: true };
+    socket.data.typing.set(conversationId, { isTyping, at: now });
+    socket.to(room).emit('typing', {
+      conversationId,
+      userType: user.type === 'driver' ? 'DRIVER' : 'STAFF',
+      userId: user.id,
+      isTyping,
+    });
     return { ok: true };
   }
 

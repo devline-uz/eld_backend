@@ -51,6 +51,23 @@ export const DriverForgotPasswordDto = z
   .refine((v) => Boolean(v.username || v.email), { message: 'username or email is required' });
 export type DriverForgotPasswordDto = z.infer<typeof DriverForgotPasswordDto>;
 
+/**
+ * MB-17 — driver reset completion. Either the new 6-digit form `{username|email, code, newPassword}`
+ * or the legacy `{token, newPassword}` (still accepted).
+ */
+export const DriverResetPasswordDto = z
+  .object({
+    token: z.string().min(1).optional(),
+    username: z.string().min(1).max(120).optional(),
+    email: z.string().email().optional(),
+    code: z.string().regex(/^\d{6}$/, 'code must be 6 digits').optional(),
+    newPassword: z.string().min(8),
+  })
+  .refine((v) => Boolean(v.token) || (Boolean(v.code) && Boolean(v.username || v.email)), {
+    message: 'either token, or code with username/email, is required',
+  });
+export type DriverResetPasswordDto = z.infer<typeof DriverResetPasswordDto>;
+
 /** Web "Forgot password?" — same rule as `ResetPasswordDto.newPassword` (min 8), capped so an
  * unauthenticated caller cannot make Argon2 hash megabytes. */
 export const WebNewPassword = z.string().min(8, 'Password must be at least 8 characters.').max(128, 'Password must be at most 128 characters.');

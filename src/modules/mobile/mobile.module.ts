@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { AuditModule } from '../audit/audit.module';
 import { AuthModule } from '../auth/auth.module';
+import { CarrierModule } from '../carrier/carrier.module';
 import { MessagingModule } from '../messaging/messaging.module';
 import { RodsLoginModule } from '../logs/rods-login-recorder';
 import { IngestModule } from '../ingest/ingest.module';
@@ -21,18 +22,22 @@ import { MobileCatalogRepository } from './mobile-catalog.repository';
 import { MobileSavedSignatureService } from './mobile-saved-signature.service';
 import { MobileContactsController } from './mobile-contacts.controller';
 import { MobileContactsService } from './mobile-contacts.service';
-import { MobileDeviceConfigController, MobileDeviceController } from './mobile-device.controller';
+import { MobileDeviceConfigController, MobileDeviceController, MobileVirtualDeviceController } from './mobile-device.controller';
 import { MobileDeviceRepository } from './mobile-device.repository';
 import { MobileDeviceService } from './mobile-device.service';
+import { MobileVirtualDeviceService } from './mobile-virtual-device.service';
 import { MobileDutyStatusController } from './mobile-duty-status.controller';
 import { MobileDvirController } from './mobile-dvir.controller';
 import { MobileDvirHistoryController } from './mobile-dvir-history.controller';
+import { DvirPdfBuilder } from '../service/dvir-pdf.builder';
 import { MobileDvirHistoryService } from './mobile-dvir-history.service';
 import { MobileDvirService } from './mobile-dvir.service';
 import { MobileFleetOpsRepository } from './mobile-fleet-ops.repository';
 import { MobileMaintenanceController } from './mobile-maintenance.controller';
 import { MobileMaintenanceRepository } from './mobile-maintenance.repository';
 import { MobileMaintenanceService } from './mobile-maintenance.service';
+import { AttachmentsModule } from '../attachments/attachments.module';
+import { MobileAttachmentsController } from './mobile-attachments.controller';
 import { MobileMessagingController } from './mobile-messaging.controller';
 import { MobileMessagingRepository } from './mobile-messaging.repository';
 import { MobileMessagingService } from './mobile-messaging.service';
@@ -58,7 +63,7 @@ import { SignatureService } from './signature.service';
  * is their shared DB-access point, kept separate from `MobileRepository` on purpose.
  */
 @Module({
-  imports: [HosRecalcModule, LogsModule, IngestModule, AuditModule, AuthModule, MessagingModule, RodsLoginModule],
+  imports: [AttachmentsModule, HosRecalcModule, LogsModule, IngestModule, AuditModule, AuthModule, MessagingModule, RodsLoginModule, CarrierModule],
   controllers: [
     MobileAppConfigController,
     MobileBootstrapController,
@@ -75,9 +80,11 @@ import { SignatureService } from './signature.service';
     PushTokensController,
     DeviceHealthController,
     MobileMessagingController,
+    MobileAttachmentsController,
     MobileMaintenanceController,
     MobileDeviceController,
     MobileDeviceConfigController,
+    MobileVirtualDeviceController,
   ],
   providers: [
     MobileRepository,
@@ -94,6 +101,7 @@ import { SignatureService } from './signature.service';
     MobileCoDriverService,
     MobileTripService,
     MobileDvirHistoryService,
+    DvirPdfBuilder, // MB-4 — the web DVIR PDF renderer, reused for GET /mobile/dvirs/:id/pdf
     MobileContactsService,
     // MB-1 (push tokens), MB-7 (device health), MB-15 (driver-facing messaging) — Phase 6b.
     PushTokensRepository,
@@ -108,6 +116,8 @@ import { SignatureService } from './signature.service';
     // MG-BLE-1/2 (wave 4) — driver reports the observed PT30 BLE MAC.
     MobileDeviceRepository,
     MobileDeviceService,
+    // pt30_pt40/tz.md §9.3 — PT Emulator (Virtual ELD) registration.
+    MobileVirtualDeviceService,
   ],
   exports: [MobileRepository, SignatureService, MobileFleetOpsRepository],
 })

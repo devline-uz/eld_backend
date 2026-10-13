@@ -8,28 +8,36 @@ import { MobileAppConfigService, compareVersions } from './mobile-app-config.ser
 
 const mkConfig = (env: Record<string, string | undefined>) =>
   ({ get: (k: string) => env[k] }) as never;
+const virtualEldOff = { isEnabled: async () => false } as never;
 
 describe('MobileAppConfigService (MR-7 / MR-30)', () => {
-  it('everything unset -> nulls, default store url', () => {
-    const svc = new MobileAppConfigService(mkConfig({ MOBILE_STORE_URL: 'https://play/x' }));
-    expect(svc.getAppConfig('android', '1.0.0')).toEqual(
+  it('everything unset -> nulls, default store url', async () => {
+    const svc = new MobileAppConfigService(mkConfig({ MOBILE_STORE_URL: 'https://play/x' }), virtualEldOff);
+    expect(await svc.getAppConfig('android', '1.0.0')).toEqual(
       expect.objectContaining({ minSupportedVersion: null, latestVersion: null, storeUrl: 'https://play/x', updateRequired: null, userManualUrl: null, minPt30Firmware: null }),
     );
   });
 
-  it('PT30 firmware gate is env-driven only: unset/blank -> null, set -> passed through', () => {
-    const unset = new MobileAppConfigService(mkConfig({ MOBILE_MIN_PT30_FIRMWARE: '  ' }));
-    expect(unset.getAppConfig('android', '1.0.0')).toEqual(expect.objectContaining({ minPt30Firmware: null, recommendedPt30Firmware: null }));
-    const set = new MobileAppConfigService(mkConfig({ MOBILE_MIN_PT30_FIRMWARE: 'V-MIN', MOBILE_RECOMMENDED_PT30_FIRMWARE: 'V-REC' }));
-    expect(set.getAppConfig('android', '1.0.0')).toEqual(expect.objectContaining({ minPt30Firmware: 'V-MIN', recommendedPt30Firmware: 'V-REC' }));
+  it('PT30 firmware gate is env-driven only: unset/blank -> null, set -> passed through', async () => {
+    const unset = new MobileAppConfigService(mkConfig({ MOBILE_MIN_PT30_FIRMWARE: '  ' }), virtualEldOff);
+    expect(await unset.getAppConfig('android', '1.0.0')).toEqual(expect.objectContaining({ minPt30Firmware: null, recommendedPt30Firmware: null }));
+    const set = new MobileAppConfigService(mkConfig({ MOBILE_MIN_PT30_FIRMWARE: 'V-MIN', MOBILE_RECOMMENDED_PT30_FIRMWARE: 'V-REC' }), virtualEldOff);
+    expect(await set.getAppConfig('android', '1.0.0')).toEqual(expect.objectContaining({ minPt30Firmware: 'V-MIN', recommendedPt30Firmware: 'V-REC' }));
   });
 
-  it('updateRequired / updateAvailable from semver compare', () => {
-    const svc = new MobileAppConfigService(mkConfig({ MOBILE_MIN_SUPPORTED_VERSION: '1.0.3', MOBILE_LATEST_VERSION: '1.2.0' }));
-    expect(svc.getAppConfig('android', '1.0.2').updateRequired).toBe(true);
-    expect(svc.getAppConfig('android', '1.0.10').updateRequired).toBe(false);
-    expect(svc.getAppConfig('android', '1.0.10').updateAvailable).toBe(true);
-    expect(svc.getAppConfig('android', undefined).updateRequired).toBeNull();
+  it('updateRequired / updateAvailable from semver compare', async () => {
+    const svc = new MobileAppConfigService(mkConfig({ MOBILE_MIN_SUPPORTED_VERSION: '1.0.3', MOBILE_LATEST_VERSION: '1.2.0' }), virtualEldOff);
+    expect((await svc.getAppConfig('android', '1.0.2')).updateRequired).toBe(true);
+    expect((await svc.getAppConfig('android', '1.0.10')).updateRequired).toBe(false);
+    expect((await svc.getAppConfig('android', '1.0.10')).updateAvailable).toBe(true);
+    expect((await svc.getAppConfig('android', undefined)).updateRequired).toBeNull();
+  });
+
+  it('pt30_pt40 §9.3 — virtualEld.enabled mirrors the shared policy', async () => {
+    const on = new MobileAppConfigService(mkConfig({}), { isEnabled: async () => true } as never);
+    expect((await on.getAppConfig('android', undefined)).virtualEld).toEqual({ enabled: true });
+    const off = new MobileAppConfigService(mkConfig({}), virtualEldOff);
+    expect((await off.getAppConfig('android', undefined)).virtualEld).toEqual({ enabled: false });
   });
 
   it('compareVersions handles lengths and build suffix', () => {
@@ -38,14 +46,14 @@ describe('MobileAppConfigService (MR-7 / MR-30)', () => {
   });
 
   it('legal returns url from env, html null', () => {
-    const svc = new MobileAppConfigService(mkConfig({ MOBILE_PRIVACY_URL: 'https://p', MOBILE_LEGAL_VERSION: '2026-10' }));
+    const svc = new MobileAppConfigService(mkConfig({ MOBILE_PRIVACY_URL: 'https://p', MOBILE_LEGAL_VERSION: '2026-10' }), virtualEldOff);
     expect(svc.getLegal('privacy')).toEqual({ version: '2026-10', url: 'https://p', html: null });
     expect(svc.getLegal('terms')).toEqual({ version: '2026-10', url: null, html: null });
   });
 });
 
 describe('MobileAppConfigController', () => {
-  const ctrl = new MobileAppConfigController(new MobileAppConfigService(mkConfig({})));
+  const ctrl = new MobileAppConfigController(new MobileAppConfigService(mkConfig({}), virtualEldOff));
   const proto = MobileAppConfigController.prototype;
 
   it('app-config and legal are public and throttled; ping is driver-guarded only', () => {

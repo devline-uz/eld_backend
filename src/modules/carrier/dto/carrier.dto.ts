@@ -57,5 +57,7 @@ export const UpdateCarrierDto = z.object({
   eldIdentifier: EldIdentifierSchema.optional(),
   eldRegistrationId: EldRegistrationIdSchema.optional(),
   erodsMode: ErodsModeEnum.optional(),
+  /** pt30_pt40/tz.md §9.3 — "Test PT30/40" switch (Virtual ELD). Needs env permission + erodsMode TEST. */
+  virtualEldEnabled: z.boolean().optional(),
 });
 export type UpdateCarrierDto = z.infer<typeof UpdateCarrierDto>;

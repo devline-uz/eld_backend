@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import type { Attachment, Conversation, EditorType, Message, Prisma } from '@prisma/client';
+import { AppException } from '../../common/errors/app.exception';
 import { PrismaService } from '../../core/prisma/prisma.service';
 import { MESSAGE_AUDIO_KIND } from './message-audio';
 
@@ -92,19 +93,48 @@ export class MessagingRepository {
     }));
   }
 
-  /** §20 B-67 — marks the caller's own participant row read up to `readAt` (default now). */
-  async markRead(
-    conversationId: string,
-    actor: Participant,
-    readAt: Date = new Date(),
-  ): Promise<void> {
-    await this.prisma.conversationParticipant.updateMany({
-      where: {
-        conversationId,
-        ...(actor.userId ? { userId: actor.userId } : { driverId: actor.driverId }),
-      },
-      data: { lastReadAt: readAt },
+  /** Prisma `{ not: x }` drops NULL rows (SQL `<>`), so "not sent by `actor`" is spelled out. */
+  private notSentBy(actor: Participant): Prisma.MessageWhereInput {
+    return actor.userId
+      ? { OR: [{ senderUserId: null }, { senderUserId: { not: actor.userId } }] }
+      : { OR: [{ senderDriverId: null }, { senderDriverId: { not: actor.driverId } }] };
+  }
+
+  /**
+   * §20 B-67 — marks the caller's own participant row read up to `readAt` (default now) AND stamps
+   * `readAt` (plus `deliveredAt` when still null) on every message the caller did not send.
+   * Returns the newest such message id (the `lastReadMessageId` of the `message.read` event).
+   */
+  async markRead(conversationId: string, actor: Participant, readAt: Date = new Date()): Promise<{ lastReadMessageId: string | null }> {
+    const others = { conversationId, ...this.notSentBy(actor) };
+    await this.prisma.$transaction([
+      this.prisma.conversationParticipant.updateMany({
+        where: { conversationId, ...(actor.userId ? { userId: actor.userId } : { driverId: actor.driverId }) },
+        data: { lastReadAt: readAt },
+      }),
+      this.prisma.message.updateMany({ where: { ...others, deliveredAt: null }, data: { deliveredAt: readAt } }),
+      this.prisma.message.updateMany({ where: { ...others, readAt: null }, data: { readAt } }),
+    ]);
+    const last = await this.prisma.message.findFirst({
+      where: others,
+      orderBy: [{ sentAt: 'desc' }, { id: 'desc' }],
+      select: { id: true },
     });
+    return { lastReadMessageId: last?.id ?? null };
+  }
+
+  /** `deliveredAt` = first time the recipient side fetched the thread. One cheap updateMany. */
+  async markDelivered(conversationId: string, recipient: Participant, now: Date = new Date()): Promise<number> {
+    const res = await this.prisma.message.updateMany({
+      where: { conversationId, deliveredAt: null, ...this.notSentBy(recipient) },
+      data: { deliveredAt: now },
+    });
+    return res.count;
+  }
+
+  async findUserDisplayName(userId: string): Promise<string | null> {
+    const u = await this.prisma.user.findUnique({ where: { id: userId }, select: { firstName: true, lastName: true } });
+    return u ? `${u.firstName} ${u.lastName}`.trim() || null : null;
   }
 
   /** BE-010 — which of `ids` are live (not soft-deleted) drivers. Web `POST /conversations` /
@@ -192,20 +222,18 @@ export class MessagingRepository {
     ]).then(([items, total]) => ({ items, total }));
   }
 
-  async createMessage(
-    conversationId: string,
-    data: Prisma.MessageCreateWithoutConversationInput,
-  ): Promise<Message> {
-    const [message] = await this.prisma.$transaction([
-      this.prisma.message.create({
-        data: { ...data, conversation: { connect: { id: conversationId } } },
-      }),
-      this.prisma.conversation.update({
-        where: { id: conversationId },
-        data: { lastMessageAt: new Date() },
-      }),
-    ]);
-    return message;
+  async createMessage(conversationId: string, data: Prisma.MessageCreateWithoutConversationInput): Promise<Message> {
+    return this.prisma.$transaction(async (tx) => {
+      const message = await tx.message.create({ data: { ...data, conversation: { connect: { id: conversationId } } } });
+      await tx.conversation.update({ where: { id: conversationId }, data: { lastMessageAt: new Date() } });
+      // MB-9 — claim the chat upload for this message (one message per attachment; also what
+      // `GET /attachments/:id/presign` keys the participant check on).
+      if (message.attachmentId) {
+        const claimed = await tx.attachment.updateMany({ where: { id: message.attachmentId, messageId: null }, data: { messageId: message.id } });
+        if (claimed.count !== 1) throw AppException.conflict('Attachment is already used by another message.', { attachmentId: message.attachmentId });
+      }
+      return message;
+    });
   }
 
   /** Voice messages — the MESSAGE_AUDIO attachments linked to `messageIds` (both directions of the

@@ -9,10 +9,12 @@ import { AppConfigService } from '../../core/config/config.service';
 import { AttachmentsService } from '../attachments/attachments.service';
 import { CarrierRepository } from '../carrier/carrier.repository';
 import { hashPassword, verifyPassword } from './lib/password.util';
+import { randomInt, randomBytes, timingSafeEqual } from 'node:crypto';
 import { randomOpaqueToken, sha256 } from './lib/hash.util';
 import { TRANSACTIONAL_MAIL, TransactionalMailPort } from '../../core/mail/mail.port';
 import { TokenService } from './token.service';
 import { DriverAuthRepository } from './repositories/driver-auth.repository';
+import { DriverResetCodeRepository } from './repositories/driver-reset-code.repository';
 import { DriverSessionRepository } from './repositories/driver-session.repository';
 import { SessionRepository } from './repositories/session.repository';
 import { UserAuthRepository, UserWithRole } from './repositories/user-auth.repository';
@@ -20,6 +22,10 @@ import { RodsLoginRecorder } from '../logs/rods-login-recorder';
 
 /** How long a back-office invite stays acceptable after `invitedAt` (web §11.18 footer copy). */
 export const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** MB-17 — driver reset-code policy (documented in Swagger on the forgot/reset endpoints). */
+export const DRIVER_RESET_CODE_TTL_MS = 15 * 60 * 1000;
+export const DRIVER_RESET_CODE_MAX_ATTEMPTS = 5;
 
 export interface RequestMeta {
   ip?: string;
@@ -65,6 +71,7 @@ export class AuthService {
     private readonly attachments: AttachmentsService,
     @Inject(TRANSACTIONAL_MAIL) private readonly mail: TransactionalMailPort,
     private readonly loginRecords: RodsLoginRecorder,
+    private readonly resetCodes: DriverResetCodeRepository,
   ) {}
 
   // ---------------------------------------------------------------------
@@ -327,29 +334,82 @@ export class AuthService {
     return this.config.echoOneTimeSecrets ? { resetToken: token } : {};
   }
 
-  /** MR-31 — `POST /auth/driver/password/forgot`. Always resolves (no enumeration oracle): an
-   * unknown identifier, a driver without email, or a mail failure all look identical. The
-   * token is emailed; it is only echoed in dev (`DEV_ECHO_SECRETS`). */
-  async forgotDriverPassword(identifier: string): Promise<{ resetToken?: string }> {
+  /** MR-31/MB-16/MB-17 — `POST /auth/driver/password/forgot`. Always resolves (no enumeration
+   * oracle): unknown identifier, email-less driver and mail failure all look identical. With an
+   * email: a 6-digit code (15 min, 5 attempts, hashed at rest, a new request invalidates the old
+   * one) is emailed. Without: the carrier's ADMINs get an in-app notification. Secrets are echoed
+   * only in dev (`DEV_ECHO_SECRETS`); the code is never logged. */
+  async forgotDriverPassword(identifier: string): Promise<{ resetToken?: string; resetCode?: string }> {
     const driver = await this.drivers.findByUsernameOrEmail(identifier);
-    if (!driver || !driver.email) return {};
+    if (!driver) return {};
+    if (!driver.email) {
+      // Not awaited — same timing-oracle reasoning as the mail below.
+      void Promise.resolve()
+        .then(() =>
+          this.resetCodes.notifyAdminsOfResetRequest(driver, new Date(Date.now() - DRIVER_RESET_CODE_TTL_MS)),
+        )
+        .catch((err: unknown) => {
+          this.logger.warn({ driverId: driver.id, err: String(err) }, 'Driver password-reset admin notification failed');
+        });
+      return {};
+    }
+    const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
+    const salt = randomBytes(16).toString('hex');
     const token = this.tokens.signDriverPasswordResetToken(driver.id, sha256(driver.passwordHash ?? ''));
     // Not awaited: waiting on the mail provider made a known identifier measurably slower than an
     // unknown one — a timing oracle that undid the "always 200" enumeration guard.
     void Promise.resolve()
       .then(() =>
-        this.mail.send({
+        this.resetCodes.upsert(driver.id, salt, sha256(`${salt}:${code}`), new Date(Date.now() + DRIVER_RESET_CODE_TTL_MS)),
+      )
+      .then((issued) =>
+        // B-158 — inside the per-driver cooldown no new code is stored, so none is mailed.
+        issued === null ? undefined : this.mail.send({
           to: driver.email as string,
-          subject: 'Reset your OneBook ELD driver app password',
+          subject: 'Your OneBook ELD password reset code',
           text:
-            `Use this code in the OneBook ELD app to choose a new password. It expires in 30 minutes.\n\n${token}\n\n` +
+            `Your OneBook ELD password reset code is ${code}\n\n` +
+            `Enter it in the app to choose a new password. It expires in ${DRIVER_RESET_CODE_TTL_MS / 60_000} minutes ` +
+            `and stops working after ${DRIVER_RESET_CODE_MAX_ATTEMPTS} wrong attempts.\n\n` +
             'If you did not request this, ignore this email.',
         }),
       )
       .catch((err: unknown) => {
         this.logger.warn({ driverId: driver.id, err: String(err) }, 'Driver password-reset email failed');
       });
-    return this.config.echoOneTimeSecrets ? { resetToken: token } : {};
+    return this.config.echoOneTimeSecrets ? { resetToken: token, resetCode: code } : {};
+  }
+
+  /** MB-17 — completes a reset with `{username|email, code, newPassword}`. Every failure
+   * (unknown driver, no/expired/exhausted code, wrong code) returns the same 401. */
+  async resetDriverPasswordWithCode(identifier: string, code: string, newPassword: string): Promise<void> {
+    const invalid = () => new AppException(ERROR_CODES.TOKEN_INVALID, 'The code is invalid, already used or expired.', 401);
+    const driver = await this.drivers.findByUsernameOrEmail(identifier);
+    if (!driver) throw invalid();
+    // B-160 — 15 wrong codes in 24 h lock code reset for that driver for 24 h (same generic 401).
+    if (await this.resetCodes.isLocked(driver.id, new Date())) throw invalid();
+    const row = await this.resetCodes.find(driver.id);
+    if (!row) throw invalid();
+    if (row.expiresAt.getTime() <= Date.now() || row.attempts >= DRIVER_RESET_CODE_MAX_ATTEMPTS) {
+      await this.resetCodes.consume(driver.id);
+      throw invalid();
+    }
+    // B-158 — spend the attempt atomically BEFORE comparing: a read-then-increment let parallel
+    // guesses all pass the stale `attempts` check and blow through the 5-attempt cap.
+    if (!(await this.resetCodes.claimAttempt(driver.id, row.codeHash, DRIVER_RESET_CODE_MAX_ATTEMPTS, new Date()))) {
+      throw invalid();
+    }
+    const expected = Buffer.from(row.codeHash, 'hex');
+    const actual = Buffer.from(sha256(`${row.salt}:${code}`), 'hex');
+    if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) {
+      if (row.attempts + 1 >= DRIVER_RESET_CODE_MAX_ATTEMPTS) await this.resetCodes.consume(driver.id);
+      await this.resetCodes.recordFailure(driver.id, new Date());
+      throw invalid();
+    }
+    // Single use: only the caller whose delete removed the row may proceed.
+    if (!(await this.resetCodes.consume(driver.id))) throw invalid();
+    await this.drivers.updatePasswordHash(driver.id, await hashPassword(newPassword));
+    await this.driverSessions.revokeAllForDriver(driver.id);
   }
 
   /** MR-31 — completes the reset; single-use (token is bound to the old password hash) and

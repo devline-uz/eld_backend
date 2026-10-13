@@ -151,6 +151,7 @@ export const FIGMA_UNMAPPED_ROUTES: Record<string, string> = {
   'GET /api/mobile/support/tickets/{id}': 'Driver app M-30 ticket detail (MR-20) — mobile Figma export missing.',
   'POST /api/mobile/device/mac': 'Driver app BLE connect to the unit\'s PT30 — reports the observed MAC (MG-BLE-1/2, no screen of its own); mobile Figma export missing.',
   'GET /api/mobile/device-config': 'Driver app reads PT SDK system variables to apply to the PT30/PT40 on connect (D-135). Background, no screen of its own.',
+  'POST /api/mobile/virtual-devices': 'Driver app S-04 "Connect ELD" -> "Test qurilmalar (Emulator)" (pt30_pt40/tz.md §8.3); background call after PIN entry, no Figma frame yet.',
   // In-app notification inbox — a bell icon shown on every screen, not a screen of its own;
   // the role-guide exports do not capture it separately from the pages it overlays.
   'GET /api/notifications': 'In-app notification bell (TZ §14) — not a distinct screen in the role-guide export.',
@@ -158,6 +159,7 @@ export const FIGMA_UNMAPPED_ROUTES: Record<string, string> = {
   'POST /api/notifications/{id}/read': 'In-app notification bell — marking one item read (TZ §14) — same as above.',
   // B-41 presigned download helper — reused by whichever screen renders the attachment
   // (DVIR photo, defect photo, support-ticket file); not a screen of its own.
+  'GET /api/mobile/attachments/{id}/presign': 'Driver app M-16 chat voice/file playback (mobile-requests MB-9) — mobile Figma export missing.',
   'GET /api/attachments/{id}/presign': 'Short-lived presigned GET for a stored attachment (TZ §20 B-41) — reused across DVIR/defect/support screens, not a screen of its own.',
   // Reports (TZ §11.6/§15). Only the IFTA and FMCSA-pack tabs of the Reports screen were
   // exported (p.20/p.21) — the generic generate/list/status/download/schedule flow and the

@@ -2,7 +2,8 @@ import type { Device, Vehicle } from '@prisma/client';
 import { AppException } from '../../common/errors/app.exception';
 import { computeChecksum } from './checksum';
 import { DIAGNOSTIC, MALFUNCTION, RECORD_ORIGIN } from './event-codes';
-import { IngestEventsDto } from './dto/ingest.dto';
+import { IngestBleStateDto, IngestDeviceStatusDto, IngestEventsDto, IngestTelemetryDto } from './dto/ingest.dto';
+import { VirtualEldPolicy } from '../carrier/virtual-eld.policy';
 import { IngestService } from './ingest.service';
 
 const VEHICLE_ID = '11111111-1111-4111-8111-111111111111';
@@ -30,6 +31,7 @@ function makeService(overrides: Record<string, unknown> = {}): {
   alerts: string[];
   recalcJobs: Array<{ name: string; data: unknown }>;
   published: string[];
+  events: { publish: jest.Mock<Promise<void>, [string, unknown?]> };
 } {
   const captured: Captured = { rows: [], segments: [], vehicleUpdates: [] };
   const alerts: string[] = [];
@@ -83,7 +85,7 @@ function makeService(overrides: Record<string, unknown> = {}): {
 
   const telemetry = { store: jest.fn(async () => ({ accepted: 1, duplicates: 0, denserThanContract: 0 })) };
   const events = {
-    publish: jest.fn(async (name: string) => {
+    publish: jest.fn(async (name: string, _payload?: unknown) => {
       published.push(name);
       if (name.startsWith('alert.')) alerts.push(name);
     }),
@@ -91,6 +93,8 @@ function makeService(overrides: Record<string, unknown> = {}): {
   const hosQueue = { add: jest.fn(async (name: string, data: unknown) => recalcJobs.push({ name, data })) };
   const alertQueue = { add: jest.fn(async () => undefined) };
   const safetyDetectQueue = { add: jest.fn(async () => undefined) };
+  // pt30_pt40/tz.md §9.3 — pass-through gate unless a test injects the real policy.
+  const virtualEld = (overrides.virtualEld as object | undefined) ?? { assertDeviceUsable: jest.fn(async () => undefined) };
 
   const service = new IngestService(
     repo as never,
@@ -99,8 +103,9 @@ function makeService(overrides: Record<string, unknown> = {}): {
     hosQueue as never,
     alertQueue as never,
     safetyDetectQueue as never,
+    virtualEld as never,
   );
-  return { service, captured, repo, alerts, recalcJobs, published };
+  return { service, captured, repo, alerts, recalcJobs, published, events };
 }
 
 function batch(events: Array<Record<string, unknown>>): IngestEventsDto {
@@ -375,6 +380,43 @@ describe('IngestService — TZ §7', () => {
   });
 });
 
+describe('IngestService — Virtual ELD gate (pt30_pt40/tz.md §9.3)', () => {
+  const virtualDevice = { ...device, serial: 'VPT30_A1B2', isVirtual: true };
+  const realPolicy = (enabled: boolean) =>
+    new VirtualEldPolicy({ virtualEldAllowed: true } as never, { get: jest.fn(async () => ({ virtualEldEnabled: enabled })) } as never);
+  const calls = (service: IngestService) => ({
+    events: () => service.ingestEvents(IngestEventsDto.parse({ deviceSerial: 'VPT30_A1B2', vehicleId: VEHICLE_ID, batch: [withChecksum()] }), DRIVER_ID),
+    telemetry: () =>
+      service.ingestTelemetry(IngestTelemetryDto.parse({ deviceSerial: 'VPT30_A1B2', vehicleId: VEHICLE_ID, points: [{ time: '2026-10-10T12:00:00Z' }] }), DRIVER_ID),
+    bleState: () => service.recordBleState(IngestBleStateDto.parse({ deviceSerial: 'VPT30_A1B2', state: 'CONNECTED', at: '2026-10-10T12:00:00Z' }), DRIVER_ID),
+    deviceStatus: () => service.recordDeviceStatus(IngestDeviceStatusDto.parse({ deviceSerial: 'VPT30_A1B2', storedEventsCount: 0 }), DRIVER_ID),
+    deviceConfig: () => service.resolveOwnedDevice('VPT30_A1B2', DRIVER_ID),
+  });
+
+  it.each(['events', 'telemetry', 'bleState', 'deviceStatus', 'deviceConfig'] as const)(
+    '%s from a virtual device -> 403 VIRTUAL_ELD_DISABLED while the switch is off, nothing written',
+    async (name) => {
+      const { service, repo } = makeService({ findDeviceBySerial: jest.fn(async () => virtualDevice), virtualEld: realPolicy(false) });
+      await expect(calls(service)[name]()).rejects.toMatchObject({ code: 'VIRTUAL_ELD_DISABLED', status: 403 });
+      expect(repo.insertEvents).not.toHaveBeenCalled();
+      expect(repo.updateDeviceOutsideTx).not.toHaveBeenCalled();
+    },
+  );
+
+  it('a virtual device ingests normally while the switch is on', async () => {
+    const { service, captured } = makeService({ findDeviceBySerial: jest.fn(async () => virtualDevice), virtualEld: realPolicy(true) });
+    const result = await service.ingestEvents(IngestEventsDto.parse({ deviceSerial: 'VPT30_A1B2', vehicleId: VEHICLE_ID, batch: [withChecksum()] }), DRIVER_ID);
+    expect(result.accepted).toBe(1);
+    expect(captured.rows).toHaveLength(1);
+  });
+
+  it('a real device is unaffected even with the switch off', async () => {
+    const { service, captured } = makeService({ virtualEld: realPolicy(false) });
+    await service.ingestEvents(batch([withChecksum()]), DRIVER_ID);
+    expect(captured.rows).toHaveLength(1);
+  });
+});
+
 describe('IngestService — BLE state and device status (§7.6, §7.7)', () => {
   it('does not alert while the link is healthy', async () => {
     const { service, alerts } = makeService({
@@ -555,5 +597,28 @@ describe('IngestService — PT SDK 6.11 (D-135)', () => {
     expect(job.points[0].latitude).toBeNull();
     expect(job.deviceHarsh).toEqual({ accel: false, brake: true, corner: false });
     expect(repo.updateDeviceOutsideTx).toHaveBeenCalledWith('dev_1', expect.objectContaining({ reportedVin: '1FUJGLDR7CLBP8834' }));
+  });
+
+  it('telemetry.point carries the latest fix (uncoarsened) to the vehicle and fleet rooms (D-149)', async () => {
+    const { service, events } = sdkService();
+    await service.ingestTelemetry(
+      {
+        deviceSerial: 'PT30_A86E',
+        vehicleId: VEHICLE_ID,
+        points: [
+          { time: new Date('2026-10-10T12:00:00Z'), isTransition: false, latitude: 39.9, longitude: -83.0, speedKmh: 80 },
+          { time: new Date('2026-10-10T12:01:00Z'), isTransition: false, latitude: 39.961176, longitude: -82.998794, speedKmh: 96.6, headingDeg: 90 },
+        ],
+      },
+      DRIVER_ID,
+    );
+    const push = events.publish.mock.calls.find(([name]: [string, unknown?]) => name === 'realtime.push')?.[1] as {
+      room: string[];
+      event: string;
+      payload: Record<string, unknown>;
+    };
+    expect(push.event).toBe('telemetry.point');
+    expect(push.room).toEqual([`vehicle:${VEHICLE_ID}`, 'fleet']);
+    expect(push.payload).toMatchObject({ vehicleId: VEHICLE_ID, latitude: 39.961176, longitude: -82.998794, speedMph: 60, headingDeg: 90 });
   });
 });

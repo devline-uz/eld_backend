@@ -6,6 +6,7 @@ import { RodsLoginModule } from '../logs/rods-login-recorder';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { DriverAuthRepository } from './repositories/driver-auth.repository';
+import { DriverResetCodeRepository } from './repositories/driver-reset-code.repository';
 import { DriverSessionRepository } from './repositories/driver-session.repository';
 import { SessionRepository } from './repositories/session.repository';
 import { UserAuthRepository } from './repositories/user-auth.repository';
@@ -36,6 +37,7 @@ import { PasswordResetCodeRepository } from './repositories/password-reset-code.
     DriverAuthRepository,
     SessionRepository,
     DriverSessionRepository,
+    DriverResetCodeRepository,
     PasswordResetCodeService,
     PasswordResetCodeRepository,
   ],

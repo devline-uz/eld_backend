@@ -4,20 +4,27 @@ function buildService(conversation: unknown = { id: 'cnv_1' }, isParticipant = t
   const repo = {
     findById: jest.fn(async (_id?: string): Promise<unknown> => conversation),
     isParticipant: jest.fn(async () => isParticipant),
-    markRead: jest.fn(async () => undefined),
+    markRead: jest.fn(async (..._a: unknown[]) => ({ lastReadMessageId: 'msg_9' })),
+    markDelivered: jest.fn(async (..._a: unknown[]) => 1),
+    listMessages: jest.fn(async () => ({ items: [], total: 0 })),
     listForActor: jest.fn(async () => []),
     createMessage: jest.fn(async (conversationId: string, data: Record<string, unknown>) => ({
       id: 'msg_1',
       conversationId,
       body: data.body,
+      attachmentId: data.attachmentId ?? null,
       clientId: data.clientId ?? null,
       senderUserId: data.senderUserId ?? null,
       senderDriverId: data.senderDriverId ?? null,
       sentAt: new Date('2026-10-11T10:00:00Z'),
     })),
-    createConversation: jest.fn(async (data: Record<string, unknown>) => ({
+    findUserDisplayName: jest.fn(async () => 'Ann Dispatcher'),
+    createConversation: jest.fn(async (data: Record<string, unknown>, participants: Array<{ userId?: string; driverId?: string }> = []) => ({
       id: 'cnv_new',
+      type: 'DIRECT',
+      title: null,
       ...data,
+      participants: participants.map((p) => ({ userId: p.userId ?? null, driverId: p.driverId ?? null })),
     })),
     findLiveDriverIds: jest.fn(async (ids: string[]) => new Set(ids)),
     findUserIds: jest.fn(async (ids: string[]) => new Set(ids)),
@@ -45,14 +52,16 @@ function buildService(conversation: unknown = { id: 'cnv_1' }, isParticipant = t
       sentAt: new Date('2026-10-13T10:00:00Z'),
     })),
   };
+  const chat = { decorate: jest.fn(async (ms: Array<Record<string, unknown>>) => ms.map((m) => ({ ...m, type: 'TEXT', attachment: null }))), assertSendable: jest.fn(async () => undefined) };
+  const push = { sendToDriver: jest.fn(async () => undefined) };
   const events = { publish: jest.fn(async (_name: string, _payload: unknown) => undefined) };
   const storage = {
     put: jest.fn(async (key: string) => key),
     delete: jest.fn(async () => undefined),
     presignGet: jest.fn(async (key: string) => `https://minio.internal/${key}?sig=abc`),
   };
-  const service = new MessagingService(repo as never, events as never, storage as never);
-  return { service, repo, events, storage };
+  const service = new MessagingService(repo as never, events as never, push as never, chat as never, storage as never);
+  return { service, repo, push, events, chat, storage };
 }
 
 const conversationWithParticipants = {
@@ -172,10 +181,46 @@ describe('MessagingService — realtime chat contract', () => {
     });
   });
 
-  it('a driver mark-read pushes nothing', async () => {
-    const { service, events } = buildService();
+  it('driver mark-read pushes no conversation.read, only message.read', async () => {
+    const { service, events } = buildService(conversationWithParticipants);
     await service.markRead('cnv_1', { id: 'drv_1', type: 'driver' } as never);
-    expect(events.publish).not.toHaveBeenCalled();
+    expect(events.publish).toHaveBeenCalledTimes(1);
+    expect(events.publish.mock.calls[0][1]).toMatchObject({ event: 'message.read', payload: { readerType: 'DRIVER', readerId: 'drv_1' } });
+  });
+
+  it('staff markRead emits message.read to conversation, driver and staff rooms with exact payload', async () => {
+    const { service, events, repo } = buildService(conversationWithParticipants);
+    await service.markRead('cnv_1', actor);
+    expect(repo.markRead).toHaveBeenCalledWith('cnv_1', { userId: 'usr_1' }, expect.any(Date));
+    expect(events.publish).toHaveBeenCalledWith('realtime.push', {
+      room: ['conversation:cnv_1', 'user:usr_1', 'driver:drv_1'],
+      event: 'message.read',
+      payload: { conversationId: 'cnv_1', readerType: 'STAFF', readerId: 'usr_1', lastReadMessageId: 'msg_9', readAt: expect.any(Date) as Date },
+    });
+    // backward compat kept
+    expect(events.publish).toHaveBeenCalledWith('realtime.push', expect.objectContaining({ event: 'conversation.read' }));
+  });
+
+  it('a message.read push failure never fails markRead', async () => {
+    const { service, events } = buildService(conversationWithParticipants);
+    events.publish.mockRejectedValue(new Error('redis down'));
+    await expect(service.markRead('cnv_1', actor)).resolves.toMatchObject({ conversationId: 'cnv_1' });
+  });
+
+  it('listMessages stamps deliveredAt for the reader side', async () => {
+    const { service, repo } = buildService();
+    await service.listMessages('cnv_1', actor, 1, 50);
+    expect(repo.markDelivered).toHaveBeenCalledWith('cnv_1', { userId: 'usr_1' });
+  });
+
+  it('chat FCM data carries objectType/objectId/category alongside the old keys', async () => {
+    const { service, push } = buildService(conversationWithParticipants);
+    await service.sendMessage('cnv_1', { body: 'hi' }, actor);
+    expect(push.sendToDriver).toHaveBeenCalledWith(
+      'drv_1',
+      expect.anything(),
+      { type: 'message.new', conversationId: 'cnv_1', messageId: 'msg_1', driverId: 'drv_1', objectType: 'Conversation', objectId: 'cnv_1', category: 'message' },
+    );
   });
 
   it('notifyConversationStarted (MR-3) pushes conversation.new to the staff user room', async () => {
@@ -198,12 +243,11 @@ describe('MessagingService — realtime chat contract', () => {
       ],
     }));
     await service.broadcast({ driverIds: ['drv_9'], body: 'all hands', title: 'Notice' }, actor);
-    const pushes = events.publish.mock.calls.map(
-      ([, p]) => p as { event: string; room: string | string[] },
-    );
-    expect(pushes.map((p) => p.event)).toEqual(['message.new', 'conversation.new']);
-    expect(pushes[0].room).toEqual(['conversation:cnv_new', 'user:usr_1']);
-    expect(pushes[1].room).toEqual(['user:usr_1']);
+    const pushes = events.publish.mock.calls.map(([, p]) => p as { event: string; room: string | string[] });
+    expect(pushes.map((p) => p.event)).toEqual(['conversation.new', 'message.new', 'conversation.new']);
+    expect(pushes[0].room).toBe('driver:drv_9');
+    expect(pushes[1].room).toEqual(['conversation:cnv_new', 'user:usr_1']);
+    expect(pushes[2].room).toEqual(['user:usr_1']);
   });
 });
 

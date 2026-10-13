@@ -1,23 +1,20 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import type { Attachment, Message } from '@prisma/client';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
 import { OffsetPage } from '../../common/dto/list-query.dto';
+import { PushService } from '../../core/firebase/push.service';
 import { EventBusService } from '../../core/events/event-bus.service';
 import type { ContextUser } from '../../core/context/request-context';
 import { STORAGE_PORT, StoragePort } from '../../core/storage/storage.port';
+import { BroadcastMessageDto, CreateConversationDto, SendAudioMessageDto, SendMessageDto } from './dto/messaging.dto';
 import {
-  BroadcastMessageDto,
-  CreateConversationDto,
-  SendAudioMessageDto,
-  SendMessageDto,
-} from './dto/messaging.dto';
-import {
-  MESSAGE_AUDIO_FALLBACK_BODY,
-  MESSAGE_AUDIO_MAX_BYTES,
-  validateAudio,
-} from './message-audio';
+  ChatAttachmentsService,
+  ChatAttachmentView,
+  MessageType as ChatMessageType,
+} from '../attachments/chat-attachments.service';
+import { MESSAGE_AUDIO_FALLBACK_BODY, MESSAGE_AUDIO_MAX_BYTES, validateAudio } from './message-audio';
 import { MessagingRepository, Participant } from './messaging.repository';
 
 function toParticipant(actor: ContextUser): Participant {
@@ -55,7 +52,13 @@ export interface MessageAudioView {
 
 /** A message row as served to the web panel: AUDIO messages additionally carry `attachment`
  * (null when the clip cannot be resolved); TEXT messages are the unchanged row. */
-export type MessageView = Message & { attachment?: MessageAudioView | null };
+/** A message as served to the web panel and pushed in `message.new`: `type` + `attachment`
+ * come from MB-9 chat uploads (`ChatAttachmentsService.decorate`, TEXT|AUDIO|IMAGE|FILE) or, for a
+ * stored AUDIO row (web voice message), from its MESSAGE_AUDIO clip (`withAudio`). */
+export type MessageView = Omit<Message, 'type'> & {
+  type: ChatMessageType;
+  attachment: ChatAttachmentView | MessageAudioView | null;
+};
 
 /**
  * Realtime chat contract for the web panel (namespace `/realtime`):
@@ -66,12 +69,20 @@ export type MessageView = Message & { attachment?: MessageAudioView | null };
  *    a staff-created or broadcast conversation.
  *  - `conversation.read` `{ conversationId, lastReadAt, userId }` → the reading staff user's own
  *    identity room only (unread badges in sync across that user's tabs).
+ *  - `message.read` `{ conversationId, readerType: 'DRIVER'|'STAFF', readerId, lastReadMessageId,
+ *    readAt }` → `conversation:{id}` + every driver participant's `driver:{id}` + every staff
+ *    participant's `user:{id}`; fired on both the driver and the staff read.
+ *  - `typing` (client emits `typing {conversationId,isTyping}`; relayed by `RealtimeGateway`).
  */
 @Injectable()
 export class MessagingService {
+  private readonly logger = new Logger(MessagingService.name);
+
   constructor(
     private readonly repo: MessagingRepository,
     private readonly events: EventBusService,
+    private readonly push: PushService,
+    private readonly chatAttachments: ChatAttachmentsService,
     @Inject(STORAGE_PORT) private readonly storage: StoragePort,
   ) {}
 
@@ -101,40 +112,80 @@ export class MessagingService {
       throw new AppException(ERROR_CODES.VALIDATION_FAILED, message, 422, { driverIds: message });
     }
     await this.assertRecipientsExist(driverIds, userIds);
-    const recipients: Participant[] = [
-      ...driverIds.map((id) => ({ driverId: id })),
-      ...userIds.map((id) => ({ userId: id })),
-    ];
+    const recipients: Participant[] = [...driverIds.map((id) => ({ driverId: id })), ...userIds.map((id) => ({ userId: id }))];
     if (dto.type === 'DIRECT') {
       const existing = await this.repo.findDirectBetween(self, recipients[0]);
       if (existing) return existing;
     }
     const participants: Participant[] = [self, ...recipients];
-    const conversation = await this.repo.createConversation(
-      { type: dto.type, title: dto.title, createdById: actor.id },
-      participants,
-    );
+    const conversation = await this.repo.createConversation({ type: dto.type, title: dto.title, createdById: actor.id }, participants);
     await this.notifyConversationCreated(conversation.id, participants, null, conversation);
+    if (actor.type !== 'driver') await this.notifyDriversConversationOpened(conversation, actor);
     return conversation;
   }
 
-  /** §20 B-67 — `POST /conversations/:id/read`. */
+  /**
+   * MB-8 — a staff member opened a thread with a driver: `conversation.new` to each driver's
+   * `driver:{id}` room so an open app adds it without polling. Best-effort, never throws.
+   */
+  private async notifyDriversConversationOpened(
+    conversation: { id: string; type: string; title: string | null; participants?: Array<{ driverId: string | null }> },
+    actor: ContextUser,
+  ): Promise<void> {
+    try {
+      for (const p of conversation.participants ?? []) {
+        if (!p.driverId || p.driverId === actor.id) continue;
+        await this.events.publish('realtime.push', {
+          room: `driver:${p.driverId}`,
+          event: 'conversation.new',
+          payload: { conversationId: conversation.id, type: conversation.type, title: conversation.title },
+        });
+      }
+    } catch (err) {
+      this.logger.warn({ conversationId: conversation.id, err: err instanceof Error ? err.message : String(err) }, 'conversation.new emit failed');
+    }
+  }
+
+  /** §20 B-67 — `POST /conversations/:id/read`. Stamps `readAt` on the other side's messages too. */
   async markRead(conversationId: string, actor: ContextUser) {
-    await this.assertParticipant(conversationId, actor);
+    const conversation = await this.assertParticipant(conversationId, actor);
     const readAt = new Date();
     const reader = toParticipant(actor);
-    await this.repo.markRead(conversationId, reader, readAt);
+    const { lastReadMessageId } = (await this.repo.markRead(conversationId, reader, readAt)) ?? { lastReadMessageId: null };
     await this.notifyRead(conversationId, reader, readAt);
+    await this.publishMessageRead(
+      conversationId,
+      {
+        readerType: actor.type === 'driver' ? 'DRIVER' : 'STAFF',
+        readerId: actor.id,
+        lastReadMessageId: lastReadMessageId ?? null,
+        readAt,
+      },
+      conversation.participants,
+    );
     return { conversationId, lastReadAt: readAt };
+  }
+
+  /** `message.read` to the conversation room, each driver's `driver:{id}` and each staff
+   * `user:{id}` room in ONE multi-room push. Best effort: never fails the REST call. */
+  async publishMessageRead(
+    conversationId: string,
+    read: { readerType: 'DRIVER' | 'STAFF'; readerId: string; lastReadMessageId: string | null; readAt: Date },
+    participants: Array<{ userId: string | null; driverId: string | null }> = [],
+  ): Promise<void> {
+    const rooms = new Set<string>([`conversation:${conversationId}`]);
+    for (const p of participants) {
+      if (p.driverId) rooms.add(`driver:${p.driverId}`);
+      if (p.userId) rooms.add(`user:${p.userId}`);
+    }
+    await this.events
+      .publish('realtime.push', { room: [...rooms], event: 'message.read', payload: { conversationId, ...read } })
+      .catch((err) => this.logger.warn({ conversationId, err: err instanceof Error ? err.message : String(err) }, 'message.read emit failed'));
   }
 
   /** `conversation.read` to the reading staff user's own identity room. Best effort: a push
    * failure never fails the REST call. */
-  private async notifyRead(
-    conversationId: string,
-    reader: Participant,
-    lastReadAt: Date,
-  ): Promise<void> {
+  private async notifyRead(conversationId: string, reader: Participant, lastReadAt: Date): Promise<void> {
     const room = staffRoom(reader);
     if (!room) return;
     await this.events
@@ -148,43 +199,35 @@ export class MessagingService {
 
   private async assertParticipant(conversationId: string, actor: ContextUser) {
     const conversation = await this.repo.findById(conversationId);
-    if (!conversation)
-      throw new AppException(ERROR_CODES.NOT_FOUND, 'Conversation not found.', 404);
+    if (!conversation) throw new AppException(ERROR_CODES.NOT_FOUND, 'Conversation not found.', 404);
     const ok = await this.repo.isParticipant(conversationId, toParticipant(actor));
-    if (!ok)
-      throw new AppException(ERROR_CODES.FORBIDDEN, 'Not a participant of this conversation.', 403);
+    if (!ok) throw new AppException(ERROR_CODES.FORBIDDEN, 'Not a participant of this conversation.', 403);
     return conversation;
   }
 
-  async listMessages(
-    conversationId: string,
-    actor: ContextUser,
-    page: number,
-    limit: number,
-  ): Promise<OffsetPage<unknown>> {
+  async listMessages(conversationId: string, actor: ContextUser, page: number, limit: number): Promise<OffsetPage<unknown>> {
     await this.assertParticipant(conversationId, actor);
-    const { items: rows, total } = await this.repo.listMessages(conversationId, page, limit);
-    const items = await this.withAudio(rows);
-    return { items, page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) };
+    // deliveredAt: the reader fetching the thread is the delivery of the other side's messages.
+    await this.repo.markDelivered(conversationId, toParticipant(actor)).catch(() => 0);
+    const { items, total } = await this.repo.listMessages(conversationId, page, limit);
+    return { items: await this.present(items), page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) };
   }
 
-  async sendMessage(
-    conversationId: string,
-    dto: SendMessageDto,
-    actor: ContextUser,
-  ): Promise<MessageView> {
+  async sendMessage(conversationId: string, dto: SendMessageDto, actor: ContextUser) {
     const conversation = await this.assertParticipant(conversationId, actor);
     const participant = toParticipant(actor);
-    const message = await this.repo.createMessage(conversationId, {
+    if (dto.attachmentId) await this.chatAttachments.assertSendable(dto.attachmentId, actor);
+    const created = await this.repo.createMessage(conversationId, {
       body: dto.body,
       attachmentId: dto.attachmentId,
       clientId: dto.clientId,
       senderUserId: participant.userId,
       senderDriverId: participant.driverId,
     });
-    const [view] = await this.withAudio([message]);
-    await this.publishNewMessage(conversationId, conversation.participants ?? [], view);
-    return view;
+    const [message] = await this.present([created]);
+    await this.publishNewMessage(conversationId, conversation.participants ?? [], message);
+    if (actor.type !== 'driver') await this.pushToDrivers(conversation, message, participant);
+    return message;
   }
 
   /**
@@ -215,7 +258,7 @@ export class MessagingService {
             clientId: message,
           });
         }
-        const [view] = await this.withAudio([existing]);
+        const [view] = await this.present([existing]);
         return view;
       }
     }
@@ -269,8 +312,9 @@ export class MessagingService {
       await this.storage.delete(key).catch(() => undefined);
       throw error;
     }
-    const [view] = await this.withAudio([message]);
+    const [view] = await this.present([message]);
     await this.publishNewMessage(conversationId, conversation.participants ?? [], view);
+    if (actor.type !== 'driver') await this.pushToDrivers(conversation, view, participant);
     return view;
   }
 
@@ -302,9 +346,18 @@ export class MessagingService {
     });
   }
 
+  /** Builds the served view of stored rows: MB-9 chat uploads via `ChatAttachmentsService.decorate`,
+   * then stored AUDIO rows (web voice messages) keep `type: 'AUDIO'` with their MESSAGE_AUDIO clip. */
+  async present(messages: Message[]): Promise<MessageView[]> {
+    const [decorated, audio] = await Promise.all([this.chatAttachments.decorate(messages), this.withAudio(messages)]);
+    return decorated.map((m, i) =>
+      messages[i].type === 'AUDIO' ? { ...m, type: 'AUDIO' as const, attachment: audio[i].attachment ?? null } : m,
+    );
+  }
+
   /** `message.new` to the conversation room (legacy subscribers) plus every staff participant's
-   * auto-joined identity room — the web panel gets it without subscribing, even for a thread it
-   * has never listed. One multi-room push: a socket in several of these rooms gets it once. */
+   * auto-joined identity room — the web panel gets it without subscribing, even for a thread it has
+   * never listed. One multi-room push: a socket in several of these rooms gets it once. */
   private async publishNewMessage(
     conversationId: string,
     rows: Array<{ userId: string | null; driverId: string | null }>,
@@ -329,12 +382,45 @@ export class MessagingService {
     });
   }
 
-  /** MR-3 — tells a staff member's open sessions a driver started a thread with them. */
-  async notifyConversationStarted(
-    userId: string,
-    conversationId: string,
-    message: unknown,
+  /**
+   * Best-effort FCM for a staff-sent message: every token of each driver participant (never
+   * the sender). Identifiers only in `data`; failures are logged, never thrown.
+   */
+  private async pushToDrivers(
+    conversation: { participants?: Array<{ driverId: string | null }> },
+    message: { id: string; conversationId: string; body: string; attachmentId: string | null },
+    sender: Participant,
   ): Promise<void> {
+    try {
+      const driverIds = (conversation.participants ?? [])
+        .map((p) => p.driverId)
+        .filter((id): id is string => !!id && id !== sender.driverId);
+      if (!driverIds.length) return;
+      const title = (sender.userId && (await this.repo.findUserDisplayName(sender.userId))) || 'Dispatch';
+      const text = message.body?.trim();
+      const body = text ? (text.length > 100 ? `${text.slice(0, 97)}...` : text) : message.attachmentId ? 'Sent an attachment' : '';
+      for (const driverId of driverIds) {
+        await this.push.sendToDriver(
+          driverId,
+          { title, body },
+          {
+            type: 'message.new',
+            conversationId: message.conversationId,
+            messageId: message.id,
+            driverId,
+            objectType: 'Conversation',
+            objectId: message.conversationId,
+            category: 'message',
+          },
+        );
+      }
+    } catch (err) {
+      this.logger.warn({ conversationId: message.conversationId, err: err instanceof Error ? err.message : String(err) }, 'Chat FCM failed');
+    }
+  }
+
+  /** MR-3 — tells a staff member's open sessions a driver started a thread with them. */
+  async notifyConversationStarted(userId: string, conversationId: string, message: unknown): Promise<void> {
     await this.events.publish('realtime.push', {
       room: `user:${userId}`,
       event: 'conversation.new',
@@ -363,10 +449,7 @@ export class MessagingService {
 
   /** BE-010 — 422 naming every unknown / soft-deleted driver and unknown user. */
   private async assertRecipientsExist(driverIds: string[], userIds: string[]): Promise<void> {
-    const [liveDrivers, users] = await Promise.all([
-      this.repo.findLiveDriverIds(driverIds),
-      this.repo.findUserIds(userIds),
-    ]);
+    const [liveDrivers, users] = await Promise.all([this.repo.findLiveDriverIds(driverIds), this.repo.findUserIds(userIds)]);
     const missingDrivers = driverIds.filter((id) => !liveDrivers.has(id));
     const missingUsers = userIds.filter((id) => !users.has(id));
     if (missingDrivers.length === 0 && missingUsers.length === 0) return;
@@ -388,6 +471,7 @@ export class MessagingService {
         { type: 'BROADCAST', title: dto.title, createdById: actor.id },
         participants,
       );
+      await this.notifyDriversConversationOpened(conversation, actor);
       const message = await this.sendMessage(conversation.id, { body: dto.body }, actor);
       await this.notifyConversationCreated(conversation.id, participants, message, conversation);
       results.push({ conversationId: conversation.id, messageId: message.id, driverId });

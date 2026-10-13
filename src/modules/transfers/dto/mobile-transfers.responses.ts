@@ -27,6 +27,8 @@ export class MobileTransferCreatedResponse extends MobileTransferView {
   warnings!: string[];
   @ApiProperty({ type: 'object', additionalProperties: { type: 'integer' }, description: 'Data-line count per output-file segment.' })
   counts!: Record<string, number>;
+  @ApiProperty({ type: String, nullable: true, description: 'MB-18 — echo of the request `clientId` (offline-queued transfers).' }) clientId!: string | null;
+  @ApiProperty({ ...DT, nullable: true, description: 'MB-18 — when the driver asked for the transfer on the device.' }) requestedAt!: string | null;
 }
 
 export class MobileTransferListResponse {

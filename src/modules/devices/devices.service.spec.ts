@@ -2,6 +2,7 @@ import { AppException } from '../../common/errors/app.exception';
 import { VehiclesRepository } from '../vehicles/vehicles.repository';
 import { DevicesRepository } from './devices.repository';
 import { DevicesService } from './devices.service';
+import { CreateDeviceDto, DeviceListQueryDto, ImportDevicesDto } from './dto/devices.dto';
 
 function makeDevice(overrides: Partial<Record<string, unknown>> = {}) {
   return {
@@ -43,6 +44,30 @@ describe('DevicesService', () => {
     const view = await service.get('dev_1');
 
     expect(view.firmwareOutdated).toBe(true);
+  });
+
+  // pt30_pt40/tz.md §9.1 — V… serials belong to POST /mobile/virtual-devices only.
+  it.each(['VPT30_A1B2', 'v123'])('create refuses the reserved serial %s with 422 VIRTUAL_SERIAL_RESERVED', async (serial) => {
+    await expect(service.create(CreateDeviceDto.parse({ serial }))).rejects.toMatchObject({ code: 'VIRTUAL_SERIAL_RESERVED', status: 422 });
+    expect(devicesRepo.create).not.toHaveBeenCalled();
+  });
+
+  it('import refuses the whole file when any row has a V… serial (nothing written)', async () => {
+    const dto = ImportDevicesDto.parse({ devices: [{ serial: 'PT30_0001' }, { serial: 'VPT40_ZZZZ' }] });
+    await expect(service.importMany(dto)).rejects.toMatchObject({
+      code: 'VIRTUAL_SERIAL_RESERVED',
+      details: { serials: [{ index: 1, serial: 'VPT40_ZZZZ' }] },
+    });
+    expect(devicesRepo.findBySerial).not.toHaveBeenCalled();
+    expect(devicesRepo.create).not.toHaveBeenCalled();
+  });
+
+  it('list passes ?virtual through as isVirtual; export carries isVirtual', async () => {
+    devicesRepo.list.mockResolvedValue({ items: [], total: 0 });
+    await service.list(DeviceListQueryDto.parse({ virtual: 'true' }));
+    expect(devicesRepo.list).toHaveBeenCalledWith(expect.objectContaining({ isVirtual: true }), 1, 25, { serial: 'asc' });
+    devicesRepo.listAll.mockResolvedValue([makeDevice({ serial: 'VPT30_A1B2', isVirtual: true })] as never);
+    expect((await service.exportAll())[0]).toMatchObject({ serial: 'VPT30_A1B2', isVirtual: true });
   });
 
   it('get throws DEVICE_NOT_FOUND when missing', async () => {

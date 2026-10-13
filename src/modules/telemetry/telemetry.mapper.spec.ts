@@ -41,10 +41,10 @@ describe('telemetry/mapper — §4.2 conversion + §7.3 rule 9 coarsening', () =
     expect(row.busType).toBeNull();
   });
 
-  it('coarsens the position to 1 mile before storage — the raw coordinate is never kept', () => {
+  it('keeps the fix (6 decimals) — telemetry is the map breadcrumb, not a RODS record (D-149)', () => {
     const row = toTelemetryRow(point(), ctx);
-    expect(row.latitude).not.toBe(39.961176);
-    expect(distanceMi({ lat: row.latitude!, lon: row.longitude! }, { lat: 39.961176, lon: -82.998794 })).toBeLessThanOrEqual(1);
+    expect(row.latitude).toBe(39.961176);
+    expect(row.longitude).toBe(-82.998794);
   });
 
   it('coarsens to 10 miles while Personal Conveyance is active', () => {

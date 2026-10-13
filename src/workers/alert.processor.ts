@@ -3,10 +3,9 @@ import { Logger } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import type { Job } from 'bullmq';
 import { EventBusService } from '../core/events/event-bus.service';
-import { FirebaseService } from '../core/firebase/firebase.service';
+import { PushService } from '../core/firebase/push.service';
 import { QUEUES } from '../core/queue/queue.constants';
 import { PrismaService } from '../core/prisma/prisma.service';
-import { MobileRepository } from '../modules/mobile/mobile.repository';
 import { AlertDeliveryRepository, AlertRulesRepository } from '../modules/notifications/notifications.repository';
 import { evaluateAlertPolicy, startOfLocalDay } from '../modules/notifications/lib/alert-policy';
 import {
@@ -44,8 +43,7 @@ export class AlertProcessor extends WorkerHost {
     private readonly rules: AlertRulesRepository,
     private readonly deliveries: AlertDeliveryRepository,
     private readonly prisma: PrismaService,
-    private readonly mobile: MobileRepository,
-    private readonly firebase: FirebaseService,
+    private readonly push: PushService,
     private readonly webhooks: WebhooksService,
     private readonly events: EventBusService,
   ) {
@@ -218,16 +216,19 @@ export class AlertProcessor extends WorkerHost {
         payload: { notification },
       });
       // TZ §12.7 — background app gets FCM, not just the socket event.
-      if (recipient.kind === 'driver' && this.firebase.enabled) {
-        const tokens = await this.mobile.findPushTokens(recipient.id);
-        await Promise.allSettled(
-          tokens.map((t) =>
-            this.firebase.sendToToken(
-              t.token,
-              { title: notification.title, body: notification.body },
-              { type: notification.type, id: notification.id, driverId: recipient.id, kind },
-            ),
-          ),
+      if (recipient.kind === 'driver') {
+        await this.push.sendToDriver(
+          recipient.id,
+          { title: notification.title, body: notification.body },
+          {
+            type: notification.type,
+            id: notification.id,
+            driverId: recipient.id,
+            kind,
+            objectType: notification.objectType,
+            objectId: notification.objectId,
+            category: notification.category,
+          },
         );
       }
       return;

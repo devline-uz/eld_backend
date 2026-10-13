@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { CarrierModule } from '../carrier/carrier.module';
 import { TelemetryModule } from '../telemetry/telemetry.module';
 import { DeviceEventsService } from './device-events.service';
 import { IngestController } from './ingest.controller';
@@ -7,7 +8,7 @@ import { IngestService } from './ingest.service';
 
 /** TZ §7 — app → server gateway ingest (events, telemetry, raw device events, BLE state, device status). */
 @Module({
-  imports: [TelemetryModule],
+  imports: [TelemetryModule, CarrierModule],
   controllers: [IngestController],
   providers: [IngestService, IngestRepository, DeviceEventsService],
   exports: [IngestService, IngestRepository],

@@ -102,7 +102,15 @@ export class MobileLogsController {
   }
 
   @Get('log-edit-requests')
-  @ApiOperation({ summary: 'Carrier edit proposals waiting for this driver (§395.30 — nothing applies until they answer).' })
+  @ApiOperation({
+    summary: 'Carrier edit proposals waiting for this driver (§395.30 — nothing applies until they answer).',
+    description:
+      'Query `status` = PENDING (default) | ACCEPTED | REJECTED | ALL, optional `from`/`to` RODS days. MB-10 (additive): every item ' +
+      'carries `date` (RODS day of `proposedStart`, home-terminal zone), `original` {status, start, end|null, location} of the ' +
+      'record being replaced (null for an INSERT), `proposedGraph[]` — the day graph as it would read if accepted now, built by ' +
+      'the same plan `POST /logs/edit-requests/:id/accept` writes (empty once resolved) — and `requestedBy` {id, name}. ' +
+      'Answer with `POST /logs/edit-requests/:id/accept|reject`.',
+  })
   @ApiEnvelopeResponse(EditRequestListResponse, {
     example: {
       driverId: 'drv_1',
@@ -111,6 +119,14 @@ export class MobileLogsController {
           id: '9120', driverId: 'drv_1', status: 'PENDING', kind: 'EDIT', originalEventId: '9100', proposedStatus: 'ON', proposedSpecial: 'NONE',
           proposedStart: '2026-09-10T18:26:58.000Z', proposedEnd: '2026-09-10T19:30:00.000Z', locationName: 'Columbus, OH',
           annotation: 'Forgot to switch to On duty while loading', requestedById: 'usr_1', requestedAt: '2026-09-11T14:00:00.000Z', resolvedAt: null,
+          date: '2026-09-10',
+          original: { status: 'OFF', start: '2026-09-10T18:26:58.000Z', end: '2026-09-10T19:30:00.000Z', location: '3mi W OH Columbus' },
+          proposedGraph: [
+            { status: 'OFF', effective: 'OFF', special: 'NONE', startAt: '2026-09-10T04:00:00.000Z', endAt: '2026-09-10T18:26:58.000Z', durationSec: 52018 },
+            { status: 'ON', effective: 'ON', special: 'NONE', startAt: '2026-09-10T18:26:58.000Z', endAt: '2026-09-10T19:30:00.000Z', durationSec: 3782 },
+            { status: 'OFF', effective: 'OFF', special: 'NONE', startAt: '2026-09-10T19:30:00.000Z', endAt: '2026-09-11T04:00:00.000Z', durationSec: 30600 },
+          ],
+          requestedBy: { id: 'usr_1', name: 'Jane Dispatcher' },
         },
       ],
     },
@@ -151,6 +167,9 @@ export class MobileLogsController {
   @ApiOperation({
     summary: "The driver's own RODS day (grid, records, certification state).",
     description:
+      'MB-14: `events[]` holds EVERY §395 record dated inside the day (every duty-status record, all statuses and origins); ' +
+      '`graph[].carriedOver` is true only on the opening segment whose status was recorded on an earlier day (that record ' +
+      'is not repeated in `events[]`). ' +
       'Additive fields (2026-10-08): `trip` {shippingDocuments, trailerNumbers, notes, bobtail, tripIds, tripNumbers} ' +
       'from the trips overlapping the day (MR-12), merged (D-129) with the driver\'s no-trip day details for that day ' +
       '(union of lists, trip notes win; `dayDetails: true` when a day-details row exists — written by `PATCH /mobile/trip` with no active trip); `malfunctionIndicator` / `diagnosticIndicator` — an Appendix A ' +

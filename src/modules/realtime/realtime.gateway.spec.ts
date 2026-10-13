@@ -32,3 +32,43 @@ describe('RealtimeGateway relay', () => {
     expect(emit).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('RealtimeGateway typing relay', () => {
+  function build(mayJoin: boolean) {
+    const rooms = { mayJoin: jest.fn(async () => mayJoin) };
+    const gateway = new RealtimeGateway({} as never, {} as never, rooms as never);
+    const emit = jest.fn();
+    const to = jest.fn(() => ({ emit }));
+    const socket = { data: { user: { id: 'usr_1', type: 'user' } }, to } as never;
+    return { gateway, rooms, socket, to, emit };
+  }
+
+  it('relays typing to the conversation room excluding the sender', async () => {
+    const { gateway, socket, to, emit } = build(true);
+    await expect(gateway.onTyping(socket, { conversationId: 'c1', isTyping: true })).resolves.toEqual({ ok: true });
+    expect(to).toHaveBeenCalledWith('conversation:c1');
+    expect(emit).toHaveBeenCalledWith('typing', { conversationId: 'c1', userType: 'STAFF', userId: 'usr_1', isTyping: true });
+  });
+
+  it('rejects a socket that is not a participant', async () => {
+    const { gateway, socket, emit } = build(false);
+    await expect(gateway.onTyping(socket, { conversationId: 'c1', isTyping: true })).resolves.toEqual({ ok: false });
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('rejects a malformed payload and an unauthenticated socket', async () => {
+    const { gateway, socket, emit } = build(true);
+    await expect(gateway.onTyping(socket, { conversationId: 'c1', isTyping: 'yes' })).resolves.toEqual({ ok: false });
+    await expect(gateway.onTyping({ data: {} } as never, { conversationId: 'c1', isTyping: true })).resolves.toEqual({ ok: false });
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('drops the same state repeated within 2 s but relays a state change', async () => {
+    const { gateway, socket, emit } = build(true);
+    await gateway.onTyping(socket, { conversationId: 'c1', isTyping: true });
+    await gateway.onTyping(socket, { conversationId: 'c1', isTyping: true });
+    expect(emit).toHaveBeenCalledTimes(1);
+    await gateway.onTyping(socket, { conversationId: 'c1', isTyping: false });
+    expect(emit).toHaveBeenCalledTimes(2);
+  });
+});
