@@ -107,8 +107,8 @@ describe('VehiclesController — delegates to VehiclesService', () => {
   });
 
   it('unassignDriver', async () => {
-    await controller.unassignDriver('veh_1');
-    expect(service.unassignDriver).toHaveBeenCalledWith('veh_1');
+    await controller.unassignDriver('veh_1', { notify: true });
+    expect(service.unassignDriver).toHaveBeenCalledWith('veh_1', { notify: true });
   });
 
   it('activities wraps the array in { items }', async () => {

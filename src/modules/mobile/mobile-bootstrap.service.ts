@@ -43,9 +43,8 @@ export class MobileBootstrapService {
     const driver = await this.repo.findDriver(driverId);
     if (!driver) throw new AppException(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.', 404, { driverId });
 
-    const [carrier, vehicle, pairing, hos, inspection, availableVehicles, pendingEditRequestCount, pendingUnidentifiedCount] = await Promise.all([
+    const [carrier, pairing, hos, inspection, availableVehicles, pendingEditRequestCount, pendingUnidentifiedCount] = await Promise.all([
       this.repo.findCarrier(),
-      driver.assignedVehicleId ? this.repo.findVehicle(driver.assignedVehicleId) : Promise.resolve(null),
       this.repo.findActivePairing(driverId),
       this.hosRecalc.computeCurrentState(driverId, now),
       this.logs.getInspectionPacket(driverId, now),
@@ -55,6 +54,10 @@ export class MobileBootstrapService {
       this.repo.countPendingEditRequests(driverId),
       this.repo.countPendingUnidentifiedConfirmations(driverId),
     ]);
+    // D-0xx — only the PRIMARY owns `Driver.assignedVehicleId`; the co-driver seat reads the unit
+    // off the active pairing so both team members see the truck/device after a seat switch.
+    const bootstrapVehicleId = driver.assignedVehicleId ?? pairing?.vehicleId ?? null;
+    const vehicle = bootstrapVehicleId ? await this.repo.findVehicle(bootstrapVehicleId) : null;
     const device = vehicle ? await this.repo.findDeviceByVehicle(vehicle.id) : null;
     // MB-3 (mobile/tz.md §21.1, screens S-11/S-18/S-19) — the co-driver's own identity + duty
     // status, not just the pairing row ids the response already carried.

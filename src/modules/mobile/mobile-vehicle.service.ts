@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { EditorType } from '@prisma/client';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
@@ -8,6 +8,8 @@ import { AuditRepository } from '../audit/audit.repository';
 import type { AvailableVehiclesQueryDto, ReleaseVehicleDto, SelectVehicleDto } from './dto/mobile-fleet-ops.dto';
 import { MobileFleetOpsRepository, VehicleWithDevice } from './mobile-fleet-ops.repository';
 import { MobileRepository } from './mobile.repository';
+import { EventBusService } from '../../core/events/event-bus.service';
+import { publishBootstrapChanged, publishVehicleAssigned, publishVehicleUnassigned } from '../vehicles/vehicle-assignment-events';
 import { RodsLoginRecorder } from '../logs/rods-login-recorder';
 
 /** M-03 "select vehicle" response — the SAME shape `GET /mobile/bootstrap` uses for
@@ -46,6 +48,7 @@ export class MobileVehicleService {
     private readonly audit: AuditRepository,
     private readonly mobileRepo: MobileRepository,
     private readonly loginRecords: RodsLoginRecorder,
+    @Optional() private readonly events?: EventBusService,
   ) {}
 
   async availableVehicles(driverId: string, query: AvailableVehiclesQueryDto = {}) {
@@ -81,6 +84,12 @@ export class MobileVehicleService {
     await this.repo.releaseVehicle(driverId, endPairingId, new Date());
     // D-130 — leaving the unit ends the ELD session on it: §395 Appendix A 4.5.1.5 logout record.
     await this.loginRecords.logout(driverId, 'RELEASE_VEHICLE', { onlyVehicleId: vehicleId });
+
+    await publishVehicleUnassigned(this.events, { driverId, vehicleId });
+    if (pairing && endPairingId) {
+      const partnerId = pairing.primaryDriverId === driverId ? pairing.coDriverId : pairing.primaryDriverId;
+      await publishBootstrapChanged(this.events, partnerId, 'vehicle_unassigned');
+    }
 
     const result: ReleaseVehicleResult = { released: true, vehicleId };
     if (dto.clientId) {
@@ -133,6 +142,8 @@ export class MobileVehicleService {
     await this.loginRecords.login(driverId, dto.vehicleId, 'SELECT_VEHICLE');
 
     await this.writeAudit(actor, driverId, dto.vehicleId);
+    if (staleHolderId) await publishVehicleUnassigned(this.events, { driverId: staleHolderId, vehicleId: dto.vehicleId });
+    await publishVehicleAssigned(this.events, { driverId, vehicleId: dto.vehicleId, unitNumber: vehicle.unitNumber });
 
     return toBootstrapVehicleShape(vehicle);
   }

@@ -6,6 +6,7 @@ import { Perm, PermAny } from '../../common/decorators/perm.decorator';
 import { zodBody } from '../../common/pipes/zod-validation.pipe';
 import {
   AssignDriverDto,
+  UnassignDriverDto,
   BulkUpdateVehicleStatusDto,
   CalibrateOdometerDto,
   CreateVehicleDto,
@@ -218,7 +219,7 @@ export class VehiclesController {
   @ApiOperation({ summary: 'Clears the driver currently assigned to this unit, if any.' })
   @ApiCreatedResponse({ schema: { example: { id: 'veh_1', unitNumber: '101', assignedDriverId: null } } })
   @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.VEHICLE_NOT_FOUND, 'Vehicle not found.')] })
-  unassignDriver(@Param('id') id: string) {
-    return this.vehicles.unassignDriver(id);
+  unassignDriver(@Param('id') id: string, @Body(zodBody(UnassignDriverDto)) dto: UnassignDriverDto) {
+    return this.vehicles.unassignDriver(id, dto);
   }
 }

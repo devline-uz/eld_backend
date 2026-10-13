@@ -116,3 +116,41 @@ describe('MobileBootstrapService — virtualEld (pt30_pt40/tz.md §9.3)', () => 
     ).toEqual({ enabled: false });
   });
 });
+
+describe('MobileBootstrapService — co-driver seat vehicle (B-0xx)', () => {
+  function buildWith(driver: Record<string, unknown>, pairing: unknown) {
+    const repo = {
+      findDriver: jest.fn().mockResolvedValue({ ...DRIVER, ...driver }),
+      findCarrier: jest.fn().mockResolvedValue(null),
+      findVehicle: jest.fn().mockResolvedValue({ id: 'veh_1', unitNumber: '103' }),
+      findActivePairing: jest.fn().mockResolvedValue(pairing),
+      findDeviceByVehicle: jest.fn().mockResolvedValue(null),
+      countPendingEditRequests: jest.fn().mockResolvedValue(0),
+      countPendingUnidentifiedConfirmations: jest.fn().mockResolvedValue(0),
+    };
+    const service = new MobileBootstrapService(
+      repo as unknown as MobileRepository,
+      { computeCurrentState: jest.fn().mockResolvedValue(null) } as unknown as HosRecalcService,
+      { getInspectionPacket: jest.fn().mockResolvedValue({ days: [] }) } as unknown as LogsService,
+      { get: jest.fn(), virtualEldAllowed: true } as unknown as AppConfigService,
+      { findAvailableVehicles: jest.fn().mockResolvedValue([]), findLatestDutyStatus: jest.fn().mockResolvedValue(null) } as unknown as MobileFleetOpsRepository,
+    );
+    return { service, repo };
+  }
+
+  it('falls back to the active pairing unit when the driver owns no assignedVehicleId (co-driver seat)', async () => {
+    const pairing = { id: 'p1', primaryDriverId: 'drv_9', coDriverId: 'drv_1', vehicleId: 'veh_1', startedAt: new Date() };
+    const { service, repo } = buildWith({ assignedVehicleId: null }, pairing);
+    const result = await service.bootstrap('drv_1');
+    expect(repo.findVehicle).toHaveBeenCalledWith('veh_1');
+    expect(result.vehicle).toMatchObject({ id: 'veh_1' });
+  });
+
+  it('prefers the driver\'s own assignedVehicleId and returns null with neither', async () => {
+    const own = buildWith({ assignedVehicleId: 'veh_own' }, null);
+    await own.service.bootstrap('drv_1');
+    expect(own.repo.findVehicle).toHaveBeenCalledWith('veh_own');
+    const none = buildWith({ assignedVehicleId: null }, null);
+    expect((await none.service.bootstrap('drv_1')).vehicle).toBeNull();
+  });
+});

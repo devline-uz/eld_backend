@@ -131,6 +131,35 @@ export class MobileFleetOpsRepository {
     return this.prisma.coDriverPairing.create({ data: input });
   }
 
+  /**
+   * B-0xx — the seat swap is ONE transaction: end the pairing, open the mirrored one, and move
+   * `Driver.assignedVehicleId` (unique) to the new primary — whoever held the unit is cleared
+   * first so the unique index never trips.
+   */
+  async switchSeats(input: {
+    pairingId: string;
+    endedById: string;
+    now: Date;
+    newPrimaryDriverId: string;
+    newCoDriverId: string;
+    vehicleId: string;
+  }): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      await tx.coDriverPairing.update({ where: { id: input.pairingId }, data: { endedAt: input.now, endedById: input.endedById } });
+      await tx.coDriverPairing.create({
+        data: {
+          primaryDriverId: input.newPrimaryDriverId,
+          coDriverId: input.newCoDriverId,
+          vehicleId: input.vehicleId,
+          startedAt: input.now,
+          startedById: input.endedById,
+        },
+      });
+      await tx.driver.updateMany({ where: { assignedVehicleId: input.vehicleId }, data: { assignedVehicleId: null } });
+      await tx.driver.update({ where: { id: input.newPrimaryDriverId }, data: { assignedVehicleId: input.vehicleId } });
+    });
+  }
+
   clearAssignedVehicle(driverId: string): Promise<Driver> {
     return this.prisma.driver.update({ where: { id: driverId }, data: { assignedVehicleId: null } });
   }
