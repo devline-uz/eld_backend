@@ -14,6 +14,7 @@ import {
   ChatAttachmentView,
   MessageType as ChatMessageType,
 } from '../attachments/chat-attachments.service';
+import { needsTranscode, transcodeToM4a } from './audio-transcode';
 import { MESSAGE_AUDIO_FALLBACK_BODY, MESSAGE_AUDIO_MAX_BYTES, validateAudio } from './message-audio';
 import { MessagingRepository, Participant } from './messaging.repository';
 
@@ -284,12 +285,25 @@ export class MessagingService {
       );
     }
 
+    // WebM/Ogg (browser MediaRecorder) -> AAC/M4A so the driver app and Safari can play it. On any
+    // ffmpeg failure the original clip is stored under its own, accurate mime type.
+    let stored: { buffer: Buffer; contentType: string; extension: string } = { buffer: file.buffer, ...audio };
+    if (needsTranscode(audio.extension)) {
+      try {
+        stored = await transcodeToM4a(file.buffer, audio.extension);
+      } catch (err) {
+        this.logger.warn(
+          { conversationId, mimeType: audio.contentType, err: err instanceof Error ? err.message : String(err) },
+          'Voice message transcode failed; storing the original file',
+        );
+      }
+    }
     const attachmentId = randomUUID();
     const messageId = randomUUID();
-    const key = `messages/${conversationId}/${attachmentId}.${audio.extension}`;
-    await this.storage.put(key, file.buffer, {
-      contentType: audio.contentType,
-      contentLength: file.buffer.length,
+    const key = `messages/${conversationId}/${attachmentId}.${stored.extension}`;
+    await this.storage.put(key, stored.buffer, {
+      contentType: stored.contentType,
+      contentLength: stored.buffer.length,
     });
     let message: Message;
     try {
@@ -297,9 +311,9 @@ export class MessagingService {
         messageId,
         attachmentId,
         key,
-        mimeType: audio.contentType,
-        sizeBytes: file.buffer.length,
-        sha256: createHash('sha256').update(file.buffer).digest('hex'),
+        mimeType: stored.contentType,
+        sizeBytes: stored.buffer.length,
+        sha256: createHash('sha256').update(stored.buffer).digest('hex'),
         durationMs: dto.durationMs ?? null,
         body: MESSAGE_AUDIO_FALLBACK_BODY,
         clientId: dto.clientId,
@@ -361,8 +375,15 @@ export class MessagingService {
   private async publishNewMessage(
     conversationId: string,
     rows: Array<{ userId: string | null; driverId: string | null }>,
-    message: MessageView,
+    rawMessage: MessageView,
   ): Promise<void> {
+    // The room is shared by the web panel and the driver app: a voice clip also carries the mobile
+    // fields (`url` presigned, `durationSec`) next to the web ones (`kind`, `durationMs`) — additive.
+    let message = rawMessage;
+    if (rawMessage.type === 'AUDIO' && rawMessage.attachment) {
+      const [mobile] = await this.chatAttachments.decorate([rawMessage]);
+      if (mobile?.attachment) message = { ...rawMessage, attachment: { ...rawMessage.attachment, ...mobile.attachment } };
+    }
     const participants: Participant[] = rows.map((p) => ({
       userId: p.userId ?? undefined,
       driverId: p.driverId ?? undefined,

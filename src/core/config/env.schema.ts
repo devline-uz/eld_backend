@@ -32,6 +32,8 @@ export const envSchema = z.object({
   S3_ENDPOINT: z.string().url().optional(),
   /** MB-1 — browser/phone-reachable origin used ONLY to sign presigned GET/PUT URLs (path-style). Unset = sign with S3_ENDPOINT. */
   S3_PUBLIC_ENDPOINT: z.string().url().optional(),
+  /** Web voice messages: WebM/Ogg are transcoded to AAC/M4A with this binary (default `ffmpeg` on PATH). */
+  FFMPEG_PATH: z.string().default('ffmpeg'),
   S3_REGION: z.string().default('us-east-1'),
   S3_BUCKET: z.string().default('onebook-eld'),
   S3_ACCESS_KEY: z.string().optional(),

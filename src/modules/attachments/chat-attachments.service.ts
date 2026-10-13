@@ -54,7 +54,7 @@ export interface ChatAttachmentView {
 
 export function messageTypeOf(att: { kind: string | null; mimeType: string } | null | undefined): MessageType {
   if (!att) return 'TEXT';
-  if (att.kind === 'CHAT_AUDIO') return 'AUDIO';
+  if (att.kind === 'CHAT_AUDIO' || att.kind === 'MESSAGE_AUDIO') return 'AUDIO';
   return att.mimeType.startsWith('image/') ? 'IMAGE' : 'FILE';
 }
 
@@ -120,7 +120,7 @@ export class ChatAttachmentsService {
   }
 
   /** Adds `type` + `attachment{}` to each message with one batched lookup (no N+1). */
-  async decorate<T extends { attachmentId: string | null }>(
+  async decorate<T extends { attachmentId: string | null; type?: string }>(
     messages: T[],
   ): Promise<Array<T & { type: MessageType; attachment: ChatAttachmentView | null }>> {
     const ids = [...new Set(messages.map((m) => m.attachmentId).filter((x): x is string => !!x))];
@@ -129,12 +129,16 @@ export class ChatAttachmentsService {
     await Promise.all(
       rows.map(async (r) => {
         const url = await this.storage.presignGet(r.key, ATTACHMENT_PRESIGN_TTL_SEC);
-        views.set(r.id, { type: messageTypeOf(r), view: { id: r.id, url, mimeType: r.mimeType, sizeBytes: r.sizeBytes, durationSec: r.durationSec } });
+        // Web voice clips store `durationMs`; mobile contract is whole seconds.
+        const durationSec = r.durationSec ?? (r.durationMs != null ? Math.round(r.durationMs / 1000) : null);
+        views.set(r.id, { type: messageTypeOf(r), view: { id: r.id, url, mimeType: r.mimeType, sizeBytes: r.sizeBytes, durationSec } });
       }),
     );
     return messages.map((m) => {
       const v = m.attachmentId ? views.get(m.attachmentId) : undefined;
-      return { ...m, type: v?.type ?? 'TEXT', attachment: v?.view ?? null };
+      // Never downgrade a stored non-TEXT type to TEXT when the attachment row is missing.
+      const stored = (['AUDIO', 'IMAGE', 'FILE'] as const).find((t) => t === m.type);
+      return { ...m, type: v?.type ?? stored ?? 'TEXT', attachment: v?.view ?? null };
     });
   }
 }

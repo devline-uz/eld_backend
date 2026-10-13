@@ -84,4 +84,19 @@ describe('ChatAttachmentsService.assertSendable / decorate', () => {
     expect(out[2].attachment).toBeNull();
     expect(messageTypeOf({ kind: 'CHAT_FILE', mimeType: 'application/pdf' })).toBe('FILE');
   });
+
+  it('web MESSAGE_AUDIO clip -> AUDIO with presigned url and whole-second durationSec; stored AUDIO is never downgraded', async () => {
+    const { service, repo } = build();
+    repo.findChatByIds.mockResolvedValue([
+      { id: 'w1', key: 'messages/c/w1.webm', kind: 'MESSAGE_AUDIO', mimeType: 'audio/webm', sizeBytes: 51519, durationSec: null, durationMs: 3335 },
+    ] as never);
+    const out = await service.decorate([
+      { id: 'm1', attachmentId: 'w1', type: 'TEXT' },
+      { id: 'm2', attachmentId: 'gone', type: 'AUDIO' },
+    ]);
+    expect(out[0].type).toBe('AUDIO');
+    expect(out[0].attachment).toEqual({ id: 'w1', url: 'https://s/messages/c/w1.webm', mimeType: 'audio/webm', sizeBytes: 51519, durationSec: 3 });
+    expect(out[1]).toMatchObject({ type: 'AUDIO', attachment: null });
+    expect(messageTypeOf({ kind: 'MESSAGE_AUDIO', mimeType: 'audio/mp4' })).toBe('AUDIO');
+  });
 });

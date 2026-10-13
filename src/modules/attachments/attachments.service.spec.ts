@@ -165,4 +165,10 @@ describe('AttachmentsService chat attachments (MB-9)', () => {
     await expect(svc.presignAttachment('att_c', { id: 'drv_1', type: 'driver' })).resolves.toHaveProperty('url');
     await expect(svc.presignAttachment('att_c', { id: 'usr_1', type: 'user', permissions: {} })).rejects.toMatchObject({ code: 'ATTACHMENT_NOT_FOUND' });
   });
+
+  it('web voice clip (MESSAGE_AUDIO): conversation participants presign, a stranger driver gets 404', async () => {
+    const { service: svc } = buildService(chatRow({ kind: 'MESSAGE_AUDIO', key: 'messages/c/att_c.m4a', uploadedById: 'usr_1', uploadedByType: 'USER' }));
+    await expect(svc.presignAttachment('att_c', { id: 'drv_1', type: 'driver' })).resolves.toHaveProperty('url');
+    await expect(svc.presignAttachment('att_c', { id: 'drv_9', type: 'driver' })).rejects.toMatchObject({ code: 'ATTACHMENT_NOT_FOUND' });
+  });
 });

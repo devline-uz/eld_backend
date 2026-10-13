@@ -5,6 +5,7 @@ import type { MessagingRepository } from '../messaging/messaging.repository';
 import type { MessagingService } from '../messaging/messaging.service';
 import { MobileMessagingRepository } from './mobile-messaging.repository';
 import { MobileRepository } from './mobile.repository';
+import { ChatAttachmentsService } from '../attachments/chat-attachments.service';
 import { MobileMessagingService } from './mobile-messaging.service';
 
 const actor: ContextUser = { id: 'drv_1', type: 'driver' };
@@ -169,5 +170,30 @@ describe('MobileMessagingService', () => {
     const { repo, service } = build();
     repo.findActiveStaff.mockResolvedValue(null);
     await expect(service.startConversation('drv_1', { contactId: '0b9d6f5e-0000-4000-8000-000000000009', body: 'x', clientId: 'c3' }, actor)).rejects.toBeInstanceOf(AppException);
+  });
+});
+
+describe('MobileMessagingService — web voice message (MESSAGE_AUDIO)', () => {
+  it('listMessages returns the web voice message as AUDIO with a full attachment', async () => {
+    const { repo, messagingRepo, messaging, mobileRepo, service: _ignored } = build();
+    void _ignored;
+    const attRepo = {
+      findChatByIds: jest.fn().mockResolvedValue([
+        { id: 'att_1', key: 'messages/cnv_1/att_1.webm', kind: 'MESSAGE_AUDIO', mimeType: 'audio/webm', sizeBytes: 51519, durationSec: null, durationMs: 3335 },
+      ]),
+    };
+    const storage = { presignGet: jest.fn(async (k: string) => `https://s/${k}`) };
+    const real = new ChatAttachmentsService(attRepo as never, storage as never);
+    const service = new MobileMessagingService(repo as never, messagingRepo as never, messaging as never, mobileRepo as never, real);
+    repo.listMessagesCursor.mockResolvedValue([
+      { id: 'msg_9', conversationId: 'cnv_1', type: 'TEXT', body: 'Voice message', attachmentId: 'att_1', senderUserId: 'usr_1', senderDriverId: null, sentAt: new Date(), readAt: null, clientId: null },
+    ]);
+    const out = await service.listMessages('cnv_1', 'drv_1', { limit: 50 });
+    expect(out.items[0]).toMatchObject({
+      id: 'msg_9',
+      type: 'AUDIO',
+      senderType: 'STAFF',
+      attachment: { id: 'att_1', url: 'https://s/messages/cnv_1/att_1.webm', mimeType: 'audio/webm', sizeBytes: 51519, durationSec: 3 },
+    });
   });
 });

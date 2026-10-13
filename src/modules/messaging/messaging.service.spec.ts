@@ -1,5 +1,13 @@
 import { MessagingService } from './messaging.service';
 
+jest.mock('./audio-transcode', () => ({
+  ...jest.requireActual<typeof import('./audio-transcode')>('./audio-transcode'),
+  transcodeToM4a: jest.fn(),
+}));
+import { transcodeToM4a } from './audio-transcode';
+const transcodeMock = transcodeToM4a as jest.Mock;
+
+
 function buildService(conversation: unknown = { id: 'cnv_1' }, isParticipant = true) {
   const repo = {
     findById: jest.fn(async (_id?: string): Promise<unknown> => conversation),
@@ -337,6 +345,7 @@ describe('MessagingService — web conversation validation (BE-010 / BE-012)', (
 });
 
 describe('MessagingService — voice messages', () => {
+  beforeEach(() => transcodeMock.mockReset().mockRejectedValue(new Error('no ffmpeg')));
   /** Minimal WebM (EBML magic) — enough for the magic-byte sniff. */
   const webm = Buffer.concat([Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), Buffer.alloc(60, 1)]);
   const file = (over: Partial<{ buffer: Buffer; mimetype: string; size: number }> = {}) => ({
@@ -467,5 +476,28 @@ describe('MessagingService — voice messages', () => {
     expect(t).toBe(text);
     expect(b).toMatchObject({ attachment: null });
     expect(repo.findAudioAttachments).toHaveBeenCalledWith(['msg_b']);
+  });
+
+  describe('transcode to M4A', () => {
+  it('stores the transcoded audio/mp4 .m4a clip instead of the webm upload', async () => {
+    const { service, repo, storage } = buildService(conversationWithParticipants);
+    transcodeMock.mockResolvedValue({ buffer: Buffer.from('m4a-bytes'), contentType: 'audio/mp4', extension: 'm4a' });
+    await service.sendAudioMessage('cnv_1', file(), { durationMs: 1000 }, actor);
+    const [key, body, options] = storage.put.mock.calls[0] as unknown as [string, Buffer, { contentType: string }];
+    expect(key).toMatch(/^messages\/cnv_1\/[0-9a-f-]+\.m4a$/);
+    expect(body.toString()).toBe('m4a-bytes');
+    expect(options.contentType).toBe('audio/mp4');
+    expect(repo.createAudioMessage).toHaveBeenCalledWith('cnv_1', expect.objectContaining({ mimeType: 'audio/mp4', sizeBytes: 9 }));
+  });
+
+  it('falls back to the original webm (accurate mime) when ffmpeg fails', async () => {
+    const { service, repo, storage } = buildService(conversationWithParticipants);
+    transcodeMock.mockRejectedValue(new Error('ffmpeg exited with code 1'));
+    await service.sendAudioMessage('cnv_1', file(), { durationMs: 1000 }, actor);
+    const [key, , options] = storage.put.mock.calls[0] as unknown as [string, Buffer, { contentType: string }];
+    expect(key).toMatch(/\.webm$/);
+    expect(options.contentType).toBe('audio/webm');
+    expect(repo.createAudioMessage).toHaveBeenCalledWith('cnv_1', expect.objectContaining({ mimeType: 'audio/webm' }));
+  });
   });
 });

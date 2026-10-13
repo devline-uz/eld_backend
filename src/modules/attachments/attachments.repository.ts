@@ -74,8 +74,9 @@ export class AttachmentsRepository {
 
   findChatByIds(ids: string[]) {
     return this.prisma.attachment.findMany({
-      where: { id: { in: ids }, kind: { in: ['CHAT_AUDIO', 'CHAT_FILE'] } },
-      select: { id: true, key: true, kind: true, mimeType: true, sizeBytes: true, durationSec: true },
+      // MESSAGE_AUDIO = a voice clip sent from the web panel (messaging module); mobile must render it too.
+      where: { id: { in: ids }, kind: { in: ['CHAT_AUDIO', 'CHAT_FILE', 'MESSAGE_AUDIO'] } },
+      select: { id: true, key: true, kind: true, mimeType: true, sizeBytes: true, durationSec: true, durationMs: true },
     });
   }
 }
