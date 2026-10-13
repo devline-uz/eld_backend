@@ -85,6 +85,7 @@ function harness(overrides: Partial<Record<string, unknown>> = {}): Harness {
     findUsers: jest.fn().mockResolvedValue([]),
     findDayTrips: jest.fn().mockResolvedValue([]),
     findDayDetails: jest.fn().mockResolvedValue([]),
+    findCoDriverPairings: jest.fn().mockResolvedValue([]),
     countTransfersInWindow: jest.fn().mockResolvedValue(0),
     createTransfer: jest.fn().mockImplementation(({ data }: never) => data),
     updateTransfer: jest.fn(),
@@ -175,6 +176,33 @@ describe('TransfersService.create (tz.md §10)', () => {
     expect(lines[3]).toMatch(/^101,1FUJGLDR9CSBK1234,X53-1188,/);
     expect(lines[5]).toMatch(/^BOL-TRIP BOL-DAY,0,/);
     expect(h.repo.findDayDetails).toHaveBeenCalledWith('drv_1', new Date('2026-09-04T00:00:00.000Z'), new Date('2026-09-11T00:00:00.000Z'));
+  });
+
+  it('4.8.2.1.1 line 2: names the co-driver of the period (driver in the co seat => partner is the primary) and lists them 2nd', async () => {
+    const partner = { id: 'drv_2', username: 'alee', firstName: 'Ann', lastName: 'Lee' };
+    const h = harness({
+      findCoDriverPairings: jest.fn().mockResolvedValue([
+        {
+          id: 'pair_1', primaryDriverId: 'drv_2', coDriverId: 'drv_1', vehicleId: 'veh_1',
+          startedAt: new Date('2026-09-05T12:00:00Z'), endedAt: null,
+          primaryDriver: partner, coDriver: DRIVER,
+        },
+      ]),
+    });
+    await h.service.create(dto(), ACTOR);
+    const lines = h.puts[0].body.toString('utf8').split(/\r?\n/);
+    expect(lines[2]).toMatch(/^Lee,Ann,alee,/);
+    const userList = lines.indexOf('User List:');
+    expect(lines[userList + 2]).toMatch(/^2,D,Lee,Ann,/);
+    expect(h.repo.findCoDriverPairings).toHaveBeenCalledWith('drv_1', expect.any(Date), expect.any(Date));
+    expect(validateOutputFile(h.puts[0].body.toString('utf8')).valid).toBe(true);
+  });
+
+  it('4.8.2.1.1 line 2 stays empty when the driver had no co-driver in the period', async () => {
+    const h = harness();
+    await h.service.create(dto(), ACTOR);
+    const lines = h.puts[0].body.toString('utf8').split(/\r?\n/);
+    expect(lines[2]).toMatch(/^,,,/);
   });
 
   it('generates, validates and stores an Appendix A file, then queues the send step', async () => {

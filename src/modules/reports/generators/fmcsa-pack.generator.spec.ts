@@ -16,6 +16,7 @@ jest.mock('../../transfers/validator', () => ({
 }));
 
 import { renderPdf } from '../lib/pdf-render';
+import { buildSnapshot } from '../../transfers/snapshot';
 
 const CARRIER = {
   id: 'carrier',
@@ -64,6 +65,7 @@ describe('FmcsaPackGenerator', () => {
       findUsers: jest.fn(async () => []),
       findDayTrips: jest.fn(async () => []),
       findDayDetails: jest.fn(async () => []),
+      findCoDriverPairings: jest.fn(async (_driverId: string, _from: Date, _to: Date): Promise<unknown[]> => []),
     };
     const storage = { put: jest.fn(async (key: string) => key) };
 
@@ -140,5 +142,23 @@ describe('FmcsaPackGenerator', () => {
     expect(call[0]).toBe('fmcsa-pack');
     expect(call[1].unitFilter).toBe('veh-A');
     expect(call[1].includeLabel).toBe('RODS, DVIR');
+  });
+
+  it('passes the co-driver of the period to the output file, same rule as POST /transfers (4.8.2.1.1 line 2)', async () => {
+    const { generator, transfers } = makeGenerator();
+    const partner = { id: 'd2', username: 'aortiz', firstName: 'Ana', lastName: 'Ortiz' };
+    transfers.findCoDriverPairings.mockImplementation(async (driverId: string) =>
+      driverId === 'd1'
+        ? [{ id: 'p1', primaryDriverId: 'd1', coDriverId: 'd2', vehicleId: 'veh-A', startedAt: new Date('2026-09-01T10:00:00Z'), endedAt: null, primaryDriver: { id: 'd1' }, coDriver: partner }]
+        : [],
+    );
+    (buildSnapshot as jest.Mock).mockClear();
+    await generator.build({ from: '2026-09-01', to: '2026-09-03', include: undefined }, 'rpt1');
+
+    const calls = (buildSnapshot as jest.Mock).mock.calls.map(([input]: [{ driver: { id: string }; coDriver: unknown }]) => [input.driver.id, input.coDriver]);
+    expect(calls).toEqual([
+      ['d1', partner],
+      ['d2', null],
+    ]);
   });
 });

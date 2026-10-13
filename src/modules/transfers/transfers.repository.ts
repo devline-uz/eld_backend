@@ -14,6 +14,7 @@ import { Prisma } from '@prisma/client';
 import { BaseRepository, ModelDelegate } from '../../core/prisma/base.repository';
 import { PrismaService } from '../../core/prisma/prisma.service';
 import type { DayTrip } from '../logs/day-extras';
+import type { PairingWithDrivers } from './co-drivers';
 import { findDayTrips } from '../logs/logs.repository';
 
 /** TZ §3.5 / §10 — every database call of the eRODS transfer module lives here. */
@@ -142,6 +143,23 @@ export class TransfersRepository extends BaseRepository<
   /** D-129 — the driver's no-trip day details for the RODS days `[fromDate, toDate]` (`@db.Date`). */
   findDayDetails(driverId: string, fromDate: Date, toDate: Date): Promise<DriverDayDetails[]> {
     return this.prisma.driverDayDetails.findMany({ where: { driverId, logDate: { gte: fromDate, lte: toDate } } });
+  }
+
+  /**
+   * Appendix A 4.8.2.1.1 line 2 — co-driver pairings overlapping `[from, to]` in which the driver
+   * sits in EITHER seat (`startedAt <= to AND (endedAt IS NULL OR endedAt >= from)`), with both
+   * drivers loaded so the partner can be picked (`co-drivers.ts`).
+   */
+  findCoDriverPairings(driverId: string, from: Date, to: Date): Promise<PairingWithDrivers[]> {
+    return this.prisma.coDriverPairing.findMany({
+      where: {
+        OR: [{ primaryDriverId: driverId }, { coDriverId: driverId }],
+        startedAt: { lte: to },
+        AND: [{ OR: [{ endedAt: null }, { endedAt: { gte: from } }] }],
+      },
+      include: { primaryDriver: true, coDriver: true },
+      orderBy: { startedAt: 'desc' },
+    });
   }
 
   findVehicles(ids: string[]): Promise<Vehicle[]> {

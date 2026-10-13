@@ -10,6 +10,7 @@ import { QUEUES } from '../../core/queue/queue.constants';
 import { STORAGE_PORT, StoragePort } from '../../core/storage/storage.port';
 import { AuditRepository } from '../audit/audit.repository';
 import { dayEnd, dayKey, dayStart } from '../hos/engine/timezone';
+import { loadCoDrivers } from './co-drivers';
 import { CreateTransferDto, TransferListQueryDto } from './dto/transfers.dto';
 import { buildOutputFileName, inclusiveDayCount } from './filename';
 import { FmcsaTransferService } from './fmcsa-transfer.service';
@@ -106,9 +107,10 @@ export class TransfersService {
       ...new Set([...events, ...unidentifiedEvents].map((e) => e.vehicleId).filter((v): v is string => Boolean(v))),
     ];
     const editorIds = [...new Set(events.map((e) => e.editedById).filter((v): v is string => Boolean(v)))];
-    const [vehicles, users] = await Promise.all([
+    const [vehicles, users, coDrivers] = await Promise.all([
       this.repo.findVehicles([...vehicleIds, ...(driver.assignedVehicleId ? [driver.assignedVehicleId] : [])]),
       this.repo.findUsers(editorIds),
+      loadCoDrivers(this.repo, driver.id, fromInstant, toInstant),
     ]);
 
     const tripDetails = await loadTripDetails(this.repo, driver.id, timezone, dayKey('UTC', rangeStart), dayKey('UTC', rangeEnd), generatedAt);
@@ -126,6 +128,8 @@ export class TransfersService {
       eldIdentifier: carrier.eldIdentifier,
       eldRegistrationId: carrier.eldRegistrationId ?? '',
       eldAuthenticationValue: this.authenticationValue(carrier, driver.id),
+      coDriver: coDrivers.coDriver,
+      otherCoDrivers: coDrivers.otherCoDrivers,
       currentTripDetails: tripDetails.current,
       tripDetailsByDay: tripDetails.byDay,
     });

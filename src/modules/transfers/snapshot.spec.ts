@@ -113,6 +113,30 @@ describe('buildSnapshot — segment routing (tz.md §10.2)', () => {
     expect(snap.events[3].userOrderNumber).toBe(3);
   });
 
+  it('lists the co-driver 2nd and further co-drivers of the period after it, all type D (4.8.2.1.2)', () => {
+    const snap = snapshot({
+      coDriver: { id: 'drv_2', username: 'alee', firstName: 'Ann', lastName: 'Lee' },
+      otherCoDrivers: [{ id: 'drv_3', username: 'bkim', firstName: 'Bo', lastName: 'Kim' }],
+    });
+    expect(snap.coDriver).toEqual({ lastName: 'Lee', firstName: 'Ann', username: 'alee' });
+    expect(snap.users.map((u) => [u.orderNumber, u.accountType, u.username])).toEqual([
+      [1, 'D', 'jsmith'],
+      [2, 'D', 'alee'],
+      [3, 'D', 'bkim'],
+      [4, 'D', 'unidentified'],
+    ]);
+    const csv = buildOutputFile(snap).csv;
+    expect(csv.split('\r\n')[2].startsWith('Lee,Ann,alee,')).toBe(true);
+    expect(validateOutputFile(csv).valid).toBe(true);
+  });
+
+  it('without a co-driver leaves header line 2 empty and the user list unchanged', () => {
+    const snap = snapshot();
+    expect(snap.coDriver).toBeNull();
+    expect(snap.users.map((u) => u.username)).toEqual(['jsmith', 'unidentified']);
+    expect(buildOutputFile(snap).csv.split('\r\n')[2].startsWith(',,,')).toBe(true);
+  });
+
   it('ranks CMVs most recently operated first across driver and unidentified records (4.8.2.1.3)', () => {
     const snap = snapshot({
       events: [
