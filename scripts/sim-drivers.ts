@@ -53,8 +53,8 @@ const ALWAYS_EXCLUDED = ['johnsmith', 'devline.qa01'];
 function parseArgs(argv: string[]): Args {
   const a: Args = {
     drivers: 30,
-    intervalSec: 10,
-    pointEverySec: 15, // Live Fleet demo: a marker step every 15 s (app contract is 60 s; counted as denserThanContract)
+    intervalSec: 3,
+    pointEverySec: 3, // Live Fleet demo: a fix every 3 s, the web glides in between (app contract is 60 s; counted as denserThanContract)
     once: false,
     stop: false,
     cleanup: false,

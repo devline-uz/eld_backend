@@ -48,8 +48,8 @@ pm2 delete eld-sim
 | Flag | Default | Ma'nosi |
 |---|---|---|
 | `--drivers N` | 30 | haydovchilar soni (max 99) |
-| `--interval S` | 10 | tick oralig'i; haydovchilar tick ichida tekis taqsimlanadi |
-| `--point-every S` | 15 | telemetriya zichligi; xaritada silliq harakat uchun 15 s (ilova shartnomasi 60 s, kichikrog'i `denserThanContract` deb sanaladi) |
+| `--interval S` | 3 | tick oralig'i; haydovchilar tick ichida tekis taqsimlanadi |
+| `--point-every S` | 3 | telemetriya zichligi; real vaqt xaritasi uchun 3 s (oradagi harakatni web animatsiya qiladi) (ilova shartnomasi 60 s, kichikrog'i `denserThanContract` deb sanaladi) |
 | `--once` | — | sozlash + bitta tick, OFF qilmasdan chiqadi |
 | `--stop` | — | hammani OFF DUTY, BLE DISCONNECTED |
 | `--cleanup` | — | `--stop` + `POST /devices/:id/unpair` + `POST /mobile/release-vehicle` (faqat sim tanlagan unitlar); state `.cleaned-*.json` ga ko'chadi |
