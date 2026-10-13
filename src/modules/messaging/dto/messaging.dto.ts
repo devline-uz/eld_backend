@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MESSAGE_AUDIO_MAX_DURATION_MS } from '../message-audio';
 
 export const ConversationTypeEnum = z.enum(['DIRECT', 'GROUP', 'BROADCAST']);
 
@@ -18,6 +19,14 @@ export const SendMessageDto = z.object({
   clientId: z.string().max(100).optional(),
 });
 export type SendMessageDto = z.infer<typeof SendMessageDto>;
+
+/** Voice messages — the text fields of the multipart `POST /conversations/:id/messages/audio`
+ * (the clip itself is the `file` part). Multipart fields arrive as strings, hence the coercion. */
+export const SendAudioMessageDto = z.object({
+  durationMs: z.coerce.number().int().min(0).max(MESSAGE_AUDIO_MAX_DURATION_MS).optional(),
+  clientId: z.string().max(100).optional(),
+});
+export type SendAudioMessageDto = z.infer<typeof SendAudioMessageDto>;
 
 /** TZ §11.5 `POST /messages/broadcast` — one message fanned out to many recipients. */
 export const BroadcastMessageDto = z.object({

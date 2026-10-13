@@ -9,6 +9,8 @@ export interface AttachmentOwnerRow {
   dvirId: string | null;
   defectId: string | null;
   ticketId: string | null;
+  /** Voice messages — the chat message this clip belongs to (optional so older fixtures compile). */
+  messageId?: string | null;
   /** M-39 — who uploaded it (a driver's own `POST /mobile/signature` upload, or a user). */
   uploadedById: string | null;
   uploadedByType: EditorType;
@@ -32,6 +34,7 @@ export class AttachmentsRepository {
         dvirId: true,
         defectId: true,
         ticketId: true,
+        messageId: true,
         uploadedById: true,
         uploadedByType: true,
         maintenanceInvoiceFor: { select: { id: true }, take: 1 },
@@ -40,5 +43,17 @@ export class AttachmentsRepository {
         ticket: { select: { createdByUserId: true, createdByDriverId: true } },
       },
     });
+  }
+
+  /** Voice messages — whether the caller (staff user or driver) is a participant of the
+   * conversation that holds `messageId`. */
+  async isMessageParticipant(messageId: string, actor: { userId?: string; driverId?: string }): Promise<boolean> {
+    const message = await this.prisma.message.findUnique({ where: { id: messageId }, select: { conversationId: true } });
+    if (!message) return false;
+    const row = await this.prisma.conversationParticipant.findFirst({
+      where: { conversationId: message.conversationId, ...(actor.userId ? { userId: actor.userId } : { driverId: actor.driverId }) },
+      select: { id: true },
+    });
+    return row !== null;
   }
 }

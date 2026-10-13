@@ -218,17 +218,17 @@ model Driver {
   /// free their username/email for reuse.
   deletedAt    DateTime?
 
-  fleetManager           User?                 @relation("DriverFleetManager", fields: [fleetManagerId], references: [id])
-  assignedVehicle        Vehicle?              @relation("VehicleDriver", fields: [assignedVehicleId], references: [id])
+  fleetManager           User?                      @relation("DriverFleetManager", fields: [fleetManagerId], references: [id])
+  assignedVehicle        Vehicle?                   @relation("VehicleDriver", fields: [assignedVehicleId], references: [id])
   dailyLogs              DailyLog[]
   violations             HosViolation[]
   pushTokens             PushToken[]
   dvirs                  Dvir[]
-  maintenanceSubmissions MaintenanceSchedule[] @relation("MaintenanceSubmittedBy")
+  maintenanceSubmissions MaintenanceSchedule[]      @relation("MaintenanceSubmittedBy")
   trips                  Trip[]
   hosSnapshot            DriverHosSnapshot?
-  pairingsAsPrimary      CoDriverPairing[]     @relation("PairingPrimary")
-  pairingsAsCo           CoDriverPairing[]     @relation("PairingCo")
+  pairingsAsPrimary      CoDriverPairing[]          @relation("PairingPrimary")
+  pairingsAsCo           CoDriverPairing[]          @relation("PairingCo")
   sessions               DriverSession[]
   syncedChanges          SyncedChange[]
   documents              DriverDocument[]
@@ -1135,14 +1135,17 @@ model ConversationParticipant {
 }
 
 model Message {
-  id             String    @id @default(uuid())
+  id             String      @id @default(uuid())
   conversationId String
   senderUserId   String?
   senderDriverId String?
-  body           String    @db.VarChar(2000)
+  body           String      @db.VarChar(2000)
+  /// Voice messages — TEXT (default, every pre-existing row) or AUDIO (`attachmentId` then points
+  /// at the uploaded `Attachment` with kind MESSAGE_AUDIO; `body` carries a plain-text fallback).
+  type           MessageType @default(TEXT)
   attachmentId   String?
-  clientId       String?   @unique
-  sentAt         DateTime  @default(now())
+  clientId       String?     @unique
+  sentAt         DateTime    @default(now())
   deliveredAt    DateTime?
   readAt         DateTime?
 
@@ -1377,6 +1380,8 @@ model Attachment {
   /// §20 B-91 — semantic kind for server-collected ticket attachments, e.g. DEVICE_DIAGNOSTICS /
   /// ELD_EVENTS_24H; null for ordinary DVIR/defect photos.
   kind           String?
+  /// Voice messages — playback length of a MESSAGE_AUDIO attachment in milliseconds (client-reported).
+  durationMs     Int?
 
   uploadedById   String?
   uploadedByType EditorType
@@ -1391,6 +1396,7 @@ model Attachment {
   @@index([dvirId])
   @@index([defectId])
   @@index([ticketId])
+  @@index([messageId])
 }
 
 model SupportTicket {
@@ -1747,6 +1753,12 @@ enum CoachingStatus {
   REVIEWED
   COACHED
   DISMISSED
+}
+
+/// Voice messages — what a chat `Message` carries.
+enum MessageType {
+  TEXT
+  AUDIO
 }
 
 enum ConversationType {

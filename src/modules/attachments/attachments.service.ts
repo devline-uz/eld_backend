@@ -20,7 +20,8 @@ export interface PresignedUrl {
  * a driver may read any file they uploaded themselves (M-39 invoice PDFs); otherwise it walks the `Attachment` row's owning DVIR/defect/support-ticket and only signs a URL
  * for a caller who may actually see that owner (the DVIR's driver, a back-office user with
  * `dvir` READ+, or — for ticket attachments — the ticket's own author or `support` READ+).
- * Unknown/unlinked attachments (message photos, fuel-purchase receipts — no read endpoint
+ * Chat voice-message clips (`messageId`) are readable by the conversation's participants.
+ * Unknown/unlinked attachments (fuel-purchase receipts — no read endpoint
  * exposes those yet) are refused rather than guessed at, to avoid an IDOR-by-omission.
  *
  * `presignKey` is the raw, no-authorization-check wrapper other modules can call once they
@@ -36,7 +37,7 @@ export class AttachmentsService {
 
   async presignAttachment(id: string, actor: ContextUser): Promise<PresignedUrl> {
     const attachment = await this.repo.findWithOwner(id);
-    if (!attachment || !this.mayView(attachment, actor)) {
+    if (!attachment || !(await this.mayViewAsync(attachment, actor))) {
       // Same 404 whether the row is missing or the caller may not see it — never confirm
       // that an attachment id belonging to someone else exists.
       throw new AppException(ERROR_CODES.ATTACHMENT_NOT_FOUND, 'Attachment not found.', 404, { id });
@@ -47,6 +48,16 @@ export class AttachmentsService {
   async presignKey(key: string, ttlSec: number = ATTACHMENT_PRESIGN_TTL_SEC): Promise<PresignedUrl> {
     const url = await this.storage.presignGet(key, ttlSec);
     return { url, expiresAt: new Date(Date.now() + ttlSec * 1000).toISOString() };
+  }
+
+  /** Voice messages — a chat clip is readable by every participant of its conversation (the
+   * same rule as `GET /conversations/:id/messages`); everything else goes through `mayView`. */
+  private async mayViewAsync(attachment: AttachmentOwnerRow, actor: ContextUser): Promise<boolean> {
+    if (attachment.messageId) {
+      const participant = actor.type === 'driver' ? { driverId: actor.id } : { userId: actor.id };
+      return this.repo.isMessageParticipant(attachment.messageId, participant);
+    }
+    return this.mayView(attachment, actor);
   }
 
   private mayView(attachment: AttachmentOwnerRow, actor: ContextUser): boolean {

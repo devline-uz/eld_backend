@@ -41551,6 +41551,284 @@
         ]
       }
     },
+    "/api/conversations/{id}/messages/audio": {
+      "post": {
+        "description": "Creates an AUDIO message (`type: \"AUDIO\"`, `body: \"Voice message\"` as a plain-text fallback) whose `attachment` carries the clip metadata and a 15-minute presigned `url` (refresh with GET /attachments/:id/presign). Pushed as `message.new` like a text message.",
+        "operationId": "MessagingController_sendAudioMessage",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "file"
+                ],
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "The recorded clip: audio/webm, audio/ogg, audio/mp4 (m4a), audio/mpeg, audio/aac or audio/wav; max 10 MB."
+                  },
+                  "durationMs": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 300000,
+                    "description": "Clip length in milliseconds (max 5 min)."
+                  },
+                  "clientId": {
+                    "type": "string",
+                    "maxLength": 100,
+                    "description": "Idempotency key — a retry with the same clientId returns the stored message."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "id": "msg_3",
+                    "type": "AUDIO",
+                    "body": "Voice message",
+                    "attachmentId": "att_9",
+                    "sentAt": "2026-10-13T10:00:00.000Z",
+                    "attachment": {
+                      "id": "att_9",
+                      "kind": "AUDIO",
+                      "mimeType": "audio/webm",
+                      "sizeBytes": 48211,
+                      "durationMs": 5300,
+                      "url": "https://minio.internal/onebook/messages/cnv_1/att_9.webm?X-Amz-Signature=...",
+                      "expiresAt": "2026-10-13T10:15:00.000Z"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHORIZED — Authentication required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 401,
+                    "code": "UNAUTHORIZED",
+                    "message": "Authentication required.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN — Not a participant of this conversation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 403,
+                    "code": "FORBIDDEN",
+                    "message": "Not a participant of this conversation.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NOT_FOUND — Conversation not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 404,
+                    "code": "NOT_FOUND",
+                    "message": "Conversation not found.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "FILE_TOO_LARGE — Voice messages must be under 10 MB.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 422,
+                    "code": "FILE_TOO_LARGE",
+                    "message": "Voice messages must be under 10 MB.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Sends a voice message into a conversation.",
+        "tags": [
+          "messaging"
+        ],
+        "x-figma-screens": [
+          {
+            "id": "web/messages",
+            "title": "Messages",
+            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.5 (sidebar)"
+          }
+        ]
+      }
+    },
     "/api/conversations/{id}/read": {
       "post": {
         "operationId": "MessagingController_markRead",

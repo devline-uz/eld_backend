@@ -15,14 +15,44 @@ function buildService(conversation: unknown = { id: 'cnv_1' }, isParticipant = t
       senderDriverId: data.senderDriverId ?? null,
       sentAt: new Date('2026-10-11T10:00:00Z'),
     })),
-    createConversation: jest.fn(async (data: Record<string, unknown>) => ({ id: 'cnv_new', ...data })),
+    createConversation: jest.fn(async (data: Record<string, unknown>) => ({
+      id: 'cnv_new',
+      ...data,
+    })),
     findLiveDriverIds: jest.fn(async (ids: string[]) => new Set(ids)),
     findUserIds: jest.fn(async (ids: string[]) => new Set(ids)),
     findDirectBetween: jest.fn(async (..._args: unknown[]): Promise<unknown> => null),
+    findMessageByClientId: jest.fn(async (_clientId: string): Promise<unknown> => null),
+    findAudioAttachments: jest.fn(async (ids: string[]) =>
+      ids.map((messageId) => ({
+        id: `att_${messageId}`,
+        messageId,
+        key: `messages/cnv_1/att_${messageId}.webm`,
+        mimeType: 'audio/webm',
+        sizeBytes: 64,
+        durationMs: 4200,
+      })),
+    ),
+    createAudioMessage: jest.fn(async (conversationId: string, data: Record<string, unknown>) => ({
+      id: data.messageId,
+      conversationId,
+      type: 'AUDIO',
+      body: data.body,
+      attachmentId: data.attachmentId,
+      clientId: data.clientId ?? null,
+      senderUserId: data.senderUserId ?? null,
+      senderDriverId: data.senderDriverId ?? null,
+      sentAt: new Date('2026-10-13T10:00:00Z'),
+    })),
   };
   const events = { publish: jest.fn(async (_name: string, _payload: unknown) => undefined) };
-  const service = new MessagingService(repo as never, events as never);
-  return { service, repo, events };
+  const storage = {
+    put: jest.fn(async (key: string) => key),
+    delete: jest.fn(async () => undefined),
+    presignGet: jest.fn(async (key: string) => `https://minio.internal/${key}?sig=abc`),
+  };
+  const service = new MessagingService(repo as never, events as never, storage as never);
+  return { service, repo, events, storage };
 }
 
 const conversationWithParticipants = {
@@ -65,17 +95,33 @@ describe('MessagingService — realtime chat contract', () => {
       event: 'message.new',
       payload: {
         conversationId: 'cnv_1',
-        message: expect.objectContaining({ id: 'msg_1', conversationId: 'cnv_1', senderUserId: 'usr_1', senderId: 'usr_1', senderType: 'STAFF' }) as unknown,
+        message: expect.objectContaining({
+          id: 'msg_1',
+          conversationId: 'cnv_1',
+          senderUserId: 'usr_1',
+          senderId: 'usr_1',
+          senderType: 'STAFF',
+        }) as unknown,
       },
     });
   });
 
   it('a driver-sent message.new carries senderType DRIVER and reaches the staff identity room', async () => {
     const { service, events } = buildService(conversationWithParticipants);
-    await service.sendMessage('cnv_1', { body: 'from cab' }, { id: 'drv_1', type: 'driver' } as never);
-    const [, push] = events.publish.mock.calls[0] as [string, { room: string[]; payload: { message: Record<string, unknown> } }];
+    await service.sendMessage('cnv_1', { body: 'from cab' }, {
+      id: 'drv_1',
+      type: 'driver',
+    } as never);
+    const [, push] = events.publish.mock.calls[0] as [
+      string,
+      { room: string[]; payload: { message: Record<string, unknown> } },
+    ];
     expect(push.room).toContain('user:usr_1');
-    expect(push.payload.message).toMatchObject({ senderDriverId: 'drv_1', senderId: 'drv_1', senderType: 'DRIVER' });
+    expect(push.payload.message).toMatchObject({
+      senderDriverId: 'drv_1',
+      senderId: 'drv_1',
+      senderType: 'DRIVER',
+    });
   });
 
   it('dedupes identity rooms when a participant appears twice', async () => {
@@ -93,7 +139,10 @@ describe('MessagingService — realtime chat contract', () => {
 
   it('createConversation pushes conversation.new to every staff identity room (creator included, no driver rooms)', async () => {
     const { service, events } = buildService();
-    const out = await service.createConversation({ type: 'GROUP', driverIds: ['drv_1'], userIds: ['usr_2'] } as never, actor);
+    const out = await service.createConversation(
+      { type: 'GROUP', driverIds: ['drv_1'], userIds: ['usr_2'] } as never,
+      actor,
+    );
     expect(out.id).toBe('cnv_new');
     expect(events.publish).toHaveBeenCalledWith('realtime.push', {
       room: ['user:usr_1', 'user:usr_2'],
@@ -105,7 +154,12 @@ describe('MessagingService — realtime chat contract', () => {
   it('a conversation.new push failure never fails createConversation', async () => {
     const { service, events } = buildService();
     events.publish.mockRejectedValueOnce(new Error('redis down'));
-    await expect(service.createConversation({ type: 'DIRECT', driverIds: ['drv_1'], userIds: [] } as never, actor)).resolves.toMatchObject({ id: 'cnv_new' });
+    await expect(
+      service.createConversation(
+        { type: 'DIRECT', driverIds: ['drv_1'], userIds: [] } as never,
+        actor,
+      ),
+    ).resolves.toMatchObject({ id: 'cnv_new' });
   });
 
   it('markRead pushes conversation.read to the reader identity room only', async () => {
@@ -136,9 +190,17 @@ describe('MessagingService — realtime chat contract', () => {
 
   it('broadcast emits message.new and conversation.new to staff rooms for each driver thread', async () => {
     const { service, repo, events } = buildService();
-    repo.findById.mockImplementation(async () => ({ id: 'cnv_new', participants: [{ userId: 'usr_1', driverId: null }, { userId: null, driverId: 'drv_9' }] }));
+    repo.findById.mockImplementation(async () => ({
+      id: 'cnv_new',
+      participants: [
+        { userId: 'usr_1', driverId: null },
+        { userId: null, driverId: 'drv_9' },
+      ],
+    }));
     await service.broadcast({ driverIds: ['drv_9'], body: 'all hands', title: 'Notice' }, actor);
-    const pushes = events.publish.mock.calls.map(([, p]) => p as { event: string; room: string | string[] });
+    const pushes = events.publish.mock.calls.map(
+      ([, p]) => p as { event: string; room: string | string[] },
+    );
     expect(pushes.map((p) => p.event)).toEqual(['message.new', 'conversation.new']);
     expect(pushes[0].room).toEqual(['conversation:cnv_new', 'user:usr_1']);
     expect(pushes[1].room).toEqual(['user:usr_1']);
@@ -148,9 +210,15 @@ describe('MessagingService — realtime chat contract', () => {
 describe('MessagingService — web conversation validation (BE-010 / BE-012)', () => {
   it('DIRECT with an existing 1:1 thread returns it instead of creating a duplicate', async () => {
     const { service, repo, events } = buildService();
-    const existing = { id: 'cnv_old', type: 'DIRECT', participants: [{ userId: 'usr_1' }, { driverId: 'drv_1' }] };
+    const existing = {
+      id: 'cnv_old',
+      type: 'DIRECT',
+      participants: [{ userId: 'usr_1' }, { driverId: 'drv_1' }],
+    };
     repo.findDirectBetween.mockResolvedValueOnce(existing);
-    await expect(service.createConversation({ type: 'DIRECT', driverIds: ['drv_1'], userIds: [] }, actor)).resolves.toBe(existing);
+    await expect(
+      service.createConversation({ type: 'DIRECT', driverIds: ['drv_1'], userIds: [] }, actor),
+    ).resolves.toBe(existing);
     expect(repo.findDirectBetween).toHaveBeenCalledWith({ userId: 'usr_1' }, { driverId: 'drv_1' });
     expect(repo.createConversation).not.toHaveBeenCalled();
     expect(events.publish).not.toHaveBeenCalled();
@@ -158,15 +226,30 @@ describe('MessagingService — web conversation validation (BE-010 / BE-012)', (
 
   it('DIRECT needs exactly one other participant (duplicates and the creator do not count)', async () => {
     const { service, repo } = buildService();
-    await expect(service.createConversation({ type: 'DIRECT', driverIds: ['drv_1', 'drv_2'], userIds: [] }, actor)).rejects.toMatchObject({ status: 422 });
-    await expect(service.createConversation({ type: 'DIRECT', driverIds: [], userIds: ['usr_1'] }, actor)).rejects.toMatchObject({ status: 422 });
-    await service.createConversation({ type: 'DIRECT', driverIds: ['drv_1', 'drv_1'], userIds: ['usr_1'] }, actor);
-    expect(repo.createConversation).toHaveBeenCalledWith(expect.anything(), [{ userId: 'usr_1' }, { driverId: 'drv_1' }]);
+    await expect(
+      service.createConversation(
+        { type: 'DIRECT', driverIds: ['drv_1', 'drv_2'], userIds: [] },
+        actor,
+      ),
+    ).rejects.toMatchObject({ status: 422 });
+    await expect(
+      service.createConversation({ type: 'DIRECT', driverIds: [], userIds: ['usr_1'] }, actor),
+    ).rejects.toMatchObject({ status: 422 });
+    await service.createConversation(
+      { type: 'DIRECT', driverIds: ['drv_1', 'drv_1'], userIds: ['usr_1'] },
+      actor,
+    );
+    expect(repo.createConversation).toHaveBeenCalledWith(expect.anything(), [
+      { userId: 'usr_1' },
+      { driverId: 'drv_1' },
+    ]);
   });
 
   it('GROUP with no participants besides the creator is a 422', async () => {
     const { service, repo } = buildService();
-    await expect(service.createConversation({ type: 'GROUP', driverIds: [], userIds: [] }, actor)).rejects.toMatchObject({
+    await expect(
+      service.createConversation({ type: 'GROUP', driverIds: [], userIds: [] }, actor),
+    ).rejects.toMatchObject({
       code: 'VALIDATION_FAILED',
       status: 422,
     });
@@ -177,7 +260,12 @@ describe('MessagingService — web conversation validation (BE-010 / BE-012)', (
     const { service, repo } = buildService();
     repo.findLiveDriverIds.mockResolvedValueOnce(new Set(['drv_1']));
     repo.findUserIds.mockResolvedValueOnce(new Set());
-    await expect(service.createConversation({ type: 'GROUP', driverIds: ['drv_1', 'drv_gone'], userIds: ['usr_x'] }, actor)).rejects.toMatchObject({
+    await expect(
+      service.createConversation(
+        { type: 'GROUP', driverIds: ['drv_1', 'drv_gone'], userIds: ['usr_x'] },
+        actor,
+      ),
+    ).rejects.toMatchObject({
       status: 422,
       details: { driverIds: ['drv_gone'], userIds: ['usr_x'] },
     });
@@ -187,7 +275,9 @@ describe('MessagingService — web conversation validation (BE-010 / BE-012)', (
   it('broadcast validates every driver up front and sends nothing when one is unknown', async () => {
     const { service, repo } = buildService(conversationWithParticipants);
     repo.findLiveDriverIds.mockResolvedValueOnce(new Set(['drv_1']));
-    await expect(service.broadcast({ driverIds: ['drv_1', 'drv_gone'], body: 'hi' }, actor)).rejects.toMatchObject({
+    await expect(
+      service.broadcast({ driverIds: ['drv_1', 'drv_gone'], body: 'hi' }, actor),
+    ).rejects.toMatchObject({
       status: 422,
       details: { driverIds: ['drv_gone'] },
     });
@@ -199,5 +289,139 @@ describe('MessagingService — web conversation validation (BE-010 / BE-012)', (
     const out = await service.broadcast({ driverIds: ['drv_1', 'drv_1'], body: 'hi' }, actor);
     expect(out.sent).toBe(1);
     expect(repo.createConversation).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('MessagingService — voice messages', () => {
+  /** Minimal WebM (EBML magic) — enough for the magic-byte sniff. */
+  const webm = Buffer.concat([Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), Buffer.alloc(60, 1)]);
+  const file = (over: Partial<{ buffer: Buffer; mimetype: string; size: number }> = {}) => ({
+    buffer: webm,
+    mimetype: 'audio/webm;codecs=opus',
+    size: webm.length,
+    ...over,
+  });
+
+  it('stores the clip, writes an AUDIO message and pushes message.new with a playable attachment', async () => {
+    const { service, repo, storage, events } = buildService(conversationWithParticipants);
+    repo.findAudioAttachments.mockImplementationOnce(async ([messageId]: string[]) => {
+      const data = repo.createAudioMessage.mock.calls[0][1] as {
+        attachmentId: string;
+        key: string;
+      };
+      return [
+        {
+          id: data.attachmentId,
+          messageId,
+          key: data.key,
+          mimeType: 'audio/webm',
+          sizeBytes: 64,
+          durationMs: 4200,
+        },
+      ];
+    });
+    const out = await service.sendAudioMessage(
+      'cnv_1',
+      file(),
+      { durationMs: 4200, clientId: 'c-a' },
+      actor,
+    );
+    const [key, , options] = storage.put.mock.calls[0] as unknown as [
+      string,
+      Buffer,
+      { contentType: string },
+    ];
+    expect(key).toMatch(/^messages\/cnv_1\/[0-9a-f-]+\.webm$/);
+    expect(options.contentType).toBe('audio/webm');
+    expect(repo.createAudioMessage).toHaveBeenCalledWith(
+      'cnv_1',
+      expect.objectContaining({
+        body: 'Voice message',
+        durationMs: 4200,
+        clientId: 'c-a',
+        senderUserId: 'usr_1',
+        uploadedByType: 'USER',
+      }),
+    );
+    expect(out).toMatchObject({
+      type: 'AUDIO',
+      attachment: { kind: 'AUDIO', mimeType: 'audio/webm', durationMs: 4200 },
+    });
+    expect(out.attachment).not.toHaveProperty('url');
+    const [, push] = events.publish.mock.calls[0] as [
+      string,
+      { event: string; payload: { message: Record<string, unknown> } },
+    ];
+    expect(push.event).toBe('message.new');
+    expect(push.payload.message).toMatchObject({
+      type: 'AUDIO',
+      attachment: expect.objectContaining({ kind: 'AUDIO' }) as unknown,
+    });
+  });
+
+  it('rejects a non-audio MIME type and a body that does not match its declared type', async () => {
+    const { service, storage } = buildService(conversationWithParticipants);
+    await expect(
+      service.sendAudioMessage('cnv_1', file({ mimetype: 'text/html' }), {}, actor),
+    ).rejects.toMatchObject({ code: 'UNSUPPORTED_FILE_TYPE', status: 422 });
+    await expect(
+      service.sendAudioMessage(
+        'cnv_1',
+        file({ buffer: Buffer.from('<html><script>alert(1)</script></html>') }),
+        {},
+        actor,
+      ),
+    ).rejects.toMatchObject({ code: 'UNSUPPORTED_FILE_TYPE' });
+    expect(storage.put).not.toHaveBeenCalled();
+  });
+
+  it('rejects a missing file and an oversized one', async () => {
+    const { service } = buildService(conversationWithParticipants);
+    await expect(service.sendAudioMessage('cnv_1', undefined, {}, actor)).rejects.toMatchObject({
+      status: 400,
+    });
+    await expect(
+      service.sendAudioMessage('cnv_1', file({ size: 11 * 1024 * 1024 }), {}, actor),
+    ).rejects.toMatchObject({ code: 'FILE_TOO_LARGE' });
+  });
+
+  it('403s a non-participant before touching storage', async () => {
+    const { service, storage } = buildService({ id: 'cnv_1' }, false);
+    await expect(service.sendAudioMessage('cnv_1', file(), {}, actor)).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+    });
+    expect(storage.put).not.toHaveBeenCalled();
+  });
+
+  it('a retry with the same clientId returns the stored message without uploading again', async () => {
+    const { service, repo, storage } = buildService(conversationWithParticipants);
+    repo.findMessageByClientId.mockResolvedValueOnce({
+      id: 'msg_a',
+      conversationId: 'cnv_1',
+      type: 'AUDIO',
+      attachmentId: 'att_msg_a',
+      senderUserId: 'usr_1',
+      senderDriverId: null,
+    });
+    const out = await service.sendAudioMessage('cnv_1', file(), { clientId: 'c-a' }, actor);
+    expect(out).toMatchObject({ id: 'msg_a', attachment: { id: 'att_msg_a' } });
+    expect(storage.put).not.toHaveBeenCalled();
+  });
+
+  it('deletes the stored object when the database write fails', async () => {
+    const { service, repo, storage } = buildService(conversationWithParticipants);
+    repo.createAudioMessage.mockRejectedValueOnce(new Error('db down'));
+    await expect(service.sendAudioMessage('cnv_1', file(), {}, actor)).rejects.toThrow('db down');
+    expect(storage.delete).toHaveBeenCalledWith(storage.put.mock.calls[0][0]);
+  });
+
+  it('withAudio leaves TEXT rows untouched and never resolves a clip the message does not own', async () => {
+    const { service, repo } = buildService();
+    const text = { id: 'msg_t', type: 'TEXT', attachmentId: null };
+    const borrowed = { id: 'msg_b', type: 'AUDIO', attachmentId: 'att_someone_else' };
+    const [t, b] = await service.withAudio([text, borrowed] as never[]);
+    expect(t).toBe(text);
+    expect(b).toMatchObject({ attachment: null });
+    expect(repo.findAudioAttachments).toHaveBeenCalledWith(['msg_b']);
   });
 });
