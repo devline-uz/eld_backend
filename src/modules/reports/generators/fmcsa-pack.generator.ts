@@ -5,6 +5,7 @@ import { PrismaService } from '../../../core/prisma/prisma.service';
 import { dayEnd, dayKey, dayStart } from '../../hos/engine/timezone';
 import { activeMalfunctionCodes, buildSnapshot, uncertifiedDayCount } from '../../transfers/snapshot';
 import { loadTripDetails } from '../../transfers/trip-details';
+import { loadCoDrivers } from '../../transfers/co-drivers';
 import { buildOutputFile } from '../../transfers/output-file';
 import { validateOutputFile } from '../../transfers/validator';
 import { buildOutputFileName, inclusiveDayCount } from '../../transfers/filename';
@@ -167,7 +168,10 @@ export class FmcsaPackGenerator {
         continue;
       }
 
-      const tripDetails = await loadTripDetails(this.transfers, driver.id, timezone, params.from, params.to, generatedAt);
+      const [tripDetails, coDrivers] = await Promise.all([
+        loadTripDetails(this.transfers, driver.id, timezone, params.from, params.to, generatedAt),
+        loadCoDrivers(this.transfers, driver.id, fromInstant, toInstant),
+      ]);
       const snapshot = buildSnapshot({
         driver,
         carrier,
@@ -181,6 +185,9 @@ export class FmcsaPackGenerator {
         eldIdentifier: carrier.eldIdentifier,
         eldRegistrationId: carrier.eldRegistrationId ?? '',
         eldAuthenticationValue: this.authenticationValue(carrier.eldIdentifier, carrier.eldRegistrationId ?? '', driver.id),
+        // 4.8.2.1.1 line 2 — same co-driver rule as a single transfer (`transfers/co-drivers.ts`).
+        coDriver: coDrivers.coDriver,
+        otherCoDrivers: coDrivers.otherCoDrivers,
         // D-129 — same header trailers / shipping documents as a single transfer.
         currentTripDetails: tripDetails.current,
         tripDetailsByDay: tripDetails.byDay,

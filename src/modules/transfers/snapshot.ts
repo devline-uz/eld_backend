@@ -40,7 +40,10 @@ export interface SnapshotInput {
   eldIdentifier: string;
   eldRegistrationId: string;
   eldAuthenticationValue: string;
+  /** Appendix A 4.8.2.1.1 line 2 — the co-driver of the period (`co-drivers.ts`); also listed 2nd in the user list. */
   coDriver?: Driver | null;
+  /** Further co-drivers of the period (4.8.2.1.2 user list only, type `D`), most recent first. */
+  otherCoDrivers?: Driver[];
   /** Explicit header Shipping Document Number; wins over `currentTripDetails` when set. */
   shippingDocumentNumber?: string;
   /**
@@ -140,11 +143,9 @@ export function buildSnapshot(input: SnapshotInput): OutputFileInput {
   const head: { key: string; user: Omit<OutputFileUser, 'orderNumber'> }[] = [
     { key: driver.id, user: { username: driver.username, lastName: driver.lastName, firstName: driver.firstName, accountType: 'D' } },
   ];
-  if (input.coDriver) {
-    head.push({
-      key: input.coDriver.id,
-      user: { username: input.coDriver.username, lastName: input.coDriver.lastName, firstName: input.coDriver.firstName, accountType: 'D' },
-    });
+  for (const co of [input.coDriver, ...(input.otherCoDrivers ?? [])]) {
+    if (!co) continue;
+    head.push({ key: co.id, user: { username: co.username, lastName: co.lastName, firstName: co.firstName, accountType: 'D' } });
   }
   const userOrder = new Map<string, number>();
   const users: OutputFileUser[] = [];
