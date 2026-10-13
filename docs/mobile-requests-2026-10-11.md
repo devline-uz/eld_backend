@@ -16,7 +16,8 @@ Common rules from `mobile-requests-2026-10-08.md` apply (envelope, additive only
    (reuse the web report generators if present).
 
 ## B. Push and realtime
-5. Chat FCM on `message.new` — DONE 2026-10-10 (D-134), commit e0b711e.
+5. Chat FCM on `message.new` — DONE 2026-10-10 (D-134), commit e0b711e. 2026-10-13 (D-146): data now also `objectType:"Conversation"`, `objectId:<conversationId>`, `category:"message"`.
+   Read receipts DONE (D-146): realtime `message.read {conversationId, readerType:'DRIVER'|'STAFF', readerId, lastReadMessageId, readAt}` to `conversation:{id}`, `driver:{id}`, `user:{id}` on both reads; `Message.deliveredAt` set on thread fetch / read; mobile `participants[].lastReadAt`. Typing: client emits `typing {conversationId,isTyping}`, others in `conversation:{id}` receive `typing {conversationId,userType:'DRIVER'|'STAFF',userId,isTyping}`.
 6. Push `data.objectType/objectId/category` — alerts/assignment DONE (D-134). Add: `EDIT_REQUEST` → `objectType:"EditRequest"`,
    `objectId:<editRequestId>`; `UNIDENTIFIED` → `objectType:"UnidentifiedSegment"`, `objectId:<segmentId>`.
 7. New edit request (`POST /logs/{driverId}/edit-requests`) and unidentified confirmation request

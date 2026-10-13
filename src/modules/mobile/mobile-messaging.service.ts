@@ -26,6 +26,8 @@ export interface MobileParticipant {
   id: string;
   type: 'DRIVER' | 'STAFF';
   name: string | null;
+  /** Last time this participant read the thread (`ConversationParticipant.lastReadAt`). */
+  lastReadAt: Date | null;
 }
 
 export interface StartConversationResult {
@@ -97,8 +99,8 @@ export class MobileMessagingService {
 
   private toParticipants(raw: ConversationSummary['rawParticipants'], names: NameMaps): MobileParticipant[] {
     return raw.flatMap((p): MobileParticipant[] => {
-      if (p.driverId) return [{ id: p.driverId, type: 'DRIVER', name: names.drivers.get(p.driverId) ?? null }];
-      if (p.userId) return [{ id: p.userId, type: 'STAFF', name: names.users.get(p.userId) ?? null }];
+      if (p.driverId) return [{ id: p.driverId, type: 'DRIVER', name: names.drivers.get(p.driverId) ?? null, lastReadAt: p.lastReadAt ?? null }];
+      if (p.userId) return [{ id: p.userId, type: 'STAFF', name: names.users.get(p.userId) ?? null, lastReadAt: p.lastReadAt ?? null }];
       return [];
     });
   }
@@ -121,6 +123,8 @@ export class MobileMessagingService {
 
   async listMessages(conversationId: string, driverId: string, query: ListMessagesQueryDto) {
     await this.assertParticipant(conversationId, driverId);
+    // deliveredAt: the driver fetching the thread is the delivery of everything not authored by them.
+    await this.repo.markDelivered(conversationId, driverId).catch(() => 0);
     const items = query.after
       ? await this.repo.listMessagesAfter(conversationId, query.limit, query.after)
       : await this.repo.listMessagesCursor(conversationId, query.limit, query.before);
@@ -207,14 +211,21 @@ export class MobileMessagingService {
   }
 
   async markRead(conversationId: string, driverId: string, now: Date = new Date()) {
-    await this.assertParticipant(conversationId, driverId);
-    return this.repo.markRead(conversationId, driverId, now);
+    const conversation = await this.assertParticipant(conversationId, driverId);
+    const result = await this.repo.markRead(conversationId, driverId, now);
+    await this.messaging.publishMessageRead(
+      conversationId,
+      { readerType: 'DRIVER', readerId: driverId, lastReadMessageId: result.lastReadMessageId ?? null, readAt: now },
+      conversation.participants,
+    );
+    return { messagesMarked: result.messagesMarked };
   }
 
-  private async assertParticipant(conversationId: string, driverId: string): Promise<void> {
+  private async assertParticipant(conversationId: string, driverId: string) {
     const conversation = await this.messagingRepo.findById(conversationId);
     if (!conversation) throw new AppException(ERROR_CODES.NOT_FOUND, 'Conversation not found.', 404);
     const ok = await this.messagingRepo.isParticipant(conversationId, { driverId });
     if (!ok) throw new AppException(ERROR_CODES.FORBIDDEN, 'Not a participant of this conversation.', 403);
+    return conversation;
   }
 }

@@ -14,7 +14,8 @@ function build() {
     listForDriver: jest.fn().mockResolvedValue([]),
     listMessagesCursor: jest.fn().mockResolvedValue([]),
     listMessagesAfter: jest.fn().mockResolvedValue([]),
-    markRead: jest.fn().mockResolvedValue({ messagesMarked: 0 }),
+    markRead: jest.fn().mockResolvedValue({ messagesMarked: 2, lastReadMessageId: 'msg_7' }),
+    markDelivered: jest.fn().mockResolvedValue(1),
     nameMaps: jest.fn().mockResolvedValue({ users: new Map([['usr_1', 'Jane Dispatcher']]), drivers: new Map([['drv_1', 'John Smith']]) }),
     findMessageByClientId: jest.fn().mockResolvedValue(null),
     findActiveStaff: jest.fn().mockResolvedValue({ id: 'usr_1' }),
@@ -28,11 +29,11 @@ function build() {
   };
   const msg = { id: 'msg_1', conversationId: 'cnv_1', body: 'hi', senderDriverId: 'drv_1', senderUserId: null, sentAt: new Date(), readAt: null, clientId: 'c1' };
   const messagingRepo = {
-    findById: jest.fn().mockResolvedValue({ id: 'cnv_1' }),
+    findById: jest.fn().mockResolvedValue({ id: 'cnv_1', participants: [{ userId: 'usr_1', driverId: null }, { userId: null, driverId: 'drv_1' }] }),
     isParticipant: jest.fn().mockResolvedValue(true),
     createConversation: jest.fn().mockResolvedValue({ id: 'cnv_new' }),
   };
-  const messaging = { sendMessage: jest.fn().mockResolvedValue(msg), notifyConversationStarted: jest.fn().mockResolvedValue(undefined) };
+  const messaging = { sendMessage: jest.fn().mockResolvedValue(msg), publishMessageRead: jest.fn().mockResolvedValue(undefined), notifyConversationStarted: jest.fn().mockResolvedValue(undefined) };
   const chat = { decorate: jest.fn(async (ms: Array<Record<string, unknown>>) => ms.map((m) => ({ ...m, type: 'TEXT', attachment: null }))), assertSendable: jest.fn(async () => undefined) };
   const service = new MobileMessagingService(
     repo as unknown as MobileMessagingRepository,
@@ -86,6 +87,31 @@ describe('MobileMessagingService', () => {
     const { repo, service } = build();
     await service.markRead('cnv_1', 'drv_1');
     expect(repo.markRead).toHaveBeenCalledWith('cnv_1', 'drv_1', expect.any(Date));
+  });
+
+  it('driver markRead publishes message.read via MessagingService', async () => {
+    const { messaging, service } = build();
+    const out = await service.markRead('cnv_1', 'drv_1');
+    expect(out).toEqual({ messagesMarked: 2 });
+    expect(messaging.publishMessageRead).toHaveBeenCalledWith(
+      'cnv_1',
+      { readerType: 'DRIVER', readerId: 'drv_1', lastReadMessageId: 'msg_7', readAt: expect.any(Date) as Date },
+      expect.any(Array),
+    );
+  });
+
+  it('listMessages stamps deliveredAt for the driver', async () => {
+    const { repo, service } = build();
+    await service.listMessages('cnv_1', 'drv_1', { limit: 50 });
+    expect(repo.markDelivered).toHaveBeenCalledWith('cnv_1', 'drv_1');
+  });
+
+  it('participants[] carry lastReadAt', async () => {
+    const { repo, service } = build();
+    const at = new Date('2026-10-13T10:00:00Z');
+    repo.listForDriver.mockResolvedValue([{ id: 'cnv_1', type: 'DIRECT', title: null, unreadCount: 0, lastMessage: null, rawParticipants: [{ userId: 'usr_1', driverId: null, lastReadAt: at }] }]);
+    const result = await service.listConversations('drv_1');
+    expect(result.items[0].participants[0]).toMatchObject({ id: 'usr_1', type: 'STAFF', lastReadAt: at });
   });
 
   it('sendMessage returns the MR-18 shape (senderId/senderType/senderName/clientId)', async () => {

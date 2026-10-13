@@ -65,15 +65,43 @@ export class MessagingRepository {
     }));
   }
 
-  /** §20 B-67 — marks the caller's own participant row read up to `readAt` (default now). */
-  async markRead(conversationId: string, actor: Participant, readAt: Date = new Date()): Promise<void> {
-    await this.prisma.conversationParticipant.updateMany({
-      where: {
-        conversationId,
-        ...(actor.userId ? { userId: actor.userId } : { driverId: actor.driverId }),
-      },
-      data: { lastReadAt: readAt },
+  /** Prisma `{ not: x }` drops NULL rows (SQL `<>`), so "not sent by `actor`" is spelled out. */
+  private notSentBy(actor: Participant): Prisma.MessageWhereInput {
+    return actor.userId
+      ? { OR: [{ senderUserId: null }, { senderUserId: { not: actor.userId } }] }
+      : { OR: [{ senderDriverId: null }, { senderDriverId: { not: actor.driverId } }] };
+  }
+
+  /**
+   * §20 B-67 — marks the caller's own participant row read up to `readAt` (default now) AND stamps
+   * `readAt` (plus `deliveredAt` when still null) on every message the caller did not send.
+   * Returns the newest such message id (the `lastReadMessageId` of the `message.read` event).
+   */
+  async markRead(conversationId: string, actor: Participant, readAt: Date = new Date()): Promise<{ lastReadMessageId: string | null }> {
+    const others = { conversationId, ...this.notSentBy(actor) };
+    await this.prisma.$transaction([
+      this.prisma.conversationParticipant.updateMany({
+        where: { conversationId, ...(actor.userId ? { userId: actor.userId } : { driverId: actor.driverId }) },
+        data: { lastReadAt: readAt },
+      }),
+      this.prisma.message.updateMany({ where: { ...others, deliveredAt: null }, data: { deliveredAt: readAt } }),
+      this.prisma.message.updateMany({ where: { ...others, readAt: null }, data: { readAt } }),
+    ]);
+    const last = await this.prisma.message.findFirst({
+      where: others,
+      orderBy: [{ sentAt: 'desc' }, { id: 'desc' }],
+      select: { id: true },
     });
+    return { lastReadMessageId: last?.id ?? null };
+  }
+
+  /** `deliveredAt` = first time the recipient side fetched the thread. One cheap updateMany. */
+  async markDelivered(conversationId: string, recipient: Participant, now: Date = new Date()): Promise<number> {
+    const res = await this.prisma.message.updateMany({
+      where: { conversationId, deliveredAt: null, ...this.notSentBy(recipient) },
+      data: { deliveredAt: now },
+    });
+    return res.count;
   }
 
   async findUserDisplayName(userId: string): Promise<string | null> {

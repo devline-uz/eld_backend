@@ -33,6 +33,10 @@ function staffRooms(participants: Participant[]): string[] {
  *    a staff-created or broadcast conversation.
  *  - `conversation.read` `{ conversationId, lastReadAt, userId }` → the reading staff user's own
  *    identity room only (unread badges in sync across that user's tabs).
+ *  - `message.read` `{ conversationId, readerType: 'DRIVER'|'STAFF', readerId, lastReadMessageId,
+ *    readAt }` → `conversation:{id}` + every driver participant's `driver:{id}` + every staff
+ *    participant's `user:{id}`; fired on both the driver and the staff read.
+ *  - `typing` (client emits `typing {conversationId,isTyping}`; relayed by `RealtimeGateway`).
  */
 @Injectable()
 export class MessagingService {
@@ -105,14 +109,41 @@ export class MessagingService {
     }
   }
 
-  /** §20 B-67 — `POST /conversations/:id/read`. */
+  /** §20 B-67 — `POST /conversations/:id/read`. Stamps `readAt` on the other side's messages too. */
   async markRead(conversationId: string, actor: ContextUser) {
-    await this.assertParticipant(conversationId, actor);
+    const conversation = await this.assertParticipant(conversationId, actor);
     const readAt = new Date();
     const reader = toParticipant(actor);
-    await this.repo.markRead(conversationId, reader, readAt);
+    const { lastReadMessageId } = (await this.repo.markRead(conversationId, reader, readAt)) ?? { lastReadMessageId: null };
     await this.notifyRead(conversationId, reader, readAt);
+    await this.publishMessageRead(
+      conversationId,
+      {
+        readerType: actor.type === 'driver' ? 'DRIVER' : 'STAFF',
+        readerId: actor.id,
+        lastReadMessageId: lastReadMessageId ?? null,
+        readAt,
+      },
+      conversation.participants,
+    );
     return { conversationId, lastReadAt: readAt };
+  }
+
+  /** `message.read` to the conversation room, each driver's `driver:{id}` and each staff
+   * `user:{id}` room in ONE multi-room push. Best effort: never fails the REST call. */
+  async publishMessageRead(
+    conversationId: string,
+    read: { readerType: 'DRIVER' | 'STAFF'; readerId: string; lastReadMessageId: string | null; readAt: Date },
+    participants: Array<{ userId: string | null; driverId: string | null }> = [],
+  ): Promise<void> {
+    const rooms = new Set<string>([`conversation:${conversationId}`]);
+    for (const p of participants) {
+      if (p.driverId) rooms.add(`driver:${p.driverId}`);
+      if (p.userId) rooms.add(`user:${p.userId}`);
+    }
+    await this.events
+      .publish('realtime.push', { room: [...rooms], event: 'message.read', payload: { conversationId, ...read } })
+      .catch((err) => this.logger.warn({ conversationId, err: err instanceof Error ? err.message : String(err) }, 'message.read emit failed'));
   }
 
   /** `conversation.read` to the reading staff user's own identity room. Best effort: a push
@@ -139,6 +170,8 @@ export class MessagingService {
 
   async listMessages(conversationId: string, actor: ContextUser, page: number, limit: number): Promise<OffsetPage<unknown>> {
     await this.assertParticipant(conversationId, actor);
+    // deliveredAt: the reader fetching the thread is the delivery of the other side's messages.
+    await this.repo.markDelivered(conversationId, toParticipant(actor)).catch(() => 0);
     const { items, total } = await this.repo.listMessages(conversationId, page, limit);
     return { items: await this.chatAttachments.decorate(items), page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) };
   }
@@ -200,7 +233,15 @@ export class MessagingService {
         await this.push.sendToDriver(
           driverId,
           { title, body },
-          { type: 'message.new', conversationId: message.conversationId, messageId: message.id, driverId },
+          {
+            type: 'message.new',
+            conversationId: message.conversationId,
+            messageId: message.id,
+            driverId,
+            objectType: 'Conversation',
+            objectId: message.conversationId,
+            category: 'message',
+          },
         );
       }
     } catch (err) {

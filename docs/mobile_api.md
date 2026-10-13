@@ -1879,7 +1879,7 @@ So'rov misoli:
 
 ### `POST /api/mobile/conversations/{id}/read`
 
-**Nima qiladi:** Suhbatni o'qilgan qiladi.
+**Nima qiladi:** Suhbatni o'qilgan qiladi. Realtime: `message.read {conversationId, readerType, readerId, lastReadMessageId, readAt}` (`conversation:{id}`, `driver:{id}`, `user:{id}` xonalariga). Typing: klient `typing {conversationId,isTyping}` yuboradi, boshqalar `typing {conversationId,userType,userId,isTyping}` oladi.
 
 - **Auth:** `Authorization: Bearer <driver access token>`
 - **operationId:** `MobileMessagingController_markRead` · original: _Marks the conversation read: sets the driver's lastReadAt and readAt on the other side's messages._

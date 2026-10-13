@@ -624,6 +624,7 @@ export class MobileParticipantView {
   @ApiProperty({ type: String }) id!: string;
   @ApiProperty({ enum: ['DRIVER', 'STAFF'], enumName: 'ParticipantType' }) type!: 'DRIVER' | 'STAFF';
   @ApiProperty({ type: String, nullable: true }) name!: string | null;
+  @ApiProperty({ ...DT, nullable: true, description: 'When this participant last read the thread (drives read receipts).' }) lastReadAt!: string | null;
 }
 
 /** `toMobileMessage` — the stored `Message` row plus the MR-18 sender fields. */

@@ -4,7 +4,9 @@ function buildService(conversation: unknown = { id: 'cnv_1' }, isParticipant = t
   const repo = {
     findById: jest.fn(async (_id?: string): Promise<unknown> => conversation),
     isParticipant: jest.fn(async () => isParticipant),
-    markRead: jest.fn(async () => undefined),
+    markRead: jest.fn(async (..._a: unknown[]) => ({ lastReadMessageId: 'msg_9' })),
+    markDelivered: jest.fn(async (..._a: unknown[]) => 1),
+    listMessages: jest.fn(async () => ({ items: [], total: 0 })),
     listForActor: jest.fn(async () => []),
     createMessage: jest.fn(async (conversationId: string, data: Record<string, unknown>) => ({
       id: 'msg_1',
@@ -128,10 +130,46 @@ describe('MessagingService — realtime chat contract', () => {
     });
   });
 
-  it('a driver mark-read pushes nothing', async () => {
-    const { service, events } = buildService();
+  it('driver mark-read pushes no conversation.read, only message.read', async () => {
+    const { service, events } = buildService(conversationWithParticipants);
     await service.markRead('cnv_1', { id: 'drv_1', type: 'driver' } as never);
-    expect(events.publish).not.toHaveBeenCalled();
+    expect(events.publish).toHaveBeenCalledTimes(1);
+    expect(events.publish.mock.calls[0][1]).toMatchObject({ event: 'message.read', payload: { readerType: 'DRIVER', readerId: 'drv_1' } });
+  });
+
+  it('staff markRead emits message.read to conversation, driver and staff rooms with exact payload', async () => {
+    const { service, events, repo } = buildService(conversationWithParticipants);
+    await service.markRead('cnv_1', actor);
+    expect(repo.markRead).toHaveBeenCalledWith('cnv_1', { userId: 'usr_1' }, expect.any(Date));
+    expect(events.publish).toHaveBeenCalledWith('realtime.push', {
+      room: ['conversation:cnv_1', 'user:usr_1', 'driver:drv_1'],
+      event: 'message.read',
+      payload: { conversationId: 'cnv_1', readerType: 'STAFF', readerId: 'usr_1', lastReadMessageId: 'msg_9', readAt: expect.any(Date) as Date },
+    });
+    // backward compat kept
+    expect(events.publish).toHaveBeenCalledWith('realtime.push', expect.objectContaining({ event: 'conversation.read' }));
+  });
+
+  it('a message.read push failure never fails markRead', async () => {
+    const { service, events } = buildService(conversationWithParticipants);
+    events.publish.mockRejectedValue(new Error('redis down'));
+    await expect(service.markRead('cnv_1', actor)).resolves.toMatchObject({ conversationId: 'cnv_1' });
+  });
+
+  it('listMessages stamps deliveredAt for the reader side', async () => {
+    const { service, repo } = buildService();
+    await service.listMessages('cnv_1', actor, 1, 50);
+    expect(repo.markDelivered).toHaveBeenCalledWith('cnv_1', { userId: 'usr_1' });
+  });
+
+  it('chat FCM data carries objectType/objectId/category alongside the old keys', async () => {
+    const { service, push } = buildService(conversationWithParticipants);
+    await service.sendMessage('cnv_1', { body: 'hi' }, actor);
+    expect(push.sendToDriver).toHaveBeenCalledWith(
+      'drv_1',
+      expect.anything(),
+      { type: 'message.new', conversationId: 'cnv_1', messageId: 'msg_1', driverId: 'drv_1', objectType: 'Conversation', objectId: 'cnv_1', category: 'message' },
+    );
   });
 
   it('notifyConversationStarted (MR-3) pushes conversation.new to the staff user room', async () => {
