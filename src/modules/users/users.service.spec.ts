@@ -4,6 +4,7 @@ import type { TransactionalMailPort } from '../../core/mail/mail.port';
 import type { StoragePort } from '../../core/storage/storage.port';
 import type { AttachmentsService } from '../attachments/attachments.service';
 import { AuthService } from '../auth/auth.service';
+import { DEFAULT_ROLE_MATRIX } from '../roles/permission-matrix';
 import { RolesRepository } from '../roles/roles.repository';
 import { UserEmailChangeService } from './user-email-change.service';
 import { UsersRepository } from './users.repository';
@@ -26,10 +27,17 @@ function makeUser(overrides: Partial<Record<string, unknown>> = {}) {
 
 const SA = { id: 'sa_1', role: 'SUPER_ADMIN' };
 const ADM = { id: 'adm_1', role: 'ADMIN' };
+/** CODE-002 — actor ids resolve to the role they hold in the DB (`RolesRepository.findRoleOfUser`). */
+const MANAGER_MATRIX = { ...DEFAULT_ROLE_MATRIX.VIEWER, users: 'FULL', roles: 'READ' } as const;
+const HELD_ROLES: Record<string, { id: string; key: string; name: string; permissions: object }> = {
+  sa_1: { id: 'role_sa', key: 'SUPER_ADMIN', name: 'Super Admin', permissions: DEFAULT_ROLE_MATRIX.SUPER_ADMIN },
+  adm_1: { id: 'role_admin', key: 'ADMIN', name: 'Administrator', permissions: DEFAULT_ROLE_MATRIX.ADMIN },
+  mgr_1: { id: 'role_mgr', key: 'USER_MANAGER', name: 'User manager', permissions: MANAGER_MATRIX },
+};
 
 describe('UsersService', () => {
   let users: jest.Mocked<Pick<UsersRepository, 'listWithRoles' | 'findByIdWithRole' | 'findByEmail' | 'create' | 'update' | 'delete' | 'countActiveAdmins' | 'countActiveSuperAdmins'>>;
-  let roles: jest.Mocked<Pick<RolesRepository, 'findById'>>;
+  let roles: jest.Mocked<Pick<RolesRepository, 'findById' | 'findRoleOfUser'>>;
   let auth: jest.Mocked<Pick<AuthService, 'issueResetToken'>>;
   let emailChange: jest.Mocked<
     Pick<UserEmailChangeService, 'assertAvailable' | 'assertRequestable' | 'pendingInput' | 'notifyRequested' | 'resend' | 'cancelPending'>
@@ -51,7 +59,10 @@ describe('UsersService', () => {
       countActiveAdmins: jest.fn().mockResolvedValue(2),
       countActiveSuperAdmins: jest.fn().mockResolvedValue(2),
     };
-    roles = { findById: jest.fn() };
+    roles = {
+      findById: jest.fn(),
+      findRoleOfUser: jest.fn(async (id: string) => (HELD_ROLES[id] ?? null) as never),
+    };
     auth = {
       issueResetToken: jest.fn().mockReturnValue('invite-token'),
     };
@@ -497,6 +508,86 @@ describe('UsersService', () => {
       users.update.mockResolvedValue({} as never);
       await service.update('u', { roleId: 'r' }, SA);
       expect(users.update).toHaveBeenCalled();
+    });
+  });
+
+  /** CODE-002 — no self role/status change, no assigning or managing above your own levels. */
+  describe('permission ceiling (CODE-002)', () => {
+    const MGR = { id: 'mgr_1', role: 'USER_MANAGER' };
+    const viewerRole = { id: 'role_viewer', key: 'VIEWER', name: 'Viewer', permissions: DEFAULT_ROLE_MATRIX.VIEWER };
+    const fleetManagerRole = { id: 'role_fm', key: 'FLEET_MANAGER', name: 'Fleet manager', permissions: DEFAULT_ROLE_MATRIX.FLEET_MANAGER };
+    const godRole = { id: 'role_god', key: 'GOD', name: 'God', permissions: DEFAULT_ROLE_MATRIX.ADMIN };
+    const self = () => makeUser({ id: 'mgr_1', status: 'ACTIVE', role: HELD_ROLES.mgr_1 }) as never;
+    const viewer = () => makeUser({ id: 'usr_v', status: 'ACTIVE', role: viewerRole }) as never;
+
+    beforeEach(() => {
+      users.update.mockResolvedValue({} as never);
+      users.create.mockResolvedValue(makeUser({ role: undefined }) as never);
+    });
+
+    it('rejects changing your own role or status', async () => {
+      users.findByIdWithRole.mockResolvedValue(self());
+      roles.findById.mockResolvedValue(viewerRole as never);
+      await expect(service.update('mgr_1', { roleId: 'role_viewer' }, MGR)).rejects.toMatchObject({
+        code: 'FORBIDDEN',
+        message: 'You cannot change your own role or status.',
+      });
+      await expect(service.update('mgr_1', { status: 'DISABLED' } as never, MGR)).rejects.toMatchObject({ code: 'FORBIDDEN' });
+      await expect(service.remove('mgr_1', MGR)).rejects.toMatchObject({ message: 'You cannot delete your own account.' });
+      expect(users.update).not.toHaveBeenCalled();
+      expect(users.delete).not.toHaveBeenCalled();
+    });
+
+    it('still lets you edit your own profile fields (unchanged role/status echoed back is fine)', async () => {
+      users.findByIdWithRole.mockResolvedValue(self());
+      roles.findById.mockResolvedValue(HELD_ROLES.mgr_1 as never);
+      await service.update('mgr_1', { firstName: 'Jane', roleId: 'role_mgr', status: 'ACTIVE' } as never, MGR);
+      expect(users.update).toHaveBeenCalled();
+    });
+
+    it('rejects assigning a role with permissions above your own (update and invite)', async () => {
+      users.findByIdWithRole.mockResolvedValue(viewer());
+      roles.findById.mockResolvedValue(godRole as never);
+      const err = await service.update('usr_v', { roleId: 'role_god' }, MGR).catch((e: unknown) => e);
+      expect(err).toMatchObject({ code: 'FORBIDDEN', status: 403 });
+      expect((err as Error).message).toContain('You cannot assign a role with permissions above your own');
+      await expect(service.invite({ email: 'n@b.com', roleId: 'role_god' } as never, MGR)).rejects.toMatchObject({ code: 'FORBIDDEN' });
+      expect(users.update).not.toHaveBeenCalled();
+      expect(users.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects managing (editing, disabling, deleting) a user whose role is above yours', async () => {
+      users.findByIdWithRole.mockResolvedValue(makeUser({ id: 'usr_fm', role: fleetManagerRole }) as never);
+      await expect(service.update('usr_fm', { email: 'mine@b.com', currentPassword: 'pw' }, MGR)).rejects.toMatchObject({
+        message: 'You cannot manage a user whose role has permissions above your own.',
+      });
+      await expect(service.update('usr_fm', { status: 'DISABLED' } as never, MGR)).rejects.toMatchObject({ code: 'FORBIDDEN' });
+      await expect(service.remove('usr_fm', MGR)).rejects.toMatchObject({ code: 'FORBIDDEN' });
+      expect(emailChange.assertRequestable).not.toHaveBeenCalled();
+      expect(users.update).not.toHaveBeenCalled();
+    });
+
+    it('allows assigning, inviting and disabling within your own levels', async () => {
+      users.findByIdWithRole.mockResolvedValue(viewer());
+      roles.findById.mockResolvedValue(viewerRole as never);
+      await service.update('usr_v', { roleId: 'role_viewer', status: 'DISABLED' } as never, MGR);
+      await service.invite({ email: 'n@b.com', firstName: 'N', lastName: 'U', roleId: 'role_viewer' }, MGR);
+      expect(users.update).toHaveBeenCalled();
+      expect(users.create).toHaveBeenCalled();
+    });
+
+    it('fails closed when the actor is not an active user', async () => {
+      users.findByIdWithRole.mockResolvedValue(viewer());
+      await expect(service.update('usr_v', { firstName: 'X' }, { id: 'ghost' })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    });
+
+    it('SUPER_ADMIN can still assign any role, change their own status and manage anyone', async () => {
+      users.findByIdWithRole.mockResolvedValue(viewer());
+      roles.findById.mockResolvedValue(godRole as never);
+      await service.update('usr_v', { roleId: 'role_god' }, SA);
+      users.findByIdWithRole.mockResolvedValue(makeUser({ id: 'sa_1', status: 'ACTIVE', role: HELD_ROLES.sa_1 }) as never);
+      await service.update('sa_1', { status: 'DISABLED' } as never, SA);
+      expect(users.update).toHaveBeenCalledTimes(2);
     });
   });
 

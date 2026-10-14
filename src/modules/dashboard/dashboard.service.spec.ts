@@ -1,4 +1,4 @@
-import { DashboardService } from './dashboard.service';
+import { countDriverDuty, DashboardService } from './dashboard.service';
 import type { CarrierService } from '../carrier/carrier.service';
 import type { LiveFleetService } from '../live/live-fleet.service';
 import type { NotificationsService } from '../notifications/notifications.service';
@@ -10,11 +10,11 @@ describe('DashboardService — reuses each feature module\'s own service via Pro
   const liveFleet = {
     snapshot: jest.fn().mockResolvedValue({
       items: [
-        { vehicleId: 'veh_1', dutyStatus: 'DRIVING' },
-        { vehicleId: 'veh_2', dutyStatus: 'ON_DUTY' },
-        { vehicleId: 'veh_3', dutyStatus: 'IDLE' },
-        { vehicleId: 'veh_4', dutyStatus: 'ELD_OFFLINE' },
-        { vehicleId: 'veh_5', dutyStatus: 'DRIVING', isStale: true },
+        { vehicleId: 'veh_1', dutyStatus: 'DRIVING', driverId: 'drv_1', driverDutyStatus: 'DRIVING', connectivity: 'ONLINE' },
+        { vehicleId: 'veh_2', dutyStatus: 'ON_DUTY', driverId: 'drv_2', driverDutyStatus: 'ON_DUTY', connectivity: 'ONLINE' },
+        { vehicleId: 'veh_3', dutyStatus: 'IDLE', driverId: 'drv_3', driverDutyStatus: 'ON_DUTY', connectivity: 'ONLINE' },
+        { vehicleId: 'veh_4', dutyStatus: 'ELD_OFFLINE', driverId: null, driverDutyStatus: null, connectivity: 'ELD_OFFLINE' },
+        { vehicleId: 'veh_5', dutyStatus: 'DRIVING', isStale: true, driverId: 'drv_5', driverDutyStatus: 'DRIVING', connectivity: 'ONLINE' },
       ],
       generatedAt: '2026-09-16T15:39:10.000Z',
     }),
@@ -49,7 +49,14 @@ describe('DashboardService — reuses each feature module\'s own service via Pro
     const result = await service.summary(actor, now);
 
     // UI-003 — veh_5 (stale DRIVING) is not counted as moving.
-    expect(result.liveFleet.counts).toEqual({ total: 5, onDuty: 3, moving: 1, idle: 1, offline: 1 });
+    expect(result.liveFleet.counts).toEqual({
+      total: 5,
+      onDuty: 4,
+      moving: 1,
+      idle: 1,
+      offline: 1,
+      driverDuty: { assigned: 4, DRIVING: 2, ON_DUTY: 2, SLEEPER: 0, OFF_DUTY: 0, UNKNOWN: 0 },
+    });
     expect(result.violations).toEqual({ items: [{ id: 'vio_1' }], total: 3 });
     expect(result.unidentified).toEqual({ total: 2, totalDurationSec: 1800 });
     expect(result.notifications).toEqual({ unreadCount: 4 });
@@ -69,7 +76,7 @@ describe('DashboardService — reuses each feature module\'s own service via Pro
     const now = new Date('2026-09-16T15:39:10.000Z');
     const result = await service.summary(actor, now);
 
-    expect(result.liveFleet).toEqual({ items: [], generatedAt: now.toISOString(), counts: { total: 0, onDuty: 0, moving: 0, idle: 0, offline: 0 } });
+    expect(result.liveFleet).toEqual({ items: [], generatedAt: now.toISOString(), counts: { total: 0, onDuty: 0, moving: 0, idle: 0, offline: 0, driverDuty: { assigned: 0, DRIVING: 0, ON_DUTY: 0, SLEEPER: 0, OFF_DUTY: 0, UNKNOWN: 0 } } });
     expect(result.violations).toEqual({ items: [], total: 0 });
     expect(result.unidentified).toEqual({ total: 0, totalDurationSec: 0 });
     expect(result.vehicles).toEqual({ active: 0, total: 0, inactive: 0, outOfService: 0 });
@@ -89,5 +96,46 @@ describe('DashboardService — reuses each feature module\'s own service via Pro
     const actor = { id: 'usr_3', type: 'user', permissions: { dashboard: 'READ', liveFleet: 'READ' } } as never;
     const result = await service.summary(actor, new Date('2026-09-16T15:39:10.000Z'));
     expect(result.liveFleet.items).toEqual([{ vehicleId: 'veh_1', dutyStatus: 'DRIVING', driverPhone: null }]);
+  });
+  it('QA LIVE-002 / LIVE-011 — counts drivers by their own HOS status (like the Drivers list) and ELD offline by connectivity', async () => {
+    liveFleet.snapshot.mockResolvedValueOnce({
+      items: [
+        // The live repro: on-duty / driving drivers whose ELD is stale or whose unit is out of service.
+        { vehicleId: 'v1', driverId: 'd1', dutyStatus: 'ELD_OFFLINE', isStale: true, driverDutyStatus: 'DRIVING', connectivity: 'ELD_OFFLINE' },
+        { vehicleId: 'v2', driverId: 'd2', dutyStatus: 'ELD_OFFLINE', isStale: true, driverDutyStatus: 'ON_DUTY', connectivity: 'ELD_OFFLINE' },
+        { vehicleId: 'v3', driverId: 'd3', dutyStatus: 'INACTIVE', driverDutyStatus: 'ON_DUTY', connectivity: 'ELD_OFFLINE' },
+        // Live markers derived from ON / OFF: idle + yard move are on duty, PC is off duty.
+        { vehicleId: 'v4', driverId: 'd4', dutyStatus: 'IDLE', driverDutyStatus: 'ON_DUTY', connectivity: 'ONLINE' },
+        { vehicleId: 'v5', driverId: 'd5', dutyStatus: 'YARD_MOVE', driverDutyStatus: 'ON_DUTY', connectivity: 'ONLINE' },
+        { vehicleId: 'v6', driverId: 'd6', dutyStatus: 'PERSONAL_CONVEYANCE', driverDutyStatus: 'OFF_DUTY', connectivity: 'ONLINE' },
+        // Off duty with a silent ELD: still off duty, but its ELD IS offline.
+        { vehicleId: 'v7', driverId: 'd7', dutyStatus: 'OFF_DUTY', driverDutyStatus: 'OFF_DUTY', connectivity: 'ELD_OFFLINE' },
+        { vehicleId: 'v8', driverId: 'd8', dutyStatus: 'SLEEPER', driverDutyStatus: 'SLEEPER', connectivity: 'ONLINE' },
+        // HOS state unavailable -> UNKNOWN slice, never silently dropped.
+        { vehicleId: 'v9', driverId: 'd9', dutyStatus: 'OFF_DUTY', driverDutyStatus: null, connectivity: 'ONLINE' },
+        // No driver: not a driver, but its silent ELD still counts as offline.
+        { vehicleId: 'v10', driverId: null, dutyStatus: 'ELD_OFFLINE', driverDutyStatus: null, connectivity: 'ELD_OFFLINE' },
+        { vehicleId: 'v11', driverId: null, dutyStatus: 'INACTIVE', driverDutyStatus: null, connectivity: 'NO_DEVICE' },
+      ],
+      generatedAt: '2026-09-16T15:39:10.000Z',
+    });
+    const actor = { id: 'usr_1', type: 'user', permissions: { dashboard: 'READ', liveFleet: 'READ', drivers: 'READ', hos: 'READ', vehicles: 'READ' } } as never;
+    const { counts } = (await service.summary(actor, new Date('2026-09-16T15:39:10.000Z'))).liveFleet;
+
+    // Drivers list definition: every status but OFF_DUTY (Driving + On-duty + Sleeper).
+    expect(counts.onDuty).toBe(6);
+    expect(counts.driverDuty).toEqual({ assigned: 9, DRIVING: 1, ON_DUTY: 4, SLEEPER: 1, OFF_DUTY: 2, UNKNOWN: 1 });
+    const { assigned, ...slices } = counts.driverDuty;
+    expect(Object.values(slices).reduce((a, b) => a + b, 0)).toBe(assigned);
+    expect(counts.offline).toBe(5);
+  });
+
+  it('countDriverDuty skips units without a driver and always sums to `assigned`', () => {
+    const counts = countDriverDuty([
+      { driverId: 'd1', driverDutyStatus: 'DRIVING' },
+      { driverId: null, driverDutyStatus: null },
+      { driverId: 'd2', driverDutyStatus: null },
+    ]);
+    expect(counts).toEqual({ assigned: 2, DRIVING: 1, ON_DUTY: 0, SLEEPER: 0, OFF_DUTY: 0, UNKNOWN: 1 });
   });
 });

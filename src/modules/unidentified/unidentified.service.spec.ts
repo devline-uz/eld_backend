@@ -10,6 +10,7 @@ import type { RodsEventWriter } from '../logs/rods-event-writer';
 import type { AuditRepository } from '../audit/audit.repository';
 import type { EventBusService } from '../../core/events/event-bus.service';
 import type { LogsService } from '../logs/logs.service';
+import { buildRodsDay, type RodsEvent } from '../logs/rods';
 import { UnidentifiedService } from './unidentified.service';
 import type { UnidentifiedRepository } from './unidentified.repository';
 
@@ -79,7 +80,12 @@ class FakeRepo {
   findSupersedingEvents = jest.fn(async (ids: bigint[]) =>
     this.events.filter((e) => e.supersedesId !== null && ids.includes(e.supersedesId)),
   );
-  findDriverEventsAfter = jest.fn(async () => []);
+  /** CODE-007 — the driver's own records (every status) in the window, as the repository reads them. */
+  findDriverEvents = jest.fn(async (driverId: string, from: Date, to: Date) =>
+    this.events
+      .filter((e) => e.driverId === driverId && e.eventDateTime >= from && e.eventDateTime <= to)
+      .sort((a, b) => a.eventDateTime.getTime() - b.eventDateTime.getTime() || a.eventSequenceId - b.eventSequenceId),
+  );
   findDriverEventsBefore = jest.fn(async () => []);
   updateSegment = jest.fn(async (_id: string, data: Record<string, unknown>) => {
     this.segment = { ...this.segment, ...data };
@@ -495,5 +501,129 @@ describe('B-83 — assignment that waits for the driver to confirm (§395.32)', 
     await service.assign('seg-1', { driverId: DRIVER, requireDriverConfirmation: false }, actor);
     expect(repo.segment.status).toBe('ASSIGNED');
     expect(writer.calls.length).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * CODE-007 — assigning unidentified driving must add exactly the segment to the driver's log:
+ * the segment's last status may not run on until the driver's next own record, and a segment
+ * that overlaps the driver's own records is refused.
+ */
+describe('CODE-007 — the segment ends where it ends and never overlaps the driver log', () => {
+  const at = (hhmm: string, day = '2026-06-01') => new Date(`${day}T${hhmm}:00Z`);
+
+  function ownEvent(id: bigint, when: Date, code: number, extra: Partial<FakeEvent> = {}): FakeEvent {
+    return { ...poolEvent(id, when.toISOString(), code), driverId: DRIVER, recordOrigin: 1, wasStoredOnDevice: false, ...extra };
+  }
+
+  /** Repro (agentB/unid.ts): driver OFF 09:00 -> ON next day 06:00; pool D@10:00, ON@12:00, segment to 12:30. */
+  function repro(poolCodes: Array<[string, number]>, endAt: Date) {
+    const ctx = build();
+    ctx.repo.driver = { id: DRIVER, username: 'jsmith', homeTerminalTimezone: 'UTC' };
+    const pool = poolCodes.map(([hhmm, code], i) => poolEvent(BigInt(100 + i), at(hhmm).toISOString(), code));
+    ctx.repo.segment = { ...ctx.repo.segment, startAt: pool[0].eventDateTime, endAt, eventIds: pool.map((e) => e.id) };
+    ctx.repo.events = [...pool, ownEvent(10n, at('09:00'), 1), ownEvent(11n, at('06:00', '2026-06-02'), 4)];
+    return ctx;
+  }
+
+  /** The driver's RODS day after the assignment: own records + everything appended for the driver. */
+  function dayAfter(ctx: ReturnType<typeof build>): ReturnType<typeof buildRodsDay> {
+    let id = 1000n;
+    let seq = 1000;
+    const own = ctx.repo.events.filter((e) => e.driverId === DRIVER) as unknown as RodsEvent[];
+    const appended = ctx.writer.calls
+      .filter((call) => call.ctx.driverId === DRIVER)
+      .flatMap((call) => call.rows)
+      .map((row) => ({
+        id: id++,
+        eventType: row.eventType,
+        eventCode: row.eventCode,
+        eventDateTime: row.at,
+        recordStatus: row.recordStatus,
+        recordOrigin: row.recordOrigin,
+        eventSequenceId: seq++,
+        supersedesId: row.supersedesId,
+      }));
+    return buildRodsDay([...own, ...appended], 'UTC', '2026-06-01', at('12:00', '2026-06-03'));
+  }
+
+  const hours = (sec: number) => sec / 3600;
+
+  it('repro: a fully off-duty day gets exactly D 2 h + ON 0.5 h — not D 2 h + ON 12 h', async () => {
+    const ctx = repro([['10:00', 3], ['12:00', 4]], at('12:30'));
+    await ctx.service.assign('seg-1', { driverId: DRIVER }, actor);
+
+    const restore = ctx.writer.rows.find((row) => row.kind === 'RESTORE');
+    expect(restore).toMatchObject({ eventType: 1, eventCode: 1, at: at('12:30'), recordStatus: 1, recordOrigin: 3 });
+    const day = dayAfter(ctx);
+    expect(hours(day.drivingSec)).toBe(2);
+    expect(hours(day.onDutySec)).toBe(0.5);
+    expect(hours(day.offDutySec)).toBe(21.5);
+  });
+
+  it('repro: a pool ending on DRIVING adds only its own driving (D 2 h, not 14 h)', async () => {
+    const ctx = repro([['10:00', 3]], at('12:00'));
+    await ctx.service.assign('seg-1', { driverId: DRIVER }, actor);
+    const day = dayAfter(ctx);
+    expect(hours(day.drivingSec)).toBe(2);
+    expect(hours(day.onDutySec)).toBe(0);
+    expect(hours(day.offDutySec)).toBe(22);
+  });
+
+  it("restores the driver's OWN prior status at the segment end (ON stays ON, not OFF)", async () => {
+    const ctx = repro([['10:00', 3]], at('12:00'));
+    ctx.repo.events.push(ownEvent(12n, at('09:30'), 4));
+    await ctx.service.assign('seg-1', { driverId: DRIVER }, actor);
+    expect(ctx.writer.rows.find((row) => row.kind === 'RESTORE')).toMatchObject({ eventCode: 4, at: at('12:00') });
+  });
+
+  it('writes no RESTORE when the driver has an own duty-status record exactly at the segment end', async () => {
+    const ctx = repro([['10:00', 3]], at('12:00'));
+    ctx.repo.events.push(ownEvent(12n, at('12:00'), 4));
+    await ctx.service.assign('seg-1', { driverId: DRIVER }, actor);
+    expect(ctx.writer.rows.some((row) => row.kind === 'RESTORE')).toBe(false);
+  });
+
+  it('refuses a segment that overlaps the driver\'s own records (409), writing nothing', async () => {
+    const ctx = repro([['10:00', 3]], at('12:00'));
+    ctx.repo.events.push(ownEvent(12n, at('11:00'), 4));
+    await expect(ctx.service.assign('seg-1', { driverId: DRIVER }, actor)).rejects.toMatchObject({
+      code: 'UNIDENTIFIED_OVERLAPS_DRIVER_LOG',
+      status: 409,
+      details: expect.objectContaining({ reason: 'OWN_RECORDS_INSIDE', conflictingAt: [at('11:00').toISOString()] }) as unknown,
+    });
+    expect(ctx.writer.append).not.toHaveBeenCalled();
+    expect(ctx.repo.updateSegment).not.toHaveBeenCalled();
+    expect(ctx.hosQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('refuses a segment that starts while the driver was already DRIVING', async () => {
+    const ctx = repro([['10:00', 3]], at('12:00'));
+    ctx.repo.events.push(ownEvent(12n, at('09:30'), 3));
+    await expect(ctx.service.assign('seg-1', { driverId: DRIVER }, actor)).rejects.toMatchObject({
+      code: 'UNIDENTIFIED_OVERLAPS_DRIVER_LOG',
+      details: expect.objectContaining({ reason: 'DRIVING_AT_START' }) as unknown,
+    });
+    expect(ctx.writer.append).not.toHaveBeenCalled();
+  });
+
+  it('a record the driver already retired by an accepted edit is not an overlap (same timeline as the log)', async () => {
+    const ctx = repro([['10:00', 3]], at('12:00'));
+    ctx.repo.events.push(
+      ownEvent(12n, at('11:00'), 4),
+      ownEvent(13n, at('11:00'), 4, { recordStatus: 2, recordOrigin: 3, supersedesId: 12n }),
+    );
+    await ctx.service.assign('seg-1', { driverId: DRIVER }, actor);
+    expect(ctx.repo.segment.status).toBe('ASSIGNED');
+  });
+
+  it('B-83: an overlapping segment is refused before the driver is even asked', async () => {
+    const ctx = repro([['10:00', 3]], at('12:00'));
+    ctx.repo.events.push(ownEvent(12n, at('11:00'), 4));
+    await expect(
+      ctx.service.assign('seg-1', { driverId: DRIVER, requireDriverConfirmation: true }, actor),
+    ).rejects.toMatchObject({ code: 'UNIDENTIFIED_OVERLAPS_DRIVER_LOG' });
+    expect(ctx.repo.updateSegment).not.toHaveBeenCalled();
+    expect(ctx.events.publish).not.toHaveBeenCalled();
   });
 });

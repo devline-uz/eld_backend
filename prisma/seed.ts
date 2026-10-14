@@ -39,7 +39,7 @@ import {
 import { hashPassword } from '../src/modules/auth/lib/password.util';
 import { coarsenLocation } from '../src/common/units/location';
 import { seedFixTime } from '../src/modules/live/live-fleet.seed';
-import { seedHosLogs, type HosMockDriver } from './seed-hos-logs';
+import { seedHosLogs, writeDutyTimeline, type HosMockDriver, type PlannedEvent } from './seed-hos-logs';
 
 const prisma = new PrismaClient();
 
@@ -59,14 +59,6 @@ function computeAnchor(): DateTime {
 }
 
 const ANCHOR = computeAnchor();
-
-/** ANCHOR minus H hours and M minutes (tz.md §22.3.6 notation "ANCHOR-13:41" etc). */
-function anchorMinus(hh: number, mm: number): DateTime {
-  return ANCHOR.minus({ hours: hh, minutes: mm });
-}
-function anchorPlus(hh: number, mm: number): DateTime {
-  return ANCHOR.plus({ hours: hh, minutes: mm });
-}
 
 // ---------------------------------------------------------------------------
 // Permission matrix — tz.md §6.4 (22 keys x 4 roles).
@@ -449,98 +441,109 @@ async function main(): Promise<void> {
   }
 
   // ---- John Smith's 8-day HOS log (tz.md §22.3.6) ------------------------
-  // Today's segments (ANCHOR-relative, exact per the TZ spec):
+  // LIVE-001 — this used to write DailyLog totals and an OPEN 11-hour violation with NO §395
+  // records behind them: the log grid was empty under an open violation, and `hos.recalc` read the
+  // made-up totals as the 70/8 recap. The dataset is now real duty-status records (written by the
+  // same `writeDutyTimeline` as the HOS mock) and the violation row is exactly what the HOS engine
+  // derives from them.
+  //
+  // "John's day" is ANCHOR's day when ANCHOR (15:41) has already passed, otherwise the day before,
+  // so no record is ever written in the future. Its segments (ANCHOR-relative, per the TZ spec):
   //   SB   ANCHOR-15:41 -> ANCHOR-13:41
   //   ON   ANCHOR-13:41 -> ANCHOR-13:11
   //   D    ANCHOR-13:11 -> ANCHOR-07:41
   //   OFF  ANCHOR-07:41 -> ANCHOR-07:11   (30 min break)
-  //   D    ANCHOR-07:11 -> ANCHOR-01:15   (11:26 total -> 11h limit exceeded by 00:26)
-  //   ON   ANCHOR-01:15 -> ANCHOR+01:19
+  //   D    ANCHOR-07:11 -> ANCHOR-01:15   (11:26 total -> 11h limit crossed at ANCHOR-01:41, over by 00:26)
+  //   ON   ANCHOR-01:15 -> ANCHOR+01:19   (then OFF, once that time has passed)
+  // The 7 preceding days are a compliant 7 h driving / 0:30 on-duty shift (06:00–14:00) with SB
+  // overnight, so today's shift starts after a 12 h rest and the 70/8 cycle stays at ~67 h.
   const todayLogDate = ANCHOR.startOf('day');
-  const todaySegments: Array<{ status: 'OFF' | 'SB' | 'D' | 'ON'; from: DateTime; to: DateTime }> = [
-    { status: 'SB', from: anchorMinus(15, 41), to: anchorMinus(13, 41) },
-    { status: 'ON', from: anchorMinus(13, 41), to: anchorMinus(13, 11) },
-    { status: 'D', from: anchorMinus(13, 11), to: anchorMinus(7, 41) },
-    { status: 'OFF', from: anchorMinus(7, 41), to: anchorMinus(7, 11) },
-    { status: 'D', from: anchorMinus(7, 11), to: anchorMinus(1, 15) },
-    { status: 'ON', from: anchorMinus(1, 15), to: anchorPlus(1, 19) },
-  ];
-
-  const drivingSecToday = todaySegments
-    .filter((s) => s.status === 'D')
-    .reduce((sum, s) => sum + Math.round(s.to.diff(s.from, 'seconds').seconds), 0);
-  const onDutySecToday = todaySegments
-    .filter((s) => s.status === 'ON')
-    .reduce((sum, s) => sum + Math.round(s.to.diff(s.from, 'seconds').seconds), 0);
-  const offDutySecToday = todaySegments
-    .filter((s) => s.status === 'OFF')
-    .reduce((sum, s) => sum + Math.round(s.to.diff(s.from, 'seconds').seconds), 0);
-  const sleeperSecToday = todaySegments
-    .filter((s) => s.status === 'SB')
-    .reduce((sum, s) => sum + Math.round(s.to.diff(s.from, 'seconds').seconds), 0);
-
-  // 11-hour driving limit (39,600 s) exceeded by 26 minutes (1,560 s) — tz.md §22.3.6.
-  const ELEVEN_HOUR_LIMIT_SEC = 11 * 3600;
-  const exceededBySec = drivingSecToday - ELEVEN_HOUR_LIMIT_SEC;
-
-  const todayDailyLog = await prisma.dailyLog.upsert({
-    where: { driverId_logDate: { driverId: johnSmithId, logDate: todayLogDate.toJSDate() } },
-    create: {
-      driverId: johnSmithId,
-      logDate: todayLogDate.toJSDate(),
-      timezone: HOME_TZ,
-      offDutySec: offDutySecToday,
-      sleeperSec: sleeperSecToday,
-      drivingSec: drivingSecToday,
-      onDutySec: onDutySecToday,
-      totalDistanceMi: 612,
-      certified: false,
-      hasViolation: true,
-      violationCount: 1,
-    },
-    update: {
-      drivingSec: drivingSecToday,
-      hasViolation: true,
-      violationCount: 1,
-    },
+  const seedNow = DateTime.now().setZone(HOME_TZ).set({ second: 0, millisecond: 0 });
+  const johnAnchor = ANCHOR <= seedNow ? ANCHOR : ANCHOR.minus({ days: 1 });
+  const johnDay = johnAnchor.startOf('day');
+  const johnAt = (hh: number, mm: number) => johnAnchor.minus({ hours: hh, minutes: mm });
+  const johnDriver = driverRows[0];
+  const johnPlace = { name: 'Columbus, OH', lat: 39.9612, lon: -82.9988 };
+  const johnTimeline: PlannedEvent[] = [];
+  {
+    let miles = 412_000;
+    let engineHours = 9_500;
+    const push = (at: DateTime, duty: PlannedEvent['duty'], driveMin = 0, onMin = 0) => {
+      johnTimeline.push({ at, duty, place: johnPlace, miles, engineHours: Math.round(engineHours * 100) / 100 });
+      miles += Math.round((driveMin / 60) * 55);
+      engineHours += (driveMin + onMin) / 60;
+    };
+    for (let d = 7; d >= 1; d--) {
+      const day = johnDay.minus({ days: d });
+      if (d === 7) push(day, 'SB');
+      push(day.set({ hour: 6, minute: 0 }), 'ON', 0, 15);
+      push(day.set({ hour: 6, minute: 15 }), 'D', 240);
+      push(day.set({ hour: 10, minute: 15 }), 'OFF');
+      push(day.set({ hour: 10, minute: 45 }), 'D', 180);
+      push(day.set({ hour: 13, minute: 45 }), 'ON', 0, 15);
+      push(day.set({ hour: 14, minute: 0 }), 'OFF');
+      push(day.set({ hour: 21, minute: 0 }), 'SB');
+    }
+    push(johnAt(15, 41), 'SB');
+    push(johnAt(13, 41), 'ON', 0, 30);
+    push(johnAt(13, 11), 'D', 330);
+    push(johnAt(7, 41), 'OFF');
+    push(johnAt(7, 11), 'D', 356);
+    push(johnAt(1, 15), 'ON', 0, 154);
+    const offAt = johnAnchor.plus({ hours: 1, minutes: 19 });
+    if (offAt <= seedNow) push(offAt, 'OFF');
+  }
+  const johnHasRecords = await prisma.eldEvent.findFirst({
+    where: { driverId: johnSmithId, eventDateTime: { gte: johnTimeline[0].at.toJSDate() } },
+    select: { id: true },
   });
+  // Append-only records: a re-run inside the same window keeps the first run's log (as the HOS mock does).
+  let johnViolation: { id: string } | null = null;
+  if (johnHasRecords) {
+    console.log(`John Smith HOS log: skipped (driver ${johnSmithId} already has records in the window)`);
+    johnViolation = await prisma.hosViolation.findFirst({
+      where: { driverId: johnSmithId, type: 'DRIVING_11' },
+      orderBy: { logDate: 'desc' },
+      select: { id: true },
+    });
+  } else {
+    await writeDutyTimeline(prisma, johnDriver, johnTimeline, seedNow);
 
-  await prisma.hosViolation.upsert({
-    where: { driverId_logDate_type: { driverId: johnSmithId, logDate: todayLogDate.toJSDate(), type: 'DRIVING_11' } },
-    create: {
-      driverId: johnSmithId,
-      dailyLogId: todayDailyLog.id,
-      logDate: todayLogDate.toJSDate(),
-      type: 'DRIVING_11',
-      occurredAt: anchorMinus(1, 15).toJSDate(),
-      exceededBySec,
-      detail: '11-hour driving limit exceeded by 00:26',
-      status: 'OPEN',
-    },
-    update: { exceededBySec },
-  });
+    // The 7 preceding days are certified by the driver (certification is never derived from records).
+    for (let d = 1; d <= 7; d++) {
+      const dayAnchor = johnDay.minus({ days: d });
+      await prisma.dailyLog.updateMany({
+        where: { driverId: johnSmithId, logDate: new Date(`${dayAnchor.toISODate()}T00:00:00.000Z`), certificationCount: 0 },
+        data: {
+          certified: true,
+          certifiedAt: dayAnchor.plus({ hours: 20 }).toJSDate(),
+          certifierType: EditorType.DRIVER,
+          certificationCount: 1,
+        },
+      });
+    }
 
-  // The 7 preceding days, each with a simple compliant OFF/D/ON/OFF pattern built the same
-  // ANCHOR-relative way so "previous 8 days" always renders (tz.md §22.3.6).
-  for (let d = 1; d <= 7; d++) {
-    const dayAnchor = todayLogDate.minus({ days: d });
-    await prisma.dailyLog.upsert({
-      where: { driverId_logDate: { driverId: johnSmithId, logDate: dayAnchor.toJSDate() } },
+    // The violation the engine derives from the records above: DRIVING_11, crossed when driving
+    // reached 11:00 (5:30 + 5:30 → ANCHOR-01:41), over by 00:26 at the end of the drive.
+    const johnLogDate = new Date(`${johnDay.toISODate()}T00:00:00.000Z`);
+    const johnDailyLog = await prisma.dailyLog.update({
+      where: { driverId_logDate: { driverId: johnSmithId, logDate: johnLogDate } },
+      data: { hasViolation: true, violationCount: 1 },
+    });
+    johnViolation = await prisma.hosViolation.upsert({
+      where: { driverId_logDate_type: { driverId: johnSmithId, logDate: johnLogDate, type: 'DRIVING_11' } },
       create: {
         driverId: johnSmithId,
-        logDate: dayAnchor.toJSDate(),
-        timezone: HOME_TZ,
-        offDutySec: 10 * 3600,
-        sleeperSec: 4 * 3600,
-        drivingSec: 9 * 3600 + 30 * 60,
-        onDutySec: 30 * 60,
-        totalDistanceMi: 520,
-        certified: true,
-        certifiedAt: dayAnchor.plus({ hours: 20 }).toJSDate(),
-        certifierType: EditorType.DRIVER,
-        certificationCount: 1,
+        dailyLogId: johnDailyLog.id,
+        logDate: johnLogDate,
+        type: 'DRIVING_11',
+        occurredAt: johnAt(1, 41).toJSDate(),
+        exceededBySec: 26 * 60,
+        detail: 'Drove 11h 26m against a 11h 00m driving limit',
+        status: 'OPEN',
       },
       update: {},
+      select: { id: true },
     });
   }
 
@@ -724,7 +727,7 @@ async function main(): Promise<void> {
   const hasNotification = await prisma.notification.findFirst({
     where: { driverId: johnSmithId, type: 'hos_violation' },
   });
-  if (!hasNotification) {
+  if (!hasNotification && johnViolation) {
     await prisma.notification.create({
       data: {
         driverId: johnSmithId,
@@ -732,7 +735,7 @@ async function main(): Promise<void> {
         title: '11-hour driving limit exceeded',
         body: 'You exceeded the 11-hour driving limit by 00:26.',
         objectType: 'HosViolation',
-        objectId: todayDailyLog.id,
+        objectId: johnViolation.id,
       },
     });
   }

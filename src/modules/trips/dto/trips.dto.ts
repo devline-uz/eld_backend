@@ -68,7 +68,8 @@ const StopsDto = z
 
 /** TZ §11.5 `POST /trips` — "Dispatch & Trips" Figma sidebar entry.
  * §20 B-73 — `draft: true` creates the trip as `DRAFT` (never auto-ASSIGNED, even with a
- * `driverId`); publish it via `PATCH { status: 'PLANNED' }` once it is complete. */
+ * `driverId`); publish it via `PATCH { status: 'PLANNED' }` once it is complete — a draft with a
+ * driver is then dispatched as `ASSIGNED` (CODE-005). */
 export const CreateTripDto = z.object({
   /** BE-015 — trimmed; whitespace-only is rejected. */
   number: z.string().trim().min(1).max(40),
@@ -110,6 +111,9 @@ export const UpdateTripDto = z.object({
   rateUsd: z.number().positive().max(1_000_000).multipleOf(0.01).optional(),
   customer: z.string().max(200).optional(),
   estimatedDriveSec: z.number().int().positive().max(TRIP_LIMITS.estimatedDriveSec).optional(),
+  /** LIVE-003 — the actual delivery time the dispatcher records with "Mark delivered"; only valid
+   * together with `status: 'DELIVERED'` (default: now). Never in the future, never before the start. */
+  completedAt: z.coerce.date().optional(),
 });
 export type UpdateTripDto = z.infer<typeof UpdateTripDto>;
 

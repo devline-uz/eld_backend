@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../core/prisma/prisma.service';
-import { containsInsensitive } from '../../common/text/insensitive';
+import { containsInsensitive, equalsInsensitive } from '../../common/text/insensitive';
+import { normalizeUnitQuery, searchTokens } from './search-ranking';
 
 export interface SearchDriverRow {
   id: string;
@@ -20,21 +21,40 @@ export interface SearchVehicleRow {
   driver: { firstName: string; lastName: string } | null;
 }
 
+const VEHICLE_SELECT = {
+  id: true,
+  unitNumber: true,
+  make: true,
+  model: true,
+  vin: true,
+  driver: { select: { firstName: true, lastName: true } },
+} as const;
+
 @Injectable()
 export class SearchRepository {
   constructor(private readonly prisma: PrismaService) {}
 
-  findDrivers(q: string, limit: number): Promise<SearchDriverRow[]> {
+  /**
+   * LIVE-009 — every word of `q` must match a name column, so "Richard Lewis" (first + last) and
+   * "QA Dri" (first + start of last) find the driver; a single word behaves as before.
+   * Soft-deleted drivers are never offered.
+   */
+  findDrivers(q: string, take: number): Promise<SearchDriverRow[]> {
+    const tokens = searchTokens(q);
     return this.prisma.driver.findMany({
       where: {
-        OR: [
-          { firstName: containsInsensitive(q) },
-          { lastName: containsInsensitive(q) },
-          { username: containsInsensitive(q) },
-          { cdlNumber: containsInsensitive(q) },
-        ],
+        deletedAt: null,
+        AND: tokens.map((token) => ({
+          OR: [
+            { firstName: containsInsensitive(token) },
+            { lastName: containsInsensitive(token) },
+            { username: containsInsensitive(token) },
+            { cdlNumber: containsInsensitive(token) },
+          ],
+        })),
       },
-      take: limit,
+      orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }],
+      take,
       select: {
         id: true,
         firstName: true,
@@ -46,40 +66,49 @@ export class SearchRepository {
     });
   }
 
-  findVehicles(q: string, limit: number): Promise<SearchVehicleRow[]> {
-    return this.prisma.vehicle.findMany({
-      where: {
-        OR: [
-          { unitNumber: containsInsensitive(q) },
-          { vin: containsInsensitive(q) },
-          { make: containsInsensitive(q) },
-          { model: containsInsensitive(q) },
-        ],
-      },
-      take: limit,
-      select: {
-        id: true,
-        unitNumber: true,
-        make: true,
-        model: true,
-        vin: true,
-        driver: { select: { firstName: true, lastName: true } },
-      },
-    });
-  }
-
-  /** One grouped query for every matched driver's open-violation count — not one per row. */
-  async openViolationCounts(driverIds: string[]): Promise<Map<string, number>> {
-    if (!driverIds.length) return new Map();
-    const rows = await this.prisma.hosViolation.groupBy({
-      by: ['driverId'],
-      where: { driverId: { in: driverIds }, status: 'OPEN' },
-      _count: { _all: true },
-    });
-    return new Map(rows.map((r) => [r.driverId, r._count._all]));
+  /**
+   * LIVE-009 — the exact unit (`106`, `#106`) or VIN is loaded on its own, so a substring match
+   * on many other units (161, 165, 1060…) can never push it out of the candidate set.
+   */
+  async findVehicles(q: string, take: number): Promise<SearchVehicleRow[]> {
+    const term = q.trim();
+    const unit = normalizeUnitQuery(term) || term;
+    const [exact, partial] = await Promise.all([
+      this.prisma.vehicle.findMany({
+        where: {
+          deletedAt: null,
+          OR: [
+            { unitNumber: equalsInsensitive(unit) },
+            { unitNumber: equalsInsensitive(`#${unit}`) },
+            { vin: equalsInsensitive(term) },
+          ],
+        },
+        take,
+        select: VEHICLE_SELECT,
+      }),
+      this.prisma.vehicle.findMany({
+        where: {
+          deletedAt: null,
+          OR: [
+            { unitNumber: containsInsensitive(unit) },
+            { vin: containsInsensitive(term) },
+            { make: containsInsensitive(term) },
+            { model: containsInsensitive(term) },
+          ],
+        },
+        orderBy: { unitNumber: 'asc' },
+        take,
+        select: VEHICLE_SELECT,
+      }),
+    ]);
+    const seen = new Set<string>();
+    return [...exact, ...partial].filter((row) => (seen.has(row.id) ? false : (seen.add(row.id), true)));
   }
 
   scopeCounts(): Promise<{ units: number; drivers: number }> {
-    return Promise.all([this.prisma.vehicle.count(), this.prisma.driver.count()]).then(([units, drivers]) => ({ units, drivers }));
+    return Promise.all([
+      this.prisma.vehicle.count({ where: { deletedAt: null } }),
+      this.prisma.driver.count({ where: { deletedAt: null } }),
+    ]).then(([units, drivers]) => ({ units, drivers }));
   }
 }

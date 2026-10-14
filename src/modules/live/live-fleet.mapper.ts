@@ -21,6 +21,14 @@ export type LiveDutyStatus =
   | 'IDLE'
   | 'INACTIVE';
 
+/**
+ * QA LIVE-002 / CODE-020 — the assigned driver's own HOS duty status, in the Drivers roster's
+ * vocabulary (`DriverRosterEntry.dutyStatus`, `toWebDutyStatus`): the engine's EFFECTIVE status
+ * (PC is OFF, YM is ON), untouched by the vehicle record (OOS / inactive) or a silent ELD — a stale
+ * status is still the driver's last known one, exactly as the roster counts it.
+ */
+export type DriverDutyStatus = 'DRIVING' | 'ON_DUTY' | 'SLEEPER' | 'OFF_DUTY';
+
 /** UI-004 — the stored `Vehicle.status` (the record), independent of what the ELD reports. */
 export type LiveRecordStatus = 'ACTIVE' | 'INACTIVE' | 'OUT_OF_SERVICE';
 
@@ -34,6 +42,12 @@ export interface LiveFleetUnit {
   driverName: string | null;
   driverPhone: string | null;
   dutyStatus: LiveDutyStatus;
+  /**
+   * QA LIVE-002 — the assigned driver's HOS duty status (see `DriverDutyStatus`); `null` when no
+   * driver is assigned or their HOS state could not be computed. The Dashboard's "Drivers on
+   * duty" KPI and duty donut count this, so they agree with the Drivers list.
+   */
+  driverDutyStatus: DriverDutyStatus | null;
   speedMph: number | null;
   headingDeg: number | null;
   odometerMi: number | null;
@@ -99,7 +113,7 @@ export interface LiveFleetInput {
   now: Date;
 }
 
-const DUTY_BY_HOS: Record<HosDutyStatus, LiveDutyStatus> = {
+const DUTY_BY_HOS: Record<HosDutyStatus, DriverDutyStatus> = {
   D: 'DRIVING',
   ON: 'ON_DUTY',
   SB: 'SLEEPER',
@@ -198,6 +212,7 @@ export function toLiveFleetUnit(input: LiveFleetInput): LiveFleetUnit {
     driverName: driver ? `${driver.firstName} ${driver.lastName}`.trim() : null,
     driverPhone: driver?.phone ?? null,
     dutyStatus: resolveDutyStatus(input, telemetryFresh),
+    driverDutyStatus: driver && hos ? DUTY_BY_HOS[hos.currentStatus] : null,
     speedMph: telemetryFresh ? (telemetry.speedMph ?? null) : null,
     headingDeg: telemetry?.headingDeg ?? null,
     odometerMi: telemetry?.odometerMi ?? vehicle.odometerMi ?? null,

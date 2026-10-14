@@ -1,3 +1,4 @@
+import { outboundUrlProblem } from '../../../common/net/outbound-url';
 import { z } from 'zod';
 
 /**
@@ -66,8 +67,9 @@ export const INTEGRATION_CATALOG: readonly IntegrationCatalogEntry[] = [
 export interface IntegrationConfigField {
   key: string;
   label: string;
-  /** `https` — must be an absolute https:// URL; `slack-webhook` — https://hooks.slack.com/… */
-  format?: 'https' | 'slack-webhook';
+  /** `https` — must be an absolute https:// URL; `slack-webhook` — https://hooks.slack.com/…;
+   * `public-https` — https:// to a public host only (CODE-018: the worker POSTs to it). */
+  format?: 'https' | 'slack-webhook' | 'public-https';
 }
 
 export const INTEGRATION_REQUIRED_CONFIG: Partial<Record<IntegrationProvider, readonly IntegrationConfigField[]>> = {
@@ -91,7 +93,7 @@ export const INTEGRATION_REQUIRED_CONFIG: Partial<Record<IntegrationProvider, re
   ],
   slack: [{ key: 'webhookUrl', label: 'Incoming webhook URL', format: 'slack-webhook' }],
   webhook: [
-    { key: 'url', label: 'Endpoint URL' },
+    { key: 'url', label: 'Endpoint URL', format: 'public-https' },
     { key: 'secret', label: 'Signing secret' },
   ],
 };
@@ -113,6 +115,8 @@ export function validateIntegrationConfig(
     }
     if (field.format === 'https' && !isHttpsUrl(value)) {
       issues.push({ path, code: 'invalid_string', message: `${field.label} must be a full https:// URL.` });
+    } else if (field.format === 'public-https' && outboundUrlProblem(value)) {
+      issues.push({ path, code: 'invalid_string', message: `${field.label} ${outboundUrlProblem(value)}.` });
     } else if (field.format === 'slack-webhook' && !isSlackWebhookUrl(value)) {
       issues.push({ path, code: 'invalid_string', message: `${field.label} must start with https://hooks.slack.com/.` });
     }

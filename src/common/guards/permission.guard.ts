@@ -2,11 +2,9 @@ import { CanActivate, ExecutionContext, Injectable } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { RequestContext } from '../../core/context/request-context';
 import { PERM_METADATA_KEY, PermRequirement, PermRequirementSet } from '../decorators/perm.decorator';
-import { PermissionLevel } from '../decorators/permission.types';
+import { PERMISSION_LEVEL_RANK as RANK } from '../decorators/permission.types';
 import { AppException } from '../errors/app.exception';
 import { ERROR_CODES } from '../errors/codes';
-
-const RANK: Record<PermissionLevel, number> = { NONE: 0, READ: 1, FULL: 2 };
 
 /**
  * TZ §6.4 — enforces `@Perm(key, level)` against the permission matrix carried in the

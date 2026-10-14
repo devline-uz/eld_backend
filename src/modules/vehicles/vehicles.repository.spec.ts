@@ -79,11 +79,15 @@ describe('VehiclesRepository', () => {
     expect(vehicle.findMany).toHaveBeenCalledWith({ where: { deletedAt: null }, orderBy: { unitNumber: 'asc' } });
   });
 
-  it('findOpenCriticalDefectIds queries the Defect table for OPEN + CRITICAL rows on this unit', async () => {
+  it('findOpenCriticalDefectIds queries the Defect table for CRITICAL rows still holding this unit (OPEN / IN_PROGRESS / DEFERRED — QA CODE-008)', async () => {
     defect.findMany.mockResolvedValue([{ id: 'def_1' }]);
     const result = await repo.findOpenCriticalDefectIds('v1');
     expect(defect.findMany).toHaveBeenCalledWith({
-      where: { vehicleId: 'v1', status: 'OPEN', severity: 'CRITICAL' },
+      where: {
+        vehicleId: 'v1',
+        status: { in: ['OPEN', 'IN_PROGRESS', 'DEFERRED'] },
+        OR: [{ severity: 'CRITICAL' }, { outOfService: true }],
+      },
       select: { id: true },
     });
     expect(result).toEqual([{ id: 'def_1' }]);

@@ -93,6 +93,13 @@ export class ActiveViolationsService {
       this.logger.error({ err }, 'active violations: open-driving scan failed — stored rows used as they are');
       return [];
     }
+    // CODE-030 — a cached check (and its stale cut-off) only applies while the driver's latest
+    // record is still the open DRIVING one it was made for. A driver who is no longer driving
+    // drops out of the scan; keeping the entry made `activeFilter` hide their later OPEN rows.
+    const openNow = new Set(rows.map((row) => row.driverId));
+    for (const driverId of [...this.checks.keys()]) {
+      if (!openNow.has(driverId)) this.checks.delete(driverId);
+    }
     const wanted = driverIds ? new Set(driverIds) : null;
     const exclude: Prisma.HosViolationWhereInput[] = [];
     for (const row of rows) {

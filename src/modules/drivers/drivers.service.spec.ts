@@ -471,6 +471,16 @@ describe('DriversService', () => {
       expect(repo.update).not.toHaveBeenCalled();
     });
 
+    // CODE-010 — the edit form sends `null` for a phone / exemption reason the user emptied.
+    it('update clears phone and ELD-exempt reason on null / blank', async () => {
+      await service.update('drv_1', UpdateDriverDto.parse({ phone: null, eldExemptReason: null }));
+      expect(repo.update).toHaveBeenCalledWith({ id: 'drv_1' }, expect.objectContaining({ phone: null, eldExemptReason: null }));
+      repo.update.mockClear();
+      await service.update('drv_1', UpdateDriverDto.parse({ phone: '  ' }));
+      expect(repo.update).toHaveBeenCalledWith({ id: 'drv_1' }, expect.objectContaining({ phone: null }));
+      expect(repo.findLiveIdByPhoneKey).not.toHaveBeenCalled();
+    });
+
     it('update saving its own values succeeds (lookups exclude the driver itself)', async () => {
       repo.findById.mockResolvedValue(makeDriver({ email: 'jsmith@example.com' }) as never);
       await service.update('drv_1', { email: 'jsmith@example.com', phone: '6145551000', cdlNumber: 'D1234567' });

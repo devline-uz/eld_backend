@@ -4,6 +4,7 @@ import { Audit } from '../../common/decorators/audit.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Perm } from '../../common/decorators/perm.decorator';
 import { zodBody } from '../../common/pipes/zod-validation.pipe';
+import type { CeilingActor } from '../roles/permission-ceiling';
 import { ApiKeysService } from './api-keys.service';
 import { CreateApiKeyDto, UpdateApiKeyScopesDto } from './dto/api-keys.dto';
 import { apiError, ApiStandardErrors, ERROR_CODES } from '../../common/errors';
@@ -37,8 +38,8 @@ export class ApiKeysController {
     schema: { example: { apiKey: { id: 'key_1', prefix: 'obk_ABCD' }, plaintextKey: 'obk_...(shown once)' } },
   })
   @ApiStandardErrors()
-  create(@Body(zodBody(CreateApiKeyDto)) dto: CreateApiKeyDto, @CurrentUser('id') createdById: string) {
-    return this.apiKeys.create(dto, createdById);
+  create(@Body(zodBody(CreateApiKeyDto)) dto: CreateApiKeyDto, @CurrentUser() actor: CeilingActor) {
+    return this.apiKeys.create(dto, actor);
   }
 
   @Patch(':id/scopes')
@@ -47,8 +48,12 @@ export class ApiKeysController {
   @ApiOperation({ summary: 'Changes the scopes granted to an existing API key.' })
   @ApiOkResponse({ schema: { example: { id: 'key_1', prefix: 'obk_ABCD', scopes: ['logs:read'] } } })
   @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.NOT_FOUND, 'API key not found.'), apiError.conflict(ERROR_CODES.API_KEY_REVOKED, 'A revoked key cannot be modified.')] })
-  updateScopes(@Param('id') id: string, @Body(zodBody(UpdateApiKeyScopesDto)) dto: UpdateApiKeyScopesDto) {
-    return this.apiKeys.updateScopes(id, dto.scopes);
+  updateScopes(
+    @Param('id') id: string,
+    @Body(zodBody(UpdateApiKeyScopesDto)) dto: UpdateApiKeyScopesDto,
+    @CurrentUser() actor: CeilingActor,
+  ) {
+    return this.apiKeys.updateScopes(id, dto.scopes, actor);
   }
 
   @Delete(':id')

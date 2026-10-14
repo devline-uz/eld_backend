@@ -62,8 +62,15 @@ export interface RodsDay {
   hasEdits: boolean;
 }
 
+/**
+ * The columns the supersede rule reads. Generic so every reader of the §395 timeline — the RODS
+ * day, the edit rules AND the HOS engine input (`hos-recalc`, CODE-006) — retires records through
+ * this one rule instead of a `recordStatus = 1` filter of its own.
+ */
+export type SupersedeAware = Pick<RodsEvent, 'id' | 'recordStatus' | 'supersedesId'>;
+
 /** §5.5 — ids whose record was marked "Inactive — Changed" by a later append-only record. */
-export function supersededEventIds(events: RodsEvent[]): Set<string> {
+export function supersededEventIds(events: SupersedeAware[]): Set<string> {
   const ids = new Set<string>();
   for (const event of events) {
     if (event.recordStatus === 2 && event.supersedesId !== null && event.supersedesId !== undefined) {
@@ -79,7 +86,7 @@ export function supersededEventIds(events: RodsEvent[]): Set<string> {
  * (§5.5, REVOKE UPDATE), so a retired record keeps `recordStatus = 1` on its own row and is
  * identified only through the marker that points at it — see decisions.md D-019.
  */
-export function activeRecords(events: RodsEvent[]): RodsEvent[] {
+export function activeRecords<T extends SupersedeAware>(events: T[]): T[] {
   const retired = supersededEventIds(events);
   return events.filter(
     (event) => event.recordStatus === 1 && !(event.id !== undefined && retired.has(String(event.id))),

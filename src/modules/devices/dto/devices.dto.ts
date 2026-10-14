@@ -1,6 +1,11 @@
 import { z } from 'zod';
 import { MAX_LIST_PAGE } from '../../../common/dto/list-query.dto';
 
+/** CODE-009 — canonical ELD serial: trimmed, upper-cased. */
+export function normalizeDeviceSerial(serial: string): string {
+  return serial.trim().toUpperCase();
+}
+
 export const DeviceModelEnum = z.enum(['PT30', 'PT40']);
 export const DeviceStatusEnum = z.enum(['UNASSIGNED', 'ASSIGNED', 'FAULTY', 'RETIRED']);
 export const BleStateEnum = z.enum(['CONNECTED', 'OUT_OF_RANGE', 'DISCONNECTED']);
@@ -8,7 +13,15 @@ export const BleStateEnum = z.enum(['CONNECTED', 'OUT_OF_RANGE', 'DISCONNECTED']
 /** TZ §5.4 — PT30/PT40 registry ("Settings > ELD devices" Figma screen: registered devices,
  * firmware, heartbeats). */
 export const CreateDeviceDto = z.object({
-  serial: z.string().min(1).max(60),
+  /** CODE-009 — stored trimmed + upper-cased, the same canonical form the vehicle form uses
+   * (`normalizeUniqueValue` in vehicles/lib/vehicle-uniques.ts), so `pt30_1c4f` and `PT30_1C4F`
+   * are one device (`Device_serial_upper_key`). */
+  serial: z
+    .string()
+    .trim()
+    .min(1)
+    .max(60)
+    .transform((value) => normalizeDeviceSerial(value)),
   bleMacAddress: z.string().max(30).optional(),
   model: DeviceModelEnum.default('PT30'),
   firmware: z.string().max(20).optional(),

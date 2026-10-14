@@ -34,3 +34,6 @@ export const PERMISSION_KEYS = [
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
 export type PermissionLevel = 'NONE' | 'READ' | 'FULL';
 export type PermissionMatrix = Record<PermissionKey, PermissionLevel>;
+
+/** NONE < READ < FULL — the one ordering every level comparison uses. */
+export const PERMISSION_LEVEL_RANK: Readonly<Record<PermissionLevel, number>> = { NONE: 0, READ: 1, FULL: 2 };

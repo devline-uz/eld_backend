@@ -1,5 +1,5 @@
 /** TZ §8.4 — the violation write rules at the Prisma boundary. */
-import { HosRecalcRepository } from './hos-recalc.repository';
+import { AUTO_CLEAR_NOTE, HOS_RECALC_ACTOR_ID, HosRecalcRepository } from './hos-recalc.repository';
 import type { PrismaService } from '../../core/prisma/prisma.service';
 
 describe('HosRecalcRepository', () => {
@@ -8,8 +8,10 @@ describe('HosRecalcRepository', () => {
     eldEvent: { findMany: jest.fn() },
     dailyLog: { findMany: jest.fn(), updateMany: jest.fn(), upsert: jest.fn() },
     unidentifiedSegment: { findMany: jest.fn() },
-    hosViolation: { findMany: jest.fn(), upsert: jest.fn(), update: jest.fn() },
+    hosViolation: { findMany: jest.fn(), upsert: jest.fn(), update: jest.fn(), findUnique: jest.fn(), updateMany: jest.fn() },
+    auditLog: { create: jest.fn() },
     $queryRaw: jest.fn(),
+    $transaction: jest.fn(),
   };
 
   /** Typed view of a recorded call, so the assertions below stay free of `any`. */
@@ -26,10 +28,10 @@ describe('HosRecalcRepository', () => {
     expect(prisma.driver.findUnique).toHaveBeenCalledWith({ where: { id: 'driver-1' } });
   });
 
-  it('reads only active §395 records, in order', async () => {
+  it('CODE-006: reads active §395 records AND their "Inactive — Changed" markers, in order', async () => {
     await repo.findEvents('driver-1', new Date('2025-01-05T00:00:00Z'), new Date('2025-01-14T00:00:00Z'));
     expect(prisma.eldEvent.findMany).toHaveBeenCalledWith({
-      where: { driverId: 'driver-1', recordStatus: 1, eventDateTime: { gte: new Date('2025-01-05T00:00:00Z'), lte: new Date('2025-01-14T00:00:00Z') } },
+      where: { driverId: 'driver-1', recordStatus: { in: [1, 2] }, eventDateTime: { gte: new Date('2025-01-05T00:00:00Z'), lte: new Date('2025-01-14T00:00:00Z') } },
       orderBy: [{ eventDateTime: 'asc' }, { eventSequenceId: 'asc' }],
     });
   });
@@ -94,6 +96,10 @@ describe('HosRecalcRepository', () => {
     expect(sql.sql).toContain('unnest(');
     expect(sql.sql).toContain('CROSS JOIN LATERAL');
     expect(sql.sql).toMatch(/"eventType" IN \(1, 3\)/);
+    // CODE-006 — the markers and the columns `activeRecords` needs to retire superseded records.
+    expect(sql.sql).toMatch(/"recordStatus" IN \(1, 2\)/);
+    expect(sql.sql).toContain('e."supersedesId"');
+    expect(sql.sql).toContain('e."id"');
     expect(sql.sql).toMatch(/LIMIT \?::int/);
     expect(sql.sql).not.toMatch(/SELECT \*/);
     expect(sql.values).toEqual([['a', 'b'], ['2025-01-05T05:00:00.000Z', '2025-01-05T08:00:00.000Z'], to, 2001]);
@@ -127,12 +133,51 @@ describe('HosRecalcRepository', () => {
 
   it('refreshes the measured values on update and bumps recalcVersion', async () => {
     await repo.upsertViolation({ driverId: 'd', logDate: new Date(0), type: 'BREAK_30', occurredAt: new Date(0), exceededBySec: 5, detail: 'x' });
-    expect(lastArgs(prisma.hosViolation.upsert).update).toEqual({ occurredAt: new Date(0), exceededBySec: 5, detail: 'x', status: 'OPEN', recalcVersion: { increment: 1 } });
+    expect(lastArgs(prisma.hosViolation.upsert).update).toEqual({
+      occurredAt: new Date(0), exceededBySec: 5, detail: 'x', status: 'OPEN', resolvedAt: null, resolutionNote: null, recalcVersion: { increment: 1 },
+    });
   });
 
-  it('auto-clears rather than deletes', async () => {
-    await repo.autoClear('v1');
-    expect(prisma.hosViolation.update).toHaveBeenCalledWith({ where: { id: 'v1' }, data: { status: 'AUTO_CLEARED', recalcVersion: { increment: 1 } } });
+  describe('LIVE-001 — autoClear keeps an audit trail', () => {
+    const open = {
+      id: 'v1', driverId: 'driver-1', logDate: new Date('2026-09-26T00:00:00Z'), type: 'DRIVING_11', status: 'OPEN',
+      occurredAt: new Date('2026-09-26T18:26:00Z'), exceededBySec: 1560, detail: '11-hour driving limit exceeded by 00:26',
+    };
+    beforeEach(() => {
+      prisma.$transaction.mockImplementation(async (fn: (tx: typeof prisma) => Promise<unknown>) => fn(prisma));
+    });
+
+    it('auto-clears rather than deletes, with a clearing note and an append-only SYSTEM audit entry', async () => {
+      prisma.hosViolation.findUnique.mockResolvedValue(open);
+      prisma.hosViolation.updateMany.mockResolvedValue({ count: 1 });
+      await expect(repo.autoClear('v1', { engineVersion: '1.2.3', now: new Date('2026-10-14T00:00:00Z') })).resolves.toBe(true);
+      expect(prisma.hosViolation.updateMany).toHaveBeenCalledWith({
+        where: { id: 'v1', status: 'OPEN' },
+        data: { status: 'AUTO_CLEARED', resolvedAt: new Date('2026-10-14T00:00:00Z'), resolutionNote: AUTO_CLEAR_NOTE, recalcVersion: { increment: 1 } },
+      });
+      const audit = lastArgs(prisma.auditLog.create).data;
+      expect(audit).toMatchObject({
+        actorType: 'SYSTEM', actorId: HOS_RECALC_ACTOR_ID, action: 'HOS_VIOLATION_AUTO_CLEARED', objectType: 'HosViolation', objectId: 'v1',
+        before: expect.objectContaining({ status: 'OPEN', logDate: '2026-09-26', type: 'DRIVING_11', exceededBySec: 1560 }) as unknown,
+        after: expect.objectContaining({ status: 'AUTO_CLEARED', hosEngineVersion: '1.2.3' }) as unknown,
+      });
+      expect(prisma.hosViolation.update).not.toHaveBeenCalled();
+      expect(AUTO_CLEAR_NOTE.length).toBeLessThanOrEqual(60);
+    });
+
+    it('never overwrites a row a human resolved in the meantime, and audits nothing', async () => {
+      prisma.hosViolation.findUnique.mockResolvedValue({ ...open, status: 'RESOLVED' });
+      await expect(repo.autoClear('v1', { engineVersion: '1.2.3' })).resolves.toBe(false);
+      expect(prisma.hosViolation.updateMany).not.toHaveBeenCalled();
+      expect(prisma.auditLog.create).not.toHaveBeenCalled();
+    });
+
+    it('a lost race on the guarded update audits nothing', async () => {
+      prisma.hosViolation.findUnique.mockResolvedValue(open);
+      prisma.hosViolation.updateMany.mockResolvedValue({ count: 0 });
+      await expect(repo.autoClear('v1', { engineVersion: '1.2.3' })).resolves.toBe(false);
+      expect(prisma.auditLog.create).not.toHaveBeenCalled();
+    });
   });
 
   it('refreshes a resolved violation without touching its status', async () => {

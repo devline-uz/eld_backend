@@ -4,6 +4,7 @@ import { BaseRepository, ModelDelegate } from '../../core/prisma/base.repository
 import { PrismaService } from '../../core/prisma/prisma.service';
 import { syncLedgerKey as ledgerKey } from '../mobile/mobile.repository';
 import type { DayTrip } from './day-extras';
+import { resolveRecordingElds, type RecordingEld } from './recording-elds';
 
 /** Opaque transaction handle. */
 export type LogsTx = Prisma.TransactionClient;
@@ -205,6 +206,34 @@ export class LogsRepository extends BaseRepository<
       select: { vehicleId: true },
     });
     return rows.map((row) => row.vehicleId).filter((id): id is string => Boolean(id));
+  }
+
+  /**
+   * LIVE-005 — the ELD(s) a RODS day was recorded on (Appendix A §4.8 "ELD identifier"): the
+   * distinct device / unit pairs of the driver's records in `[from, to)`. A record written without
+   * a `deviceId` (manual entries, older data) falls back to the device paired with its unit now.
+   */
+  async findRecordingElds(driverId: string, from: Date, to: Date): Promise<RecordingEld[]> {
+    const rows = await this.prisma.eldEvent.findMany({
+      where: {
+        driverId,
+        eventDateTime: { gte: from, lt: to },
+        OR: [{ deviceId: { not: null } }, { vehicleId: { not: null } }],
+      },
+      distinct: ['deviceId', 'vehicleId'],
+      select: { deviceId: true, vehicleId: true },
+    });
+    if (!rows.length) return [];
+    const deviceIds = [...new Set(rows.map((row) => row.deviceId).filter((id): id is string => Boolean(id)))];
+    const vehicleIds = [...new Set(rows.map((row) => row.vehicleId).filter((id): id is string => Boolean(id)))];
+    const [devices, vehicles] = await Promise.all([
+      this.prisma.device.findMany({
+        where: { OR: [{ id: { in: deviceIds } }, { vehicleId: { in: vehicleIds } }] },
+        select: { id: true, serial: true, vehicleId: true },
+      }),
+      this.prisma.vehicle.findMany({ where: { id: { in: vehicleIds } }, select: { id: true, unitNumber: true } }),
+    ]);
+    return resolveRecordingElds(rows, devices, vehicles);
   }
 
   // ---------------------------------------------------------------------

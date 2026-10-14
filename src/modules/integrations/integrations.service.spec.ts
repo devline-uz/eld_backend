@@ -126,6 +126,18 @@ describe('IntegrationsService', () => {
       expect(issues).toEqual([expect.objectContaining({ path: 'config.webhookUrl' })]);
     });
 
+    // CODE-018 — the webhook URL is where the worker POSTs: public https hosts only.
+    it.each([
+      ['http://hooks.example.com/x', /https/],
+      ['https://127.0.0.1/x', /public/],
+      ['https://169.254.169.254/latest/meta-data', /public/],
+      ['https://localhost:8080/x', /public/],
+    ])('rejects the webhook endpoint %s', async (url, message) => {
+      const issues = await issuesOf('webhook', { url, secret: 's' });
+      expect(issues.map((i) => i.path)).toEqual(['config.url']);
+      expect(issues[0].message).toMatch(message);
+    });
+
     it('connects Slack with a hooks.slack.com URL, stores it encrypted and never echoes it', async () => {
       repo.upsert.mockImplementation(async (provider, data) => makeIntegration({ provider, config: data.config }) as never);
 

@@ -3,6 +3,7 @@ import type { Prisma, VehicleStatus, WorkOrder } from '@prisma/client';
 import { BaseRepository, ModelDelegate } from '../../core/prisma/base.repository';
 import { PrismaService } from '../../core/prisma/prisma.service';
 import { containsInsensitive } from '../../common/text/insensitive';
+import { outOfServiceHoldingDefectsWhere } from '../vehicles/lib/out-of-service-defects';
 
 export interface WorkOrderListFilter {
   vehicleId?: string;
@@ -24,7 +25,7 @@ export function holdsUnitOutOfService(workOrder: Pick<WorkOrder, 'status' | 'kee
  * inside the same transaction:
  *  • an open work order with the flag holds the unit `OUT_OF_SERVICE`;
  *  • when this write `released` a hold (completed / cancelled / flag turned off) and no other open
- *    flagged work order and no open out-of-service DVIR defect remains, the unit goes back to `ACTIVE`.
+ *    flagged work order and no open / in-progress / deferred out-of-service DVIR defect remains, the unit goes back to `ACTIVE`.
  * An `INACTIVE` unit is never touched, and a unit put out of service for another reason is only
  * restored when a work-order hold is actually released. Returns the new status, or `null` if unchanged.
  */
@@ -44,9 +45,8 @@ export async function syncVehicleOutOfService(
     return 'OUT_OF_SERVICE';
   }
   if (!released || vehicle.status !== 'OUT_OF_SERVICE') return null;
-  const outOfServiceDefects = await tx.defect.count({
-    where: { vehicleId, outOfService: true, status: { in: ['OPEN', 'IN_PROGRESS'] } },
-  });
+  // QA CODE-008 — a DEFERRED critical defect still holds the unit (shared definition).
+  const outOfServiceDefects = await tx.defect.count({ where: outOfServiceHoldingDefectsWhere(vehicleId) });
   if (outOfServiceDefects > 0) return null;
   await tx.vehicle.update({ where: { id: vehicleId }, data: { status: 'ACTIVE' } });
   return 'ACTIVE';

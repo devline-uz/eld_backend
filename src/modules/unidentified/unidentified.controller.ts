@@ -152,6 +152,10 @@ export class UnidentifiedController {
     errors: [
       apiError.notFound(ERROR_CODES.NOT_FOUND, 'Unidentified segment not found.'),
       apiError.conflict(ERROR_CODES.UNIDENTIFIED_ALREADY_ASSIGNED, 'This segment is already assigned to a driver.'),
+      apiError.conflict(
+        ERROR_CODES.UNIDENTIFIED_OVERLAPS_DRIVER_LOG,
+        "CODE-007 — the driver's own log already covers part of the segment (own duty-status records inside it, or driving / PC / YM in force when it starts). Nothing is written; correct the driver's log first.",
+      ),
     ],
   })
   assign(

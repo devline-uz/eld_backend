@@ -1,5 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { ContextUser } from '../../core/context/request-context';
+import { ActiveViolationsService } from '../violations/active-violations.service';
+import { candidateLimit, rankDrivers, rankVehicles } from './search-ranking';
 import { SearchRepository } from './search.repository';
 
 export interface SearchDriverHit {
@@ -34,19 +36,29 @@ export interface GlobalSearchResult {
  * these same fields. */
 @Injectable()
 export class SearchService {
-  constructor(private readonly repo: SearchRepository) {}
+  constructor(
+    private readonly repo: SearchRepository,
+    private readonly activeViolations: ActiveViolationsService,
+  ) {}
 
   /** Each section is only searched when the caller holds READ on it (B-090): `drivers` for
    * driver hits, `vehicles` for vehicle hits, `hos` for the open-violation count. A section
    * the caller may not read comes back empty/`null` — never queried, never leaked. */
   async search(q: string, limit: number, actor: Pick<ContextUser, 'permissions'> | undefined): Promise<GlobalSearchResult> {
     const canRead = (key: string) => (actor?.permissions?.[key] ?? 'NONE') !== 'NONE';
-    const [driverRows, vehicleRows] = await Promise.all([
-      canRead('drivers') ? this.repo.findDrivers(q, limit) : Promise.resolve([]),
-      canRead('vehicles') ? this.repo.findVehicles(q, limit) : Promise.resolve([]),
+    // LIVE-009 — a wider candidate set is ranked (exact name / unit first) and only then cut to `limit`.
+    const take = candidateLimit(limit);
+    const [driverCandidates, vehicleCandidates] = await Promise.all([
+      canRead('drivers') ? this.repo.findDrivers(q, take) : Promise.resolve([]),
+      canRead('vehicles') ? this.repo.findVehicles(q, take) : Promise.resolve([]),
     ]);
+    const driverRows = rankDrivers(driverCandidates, q, limit);
+    const vehicleRows = rankVehicles(vehicleCandidates, q, limit);
+    // LIVE-009 / BUG-003 — the same "active violation" count the Drivers roster and HOS Logs show.
     const violationCounts =
-      canRead('hos') && driverRows.length ? await this.repo.openViolationCounts(driverRows.map((d) => d.id)) : null;
+      canRead('hos') && driverRows.length
+        ? await this.activeViolations.openCountsByDriver(driverRows.map((d) => d.id))
+        : null;
 
     const drivers: SearchDriverHit[] = driverRows.map((d) => ({
       id: d.id,

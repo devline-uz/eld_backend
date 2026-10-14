@@ -5,6 +5,7 @@ import {
   toLiveFleetUnit,
   type LiveFleetInput,
 } from './live-fleet.mapper';
+import { toWebDutyStatus } from '../drivers/driver-roster.service';
 
 const NOW = new Date('2026-09-14T15:41:00.000Z');
 const minsAgo = (m: number): Date => new Date(NOW.getTime() - m * 60_000);
@@ -64,7 +65,7 @@ describe('toLiveFleetUnit (GET /live/fleet, web/tz.md §20 B-3)', () => {
     const unit = toLiveFleetUnit(input());
     expect(Object.keys(unit).sort()).toEqual(
       [
-        'vehicleId', 'unitNumber', 'driverId', 'driverName', 'driverPhone', 'dutyStatus', 'speedMph',
+        'vehicleId', 'unitNumber', 'driverId', 'driverName', 'driverPhone', 'dutyStatus', 'driverDutyStatus', 'speedMph',
         'headingDeg', 'odometerMi', 'lat', 'lon', 'locationLabel', 'lastSeenAt', 'driveRemainingSec',
         'shiftEndsAt', 'eldSerial', 'bleState', 'recordStatus', 'connectivity', 'isStale', 'staleSince',
       ].sort(),
@@ -75,6 +76,7 @@ describe('toLiveFleetUnit (GET /live/fleet, web/tz.md §20 B-3)', () => {
       driverId: 'drv_1',
       driverName: 'John Smith',
       dutyStatus: 'DRIVING',
+      driverDutyStatus: 'DRIVING',
       speedMph: 61,
       headingDeg: 274,
       odometerMi: 50_120,
@@ -235,5 +237,35 @@ describe('toLiveFleetUnit (GET /live/fleet, web/tz.md §20 B-3)', () => {
 
   it('orders unit numbers naturally', () => {
     expect(['110', '9', '101'].sort(compareUnitNumbers)).toEqual(['9', '101', '110']);
+  });
+});
+
+describe('QA LIVE-002 — driverDutyStatus is the driver\'s own HOS status (the Drivers roster vocabulary)', () => {
+  it.each([
+    ['D', 'DRIVING'],
+    ['ON', 'ON_DUTY'],
+    ['SB', 'SLEEPER'],
+    ['OFF', 'OFF_DUTY'],
+  ] as const)('maps HOS %s to %s exactly like toWebDutyStatus', (hosStatus, expected) => {
+    const unit = toLiveFleetUnit(input({ hos: { currentStatus: hosStatus, driveRemainingSec: 0, shiftEndsAt: null } }));
+    expect(unit.driverDutyStatus).toBe(expected);
+    expect(toWebDutyStatus(hosStatus)).toBe(expected);
+  });
+
+  it('keeps the last known status when the ELD is silent (unit marker reads ELD_OFFLINE)', () => {
+    const unit = toLiveFleetUnit(input({ device: { serial: 'PT30_A86E', bleState: 'CONNECTED', lastSeenAt: minsAgo(120) } }));
+    expect(unit.dutyStatus).toBe('ELD_OFFLINE');
+    expect(unit.driverDutyStatus).toBe('DRIVING');
+  });
+
+  it('keeps the driver status on an out-of-service unit (unit marker reads INACTIVE)', () => {
+    const unit = toLiveFleetUnit(input({ vehicle: { id: 'veh_1', unitNumber: '101', status: 'OUT_OF_SERVICE', odometerMi: 1 }, hos: { currentStatus: 'ON', driveRemainingSec: 0, shiftEndsAt: null } }));
+    expect(unit.dutyStatus).toBe('INACTIVE');
+    expect(unit.driverDutyStatus).toBe('ON_DUTY');
+  });
+
+  it('is null with no driver, or when the HOS state is unavailable', () => {
+    expect(toLiveFleetUnit(input({ driver: null, hos: null })).driverDutyStatus).toBeNull();
+    expect(toLiveFleetUnit(input({ hos: null })).driverDutyStatus).toBeNull();
   });
 });

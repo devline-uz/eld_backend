@@ -5,7 +5,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Perm } from '../../common/decorators/perm.decorator';
 import { zodBody } from '../../common/pipes/zod-validation.pipe';
 import { CreateRoleDto, UpdateRoleDto } from './dto/roles.dto';
-import { RolesService } from './roles.service';
+import { RoleActor, RolesService } from './roles.service';
 import { apiError, ApiStandardErrors, ERROR_CODES } from '../../common/errors';
 import { FigmaScreen } from '../../common/decorators/figma-screen.decorator';
 
@@ -41,8 +41,8 @@ export class RolesController {
   @ApiOperation({ summary: 'Creates a custom role with a full 22-key permission matrix.' })
   @ApiCreatedResponse({ schema: { example: { id: 'rol_9', key: 'SAFETY_REVIEWER', name: 'Safety reviewer', isSystem: false, permissions: { logs: 'READ', safety: 'FULL' } } } })
   @ApiStandardErrors({ errors: [apiError.conflict(ERROR_CODES.CONFLICT, 'A role with this key already exists.')] })
-  create(@Body(zodBody(CreateRoleDto)) dto: CreateRoleDto) {
-    return this.roles.create(dto);
+  create(@Body(zodBody(CreateRoleDto)) dto: CreateRoleDto, @CurrentUser() actor: RoleActor) {
+    return this.roles.create(dto, actor);
   }
 
   @Patch(':id')
@@ -51,7 +51,7 @@ export class RolesController {
   @ApiOperation({ summary: 'Updates a custom role. ADMIN (isSystem) cannot be edited.' })
   @ApiOkResponse({ schema: { example: { id: 'rol_9', key: 'SAFETY_REVIEWER', name: 'Safety reviewer', isSystem: false, permissions: { logs: 'READ', safety: 'READ' } } } })
   @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.NOT_FOUND, 'Role not found.'), apiError.conflict(ERROR_CODES.ROLE_IMMUTABLE, 'System roles cannot be edited or deleted (Figma: "Admin cannot be edited").')] })
-  update(@Param('id') id: string, @Body(zodBody(UpdateRoleDto)) dto: UpdateRoleDto, @CurrentUser() actor: { role?: string }) {
+  update(@Param('id') id: string, @Body(zodBody(UpdateRoleDto)) dto: UpdateRoleDto, @CurrentUser() actor: RoleActor) {
     return this.roles.update(id, dto, actor);
   }
 

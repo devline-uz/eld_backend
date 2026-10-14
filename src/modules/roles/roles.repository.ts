@@ -35,6 +35,13 @@ export class RolesRepository extends BaseRepository<
     return new Map(rows.map((r) => [r.roleId, r._count._all]));
   }
 
+  /** CODE-002 — the role a back-office user holds *now* (null if missing or not ACTIVE), so
+   * permission ceilings never trust a stale token claim. */
+  async findRoleOfUser(userId: string): Promise<Role | null> {
+    const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { status: true, role: true } });
+    return user?.status === 'ACTIVE' ? user.role : null;
+  }
+
   countUsersWithRole(roleId: string): Promise<number> {
     return this.prisma.user.count({ where: { roleId } });
   }

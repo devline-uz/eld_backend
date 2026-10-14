@@ -1,6 +1,7 @@
 import { InjectQueue, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import type { Job, Queue } from 'bullmq';
+import { assertPublicDestination, BlockedDestinationError } from '../common/net/outbound-url';
 import { QUEUES } from '../core/queue/queue.constants';
 import { IntegrationsService } from '../modules/integrations/integrations.service';
 import { WebhookDeliveryRepository } from '../modules/webhooks/webhook-delivery.repository';
@@ -46,6 +47,23 @@ export class WebhookProcessor extends WorkerHost {
     let responseBody: string | undefined;
     let ok = false;
 
+    // CODE-018 — never reach a private / loopback / metadata address: checked on every attempt
+    // (after DNS resolution), and a refused destination fails at once — retrying cannot help.
+    try {
+      await assertPublicDestination(delivery.url);
+    } catch (err) {
+      const reason = err instanceof BlockedDestinationError ? err.message : 'Webhook URL refused.';
+      await this.deliveries.recordAttempt(delivery.id, {
+        status: 'FAILED',
+        attempts: nextAttempt,
+        signature,
+        responseBody: reason,
+        nextRetryAt: null,
+      });
+      this.logger.warn({ deliveryId: delivery.id, reason }, 'Webhook delivery refused — destination not allowed.');
+      return;
+    }
+
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -55,6 +73,8 @@ export class WebhookProcessor extends WorkerHost {
           headers: { 'Content-Type': 'application/json', 'X-OneBook-Signature': signature },
           body: rawBody,
           signal: controller.signal,
+          // CODE-018 — a redirect could bounce the request to a private address; a 3xx is a failure.
+          redirect: 'manual',
         });
         httpStatus = res.status;
         responseBody = (await res.text()).slice(0, RESPONSE_BODY_CAP);

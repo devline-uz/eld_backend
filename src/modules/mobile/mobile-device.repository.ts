@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { Device, Prisma } from '@prisma/client';
 import { PrismaService } from '../../core/prisma/prisma.service';
+import { equalsInsensitive } from '../../common/text/insensitive';
 
 /** MG-BLE-1/2 — the only device write a driver can cause: filling an EMPTY `bleMacAddress`. */
 @Injectable()
@@ -11,8 +12,13 @@ export class MobileDeviceRepository {
     return this.prisma.device.findUnique({ where: { id } });
   }
 
-  findBySerial(serial: string): Promise<Device | null> {
-    return this.prisma.device.findUnique({ where: { serial } });
+  /** CODE-009 — the registry stores serials trimmed + upper-cased; exact match first (hot path),
+   * then case-insensitive so an app reporting `pt30_a86e` still resolves its device. */
+  async findBySerial(serial: string): Promise<Device | null> {
+    return (
+      (await this.prisma.device.findUnique({ where: { serial } })) ??
+      (await this.prisma.device.findFirst({ where: { serial: equalsInsensitive(serial.trim()) } }))
+    );
   }
 
   findByVehicle(vehicleId: string): Promise<Device | null> {

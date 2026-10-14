@@ -129,6 +129,30 @@ describe('DevicesService', () => {
       } as never);
       expect(view.id).toBe('dev_1');
     });
+
+    // CODE-009 — case/whitespace variants of a registered serial are the same device.
+    it('normalises the serial (trim + upper) before the duplicate check and the write', async () => {
+      devicesRepo.findBySerial.mockResolvedValue(null);
+      devicesRepo.create.mockResolvedValue(makeDevice() as never);
+      await service.create(CreateDeviceDto.parse({ serial: '  pt30_1c4f ' }));
+      expect(devicesRepo.findBySerial).toHaveBeenCalledWith('PT30_1C4F');
+      expect(devicesRepo.create).toHaveBeenCalledWith(expect.objectContaining({ serial: 'PT30_1C4F' }));
+    });
+
+    it('rejects a lower-case duplicate of a registered serial with 409', async () => {
+      devicesRepo.findBySerial.mockResolvedValue(makeDevice({ serial: 'PT30_1C4F' }) as never);
+      await expect(service.create(CreateDeviceDto.parse({ serial: 'pt30_1c4f' }))).rejects.toMatchObject({ status: 409 });
+      expect(devicesRepo.create).not.toHaveBeenCalled();
+    });
+
+    it('import upserts a case variant onto the existing row instead of creating a duplicate', async () => {
+      devicesRepo.findBySerial.mockResolvedValueOnce(makeDevice({ serial: 'PT30_1C4F' }) as never);
+      devicesRepo.update.mockResolvedValue(makeDevice() as never);
+      const summary = await service.importMany(ImportDevicesDto.parse({ devices: [{ serial: 'pt30_1c4f ' }] }));
+      expect(devicesRepo.findBySerial).toHaveBeenCalledWith('PT30_1C4F');
+      expect(summary).toMatchObject({ imported: 0, updated: 1 });
+      expect(devicesRepo.create).not.toHaveBeenCalled();
+    });
   });
 
   describe('update / updateFirmware / updateBleStatus / unpair', () => {
