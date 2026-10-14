@@ -23,7 +23,7 @@ export class NotificationsController {
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
   @ApiQuery({ name: 'unreadOnly', required: false })
-  @ApiQuery({ name: 'category', required: false, enum: ['VIOLATIONS', 'MAINTENANCE'] })
+  @ApiQuery({ name: 'category', required: false, enum: ['VIOLATIONS', 'MAINTENANCE', 'CONNECTIVITY'] })
   @ApiOperation({
     summary: "Lists the caller's own in-app notifications, with segment counts.",
     description:

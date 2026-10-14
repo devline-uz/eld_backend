@@ -8,7 +8,7 @@
  *   ... --unidentified-report                                        # list CODE-007 assignments to reject + re-assign
  *
  * What it does: reads (never writes) `HosViolation` / `Driver` / `UnidentifiedSegment` /
- * `EldEvent`, and with `--apply` adds `hos.recalc` jobs `{ driverId, fromDate }` to the
+ * `EldEvent`, and with `--apply` adds `hos.recalc` jobs `{ driverId, fromDate, silent: true }` (silent = no alerts) to the
  * `hos-recalc` queue. The WORKER runs them through `HosRecalcService.recalculate` — the same
  * idempotent code path as every log change: violations are upserted on (driverId, logDate, type),
  * OPEN rows the records no longer support become AUTO_CLEARED with a `HOS_VIOLATION_AUTO_CLEARED`
@@ -102,7 +102,7 @@ async function main(): Promise<void> {
     });
     try {
       for (const job of jobs) {
-        await queue.add('hos.recalc', { driverId: job.driverId, fromDate: job.fromDate }, { removeOnComplete: { count: 1000 }, removeOnFail: { count: 1000 } });
+        await queue.add('hos.recalc', { driverId: job.driverId, fromDate: job.fromDate, silent: true }, { removeOnComplete: { count: 1000 }, removeOnFail: { count: 1000 } });
       }
       console.log(`Queued ${jobs.length} hos.recalc job(s); the worker processes them one at a time.`);
     } finally {

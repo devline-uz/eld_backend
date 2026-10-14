@@ -583,6 +583,60 @@ describe('§9.2 — certification', () => {
     });
   });
 
+  // User decision (certify option b): certifying stays allowed at any time; every later applied
+  // change to a certified day voids the signature and the day reads "re-certification required".
+  it('B-123 end to end: a pending proposal keeps the signature, an applied change voids it, re-certifying counts 2', async () => {
+    const { service, repo, writer } = build();
+    const status = async () =>
+      (await service.getCertificationStatus(DRIVER, 2, new Date('2026-06-02T15:00:00Z'))).find(
+        (row) => row.date === '2026-06-01',
+      );
+    repo.events = [evt({ id: 1n, at: '2026-06-01T12:00:00Z', code: 4 }), evt({ id: 2n, at: '2026-06-01T14:00:00Z', code: 1 })];
+
+    await service.certify({ dates: ['2026-06-01'] }, driver);
+    expect(await status()).toMatchObject({ certified: true, certificationCount: 1, recertificationRequired: false });
+
+    // A carrier proposal is only a suggestion (§395.30): the certification stands.
+    await service.createEditRequest(
+      DRIVER,
+      {
+        originalEventId: '1',
+        proposedStatus: 'SB',
+        proposedStart: new Date('2026-06-01T12:00:00Z'),
+        proposedEnd: new Date('2026-06-01T14:00:00Z'),
+        reason: 'Driver was in the sleeper',
+      },
+      carrier,
+    );
+    expect(await status()).toMatchObject({ certified: true, recertificationRequired: false });
+
+    // The driver accepts it: the record changed after the signature.
+    repo.events.push(
+      evt({ id: 5n, at: '2026-06-01T12:00:00Z', code: 2, recordStatus: 3, recordOrigin: 3, supersedesId: 1n }),
+    );
+    await service.acceptEditRequest('5', driver, {});
+    expect(await status()).toMatchObject({ certified: false, certificationCount: 1, recertificationRequired: true });
+
+    // Re-certification: event code 2, true count 2, flag cleared.
+    const again = await service.certify({ dates: ['2026-06-01'] }, driver);
+    expect(again.days[0]).toMatchObject({ eventCode: 2, certificationCount: 2 });
+    expect(await status()).toMatchObject({ certified: true, certificationCount: 2, recertificationRequired: false });
+
+    // A record the driver ADDS to the certified day voids it again.
+    await service.createLogEntry(
+      DRIVER,
+      {
+        status: 'ON',
+        startAt: new Date('2026-06-01T18:00:00Z'),
+        endAt: new Date('2026-06-01T18:30:00Z'),
+        annotation: 'Fuel stop',
+      },
+      driver,
+    );
+    expect(await status()).toMatchObject({ certified: false, certificationCount: 2, recertificationRequired: true });
+    expect(writer.rows.filter((row) => row.eventType === 4).map((row) => row.recordOrigin)).toEqual([2, 2]);
+  });
+
   it('raises alert.uncertified_logs at the 8-day threshold', async () => {
     const { service, repo, alertQueue } = build();
     repo.findUncertifiedDates = jest.fn(async () => [new Date('2026-05-20T00:00:00Z')]);

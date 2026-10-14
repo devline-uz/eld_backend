@@ -79,6 +79,12 @@ export class DriversRepository extends BaseRepository<
     super(prisma);
   }
 
+  /** The carrier (office) time zone — the zone alert text is written in for the web bell. */
+  async carrierTimezone(): Promise<string | null> {
+    const carrier = await this.prisma.carrier.findFirst({ select: { timezone: true } });
+    return carrier?.timezone ?? null;
+  }
+
   protected get model(): ModelDelegate<
     Driver,
     Prisma.DriverWhereInput,

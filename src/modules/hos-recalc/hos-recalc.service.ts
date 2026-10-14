@@ -1,4 +1,9 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Injectable, Logger, Optional } from '@nestjs/common';
+import type { HosViolation } from '@prisma/client';
+import type { Queue } from 'bullmq';
+import { DateTime } from 'luxon';
+import { QUEUES } from '../../core/queue/queue.constants';
 import { computeHos } from '../hos/engine/compute-hos';
 import { addDays, dayEnd, dayKey, dayStart } from '../hos/engine/timezone';
 import { mapEldEventsToNormalized, type EldEventRow } from '../hos/hos-event-mapper';
@@ -18,6 +23,8 @@ export interface HosRecalcJobData {
   fromDate?: string;
   from?: string;
   to?: string;
+  /** Backfill / repair runs (`scripts/hos-recalc-backfill.ts`): rewrite rows, raise no alerts. */
+  silent?: boolean;
 }
 
 export interface HosRecalcResult {
@@ -48,6 +55,31 @@ export const HOS_BATCH_CHUNK_SIZE = 25;
  */
 export const HOS_BATCH_MAX_EVENTS_PER_DRIVER = 2000;
 
+/** Alert job names (`alert.*` ⇒ `ruleEventsFor` maps them to the editor's `hos.violation` / `hos.break_due`). */
+export const HOS_VIOLATION_ALERT = 'alert.hos_violation';
+export const HOS_BREAK_DUE_ALERT = 'alert.break_due';
+/**
+ * A violation is alerted only when it is NEW (no row for its driver/day/type yet) and recent: one
+ * that crossed its limit more than a day ago is history being re-filed (late upload, edit, a
+ * reconnected ELD) and would only flood the bell. Recalculations at an instant away from the wall
+ * clock (the stale-status cap) never alert either.
+ */
+export const HOS_ALERT_MAX_AGE_MS = 24 * 3600 * 1000;
+const LIVE_RECALC_TOLERANCE_MS = 10 * 60 * 1000;
+/** Break-due countdown is raised from this many minutes out, one job per 5-minute step. */
+export const BREAK_DUE_HORIZON_MIN = 120;
+const BREAK_DUE_STEP_MIN = 5;
+/** Alert jobs are retained this long so a re-run with the same `jobId` stays a no-op. */
+const ALERT_JOB_RETAIN_SEC = 7 * 24 * 3600;
+
+const VIOLATION_LABEL: Record<string, string> = {
+  DRIVING_11: '11-hour driving',
+  SHIFT_14: '14-hour shift',
+  BREAK_30: '30-minute break',
+  CYCLE_70: '70-hour cycle',
+  CYCLE_60: '60-hour cycle',
+};
+
 function groupByDriver<T extends { driverId: string }>(rows: T[]): Map<string, T[]> {
   const grouped = new Map<string, T[]>();
   for (const row of rows) {
@@ -67,7 +99,11 @@ function utcDate(key: string): Date {
 export class HosRecalcService {
   private readonly logger = new Logger(HosRecalcService.name);
 
-  constructor(private readonly repo: HosRecalcRepository) {}
+  constructor(
+    private readonly repo: HosRecalcRepository,
+    /** Optional so read-only consumers (and unit tests) need no queue; the API and worker both register it. */
+    @Optional() @InjectQueue(QUEUES.ALERT) private readonly alertQueue?: Queue,
+  ) {}
 
   /**
    * §8.4 — recalculates FORWARD from `fromDate` to today and rewrites that range's violations.
@@ -104,13 +140,17 @@ export class HosRecalcService {
     }));
 
     const actions = reconcileViolations(inScope, existing, days);
+    // Alert candidates: every OPEN row this run upserted. The queue job id (`hos-violation-<id>`)
+    // is the dedupe, not "was it new in this run" — so a violation first filed by a non-live recalc
+    // (stale-status cap, silent backfill) still alerts on the first LIVE run while < 24 h old.
+    const alertable: HosViolation[] = [];
     let upserted = 0;
     let autoCleared = 0;
     let refreshed = 0;
 
     for (const action of actions) {
       if (action.kind === 'UPSERT') {
-        await this.repo.upsertViolation({
+        const row = await this.repo.upsertViolation({
           driverId: driver.id,
           logDate: utcDate(action.logDate),
           type: action.type,
@@ -118,6 +158,7 @@ export class HosRecalcService {
           exceededBySec: action.exceededBySec,
           detail: action.detail,
         });
+        if (row && row.status === 'OPEN') alertable.push(row);
         upserted += 1;
       } else if (action.kind === 'AUTO_CLEAR') {
         if (await this.repo.autoClear(action.id, { engineVersion: HOS_ENGINE_VERSION })) autoCleared += 1;
@@ -135,8 +176,80 @@ export class HosRecalcService {
       await this.repo.updateDailyLogViolationFlags(driver.id, utcDate(day), open);
     }
 
+    if (!data.silent && Math.abs(Date.now() - now.getTime()) <= LIVE_RECALC_TOLERANCE_MS) {
+      await this.raiseViolationAlerts(driver, alertable, now);
+      await this.raiseBreakDue(driver, state);
+    }
+
     this.logger.log({ driverId: driver.id, days: days.length, upserted, autoCleared, refreshed }, 'hos.recalc done');
     return { driverId: driver.id, hosEngineVersion: HOS_ENGINE_VERSION, days, upserted, autoCleared, refreshed, state };
+  }
+
+  /**
+   * The bell / email / webhook side of a violation (rules on `hos.violation`). One job per
+   * violation row (`jobId` = row id, retained {@link ALERT_JOB_RETAIN_SEC} — longer than the 24 h
+   * alert window), so a retried or repeated recalculation never re-alerts.
+   */
+  private async raiseViolationAlerts(driver: DriverHosRow, alertable: HosViolation[], now: Date): Promise<void> {
+    for (const violation of alertable) {
+      if (now.getTime() - violation.occurredAt.getTime() > HOS_ALERT_MAX_AGE_MS) continue;
+      const label = VIOLATION_LABEL[violation.type] ?? violation.type;
+      const at = DateTime.fromJSDate(violation.occurredAt, { zone: driver.homeTerminalTimezone }).toFormat('MMM d, HH:mm ZZZZ');
+      await this.enqueueAlert(
+        HOS_VIOLATION_ALERT,
+        {
+          driverId: driver.id,
+          violationId: violation.id,
+          type: violation.type,
+          logDate: dayKey('UTC', violation.logDate),
+          occurredAt: violation.occurredAt.toISOString(),
+          exceededBySec: violation.exceededBySec,
+          title: 'HOS violation',
+          message: `${driver.firstName} ${driver.lastName}: ${label} limit exceeded at ${at}.`,
+        },
+        `hos-violation-${violation.id}`,
+      );
+    }
+  }
+
+  /**
+   * `hos.break_due` — the 30-minute break countdown of a driver who is DRIVING. The open-driving
+   * sweep re-runs this every 5 minutes; each 5-minute step of one break is raised once, and the
+   * rule's "within N minutes" (`conditionParamsMatch`) picks the step that crosses N.
+   */
+  private async raiseBreakDue(driver: DriverHosRow, state: HosState): Promise<void> {
+    if (state.currentStatus !== 'D' || !state.nextBreakDueAt) return;
+    if (state.breakRemainingSec <= 0) return;
+    const minutesUntilBreak = Math.ceil(state.breakRemainingSec / 60);
+    if (minutesUntilBreak > BREAK_DUE_HORIZON_MIN) return;
+    const step = Math.ceil(minutesUntilBreak / BREAK_DUE_STEP_MIN);
+    const deadlineMs = stableBreakDeadlineMs(state.statusSince, state.nextBreakDueAt);
+    const at = DateTime.fromJSDate(state.nextBreakDueAt, { zone: driver.homeTerminalTimezone }).toFormat('HH:mm ZZZZ');
+    await this.enqueueAlert(
+      HOS_BREAK_DUE_ALERT,
+      {
+        driverId: driver.id,
+        minutesUntilBreak,
+        nextBreakDueAt: state.nextBreakDueAt.toISOString(),
+        title: '30-minute break due',
+        message: `${driver.firstName} ${driver.lastName} needs a 30-minute break in ${minutesUntilBreak} min (by ${at}).`,
+      },
+      `hos-break-due-${driver.id}-${deadlineMs}-${step}`,
+    );
+  }
+
+  /** Never fails the recalculation: the HOS rows are what matter; an alert lost to a Redis blip is logged. */
+  private async enqueueAlert(name: string, payload: Record<string, unknown>, jobId: string): Promise<void> {
+    if (!this.alertQueue) return;
+    try {
+      await this.alertQueue.add(name, payload, {
+        jobId,
+        removeOnComplete: { age: ALERT_JOB_RETAIN_SEC },
+        removeOnFail: { age: ALERT_JOB_RETAIN_SEC },
+      });
+    } catch (err) {
+      this.logger.error({ err, alert: name, driverId: payload.driverId }, 'Failed to enqueue HOS alert');
+    }
   }
 
   /**
@@ -329,4 +442,16 @@ export class HosRecalcService {
     }
     return days;
   }
+}
+
+/**
+ * The break deadline as a dedupe key. The engine reports `nextBreakDueAt = now + breakRemainingSec`
+ * with whole-second durations, so it carries `now`'s sub-second part and drifts by up to ±0.5 s on
+ * every recalculation. Measured from the stored start of the open DRIVING segment and rounded to the
+ * second it is exact: the same deadline for every recalc within that driving run. A pause (ON / OFF
+ * < 30 min) moves the real deadline, and with it the key.
+ */
+export function stableBreakDeadlineMs(statusSince: Date, nextBreakDueAt: Date): number {
+  const since = statusSince.getTime();
+  return since + Math.round((nextBreakDueAt.getTime() - since) / 1000) * 1000;
 }

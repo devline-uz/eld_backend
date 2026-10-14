@@ -15,7 +15,7 @@ function toRecipient(actor: ContextUser) {
 export class NotificationsService {
   constructor(private readonly repo: NotificationsRepository) {}
 
-  async list(actor: ContextUser, query: NotificationListQueryDto): Promise<OffsetPage<unknown> & { counts: { all: number; violations: number; maintenance: number }; unreadCount: number }> {
+  async list(actor: ContextUser, query: NotificationListQueryDto): Promise<OffsetPage<unknown> & { counts: { all: number; violations: number; maintenance: number; connectivity: number }; unreadCount: number }> {
     const recipient = toRecipient(actor);
     const [{ items, total }, counts, unreadCount] = await Promise.all([
       this.repo.list(recipient, query.page, query.limit, query.unreadOnly, query.category),

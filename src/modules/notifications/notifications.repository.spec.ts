@@ -1,4 +1,4 @@
-import { AlertRulesRepository } from './notifications.repository';
+import { AlertRulesRepository, NotificationsRepository } from './notifications.repository';
 
 function buildRepo(rows: Array<Record<string, unknown>>) {
   const prisma = {
@@ -42,5 +42,46 @@ describe('AlertRulesRepository.findByEvent (TZ §20 B-86 — mutedUntil)', () =>
     ]);
     const result = await repo.findByEvent('alert.harsh_event', {});
     expect(result.map((r) => r.id)).toEqual(['web_rule']);
+  });
+
+  it('LIVE-027: a break-due rule honours its "within N minutes" threshold', async () => {
+    const { repo } = buildRepo([
+      { id: 'within_30', enabled: true, conditions: [{ event: 'hos.break_due', params: { minutes: 30 } }] },
+      { id: 'within_60', enabled: true, conditions: [{ event: 'hos.break_due', params: { minutes: 60 } }] },
+    ]);
+    const result = await repo.findByEvent('alert.break_due', { minutesUntilBreak: 29 });
+    expect(result.map((r) => r.id)).toEqual(['within_30']);
+  });
+});
+
+describe('NotificationsRepository — ELD connectivity segment', () => {
+  function build(items: Array<Record<string, unknown>>) {
+    const prisma = {
+      notification: {
+        findMany: jest.fn(async (..._args: unknown[]) => items),
+        count: jest.fn(async (..._args: unknown[]) => 3),
+      },
+    };
+    return { repo: new NotificationsRepository(prisma as never), prisma };
+  }
+
+  it('a CONNECTIVITY filter also picks up old DEVICE rows filed under MAINTENANCE, and reads them as CONNECTIVITY', async () => {
+    const { repo, prisma } = build([{ id: 'n1', kind: 'DEVICE', category: 'MAINTENANCE' }]);
+    const { items } = await repo.list({ userId: 'u1' }, 1, 25, false, 'CONNECTIVITY');
+    const where = (prisma.notification.findMany.mock.calls[0][0] as { where: Record<string, unknown> }).where;
+    expect(where.OR).toEqual([{ category: 'CONNECTIVITY' }, { category: 'MAINTENANCE', kind: 'DEVICE' }]);
+    expect(items[0]).toMatchObject({ id: 'n1', category: 'CONNECTIVITY' });
+  });
+
+  it('the MAINTENANCE filter leaves device rows out', async () => {
+    const { repo, prisma } = build([]);
+    await repo.list({ userId: 'u1' }, 1, 25, false, 'MAINTENANCE');
+    const where = (prisma.notification.findMany.mock.calls[0][0] as { where: Record<string, unknown> }).where;
+    expect(where).toMatchObject({ category: 'MAINTENANCE', OR: [{ kind: null }, { kind: { not: 'DEVICE' } }] });
+  });
+
+  it('counts carry the connectivity segment', async () => {
+    const { repo } = build([]);
+    await expect(repo.counts({ userId: 'u1' })).resolves.toEqual({ all: 3, violations: 3, maintenance: 3, connectivity: 3 });
   });
 });

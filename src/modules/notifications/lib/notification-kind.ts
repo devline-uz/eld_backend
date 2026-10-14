@@ -19,14 +19,17 @@ export function deriveNotificationKind(eventName: string): NotificationKind {
   return NotificationKind.OTHER;
 }
 
+export type NotificationCategory = 'VIOLATIONS' | 'MAINTENANCE' | 'CONNECTIVITY';
+
 /**
- * TZ §20 B-57 — the two segments `web/features/notifications/NotificationsPanel.tsx` renders
- * (`All` / `Violations` / `Maintenance`). Compliance-risk kinds (a violation itself, a break
- * warning, an uncertified-log nag, an unidentified-driving alert) bucket to `VIOLATIONS`;
- * equipment-health kinds (maintenance due, device/ELD trouble) bucket to `MAINTENANCE`.
+ * TZ §20 B-57 — the segments `web/features/notifications/NotificationsPanel.tsx` renders
+ * (`All` / `Violations` / `Maintenance` / `ELD connectivity`). Compliance-risk kinds (a violation
+ * itself, a break warning, an uncertified-log nag, an unidentified-driving alert) bucket to
+ * `VIOLATIONS`; maintenance due to `MAINTENANCE`; device/ELD trouble ("ELD connection lost",
+ * disconnected, malfunction) to its own `CONNECTIVITY` segment — it is not maintenance.
  * Dispatch/messaging/edit-request/other kinds have no segment — they still count in `all`.
  */
-export function deriveNotificationCategory(kind: NotificationKind): 'VIOLATIONS' | 'MAINTENANCE' | undefined {
+export function deriveNotificationCategory(kind: NotificationKind): NotificationCategory | undefined {
   switch (kind) {
     case NotificationKind.VIOLATION:
     case NotificationKind.WARNING:
@@ -34,11 +37,21 @@ export function deriveNotificationCategory(kind: NotificationKind): 'VIOLATIONS'
     case NotificationKind.UNIDENTIFIED:
       return 'VIOLATIONS';
     case NotificationKind.MAINTENANCE:
-    case NotificationKind.DEVICE:
       return 'MAINTENANCE';
+    case NotificationKind.DEVICE:
+      return 'CONNECTIVITY';
     default:
       return undefined;
   }
+}
+
+/**
+ * Rows written before the CONNECTIVITY segment existed carry `category = 'MAINTENANCE'` with
+ * `kind = DEVICE` (migration 20261014221000 rewrites them; this keeps reads right until then).
+ */
+export function effectiveNotificationCategory(row: { category: string | null; kind: NotificationKind | null }): string | null {
+  if (row.kind === NotificationKind.DEVICE && row.category === 'MAINTENANCE') return 'CONNECTIVITY';
+  return row.category;
 }
 
 export interface ObjectRef {

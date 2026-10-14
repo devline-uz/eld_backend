@@ -4,9 +4,9 @@ import type { ContextUser } from '../../core/context/request-context';
 import { ReportsService } from './reports.service';
 
 describe('ReportsService (TZ §15)', () => {
-  const actor: ContextUser = { id: 'usr_1', type: 'user', permissions: { reports: 'FULL', reportsTransfer: 'READ' } };
+  const actor: ContextUser = { id: 'usr_1', type: 'user', permissions: { reports: 'FULL', reportsTransfer: 'READ', dvir: 'READ', safety: 'READ' } };
   /** CODE-016 — `reports` FULL but no `reportsTransfer`. */
-  const reportsOnly: ContextUser = { id: 'usr_2', type: 'user', permissions: { reports: 'FULL', reportsTransfer: 'NONE' } };
+  const reportsOnly: ContextUser = { id: 'usr_2', type: 'user', permissions: { reports: 'FULL', reportsTransfer: 'NONE', dvir: 'READ' } };
 
   function build() {
     const repo = {
@@ -228,12 +228,69 @@ describe('ReportsService (TZ §15)', () => {
     it('list() hides FMCSA packs from a caller without reportsTransfer', async () => {
       const { service, repo } = build();
       await service.list({ page: 1, limit: 25 }, reportsOnly);
-      expect(repo.list).toHaveBeenCalledWith({ type: { not: 'FMCSA_PACK' } }, 1, 25);
+      expect(repo.list).toHaveBeenCalledWith({ type: { notIn: ['FMCSA_PACK', 'SAFETY'] } }, 1, 25);
       repo.list.mockClear();
       await expect(service.list({ page: 1, limit: 25, type: 'FMCSA_PACK' } as never, reportsOnly)).resolves.toMatchObject({ total: 0 });
       expect(repo.list).not.toHaveBeenCalled();
       await service.list({ page: 1, limit: 25 }, actor);
       expect(repo.list).toHaveBeenCalledWith({}, 1, 25);
+    });
+  });
+
+  describe('CODE-085 — DVIR reports need dvir READ on every route', () => {
+    /** The default DISPATCHER: `reports` READ/FULL but `dvir` NONE. */
+    const noDvir: ContextUser = { id: 'usr_3', type: 'user', permissions: { reports: 'FULL', reportsTransfer: 'NONE', dvir: 'NONE' } };
+
+    it('generate() refuses DVIR without dvir READ, nothing queued; ACTIVITY still allowed', async () => {
+      const { service, queue } = build();
+      await expect(
+        service.generate({ type: 'DVIR', format: 'CSV', params: { from: '2026-09-01', to: '2026-09-08' } }, noDvir),
+      ).rejects.toMatchObject({ code: 'FORBIDDEN', status: 403 });
+      expect(queue.add).not.toHaveBeenCalled();
+      await expect(
+        service.generate({ type: 'ACTIVITY', format: 'CSV', params: { from: '2026-09-01', to: '2026-09-08' } }, noDvir),
+      ).resolves.toMatchObject({ id: 'rpt_1' });
+    });
+
+    it('get() of a DVIR report is refused without dvir; list() hides DVIR and FMCSA types', async () => {
+      const { service, repo } = build();
+      repo.findByIdWithRequestedBy.mockResolvedValue({ id: 'rpt_7', type: 'DVIR', status: 'READY', fileKey: 'r/d.csv', requestedBy: null });
+      await expect(service.get('rpt_7', noDvir)).rejects.toMatchObject({ status: 403 });
+      await expect(service.get('rpt_7', actor)).resolves.toMatchObject({ id: 'rpt_7' });
+      await service.list({ page: 1, limit: 25 }, noDvir);
+      expect(repo.list).toHaveBeenCalledWith({ type: { notIn: ['FMCSA_PACK', 'DVIR', 'SAFETY'] } }, 1, 25);
+    });
+
+    it('createSchedule() refuses a DVIR schedule without dvir READ', async () => {
+      const { service, schedules } = build();
+      await expect(
+        service.createSchedule(
+          { reportType: 'DVIR', format: 'CSV', params: { window: 'PREVIOUS_MONTH' }, cron: '0 6 1 * *', timezone: 'UTC', recipients: [], enabled: true } as never,
+          noDvir,
+        ),
+      ).rejects.toMatchObject({ status: 403 });
+      expect(schedules.create).not.toHaveBeenCalled();
+    });
+
+    it('SAFETY reports need safety READ (get refused, list hides them)', async () => {
+      const { service, repo } = build();
+      repo.findByIdWithRequestedBy.mockResolvedValue({ id: 'rpt_8', type: 'SAFETY', status: 'READY', fileKey: 'r/s.csv', requestedBy: null });
+      await expect(service.get('rpt_8', noDvir)).rejects.toMatchObject({ status: 403 });
+      await expect(service.get('rpt_8', actor)).resolves.toMatchObject({ id: 'rpt_8' });
+    });
+
+    it('updateSchedule() cannot retarget a schedule to DVIR, nor edit a DVIR one, without dvir READ', async () => {
+      const { service, schedules } = build();
+      const activity = {
+        id: 'sch_1', reportType: 'ACTIVITY', format: 'CSV', params: { window: 'PREVIOUS_WEEK' }, cron: '0 6 * * 1', timezone: 'UTC', enabled: true,
+      };
+      schedules.findById.mockResolvedValueOnce(activity as never);
+      await expect(service.updateSchedule('sch_1', { reportType: 'DVIR' }, noDvir)).rejects.toMatchObject({ status: 403 });
+      schedules.findById.mockResolvedValueOnce({ ...activity, reportType: 'DVIR' } as never);
+      await expect(service.updateSchedule('sch_1', { enabled: false }, noDvir)).rejects.toMatchObject({ status: 403 });
+      expect(schedules.update).not.toHaveBeenCalled();
+      schedules.findById.mockResolvedValueOnce(activity as never);
+      await expect(service.updateSchedule('sch_1', { enabled: false }, noDvir)).resolves.toMatchObject({ id: 'sch_1' });
     });
   });
 
@@ -266,7 +323,7 @@ describe('ReportsService (TZ §15)', () => {
       schedules.findById.mockResolvedValueOnce({
         id: 'sch_1', reportType: 'FMCSA_PACK', format: 'PDF', params: { window: 'PREVIOUS_MONTH' }, cron: '0 6 1 * *', timezone: 'UTC', enabled: true,
       } as never);
-      await expect(service.updateSchedule('sch_1', { format: 'XLSX' })).rejects.toMatchObject({ code: ERROR_CODES.VALIDATION_FAILED });
+      await expect(service.updateSchedule('sch_1', { format: 'XLSX' }, actor)).rejects.toMatchObject({ code: ERROR_CODES.VALIDATION_FAILED });
       expect(schedules.update).not.toHaveBeenCalled();
     });
 
@@ -275,7 +332,7 @@ describe('ReportsService (TZ §15)', () => {
       schedules.findById.mockResolvedValueOnce({
         id: 'sch_1', reportType: 'ACTIVITY', format: 'CSV', params: { window: 'PREVIOUS_WEEK' }, cron: '0 6 * * 1', timezone: 'UTC', enabled: true,
       } as never);
-      await expect(service.updateSchedule('sch_1', { params: { from: '2000-01-01', to: '2026-01-01' } })).rejects.toMatchObject({
+      await expect(service.updateSchedule('sch_1', { params: { from: '2000-01-01', to: '2026-01-01' } }, actor)).rejects.toMatchObject({
         code: ERROR_CODES.VALIDATION_FAILED,
       });
     });
@@ -303,7 +360,7 @@ describe('ReportsService (TZ §15)', () => {
     it('updateSchedule() resuming a paused schedule recomputes a future nextRunAt', async () => {
       const { service, schedules } = build();
       schedules.findById.mockResolvedValueOnce(row as never);
-      await service.updateSchedule('sch_1', { enabled: true });
+      await service.updateSchedule('sch_1', { enabled: true }, actor);
       const [, data] = schedules.update.mock.calls[0] as unknown as [unknown, { enabled: boolean; nextRunAt: Date }];
       expect(data.enabled).toBe(true);
       expect(data.nextRunAt.getTime()).toBeGreaterThan(Date.now());
@@ -312,7 +369,7 @@ describe('ReportsService (TZ §15)', () => {
     it('updateSchedule() pausing keeps nextRunAt untouched', async () => {
       const { service, schedules } = build();
       schedules.findById.mockResolvedValueOnce({ ...row, enabled: true } as never);
-      await service.updateSchedule('sch_1', { enabled: false });
+      await service.updateSchedule('sch_1', { enabled: false }, actor);
       const [, data] = schedules.update.mock.calls[0] as unknown as [unknown, Record<string, unknown>];
       expect(data).toEqual({ enabled: false });
     });

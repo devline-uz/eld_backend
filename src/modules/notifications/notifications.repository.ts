@@ -1,8 +1,23 @@
 import { Injectable } from '@nestjs/common';
-import type { AlertRule, Notification, Prisma } from '@prisma/client';
+import { NotificationKind, type AlertRule, type Notification, type Prisma } from '@prisma/client';
 import { BaseRepository, ModelDelegate } from '../../core/prisma/base.repository';
 import { PrismaService } from '../../core/prisma/prisma.service';
-import { ruleEventsFor } from './lib/alert-events';
+import { conditionParamsMatch, ruleEventsFor, type RuleCondition } from './lib/alert-events';
+import { effectiveNotificationCategory } from './lib/notification-kind';
+
+/**
+ * A segment filter. Device/ELD rows stored before the CONNECTIVITY segment existed still say
+ * `MAINTENANCE` (kind DEVICE): they count under CONNECTIVITY and never under Maintenance.
+ */
+function categoryWhere(category: string): Prisma.NotificationWhereInput {
+  if (category === 'CONNECTIVITY') {
+    return { OR: [{ category: 'CONNECTIVITY' }, { category: 'MAINTENANCE', kind: NotificationKind.DEVICE }] };
+  }
+  if (category === 'MAINTENANCE') {
+    return { category: 'MAINTENANCE', OR: [{ kind: null }, { kind: { not: NotificationKind.DEVICE } }] };
+  }
+  return { category };
+}
 
 @Injectable()
 export class AlertRulesRepository extends BaseRepository<
@@ -54,8 +69,9 @@ export class AlertRulesRepository extends BaseRepository<
       where: { enabled: true, mutedUntil: null },
     });
     return rows.filter((r) => {
-      const conditions = r.conditions as Array<{ event: string }>;
-      return Array.isArray(conditions) && conditions.some((c) => events.has(c.event));
+      const conditions = r.conditions as unknown as RuleCondition[];
+      // LIVE-027 — `params.minutes` (break due within / offline for / unassigned longer than) is honoured.
+      return Array.isArray(conditions) && conditions.some((c) => events.has(c.event) && conditionParamsMatch(c, payload, now));
     });
   }
 }
@@ -129,23 +145,29 @@ export class NotificationsRepository {
     const where: Prisma.NotificationWhereInput = {
       ...(recipient.userId ? { userId: recipient.userId } : { driverId: recipient.driverId }),
       ...(unreadOnly && { readAt: null }),
-      ...(category && { category }),
+      ...(category && categoryWhere(category)),
     };
     return Promise.all([
       this.prisma.notification.findMany({ where, orderBy: { createdAt: 'desc' }, skip: (page - 1) * limit, take: limit }),
       this.prisma.notification.count({ where }),
-    ]).then(([items, total]) => ({ items, total }));
+    ]).then(([items, total]) => ({
+      items: items.map((item) => ({ ...item, category: effectiveNotificationCategory(item) })),
+      total,
+    }));
   }
 
   /** §20 B-57 — sidebar counts; `all` ignores `category`/`unreadOnly` entirely. */
-  async counts(recipient: { userId?: string; driverId?: string }): Promise<{ all: number; violations: number; maintenance: number }> {
+  async counts(
+    recipient: { userId?: string; driverId?: string },
+  ): Promise<{ all: number; violations: number; maintenance: number; connectivity: number }> {
     const base: Prisma.NotificationWhereInput = recipient.userId ? { userId: recipient.userId } : { driverId: recipient.driverId };
-    const [all, violations, maintenance] = await Promise.all([
+    const [all, violations, maintenance, connectivity] = await Promise.all([
       this.prisma.notification.count({ where: base }),
-      this.prisma.notification.count({ where: { ...base, category: 'VIOLATIONS' } }),
-      this.prisma.notification.count({ where: { ...base, category: 'MAINTENANCE' } }),
+      this.prisma.notification.count({ where: { ...base, ...categoryWhere('VIOLATIONS') } }),
+      this.prisma.notification.count({ where: { ...base, ...categoryWhere('MAINTENANCE') } }),
+      this.prisma.notification.count({ where: { ...base, ...categoryWhere('CONNECTIVITY') } }),
     ]);
-    return { all, violations, maintenance };
+    return { all, violations, maintenance, connectivity };
   }
 
   /** MR-19 — unread rows for the recipient (all categories, ignores `category`/`unreadOnly`). */

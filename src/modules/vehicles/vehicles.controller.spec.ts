@@ -41,6 +41,7 @@ describe('VehiclesController — delegates to VehiclesService', () => {
     list: jest.fn().mockResolvedValue({ items: [], page: 1, limit: 25, total: 0, totalPages: 0 }),
     exportAll: jest.fn().mockResolvedValue([]),
     get: jest.fn().mockResolvedValue({ id: 'veh_1' }),
+    getView: jest.fn().mockResolvedValue({ id: 'veh_1', eldSerial: null }),
     create: jest.fn().mockResolvedValue({ id: 'veh_1' }),
     importMany: jest.fn().mockResolvedValue({ imported: 0, updated: 0, failed: [] }),
     update: jest.fn().mockResolvedValue({ id: 'veh_1' }),
@@ -68,7 +69,7 @@ describe('VehiclesController — delegates to VehiclesService', () => {
 
   it('get', async () => {
     await controller.get('veh_1');
-    expect(service.get).toHaveBeenCalledWith('veh_1');
+    expect(service.getView).toHaveBeenCalledWith('veh_1');
   });
 
   it('create', async () => {
@@ -112,8 +113,9 @@ describe('VehiclesController — delegates to VehiclesService', () => {
   });
 
   it('activities wraps the array in { items }', async () => {
-    const result = await controller.activities('veh_1');
-    expect(service.activities).toHaveBeenCalledWith('veh_1');
+    const actor = { id: 'usr_1', type: 'user', permissions: { vehicles: 'READ', dvir: 'READ' } } as never;
+    const result = await controller.activities('veh_1', actor);
+    expect(service.activities).toHaveBeenCalledWith('veh_1', actor);
     expect(result).toEqual({ items: [] });
   });
 

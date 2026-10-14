@@ -2,6 +2,7 @@ import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestj
 import { ApiBearerAuth, ApiCreatedResponse, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { Audit } from '../../common/decorators/audit.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import type { ContextUser } from '../../core/context/request-context';
 import { Perm, PermAny } from '../../common/decorators/perm.decorator';
 import { zodBody } from '../../common/pipes/zod-validation.pipe';
 import {
@@ -79,7 +80,7 @@ export class VehiclesController {
   @ApiOkResponse({ schema: { example: { id: 'veh_1', unitNumber: '101', vin: '1FUJGLDR8LLLL1234', make: 'Freightliner', model: 'Cascadia', year: 2021, status: 'ACTIVE', odometerMiles: 993107, odometerOffsetMiles: 12, assignedDriverId: 'drv_1' } } })
   @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.VEHICLE_NOT_FOUND, 'Vehicle not found.')] })
   get(@Param('id') id: string) {
-    return this.vehicles.get(id);
+    return this.vehicles.getView(id);
   }
 
   @Get(':id/activities')
@@ -87,8 +88,8 @@ export class VehiclesController {
   @ApiOperation({ summary: 'B-5 — "Unit activity" feed (audit trail + DVIR submissions for this unit).' })
   @ApiOkResponse({ schema: { example: { items: [{ id: 'dvir_1', occurredAt: '2026-09-24T13:00:00.000Z', activity: 'DVIR_PRE_TRIP', driverName: 'John Smith', source: 'DVIR', details: 'SATISFACTORY' }] } } })
   @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.VEHICLE_NOT_FOUND, 'Vehicle not found.')] })
-  async activities(@Param('id') id: string) {
-    return { items: await this.vehicles.activities(id) };
+  async activities(@Param('id') id: string, @CurrentUser() actor: ContextUser) {
+    return { items: await this.vehicles.activities(id, actor) };
   }
 
   @Get(':id/histories')

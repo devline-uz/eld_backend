@@ -81,6 +81,8 @@ function makeService(overrides: Record<string, unknown> = {}): {
     })),
     findLoggedCodesInWindow: jest.fn(async () => new Set<string>()),
     findActiveCodes: jest.fn(async () => new Set<string>()),
+    findCertifiedHeaders: jest.fn(async () => []),
+    voidCertifications: jest.fn(async (_tx: unknown, ids: string[]) => ids.length),
     ...(overrides as Record<string, jest.Mock>),
   };
 
@@ -434,6 +436,71 @@ describe('IngestService — TZ §7', () => {
     await service.ingestEvents(batch([withChecksum()]), DRIVER_ID);
     expect(recalcJobs[0].name).toBe('hos.recalc');
     expect(published).toContain('realtime.push');
+  });
+
+  describe('B-123 (certify option b) — a fresh duty record on a certified day voids the signature', () => {
+    // 10:00 EDT on Jun 1 2026 = 14:00Z; the header is the New York RODS day 2026-06-01.
+    // Signed at 12:00 EDT (16:00Z); records after that change what was certified.
+    const header = {
+      id: 'log-0601',
+      driverId: DRIVER_ID,
+      logDate: new Date('2026-06-01T00:00:00Z'),
+      timezone: 'America/New_York',
+      certifiedAt: new Date('2026-06-01T16:00:00Z'),
+    };
+
+    it('voids the certified day the record lands on and tells the app (log.changed)', async () => {
+      const { service, repo, events } = makeService({ findCertifiedHeaders: jest.fn(async () => [header]) });
+      await service.ingestEvents(
+        batch([baseEvent({ uuid: 'evt-late-1', eventDateTime: '2026-06-01T18:00:00.000Z' })]),
+        DRIVER_ID,
+      );
+      expect(repo.voidCertifications).toHaveBeenCalledWith(expect.anything(), ['log-0601']);
+      expect(events.publish).toHaveBeenCalledWith('log.changed', { driverId: DRIVER_ID, dates: ['2026-06-01'] });
+    });
+
+    it('a record dated before the signature that only arrives now (offline queue) does not void it', async () => {
+      const { service, repo } = makeService({ findCertifiedHeaders: jest.fn(async () => [header]) });
+      await service.ingestEvents(
+        batch([baseEvent({ uuid: 'evt-queued-1', eventDateTime: '2026-06-01T14:00:00.000Z' })]),
+        DRIVER_ID,
+      );
+      expect(repo.voidCertifications).not.toHaveBeenCalled();
+    });
+
+    it('a record outside the certified day (in its zone) leaves the signature alone', async () => {
+      const { service, repo } = makeService({ findCertifiedHeaders: jest.fn(async () => [header]) });
+      // 02:00Z on Jun 2 is still 22:00 on Jun 1 in New York → voids; 05:00Z on Jun 2 is 01:00 Jun 2 → does not.
+      await service.ingestEvents(
+        batch([baseEvent({ uuid: 'evt-late-2', eventDateTime: '2026-06-02T05:00:00.000Z' })]),
+        DRIVER_ID,
+      );
+      expect(repo.voidCertifications).not.toHaveBeenCalled();
+    });
+
+    it('login/logout and engine power records never void a signature', async () => {
+      const { service, repo } = makeService({ findCertifiedHeaders: jest.fn(async () => [header]) });
+      await service.ingestEvents(
+        batch([
+          baseEvent({ uuid: 'evt-logout', eventType: 5, eventCode: 2, eventDateTime: '2026-06-01T20:00:00.000Z' }),
+          baseEvent({ uuid: 'evt-power', eventType: 6, eventCode: 3, eventDateTime: '2026-06-01T20:05:00.000Z' }),
+        ]),
+        DRIVER_ID,
+      );
+      expect(repo.voidCertifications).not.toHaveBeenCalled();
+    });
+
+    it('a re-sent (duplicate) record voids nothing', async () => {
+      const { service, repo } = makeService({
+        findExistingUuids: jest.fn(async () => new Set(['evt-dup-0001'])),
+        findCertifiedHeaders: jest.fn(async () => [header]),
+      });
+      await service.ingestEvents(
+        batch([baseEvent({ uuid: 'evt-dup-0001', eventDateTime: '2026-06-01T18:00:00.000Z' })]),
+        DRIVER_ID,
+      );
+      expect(repo.voidCertifications).not.toHaveBeenCalled();
+    });
   });
 
   it('§7.3 rule 6 — the whole batch goes through one transaction', async () => {

@@ -12,7 +12,8 @@ import { EventBusService } from '../../core/events/event-bus.service';
 import { publishBootstrapChanged, publishNotificationNew, publishVehicleAssigned, publishVehicleUnassigned } from './vehicle-assignment-events';
 import { AuditRepository } from '../audit/audit.repository';
 import { RodsLoginRecorder } from '../logs/rods-login-recorder';
-import { RequestContext } from '../../core/context/request-context';
+import { RequestContext, type ContextUser } from '../../core/context/request-context';
+import { PERMISSION_LEVEL_RANK } from '../../common/decorators/permission.types';
 import { NotificationsRepository } from '../notifications/notifications.repository';
 import { TRANSACTIONAL_MAIL, TransactionalMailPort } from '../../core/mail/mail.port';
 import { UsersRepository } from '../users/users.repository';
@@ -41,7 +42,7 @@ import {
   VehicleListQueryDto,
   VehicleTelemetryQueryDto,
 } from './dto/vehicles.dto';
-import { EldSerialTakenError, VehiclesRepository, type VehicleStatusCounts } from './vehicles.repository';
+import { EldSerialTakenError, VehiclesRepository, type VehicleStatusCounts, type VehicleWithSerial } from './vehicles.repository';
 
 const SORTABLE_FIELDS = ['unitNumber', 'vin', 'make', 'model', 'status', 'createdAt'] as const;
 
@@ -144,13 +145,20 @@ export class VehiclesService {
   ) {}
 
   /** UI-004 — the page plus `statusCounts`: fleet-wide ACTIVE / INACTIVE / OUT_OF_SERVICE (filters ignored). */
-  async list(query: VehicleListQueryDto): Promise<OffsetPage<Vehicle> & { statusCounts: VehicleStatusCounts }> {
+  async list(query: VehicleListQueryDto): Promise<OffsetPage<VehicleWithSerial> & { statusCounts: VehicleStatusCounts }> {
     const orderBy = parseSort(query.sort, SORTABLE_FIELDS, { unitNumber: 'asc' });
     const [{ items, total }, statusCounts] = await Promise.all([
       this.vehicles.list({ status: query.status, q: query.q, groupId: query.groupId }, query.page, query.limit, orderBy),
       this.vehicles.countByStatus(),
     ]);
     return { ...toOffsetPage(items, total, query.page, query.limit), statusCounts };
+  }
+
+  /** `GET /vehicles/:id` — the unit plus its paired ELD serial (CODE-085, see `VehicleWithSerial`). */
+  async getView(id: string): Promise<VehicleWithSerial> {
+    const vehicle = await this.get(id);
+    const device = await this.vehicles.findDeviceByVehicleId(vehicle.id);
+    return { ...vehicle, eldSerial: device?.serial ?? null };
   }
 
   async get(id: string): Promise<Vehicle> {
@@ -595,11 +603,18 @@ export class VehiclesService {
   // §20 B-5 — "Unit activity" feed.
   // -------------------------------------------------------------------
 
-  async activities(vehicleId: string): Promise<VehicleActivityItem[]> {
+  /**
+   * CODE-085 — DVIR submissions are merged in only for a caller with `dvir` READ: the route needs
+   * just `vehicles` READ, and a role with `dvir` NONE (the default DISPATCHER) must not read DVIRs
+   * through the unit feed. An absent matrix (no actor) is no access.
+   */
+  async activities(vehicleId: string, actor?: ContextUser): Promise<VehicleActivityItem[]> {
     await this.get(vehicleId);
+    const dvirLevel = actor?.permissions?.dvir ?? 'NONE';
+    const mayReadDvir = PERMISSION_LEVEL_RANK[dvirLevel] >= PERMISSION_LEVEL_RANK.READ;
     const [auditRows, dvirRows] = await Promise.all([
       this.vehicles.findAuditRows(vehicleId),
-      this.vehicles.findDvirRows(vehicleId),
+      mayReadDvir ? this.vehicles.findDvirRows(vehicleId) : Promise.resolve([]),
     ]);
     const driverActorIds = [...new Set(auditRows.filter((r) => r.actorType === 'DRIVER').map((r) => r.actorId))];
     const driverNames = new Map<string, string>();

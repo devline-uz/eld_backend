@@ -35,11 +35,14 @@ export const DEFAULT_ROLE_MATRIX: Record<'SUPER_ADMIN' | 'ADMIN' | 'FLEET_MANAGE
     devices: 'FULL', alertRules: 'FULL', users: 'NONE', roles: 'NONE', integrations: 'NONE',
     auditLog: 'NONE', support: 'FULL', carrierSettings: 'NONE', dataTransfer: 'FULL',
   },
+  // CODE-085 — `dvir`, `maintenance`, `safety` and `devices` are NONE (were READ): the web never
+  // gave DISPATCHER these screens, and the API now agrees instead of a UI-only block. The paired
+  // ELD serial still reaches the Vehicles list through `vehicles` READ (`eldSerial`).
   DISPATCHER: {
     dashboard: 'FULL', liveFleet: 'FULL', vehicles: 'READ', drivers: 'READ', hos: 'READ',
-    hosEdit: 'NONE', hosCertifyOnBehalf: 'NONE', dvir: 'READ', maintenance: 'READ',
-    safety: 'READ', trips: 'FULL', reports: 'READ', reportsTransfer: 'NONE', messaging: 'FULL',
-    devices: 'READ', alertRules: 'NONE', users: 'NONE', roles: 'NONE', integrations: 'NONE',
+    hosEdit: 'NONE', hosCertifyOnBehalf: 'NONE', dvir: 'NONE', maintenance: 'NONE',
+    safety: 'NONE', trips: 'FULL', reports: 'READ', reportsTransfer: 'NONE', messaging: 'FULL',
+    devices: 'NONE', alertRules: 'NONE', users: 'NONE', roles: 'NONE', integrations: 'NONE',
     auditLog: 'NONE', support: 'FULL', carrierSettings: 'NONE', dataTransfer: 'NONE',
   },
   VIEWER: {

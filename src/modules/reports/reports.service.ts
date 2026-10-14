@@ -1,9 +1,9 @@
 import { InjectQueue } from '@nestjs/bullmq';
 import { Inject, Injectable } from '@nestjs/common';
-import type { Report, ReportSchedule } from '@prisma/client';
+import type { Report, ReportSchedule, ReportType } from '@prisma/client';
 import { Queue } from 'bullmq';
 import cronParser from 'cron-parser';
-import { PERMISSION_LEVEL_RANK } from '../../common/decorators/permission.types';
+import { PERMISSION_LEVEL_RANK, type PermissionKey } from '../../common/decorators/permission.types';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
 import type { ContextUser } from '../../core/context/request-context';
@@ -72,8 +72,9 @@ export class ReportsService {
 
   /** TZ §15 — "a report is NEVER generated inside a request": enqueue and return 202. */
   async generate(dto: GenerateReportDto, actor: ContextUser): Promise<Report> {
-    // CODE-016 — the FMCSA pack is a §6.4 `reportsTransfer` artefact whichever route queues it.
-    if (dto.type === 'FMCSA_PACK') assertMayAccessFmcsaPack(actor);
+    // CODE-016 / CODE-085 — FMCSA packs need `reportsTransfer`, DVIR reports need `dvir`,
+    // whichever route queues them.
+    assertMayAccessReportType(actor, dto.type);
     this.assertFormatAllowed(dto.type, dto.format);
     // `params` reaches the worker verbatim, so it is validated against the schema of its own
     // report type HERE and not only on the synchronous preview routes — otherwise a queued
@@ -90,13 +91,13 @@ export class ReportsService {
   }
 
   async list(query: ReportListQueryDto, actor?: ContextUser) {
-    // CODE-016 — without reportsTransfer READ the FMCSA packs are not listed at all.
-    const hideFmcsa = actor !== undefined && !mayAccessFmcsaPack(actor);
-    if (hideFmcsa && query.type === 'FMCSA_PACK') {
+    // CODE-016 / CODE-085 — report types the caller may not open are not listed at all.
+    const hidden = actor ? hiddenReportTypes(actor) : [];
+    if (query.type && hidden.includes(query.type)) {
       return { items: [], page: query.page, limit: query.limit, total: 0, totalPages: 0 };
     }
     const where = {
-      ...(query.type ? { type: query.type } : hideFmcsa ? { type: { not: 'FMCSA_PACK' as const } } : {}),
+      ...(query.type ? { type: query.type } : hidden.length ? { type: { notIn: hidden } } : {}),
       ...(query.status ? { status: query.status } : {}),
     };
     const { items, total } = await this.repo.list(where, query.page, query.limit);
@@ -113,7 +114,7 @@ export class ReportsService {
   async get(id: string, actor?: ContextUser) {
     const report = await this.repo.findByIdWithRequestedBy(id);
     if (!report) throw AppException.notFound('Report not found.', undefined);
-    if (report.type === 'FMCSA_PACK' && actor) assertMayAccessFmcsaPack(actor);
+    if (actor) assertMayAccessReportType(actor, report.type);
     return withRequestedBy(report);
   }
 
@@ -148,6 +149,7 @@ export class ReportsService {
   // ---------------------------------------------------------------------------------------
 
   async createSchedule(dto: CreateReportScheduleDto, actor: ContextUser): Promise<ReportSchedule> {
+    assertMayAccessReportType(actor, dto.reportType);
     this.assertFormatAllowed(dto.reportType, dto.format);
     const nextRunAt = this.computeNextRun(dto.cron, dto.timezone);
     // CODE-015 — the scheduler hands these params to the worker on every run, so they get the
@@ -170,9 +172,13 @@ export class ReportsService {
     return this.schedules.listAll();
   }
 
-  async updateSchedule(id: string, dto: UpdateReportScheduleDto): Promise<ReportSchedule> {
+  async updateSchedule(id: string, dto: UpdateReportScheduleDto, actor: ContextUser): Promise<ReportSchedule> {
     const existing = await this.schedules.findById({ id });
     if (!existing) throw AppException.notFound('Report schedule not found.');
+    // CODE-085 — the same type gate as createSchedule, on the type the schedule will have after the
+    // patch: a `reports` FULL role without `dvir` / `reportsTransfer` / `safety` must not retarget a
+    // schedule to DVIR / FMCSA_PACK / SAFETY, nor edit one already of that type.
+    assertMayAccessReportType(actor, dto.reportType ?? existing.reportType);
     const cron = dto.cron ?? existing.cron;
     const timezone = dto.timezone ?? existing.timezone;
     // CODE-015 — validate the schedule as it will be AFTER this patch (a format-only or type-only
@@ -231,15 +237,34 @@ export class ReportsService {
   }
 }
 
-/** CODE-016 — FMCSA audit packs need `reportsTransfer` READ (as `GET /reports/fmcsa-pack`), not
- * just `reports`. Drivers never reach these routes; an absent matrix is no access. */
-export function mayAccessFmcsaPack(actor: ContextUser): boolean {
-  const level = actor.permissions?.reportsTransfer ?? 'NONE';
+/** CODE-016 / CODE-085 — report types that need a second permission on top of `reports`:
+ * FMCSA audit packs need `reportsTransfer` READ (as `GET /reports/fmcsa-pack`), DVIR reports
+ * need `dvir` READ (as the DVIR screen and `/dvir/compliance`), SAFETY reports need `safety`
+ * READ (as the Safety screen). Drivers never reach these routes; an absent matrix is no access. */
+const REPORT_TYPE_EXTRA_PERMISSION: Partial<Record<ReportType, PermissionKey>> = {
+  FMCSA_PACK: 'reportsTransfer',
+  DVIR: 'dvir',
+  SAFETY: 'safety',
+};
+
+export function mayAccessReportType(actor: ContextUser, type: ReportType): boolean {
+  const key = REPORT_TYPE_EXTRA_PERMISSION[type];
+  if (!key) return true;
+  const level = actor.permissions?.[key] ?? 'NONE';
   return PERMISSION_LEVEL_RANK[level] >= PERMISSION_LEVEL_RANK.READ;
 }
 
-function assertMayAccessFmcsaPack(actor: ContextUser): void {
-  if (!mayAccessFmcsaPack(actor)) throw AppException.forbidden('reportsTransfer = READ is required for the FMCSA audit pack.');
+export function mayAccessFmcsaPack(actor: ContextUser): boolean {
+  return mayAccessReportType(actor, 'FMCSA_PACK');
+}
+
+function hiddenReportTypes(actor: ContextUser): ReportType[] {
+  return (Object.keys(REPORT_TYPE_EXTRA_PERMISSION) as ReportType[]).filter((t) => !mayAccessReportType(actor, t));
+}
+
+function assertMayAccessReportType(actor: ContextUser, type: ReportType): void {
+  if (mayAccessReportType(actor, type)) return;
+  throw AppException.forbidden(`${REPORT_TYPE_EXTRA_PERMISSION[type]} = READ is required for ${type} reports.`);
 }
 
 const REPORT_PARAM_SCHEMAS = {

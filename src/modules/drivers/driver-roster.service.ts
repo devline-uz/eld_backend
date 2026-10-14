@@ -5,6 +5,7 @@ import type { Queue } from 'bullmq';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
 import { parseSort } from '../../common/dto/list-query.dto';
+import { DateTime } from 'luxon';
 import { isValidIanaTimezone } from '../../common/dto/timezone.dto';
 import { QUEUES } from '../../core/queue/queue.constants';
 import { resolveLimits } from '../hos/engine/limits';
@@ -275,6 +276,7 @@ export class DriverRosterService {
     this.staleAlerted.add(jobId);
     const status = toWebDutyStatus(state.currentStatus);
     try {
+      const since = await this.formatForOffice(state.statusSince, driver.homeTerminalTimezone);
       await this.alertQueue.add(
         HOS_STATUS_STALE_ALERT,
         {
@@ -284,7 +286,7 @@ export class DriverRosterService {
           statusSince: state.statusSince.toISOString(),
           staleSince: capAt.toISOString(),
           title: 'ELD connection lost',
-          message: `ELD connection lost: ${driver.firstName} ${driver.lastName} has been ${status} since ${state.statusSince.toISOString()} with no status change.`,
+          message: `ELD connection lost: ${driver.firstName} ${driver.lastName} has been ${status} since ${since} with no status change.`,
         },
         { jobId, removeOnComplete: { age: STALE_ALERT_RETAIN_SEC }, removeOnFail: { age: STALE_ALERT_RETAIN_SEC } },
       );
@@ -293,6 +295,25 @@ export class DriverRosterService {
       this.staleAlerted.delete(jobId);
       this.logger.error({ err, driverId: driver.id }, `Failed to enqueue ${HOS_STATUS_STALE_ALERT}`);
     }
+  }
+
+  /**
+   * LIVE-027 — the stale-alert sentence lands in the web bell, email and FCM as plain text: it is
+   * written in the carrier's time zone with its abbreviation ("Oct 8, 02:28 MDT"), never raw ISO.
+   * Falls back to the driver's home terminal, then UTC, when the carrier zone is unreadable.
+   */
+  private async formatForOffice(at: Date, driverZone: string | null | undefined): Promise<string> {
+    let zone: string | null | undefined;
+    try {
+      zone = await this.drivers.carrierTimezone?.();
+    } catch {
+      zone = null;
+    }
+    for (const candidate of [zone, driverZone, 'UTC']) {
+      if (!candidate || !isValidIanaTimezone(candidate)) continue;
+      return DateTime.fromJSDate(at, { zone: candidate }).toFormat('MMM d, HH:mm ZZZZ');
+    }
+    return at.toISOString();
   }
 
   /** BE-003 — drivers whose stored home-terminal zone is not a valid IANA zone are left out of the
