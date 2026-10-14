@@ -167,6 +167,19 @@ describe('ActiveViolationsService (BUG-003)', () => {
     await expect(service.refresh(NOW)).resolves.toEqual([]);
   });
 
+  it('CODE-030 — a cached stale cut-off is dropped once the driver is no longer open-driving', async () => {
+    const since = new Date('2026-10-10T10:00:00Z');
+    const { service, hosRepo } = setup({ rows: [openDriving({ since })], state: state({ statusSince: since, violations: [] }) });
+    const stale = await service.activeFilter('drv-1', NOW);
+    const later = { status: 'OPEN', occurredAt: new Date('2026-10-12T04:00:00Z') };
+    expect(stale(later)).toBe(false);
+
+    // A new record ended the stale DRIVING: the driver drops out of the open-driving scan (TTL passed).
+    hosRepo.findOpenDrivingDrivers.mockResolvedValue([]);
+    const fresh = await service.activeFilter('drv-1', new Date(NOW.getTime() + 61_000));
+    expect(fresh(later)).toBe(true);
+  });
+
   it('only checks the drivers asked for', async () => {
     const { service, hos } = setup({ rows: [openDriving({ driverId: 'drv-2' })] });
     await service.openCountsByDriver(['drv-1'], NOW);

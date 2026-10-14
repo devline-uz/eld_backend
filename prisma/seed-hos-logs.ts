@@ -245,7 +245,7 @@ const PLANS: Array<{ label: string; odometerStart: number; engineHoursStart: num
 /** How long the still-open record of today's shift has been running (slots A..D). */
 const OPEN_FOR_MIN = [80, 45, 130, 35];
 
-interface PlannedEvent {
+export interface PlannedEvent {
   at: DateTime;
   duty: Duty;
   place: Place;
@@ -366,6 +366,68 @@ async function allocateSequenceIds(tx: Prisma.TransactionClient, driverId: strin
   return ids;
 }
 
+/**
+ * Writes one driver's planned duty timeline as §395 duty-status records (`EldEvent`, append-only)
+ * plus the `DailyLog` header of every day that carries a shift. Shared with `prisma/seed.ts`
+ * (John Smith's tz.md §22.3.6 log), so every seeded log is backed by real records.
+ */
+export async function writeDutyTimeline(
+  prisma: PrismaClient,
+  driver: HosMockDriver,
+  timeline: PlannedEvent[],
+  now: DateTime,
+): Promise<void> {
+  await prisma.$transaction(
+    async (tx) => {
+      const months = new Set(timeline.map((e) => e.at.toUTC().startOf('month').toISODate()!));
+      for (const month of months) {
+        await tx.$executeRawUnsafe(`SELECT ensure_event_partition($1::date)`, month);
+      }
+      const sequenceIds = await allocateSequenceIds(tx, driver.id, timeline.length);
+      const rows: Prisma.EldEventCreateManyInput[] = timeline.map((ev, idx) => {
+        const at = ev.at.toJSDate();
+        const position = coarsenLocation({ lat: ev.place.lat, lon: ev.place.lon }, 'ONE_MILE');
+        const base = {
+          uuid: randomUUID(),
+          eventType: EVENT_TYPE_DUTY_STATUS,
+          eventCode: CODE_BY_DUTY[ev.duty],
+          eventDateTime: at,
+          timezoneOffset: Math.round(offsetMs(driver.timezone, at) / 60_000),
+          recordStatus: 1,
+          recordOrigin: ORIGIN_BY_DUTY[ev.duty],
+          latitude: Number(position.lat.toFixed(6)),
+          longitude: Number(position.lon.toFixed(6)),
+          rawDeviceOdometerKm: Math.round(ev.miles * 1.609344),
+          totalEngineHours: ev.engineHours,
+        };
+        return {
+          ...base,
+          driverId: driver.id,
+          vehicleId: driver.vehicleId,
+          eventSequenceId: sequenceIds[idx],
+          locationPrecisionMi: 1,
+          locationName: ev.place.name,
+          locationSource: 1,
+          totalVehicleMiles: ev.miles,
+          checksum: computeChecksum(base),
+        };
+      });
+      await tx.eldEvent.createMany({ data: rows, skipDuplicates: true });
+
+      for (const [day, t] of dayTotals(timeline, driver.timezone, now)) {
+        const logDate = new Date(`${day}T00:00:00.000Z`);
+        const totals = { offDutySec: t.OFF, sleeperSec: t.SB, drivingSec: t.D, onDutySec: t.ON, totalDistanceMi: t.miles };
+        await tx.dailyLog.upsert({
+          where: { driverId_logDate: { driverId: driver.id, logDate } },
+          create: { driverId: driver.id, logDate, timezone: driver.timezone, ...totals },
+          update: { ...totals, recalculatedAt: new Date() },
+        });
+      }
+    },
+    { timeout: 30_000, maxWait: 10_000 },
+  );
+}
+
 /** Seeds the 10 mock HOS logs. `drivers` = slots A..E (exactly 5). Returns a short summary. */
 export async function seedHosLogs(prisma: PrismaClient, drivers: HosMockDriver[], nowJs: Date = new Date()): Promise<string[]> {
   if (drivers.length !== PLANS.length) {
@@ -388,55 +450,7 @@ export async function seedHosLogs(prisma: PrismaClient, drivers: HosMockDriver[]
       continue;
     }
 
-    await prisma.$transaction(
-      async (tx) => {
-        const months = new Set(timeline.map((e) => e.at.toUTC().startOf('month').toISODate()!));
-        for (const month of months) {
-          await tx.$executeRawUnsafe(`SELECT ensure_event_partition($1::date)`, month);
-        }
-        const sequenceIds = await allocateSequenceIds(tx, driver.id, timeline.length);
-        const rows: Prisma.EldEventCreateManyInput[] = timeline.map((ev, idx) => {
-          const at = ev.at.toJSDate();
-          const position = coarsenLocation({ lat: ev.place.lat, lon: ev.place.lon }, 'ONE_MILE');
-          const base = {
-            uuid: randomUUID(),
-            eventType: EVENT_TYPE_DUTY_STATUS,
-            eventCode: CODE_BY_DUTY[ev.duty],
-            eventDateTime: at,
-            timezoneOffset: Math.round(offsetMs(driver.timezone, at) / 60_000),
-            recordStatus: 1,
-            recordOrigin: ORIGIN_BY_DUTY[ev.duty],
-            latitude: Number(position.lat.toFixed(6)),
-            longitude: Number(position.lon.toFixed(6)),
-            rawDeviceOdometerKm: Math.round(ev.miles * 1.609344),
-            totalEngineHours: ev.engineHours,
-          };
-          return {
-            ...base,
-            driverId: driver.id,
-            vehicleId: driver.vehicleId,
-            eventSequenceId: sequenceIds[idx],
-            locationPrecisionMi: 1,
-            locationName: ev.place.name,
-            locationSource: 1,
-            totalVehicleMiles: ev.miles,
-            checksum: computeChecksum(base),
-          };
-        });
-        await tx.eldEvent.createMany({ data: rows, skipDuplicates: true });
-
-        for (const [day, t] of dayTotals(timeline, driver.timezone, now)) {
-          const logDate = new Date(`${day}T00:00:00.000Z`);
-          const totals = { offDutySec: t.OFF, sleeperSec: t.SB, drivingSec: t.D, onDutySec: t.ON, totalDistanceMi: t.miles };
-          await tx.dailyLog.upsert({
-            where: { driverId_logDate: { driverId: driver.id, logDate } },
-            create: { driverId: driver.id, logDate, timezone: driver.timezone, ...totals },
-            update: { ...totals, recalculatedAt: new Date() },
-          });
-        }
-      },
-      { timeout: 30_000, maxWait: 10_000 },
-    );
+    await writeDutyTimeline(prisma, driver, timeline, now);
 
     const last = timeline[timeline.length - 1];
     summary.push(`${plan.label}: ${timeline.length} records for driver ${driver.id}; now ${last.duty} since ${last.at.setZone(driver.timezone).toFormat('yyyy-MM-dd HH:mm ZZZZ')}`);

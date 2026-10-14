@@ -10,11 +10,14 @@ import { RequestContext } from '../../core/context/request-context';
 import { EventBusService } from '../../core/events/event-bus.service';
 import { QUEUES } from '../../core/queue/queue.constants';
 import { AuditRepository } from '../audit/audit.repository';
-import { dayKey } from '../hos/engine/timezone';
+import { addDays, dayKey, dayStart } from '../hos/engine/timezone';
 import { RECORD_ORIGIN, RECORD_STATUS } from '../ingest/event-codes';
+import { RODS_HEADER_LOOKBACK_DAYS } from '../logs/daily-log-header';
 import type { AppendRow } from '../logs/edit-plan';
 import { LogsService } from '../logs/logs.service';
+import { DUTY_CODE_BY_STATUS, type RodsEvent } from '../logs/rods';
 import { RodsEventWriter } from '../logs/rods-event-writer';
+import { planAssignmentAgainstDriverLog, type AssignmentConflict } from './assignment-plan';
 import {
   AnnotateUnidentifiedDto,
   AssignUnidentifiedDto,
@@ -115,6 +118,8 @@ export class UnidentifiedService {
     }
 
     if (dto.requireDriverConfirmation) {
+      // CODE-007 — refuse up front what the driver could never confirm (re-checked on confirm).
+      await this.planAgainstDriverLog(segment, driver);
       return this.requestConfirmation(segment, driver, dto.annotation ?? null, actor);
     }
     return this.attribute(segment, pool, driver, dto.annotation ?? null, actor, {
@@ -246,14 +251,16 @@ export class UnidentifiedService {
       annotation,
     }));
 
-    // 3) The driver must not be left driving forever: close the segment with an off-duty
-    //    record unless they already have a later record of their own.
-    const later = await this.repo.findDriverEventsAfter(driver.id, segment.endAt);
-    if (!later.length) {
+    // 3) CODE-007 — the segment must end where it ends: at `endAt` the driver goes back to the
+    //    status their own log had in force there (OFF without any record). Before, the segment's
+    //    last status ran on until the driver's next own record (phantom on-duty / driving time).
+    //    A segment that overlaps the driver's own records is refused before anything is written.
+    const restoreStatus = await this.planAgainstDriverLog(segment, driver);
+    if (restoreStatus) {
       copies.push({
         kind: 'RESTORE',
         eventType: 1,
-        eventCode: 1,
+        eventCode: DUTY_CODE_BY_STATUS[restoreStatus],
         at: segment.endAt,
         recordStatus: RECORD_STATUS.ACTIVE,
         recordOrigin: RECORD_ORIGIN.OTHER_USER,
@@ -547,6 +554,30 @@ export class UnidentifiedService {
 
   // ---------------------------------------------------------------- helpers
 
+  /**
+   * CODE-007 — reads the driver's own timeline around the segment (same lookback as the RODS
+   * header) and returns the status the RESTORE record re-states at `endAt` (null: none needed).
+   * Throws 409 `UNIDENTIFIED_OVERLAPS_DRIVER_LOG` when the segment overlaps the driver's own log.
+   */
+  private async planAgainstDriverLog(
+    segment: UnidentifiedSegment,
+    driver: { id: string; homeTerminalTimezone: string },
+  ) {
+    const timezone = driver.homeTerminalTimezone;
+    const from = dayStart(timezone, addDays(dayKey(timezone, segment.startAt), -RODS_HEADER_LOOKBACK_DAYS));
+    const own = (await this.repo.findDriverEvents(driver.id, from, segment.endAt)) as unknown as RodsEvent[];
+    const plan = planAssignmentAgainstDriverLog(own, segment);
+    if (plan.conflict) {
+      throw new AppException(ERROR_CODES.UNIDENTIFIED_OVERLAPS_DRIVER_LOG, overlapMessage(plan.conflict), 409, {
+        segmentId: segment.id,
+        driverId: driver.id,
+        reason: plan.conflict.reason,
+        conflictingAt: plan.conflict.conflictingAt.map((at) => at.toISOString()),
+      });
+    }
+    return plan.restoreStatus;
+  }
+
   private async raiseAlert(name: string, payload: Record<string, unknown>): Promise<void> {
     try {
       await this.alertQueue.add(name, payload);
@@ -670,6 +701,18 @@ export function confirmationCardOf(
     startOdometerMi: withMiles.length ? withMiles[0].totalVehicleMiles : null,
     endOdometerMi: withMiles.length ? withMiles[withMiles.length - 1].totalVehicleMiles : null,
   };
+}
+
+/** CODE-007 — the refusal sentence the panel shows as is (a dispatcher must be able to act on it). */
+function overlapMessage(conflict: AssignmentConflict): string {
+  switch (conflict.reason) {
+    case 'DRIVING_AT_START':
+      return "This driver was already driving when this unidentified driving started. Correct the driver's log first or assign it to another driver.";
+    case 'SPECIAL_AT_START':
+      return "This driver was on personal conveyance or yard move when this unidentified driving started. Correct the driver's log first or assign it to another driver.";
+    default:
+      return "This driver's own log already has duty-status records during this unidentified driving. Correct the driver's log first or assign it to another driver.";
+  }
 }
 
 /** Which original id a superseding record ultimately belongs to. */

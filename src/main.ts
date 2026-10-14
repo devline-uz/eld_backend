@@ -6,6 +6,7 @@ import helmet from 'helmet';
 import { Logger } from 'nestjs-pino';
 import { AppModule } from './app.module';
 import { AppConfigService } from './core/config/config.service';
+import { configureTrustProxy } from './core/config/trust-proxy';
 import { applyZodSwagger, attachZodComponents } from './common/swagger/zod-swagger';
 import { type AccessTokenVerifier, driverOnlyLargeJson } from './common/middleware/driver-large-json.middleware';
 import { panelUserLargeJson } from './common/middleware/panel-user-large-json.middleware';
@@ -19,6 +20,8 @@ import { TokenService } from './modules/auth/token.service';
 export function configureApp(app: INestApplication): AppConfigService {
   const config = app.get(AppConfigService);
 
+  // CODE-004 — real client IP behind the reverse proxy (rate-limit buckets, audit log, sessions).
+  configureTrustProxy(app, config.get('TRUST_PROXY'));
   app.use(helmet({ crossOriginResourcePolicy: { policy: 'same-site' } }));
   // TZ §7.3 rule 2 — an ingest batch may be up to 1 MB (500 §395 events). Express's default
   // JSON limit is 100 KB, which rejected legitimate batches with a body-parser error before

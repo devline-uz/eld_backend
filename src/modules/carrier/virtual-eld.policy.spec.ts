@@ -10,6 +10,11 @@ import {
 } from './virtual-eld.policy';
 
 const BASE_ENV = { DATABASE_URL: 'postgresql://u:p@localhost:5432/db', REDIS_URL: 'redis://localhost:6379' };
+// CODE-001 — production refuses the public dev secrets, so production cases supply test-only ones.
+const PROD_SECRETS = {
+  JWT_SECRET: 'q7Vt2LmX9pR4sK8wZ1cN6bH3yJ5fD0gA-uE+oI/TrWv',
+  INTEGRATION_ENCRYPTION_KEY: Buffer.from(Array.from({ length: 32 }, (_, i) => (i * 73 + 11) % 256)).toString('base64'),
+};
 
 function policy(opts: { allowed: boolean; carrier: unknown }) {
   const carriers = { get: jest.fn(async () => opts.carrier) };
@@ -18,7 +23,8 @@ function policy(opts: { allowed: boolean; carrier: unknown }) {
 }
 
 describe('VIRTUAL_ELD_ALLOWED (§9.2)', () => {
-  const allowed = (env: Record<string, string>) => new AppConfigService(parseEnv({ ...BASE_ENV, ...env })).virtualEldAllowed;
+  const allowed = (env: Record<string, string>) =>
+    new AppConfigService(parseEnv({ ...BASE_ENV, ...PROD_SECRETS, ...env })).virtualEldAllowed;
 
   it('defaults to true outside production and false in production', () => {
     expect(allowed({ NODE_ENV: 'development' })).toBe(true);

@@ -106,11 +106,14 @@ export class UnidentifiedRepository extends BaseRepository<
     });
   }
 
-  findDriverEventsAfter(driverId: string, at: Date): Promise<EldEvent[]> {
+  /**
+   * CODE-007 — the driver's own records in `[from, to]`, EVERY record status: the
+   * "Inactive — Changed" markers are needed to retire superseded records (`activeRecords`, D-019).
+   */
+  findDriverEvents(driverId: string, from: Date, to: Date): Promise<EldEvent[]> {
     return this.prisma.eldEvent.findMany({
-      where: { driverId, recordStatus: 1, eventType: 1, eventDateTime: { gt: at } },
-      orderBy: { eventDateTime: 'asc' },
-      take: 1,
+      where: { driverId, eventDateTime: { gte: from, lte: to } },
+      orderBy: [{ eventDateTime: 'asc' }, { eventSequenceId: 'asc' }],
     });
   }
 

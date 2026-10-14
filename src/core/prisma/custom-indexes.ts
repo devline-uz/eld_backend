@@ -76,6 +76,12 @@ export const CUSTOM_INDEXES: readonly CustomIndex[] = [
     migration: '20261014120000_user_email_lowercase',
     why: 'web-user email unique ignoring case (expression index on lower(email))',
   },
+  {
+    name: 'Device_serial_upper_key',
+    table: 'Device',
+    migration: '20261014140000_device_serial_upper_unique',
+    why: 'ELD device serial unique ignoring case and surrounding spaces (CODE-009, expression index)',
+  },
 ];
 
 export const CUSTOM_INDEX_NAMES: ReadonlySet<string> = new Set(CUSTOM_INDEXES.map((i) => i.name));

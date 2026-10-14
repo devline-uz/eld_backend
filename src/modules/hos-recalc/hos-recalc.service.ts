@@ -1,11 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { computeHos } from '../hos/engine/compute-hos';
 import { addDays, dayEnd, dayKey, dayStart } from '../hos/engine/timezone';
-import { mapEldEventsToNormalized } from '../hos/hos-event-mapper';
+import { mapEldEventsToNormalized, type EldEventRow } from '../hos/hos-event-mapper';
 import { reconcileViolations, type ExistingViolation } from '../hos/hos-violation-plan';
 import { HOS_ENGINE_VERSION } from '../hos/hos.constants';
 import type { HosState, PreviousDay } from '../hos/hos.types';
 import { buildDailyLogHeaders, RODS_HEADER_LOOKBACK_DAYS } from '../logs/daily-log-header';
+import { activeRecords, type SupersedeAware } from '../logs/rods';
 import { HosRecalcRepository } from './hos-recalc.repository';
 
 /** The `Driver` columns the engine input is built from — everything else is irrelevant here. */
@@ -119,8 +120,7 @@ export class HosRecalcService {
         });
         upserted += 1;
       } else if (action.kind === 'AUTO_CLEAR') {
-        await this.repo.autoClear(action.id);
-        autoCleared += 1;
+        if (await this.repo.autoClear(action.id, { engineVersion: HOS_ENGINE_VERSION })) autoCleared += 1;
       } else {
         await this.repo.refreshResolved(action.id, action.exceededBySec);
         refreshed += 1;
@@ -263,13 +263,18 @@ export class HosRecalcService {
     }
   }
 
-  /** The single place the engine input is assembled — shared by every read and write path. */
+  /**
+   * The single place the engine input is assembled — shared by every read and write path.
+   * CODE-006 — `events` holds the "Inactive — Changed" markers too: the engine sees exactly the
+   * timeline the RODS log shows (`activeRecords`, D-019), so a record retired by an accepted edit
+   * whose new start is EARLIER (no neutralising row, B-048) no longer counts twice.
+   */
   private runEngine(
     driver: DriverHosRow,
     timezone: string,
     firstKey: string,
     now: Date,
-    events: Parameters<typeof mapEldEventsToNormalized>[0],
+    events: Array<EldEventRow & SupersedeAware>,
     dailyLogs: Array<{ logDate: Date; onDutySec: number; drivingSec: number }>,
   ): HosState {
     const previousDays: PreviousDay[] = dailyLogs
@@ -277,7 +282,7 @@ export class HosRecalcService {
       .filter((day) => day.date < firstKey);
 
     return computeHos({
-      events: mapEldEventsToNormalized(events),
+      events: mapEldEventsToNormalized(activeRecords(events)),
       driver: {
         driverId: driver.id,
         allowPersonalConveyance: driver.allowPersonalConveyance,

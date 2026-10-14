@@ -116,6 +116,9 @@ export const ERROR_CODES = {
   UNCERTIFIED_LOGS: 'UNCERTIFIED_LOGS',
   UNRESOLVED_UNIDENTIFIED: 'UNRESOLVED_UNIDENTIFIED',
   UNIDENTIFIED_ALREADY_ASSIGNED: 'UNIDENTIFIED_ALREADY_ASSIGNED',
+  /** CODE-007 — the driver's own log already covers part of the segment (own records inside it,
+   * or driving / PC / YM in force when it starts). 409; fix the driver's log first. */
+  UNIDENTIFIED_OVERLAPS_DRIVER_LOG: 'UNIDENTIFIED_OVERLAPS_DRIVER_LOG',
   HOS_ENGINE_VERSION_MISMATCH: 'HOS_ENGINE_VERSION_MISMATCH',
   /** MR-23 — PC/YM (`specialCondition`) requested by a driver whose exceptions do not allow it
    * (`Driver.allowPersonalConveyance` / `allowYardMove`, §395.1(e)). 422. */

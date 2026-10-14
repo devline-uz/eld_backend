@@ -91,6 +91,73 @@ describe('DefectsService (TZ §5.10 out-of-service rule)', () => {
     expect(vehicles.update).not.toHaveBeenCalled();
   });
 
+  it('QA CODE-008 — deferring a CRITICAL defect keeps the unit OUT_OF_SERVICE (no restore, no count)', async () => {
+    const defect = makeDefect();
+    repo.findById.mockResolvedValue(defect as never);
+    repo.update.mockResolvedValue({ ...defect, status: 'DEFERRED', resolutionType: 'DEFERRED' } as never);
+    repo.count.mockResolvedValue(0);
+    vehicles.findById.mockResolvedValue({ id: 'veh_1', status: 'OUT_OF_SERVICE' } as never);
+
+    await service.resolve('def_1', { resolutionType: 'DEFERRED', resolutionNote: 'Parts on order' }, 'user_1');
+
+    expect(repo.update).toHaveBeenCalledWith({ id: 'def_1' }, expect.objectContaining({ status: 'DEFERRED', resolutionType: 'DEFERRED' }));
+    expect(vehicles.update).not.toHaveBeenCalled();
+    expect(events.publish).not.toHaveBeenCalledWith('vehicle.restored_from_out_of_service', expect.anything());
+    expect(events.publish).toHaveBeenCalledWith('defect.resolved', { defectId: 'def_1', vehicleId: 'veh_1', resolutionType: 'DEFERRED' });
+  });
+
+  it('QA CODE-008 — repairing a previously DEFERRED CRITICAL defect restores the unit once nothing else holds it', async () => {
+    const defect = makeDefect({ status: 'DEFERRED' });
+    repo.findById.mockResolvedValue(defect as never);
+    repo.update.mockResolvedValue({ ...defect, status: 'REPAIRED' } as never);
+    repo.count.mockResolvedValue(0);
+    vehicles.findById.mockResolvedValue({ id: 'veh_1', status: 'OUT_OF_SERVICE' } as never);
+
+    await service.resolve('def_1', { resolutionType: 'REPAIRED' }, 'user_1');
+
+    expect(vehicles.update).toHaveBeenCalledWith({ id: 'veh_1' }, { status: 'ACTIVE' });
+  });
+
+  it('QA CODE-008 — repairing an IN_PROGRESS CRITICAL defect also restores the unit', async () => {
+    const defect = makeDefect({ status: 'IN_PROGRESS' });
+    repo.findById.mockResolvedValue(defect as never);
+    repo.update.mockResolvedValue({ ...defect, status: 'REPAIRED' } as never);
+    repo.count.mockResolvedValue(0);
+    vehicles.findById.mockResolvedValue({ id: 'veh_1', status: 'OUT_OF_SERVICE' } as never);
+
+    await service.resolve('def_1', { resolutionType: 'NOT_REQUIRED' }, 'user_1');
+
+    expect(vehicles.update).toHaveBeenCalledWith({ id: 'veh_1' }, { status: 'ACTIVE' });
+  });
+
+  it('QA CODE-008 — a remaining DEFERRED critical defect counts as a hold (open / in-progress / deferred are all counted)', async () => {
+    const defect = makeDefect();
+    repo.findById.mockResolvedValue(defect as never);
+    repo.update.mockResolvedValue({ ...defect, status: 'REPAIRED' } as never);
+    repo.count.mockResolvedValue(1); // another critical defect, deferred
+    vehicles.findById.mockResolvedValue({ id: 'veh_1', status: 'OUT_OF_SERVICE' } as never);
+
+    await service.resolve('def_1', { resolutionType: 'REPAIRED' }, 'user_1');
+
+    expect(repo.count).toHaveBeenCalledWith({
+      vehicleId: 'veh_1',
+      status: { in: ['OPEN', 'IN_PROGRESS', 'DEFERRED'] },
+      OR: [{ severity: 'CRITICAL' }, { outOfService: true }],
+    });
+    expect(vehicles.update).not.toHaveBeenCalled();
+  });
+
+  it('does not re-run the restore when an already REPAIRED critical defect is edited again', async () => {
+    const defect = makeDefect({ status: 'REPAIRED' });
+    repo.findById.mockResolvedValue(defect as never);
+    repo.update.mockResolvedValue(defect as never);
+
+    await service.resolve('def_1', { resolutionType: 'REPAIRED' }, 'user_1');
+
+    expect(repo.count).not.toHaveBeenCalled();
+    expect(vehicles.update).not.toHaveBeenCalled();
+  });
+
   it('does not touch the vehicle when resolving a MINOR defect', async () => {
     const defect = makeDefect({ severity: 'MINOR', outOfService: false });
     repo.findById.mockResolvedValue(defect as never);

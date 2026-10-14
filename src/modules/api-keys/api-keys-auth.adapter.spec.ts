@@ -1,8 +1,9 @@
-import type { ApiKey } from '@prisma/client';
+import { DEFAULT_ROLE_MATRIX } from '../roles/permission-matrix';
+import type { ApiKeyWithCreator } from './api-keys.repository';
 import { ApiKeysAuthAdapter } from './api-keys-auth.adapter';
 import { ApiKeysService } from './api-keys.service';
 
-function makeKey(overrides: Partial<ApiKey> = {}): ApiKey {
+function makeKey(overrides: Partial<ApiKeyWithCreator> = {}): ApiKeyWithCreator {
   return {
     id: 'key_1',
     name: 'CI runner',
@@ -14,6 +15,7 @@ function makeKey(overrides: Partial<ApiKey> = {}): ApiKey {
     lastUsedAt: null,
     revokedAt: null,
     expiresAt: null,
+    createdBy: { status: 'ACTIVE', role: { key: 'ADMIN', permissions: DEFAULT_ROLE_MATRIX.ADMIN } },
     ...overrides,
   };
 }
@@ -47,5 +49,32 @@ describe('ApiKeysAuthAdapter (TZ §6.5, §11.7 — API key "used" half)', () => 
     const user = await adapter.verify('obk_plaintext');
 
     expect(user.permissions?.reports).toBe('READ');
+  });
+
+  it('caps the scope matrix at the creator\u2019s current role (CODE-003: pre-existing over-scoped keys)', async () => {
+    const creatorRole = { key: 'INTEGRATOR', permissions: { ...DEFAULT_ROLE_MATRIX.VIEWER, integrations: 'FULL' } };
+    const apiKeys = {
+      verify: jest.fn().mockResolvedValue(
+        makeKey({ scopes: ['users:full', 'reports:full', 'integrations:full'], createdBy: { status: 'ACTIVE', role: creatorRole } }),
+      ),
+    };
+    const adapter = new ApiKeysAuthAdapter(apiKeys as unknown as ApiKeysService);
+
+    const user = await adapter.verify('obk_plaintext');
+
+    expect(user.permissions?.users).toBe('NONE');
+    expect(user.permissions?.reports).toBe('READ');
+    expect(user.permissions?.integrations).toBe('FULL');
+  });
+
+  it('does not cap a SUPER_ADMIN creator\u2019s key', async () => {
+    const apiKeys = {
+      verify: jest.fn().mockResolvedValue(
+        makeKey({ scopes: ['dataTransfer:full'], createdBy: { status: 'ACTIVE', role: { key: 'SUPER_ADMIN', permissions: {} } } }),
+      ),
+    };
+    const adapter = new ApiKeysAuthAdapter(apiKeys as unknown as ApiKeysService);
+
+    expect((await adapter.verify('obk_plaintext')).permissions?.dataTransfer).toBe('FULL');
   });
 });

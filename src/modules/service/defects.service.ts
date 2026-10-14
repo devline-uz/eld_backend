@@ -4,6 +4,7 @@ import { OffsetPage, parseSort, toOffsetPage } from '../../common/dto/list-query
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
 import { EventBusService } from '../../core/events/event-bus.service';
+import { holdsVehicleOutOfService, outOfServiceHoldingDefectsWhere } from '../vehicles/lib/out-of-service-defects';
 import { VehiclesRepository } from '../vehicles/vehicles.repository';
 import { DefectsRepository } from './defects.repository';
 import { AssignDefectDto, DefectListQueryDto, LinkDefectWorkOrderDto, ResolveDefectDto } from './dto/service.dto';
@@ -14,7 +15,9 @@ const SORTABLE_FIELDS = ['createdAt', 'severity', 'status'] as const;
  * TZ §5.10 out-of-service rule: `severity = CRITICAL` + `status = OPEN` flips
  * `Vehicle.status = OUT_OF_SERVICE` (already enforced on submission by `MobileDvirService`,
  * Phase 6). This service owns the OTHER half — resolving the last open CRITICAL defect on a
- * vehicle restores it automatically. The restore never happens for a vehicle that isn't
+ * vehicle restores it automatically. "Resolving" means REPAIRED / NOT_REQUIRED — a `DEFERRED`
+ * critical defect still holds the unit out of service (QA CODE-008, see
+ * `vehicles/lib/out-of-service-defects.ts`). The restore never happens for a vehicle that isn't
  * currently `OUT_OF_SERVICE` (e.g. an admin already put it back manually, or it was
  * `INACTIVE` for an unrelated reason) — only the automatic path is idempotent here.
  */
@@ -75,7 +78,10 @@ export class DefectsService {
       },
     );
 
-    if (defect.severity === 'CRITICAL' && defect.status === 'OPEN') {
+    // QA CODE-008 — deferring a critical defect postpones the repair; it must never put an
+    // out-of-service unit back to ACTIVE. Only an actual repair / "no repair needed" of a defect
+    // that was holding the unit (OPEN, IN_PROGRESS or previously DEFERRED) can release it.
+    if (status !== 'DEFERRED' && holdsVehicleOutOfService(defect)) {
       await this.maybeRestoreVehicle(defect.vehicleId);
     }
 
@@ -94,11 +100,12 @@ export class DefectsService {
     return this.repo.update({ id }, { assigneeId: dto.assigneeId });
   }
 
-  /** Restores `Vehicle.status` to `ACTIVE` once no OPEN CRITICAL defect remains — only if the
-   * vehicle is currently `OUT_OF_SERVICE` (never overrides an unrelated manual state). */
+  /** Restores `Vehicle.status` to `ACTIVE` once no open / in-progress / deferred CRITICAL defect
+   * remains — only if the vehicle is currently `OUT_OF_SERVICE` (never overrides an unrelated
+   * manual state). */
   private async maybeRestoreVehicle(vehicleId: string): Promise<void> {
-    // The defect just resolved is no longer `status: 'OPEN'`, so this count already excludes it.
-    const remaining = await this.repo.count({ vehicleId, status: 'OPEN', severity: 'CRITICAL' });
+    // The defect just resolved is now `REPAIRED`, so this count already excludes it.
+    const remaining = await this.repo.count(outOfServiceHoldingDefectsWhere(vehicleId));
     if (remaining > 0) return;
     // An open work order flagged `Keep the unit out of service` still holds the unit.
     if ((await this.repo.countOutOfServiceWorkOrders(vehicleId)) > 0) return;

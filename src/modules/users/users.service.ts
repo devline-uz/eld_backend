@@ -8,6 +8,14 @@ import { TRANSACTIONAL_MAIL, TransactionalMailPort } from '../../core/mail/mail.
 import { STORAGE_PORT, StoragePort } from '../../core/storage/storage.port';
 import { AttachmentsService } from '../attachments/attachments.service';
 import { AuthService, INVITE_TTL_MS } from '../auth/auth.service';
+import {
+  assertWithinCeiling,
+  CeilingActor,
+  exceedingPermissions,
+  levelsOf,
+  PermissionCeiling,
+  resolveCeiling,
+} from '../roles/permission-ceiling';
 import { RolesRepository } from '../roles/roles.repository';
 import { readImageDimensions, stripImageMetadata } from './lib/image-dimensions.util';
 import { buildInviteEmail } from './lib/invite-email';
@@ -22,7 +30,7 @@ import {
 import { UserListItem, UsersRepository, UserWithRole } from './users.repository';
 
 /** The authenticated caller, as passed from the controller (`@CurrentUser()`). */
-export interface Actor {
+export interface Actor extends CeilingActor {
   id: string;
   role?: string;
 }
@@ -113,6 +121,8 @@ export class UsersService {
     const role = await this.roles.findById({ id: dto.roleId });
     if (!role) throw AppException.notFound('Role not found.');
     if (isPrivilegedRole(role.key)) assertSuperAdmin(actor);
+    const ceiling = await resolveCeiling(actor, this.roles);
+    assertWithinCeiling(levelsOf(role.permissions), ceiling, 'You cannot assign a role with permissions above your own');
     // Stored trimmed + lower-case (`User.email` is unique on `lower(email)`), compared case-insensitively.
     // A pending invite is a `User` row in INVITED status, so `assertAvailable` covers it too, as well
     // as another account's unexpired pending email change (same 409 EMAIL_TAKEN as `PATCH /users/:id`).
@@ -188,7 +198,7 @@ export class UsersService {
   /**
    * `@Audit` on the controller picks `ROLE_CHANGE` vs `UPDATE` — this method just applies
    * the diff; role-immutability (ADMIN `isSystem`) is a *role* rule (`RolesService`), not a
-   * *user* rule, so any role can be assigned here as long as it exists.
+   * *user* rule. CODE-002: a non-SUPER_ADMIN may only assign a role within their own levels.
    */
   /**
    * B-84 — `email` is never written here: a changed address (trim + lower-case, compared
@@ -200,13 +210,28 @@ export class UsersService {
   async update(id: string, dto: UpdateUserDto, actor: Actor): Promise<UserView & { emailVerification?: UserEmailVerificationView }> {
     const current = await this.getRaw(id);
     let nextRoleKey = current.role.key;
+    let nextRole: { permissions: unknown } | undefined;
     if (dto.roleId) {
       const role = await this.roles.findById({ id: dto.roleId });
       if (!role) throw AppException.notFound('Role not found.');
       nextRoleKey = role.key;
+      nextRole = role;
     }
     // Only a SUPER_ADMIN may touch a privileged user, or move anyone to/from a privileged role.
     if (isPrivilegedRole(current.role.key) || isPrivilegedRole(nextRoleKey)) assertSuperAdmin(actor);
+    // CODE-002 — no self role/status change, no managing a user above you, no assigning a role above you.
+    const ceiling = await resolveCeiling(actor, this.roles);
+    if (!ceiling.unrestricted) {
+      const changesRole = dto.roleId !== undefined && dto.roleId !== current.role.id;
+      const changesStatus = dto.status !== undefined && dto.status !== current.status;
+      if (id === actor.id && (changesRole || changesStatus)) {
+        throw AppException.forbidden('You cannot change your own role or status.');
+      }
+      this.assertCanManage(current, ceiling);
+      if (nextRole && changesRole) {
+        assertWithinCeiling(levelsOf(nextRole.permissions), ceiling, 'You cannot assign a role with permissions above your own');
+      }
+    }
     // Never leave the system without an active SUPER_ADMIN (nor without any active administrator):
     // the server enforces it so a stale tab or a direct call can't lock every user out of Settings.
     const losesStatus = dto.status !== undefined && dto.status !== 'ACTIVE';
@@ -270,9 +295,21 @@ export class UsersService {
     }
   }
 
+  /** CODE-002 — a non-SUPER_ADMIN cannot act on a user whose role has permissions above their own. */
+  private assertCanManage(target: UserWithRole, ceiling: PermissionCeiling): void {
+    if (exceedingPermissions(levelsOf(target.role.permissions), ceiling).length > 0) {
+      throw AppException.forbidden('You cannot manage a user whose role has permissions above your own.');
+    }
+  }
+
   async remove(id: string, actor: Actor): Promise<void> {
     const current = await this.getRaw(id);
     if (isPrivilegedRole(current.role.key)) assertSuperAdmin(actor);
+    const ceiling = await resolveCeiling(actor, this.roles);
+    if (!ceiling.unrestricted) {
+      if (id === actor.id) throw AppException.forbidden('You cannot delete your own account.');
+      this.assertCanManage(current, ceiling);
+    }
     await this.assertNotLastAdmin(current, null, true);
     await this.users.delete({ id });
   }

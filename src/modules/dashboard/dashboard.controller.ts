@@ -15,7 +15,9 @@ import { DashboardService } from './dashboard.service';
  *
  * ```
  * {
- *   liveFleet: { items: LiveFleetUnit[], generatedAt: string, counts: { total, onDuty, moving, idle, offline } },
+ *   liveFleet: { items: LiveFleetUnit[], generatedAt: string, counts: { total, onDuty, moving, idle, offline, driverDuty } },
+ *   // onDuty / driverDuty: assigned drivers by their HOS status (same definition as the Drivers list);
+ *   // offline: units whose paired ELD has been silent > 30 min (connectivity ELD_OFFLINE).
  *   violations: { items: Violation[], total: number },   // status=OPEN (any day), same shape as GET /violations
  *   unidentified: { total: number, totalDurationSec: number }, // status=PENDING
  *   notifications: { unreadCount: number },               // caller's own inbox
@@ -39,10 +41,10 @@ export class DashboardController {
   })
   @ApiOkResponse({
     description:
-      "UI-003/UI-004 (additive): recordStatus 'ACTIVE'|'INACTIVE'|'OUT_OF_SERVICE' (stored Vehicle.status); connectivity 'NO_DEVICE'|'ELD_OFFLINE'|'ONLINE' (ELD_OFFLINE = silent > 30 min); isStale boolean (duty status past its plausibility cap, or a DRIVING/ON_DUTY unit whose ELD went silent); staleSince ISO string|null. dutyStatus semantics: a stale assigned D/ON unit reads ELD_OFFLINE; an OUT_OF_SERVICE/INACTIVE record reads INACTIVE. speedMph is null when telemetry is older than 30 min. vehicles.inactive / vehicles.outOfService: fleet-wide record-status counts. liveFleet.counts.moving counts DRIVING units that are not stale.",
+      "UI-003/UI-004 (additive): recordStatus 'ACTIVE'|'INACTIVE'|'OUT_OF_SERVICE' (stored Vehicle.status); connectivity 'NO_DEVICE'|'ELD_OFFLINE'|'ONLINE' (ELD_OFFLINE = silent > 30 min); isStale boolean (duty status past its plausibility cap, or a DRIVING/ON_DUTY unit whose ELD went silent); staleSince ISO string|null. dutyStatus semantics: a stale assigned D/ON unit reads ELD_OFFLINE; an OUT_OF_SERVICE/INACTIVE record reads INACTIVE. speedMph is null when telemetry is older than 30 min. vehicles.inactive / vehicles.outOfService: fleet-wide record-status counts. liveFleet.counts.moving counts DRIVING units that are not stale. QA LIVE-002: liveFleet.counts.onDuty = assigned drivers whose HOS status (driverDutyStatus) is DRIVING/ON_DUTY/SLEEPER (the Drivers list definition); liveFleet.counts.driverDuty = assigned drivers per status + UNKNOWN, summing to assigned. QA LIVE-011: liveFleet.counts.offline = units with connectivity ELD_OFFLINE (paired ELD silent > 30 min).",
     schema: {
       example: {
-        liveFleet: { items: [{ vehicleId: 'veh_1', unitNumber: '101', dutyStatus: 'DRIVING', recordStatus: 'ACTIVE', connectivity: 'ONLINE', isStale: false, staleSince: null }], generatedAt: '2026-09-16T15:39:10.000Z', counts: { total: 42, onDuty: 30, moving: 18, idle: 5, offline: 2 } },
+        liveFleet: { items: [{ vehicleId: 'veh_1', unitNumber: '101', dutyStatus: 'DRIVING', driverDutyStatus: 'DRIVING', recordStatus: 'ACTIVE', connectivity: 'ONLINE', isStale: false, staleSince: null }], generatedAt: '2026-09-16T15:39:10.000Z', counts: { total: 42, onDuty: 30, moving: 18, idle: 5, offline: 2, driverDuty: { assigned: 36, DRIVING: 18, ON_DUTY: 10, SLEEPER: 2, OFF_DUTY: 6, UNKNOWN: 0 } } },
         violations: { items: [{ id: 'vio_1', type: 'DRIVING_11', driverName: 'John Smith', unitNumber: '101' }], total: 3 },
         unidentified: { total: 2, totalDurationSec: 3600 },
         notifications: { unreadCount: 4 },

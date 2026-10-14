@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { Device, Prisma } from '@prisma/client';
 import { BaseRepository, ModelDelegate } from '../../core/prisma/base.repository';
 import { PrismaService } from '../../core/prisma/prisma.service';
-import { containsInsensitive } from '../../common/text/insensitive';
+import { containsInsensitive, equalsInsensitive } from '../../common/text/insensitive';
 
 export interface DeviceListFilter {
   status?: Device['status'];
@@ -40,8 +40,13 @@ export class DevicesRepository extends BaseRepository<
     return this.prisma.device;
   }
 
-  findBySerial(serial: string): Promise<Device | null> {
-    return this.prisma.device.findUnique({ where: { serial } });
+  /** CODE-009 — exact match first (the canonical upper-case row), then case-insensitive so a
+   * legacy mixed-case row is still found and never duplicated. */
+  async findBySerial(serial: string): Promise<Device | null> {
+    return (
+      (await this.prisma.device.findUnique({ where: { serial } })) ??
+      (await this.prisma.device.findFirst({ where: { serial: equalsInsensitive(serial) } }))
+    );
   }
 
   findByVehicleId(vehicleId: string): Promise<Device | null> {

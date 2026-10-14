@@ -39,7 +39,8 @@ export const CreateVehicleDto = z.object({
   // TZ §4.3 step 1 — the dash odometer the user reads off the panel when adding the unit.
   odometerMi: z.number().int().min(0).max(MAX_ODOMETER_MI).default(0),
   busType: BusTypeEnum.optional(),
-  notes: z.string().max(500).optional(),
+  /** CODE-010 — `null` on update clears the notes. */
+  notes: z.string().max(500).nullable().optional(),
   /** Vehicle group (`/vehicle-groups`); `null` on update removes the unit from its group. */
   groupId: z.string().uuid().nullable().optional(),
   /** ELD device to pair, by its serial (what the web's "ELD serial" input sends as `deviceId`). A

@@ -1,6 +1,6 @@
 import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable } from '@nestjs/common';
-import type { Prisma } from '@prisma/client';
+import type { Prisma, Trip } from '@prisma/client';
 import type { Queue } from 'bullmq';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
@@ -107,11 +107,31 @@ function tripInProgress(): AppException {
   );
 }
 
+/** CODE-024 — the trip's status moved between the service's read and its write (the driver app
+ * started/delivered it, or another dispatcher changed it): the write is refused, never applied
+ * over the newer status. */
+function tripStatusChanged(current: string): AppException {
+  return new AppException(
+    ERROR_CODES.CONFLICT,
+    `This trip was changed by someone else (it is now ${current.toLowerCase().replace('_', ' ')}). Refresh and try again.`,
+    409,
+    { status: current },
+  );
+}
+
+/** LIVE-003 — clock skew allowed on a dispatcher-entered delivery time. */
+const COMPLETED_AT_SKEW_MS = 2 * 60_000;
+
+function completedAtInvalid(message: string): AppException {
+  return new AppException(ERROR_CODES.VALIDATION_FAILED, message, 422, { completedAt: message });
+}
+
 /** Statuses in which only `status` may be PATCHed (409 `TRIP_NOT_EDITABLE` otherwise). */
 const NON_EDITABLE_STATUSES: string[] = ['DELIVERED', 'CANCELLED'];
 
 /** Valid forward transitions of `Trip.status` (TZ §11.5 dispatch lifecycle).
- * §20 B-73 — `DRAFT` is the pre-publish state: `PATCH { status: 'PLANNED' }` publishes it. */
+ * §20 B-73 — `DRAFT` is the pre-publish state: `PATCH { status: 'PLANNED' }` publishes it
+ * (CODE-005: a draft that already has a driver is stored as `ASSIGNED`, see `update`). */
 const ALLOWED_TRANSITIONS: Record<string, string[]> = {
   DRAFT: ['PLANNED', 'CANCELLED'],
   PLANNED: ['ASSIGNED', 'CANCELLED'],
@@ -197,14 +217,17 @@ export class TripsService {
     }
   }
 
-  /** BE-001 — `P2025` on a trip update/assign: the trip itself vanished (hard delete race) → 404,
-   * otherwise the driver/unit being connected did → 422. */
-  private async mapUpdateError<T>(id: string, write: Promise<T>): Promise<T> {
+  /** BE-001 — `P2025` on a trip update/assign: the trip itself vanished (hard delete race) → 404;
+   * CODE-024 — its status is no longer the one the write was guarded on → 409; otherwise the
+   * driver/unit being connected did → 422. */
+  private async mapUpdateError<T>(id: string, expectedStatus: string, write: Promise<T>): Promise<T> {
     try {
       return await write;
     } catch (err) {
       if (!isRecordNotFound(err)) throw err;
-      if (!(await this.repo.findById({ id }))) throw new AppException(ERROR_CODES.NOT_FOUND, 'Trip not found.', 404);
+      const current = await this.repo.findById({ id });
+      if (!current) throw new AppException(ERROR_CODES.NOT_FOUND, 'Trip not found.', 404);
+      if (current.status !== expectedStatus) throw tripStatusChanged(current.status);
       throw this.relationGone();
     }
   }
@@ -252,6 +275,8 @@ export class TripsService {
       }
     }
 
+    if (dto.completedAt !== undefined) this.assertCompletedAt(trip, dto);
+
     const timesChanged = dto.plannedStartAt !== undefined || dto.plannedEndAt !== undefined;
     const plannedStartAt = dto.plannedStartAt ?? trip.plannedStartAt;
     const plannedEndAt = dto.plannedEndAt ?? trip.plannedEndAt;
@@ -261,14 +286,30 @@ export class TripsService {
     // BE-011 — ASSIGNED -> PLANNED is an unassign: the driver comes off the trip (it is back on
     // the unassigned-loads board, which lists PLANNED trips with no driver).
     if (trip.status === 'ASSIGNED' && dto.status === 'PLANNED' && trip.driverId) data.driver = { disconnect: true };
+    // CODE-005 — publishing a draft that already names a driver dispatches it: it goes straight to
+    // ASSIGNED (what `create` does for a non-draft trip with a driver), never to a driver-holding
+    // PLANNED trip that neither the unassigned-loads board (`driverId: null`) nor the driver app
+    // (ASSIGNED / IN_PROGRESS only) would ever show. A draft without a driver still lands PLANNED.
+    if (trip.status === 'DRAFT' && dto.status === 'PLANNED' && trip.driverId) data.status = 'ASSIGNED';
     if (dto.status === 'IN_PROGRESS' && !trip.startedAt) data.startedAt = new Date();
-    if (dto.status === 'DELIVERED' && !trip.completedAt) data.completedAt = new Date();
+    // LIVE-003 — "Mark delivered" may record the actual delivery time (`completedAt`, checked above).
+    if (dto.status === 'DELIVERED' && !dto.completedAt && !trip.completedAt) data.completedAt = new Date();
+    // LIVE-003 — `Trip.onTime` was never written, so every delivery counted as on time on the web
+    // KPI. Stamp it on delivery from the actual vs planned end (left alone without a planned end).
+    if (dto.status === 'DELIVERED' && trip.onTime == null && trip.plannedEndAt) {
+      const completedAt = (data.completedAt as Date | undefined) ?? (trip.completedAt as Date);
+      data.onTime = completedAt.getTime() <= trip.plannedEndAt.getTime();
+    }
 
-    // Re-check the unit, driver and trailer when the trip's range moves, or when a draft is
-    // published (a draft saved before this rule existed may overlap). Plain status moves keep the
-    // range, so no re-check. PATCH cannot change who/what is on the trip — `assign` does that.
-    const nextStatus = dto.status ?? trip.status;
+    // Re-check the unit, driver and trailer when the trip's range moves, when a draft is published
+    // (a draft saved before this rule existed may overlap) or when the trip becomes ASSIGNED. Plain
+    // status moves keep the range, so no re-check. PATCH cannot change who/what is on the trip —
+    // `assign` does that.
+    const nextStatus = (data.status as Trip['status'] | undefined) ?? trip.status;
     const publishing = trip.status === 'DRAFT' && nextStatus !== 'DRAFT';
+    // CODE-005 — the trip is being dispatched to its driver (a published draft with a driver, or
+    // PATCH PLANNED -> ASSIGNED on a trip that already has one): same gates as `assign`.
+    const assigning = nextStatus === 'ASSIGNED' && trip.status !== 'ASSIGNED' && Boolean(trip.driverId);
     const window = this.windowOf(plannedStartAt, plannedEndAt);
     const unassigning = data.driver !== undefined;
     const holders = {
@@ -276,19 +317,31 @@ export class TripsService {
       driverId: unassigning ? null : trip.driverId,
       trailerId: trip.trailerId,
     };
-    // BE-005 — publishing a draft that holds a driver/unit/trailer needs a range to check.
-    if (publishing && !window && this.hasHolder(holders)) throw plannedStartRequired();
+    // BE-005 — publishing a draft that holds a driver/unit/trailer needs a range to check
+    // (cancelling a draft puts nothing on the schedule, so it needs none).
+    if (publishing && nextStatus !== 'CANCELLED' && !window && this.hasHolder(holders)) throw plannedStartRequired();
+    // CODE-005 — a draft only had its driver/unit/trailer checked when it was saved; they may have
+    // been deactivated, put out of service or deleted since. Re-check them before it goes live.
+    if ((publishing && nextStatus !== 'CANCELLED') || assigning) await this.assertHoldersAssignable(holders);
+    // CODE-024 — the write is guarded on the status read above, so a concurrent move (the driver
+    // starting the trip, another dispatcher cancelling it) is a 409, never silently overwritten.
+    const guard = { id, status: trip.status };
     const updated = await this.mapUpdateError(
       id,
-      window && this.hasHolder(holders) && (timesChanged || publishing) && UNIT_SCHEDULED_STATUSES.includes(nextStatus)
+      trip.status,
+      window && this.hasHolder(holders) && (timesChanged || publishing || assigning) && UNIT_SCHEDULED_STATUSES.includes(nextStatus)
         ? this.withScheduleLocks(holders, async (db) => {
             await this.assertHoldersFree(holders, window, id, db);
-            return this.repo.update({ id }, data, db);
+            return this.repo.update(guard, data, db);
           })
-        : this.repo.update({ id }, data),
+        : this.repo.update(guard, data),
     );
-    if (dto.status && dto.status !== trip.status) {
+    if (nextStatus !== trip.status) {
       await this.publishStatusChanged(updated.id, updated.status, updated.etaAt);
+    }
+    // CODE-005 — the same driver-app notification `assign` raises (`notify` defaults to true there).
+    if (assigning && trip.driverId) {
+      await this.alertQueue.add('alert.trip_assigned', { tripId: updated.id, driverId: trip.driverId });
     }
     return updated;
   }
@@ -342,14 +395,17 @@ export class TripsService {
     const window = this.windowOf(trip.plannedStartAt, trip.plannedEndAt);
     // BE-005 — without a planned start the driver/unit overlap check cannot run.
     if (!window && this.hasHolder(holders)) throw plannedStartRequired();
+    // CODE-024 — guarded on the PLANNED/ASSIGNED status checked above (see `update`).
+    const guard = { id, status: trip.status };
     const updated = await this.mapUpdateError(
       id,
+      trip.status,
       window && this.hasHolder(holders)
         ? this.withScheduleLocks(holders, async (db) => {
             await this.assertHoldersFree(holders, window, id, db);
-            return this.repo.update({ id }, data, db);
+            return this.repo.update(guard, data, db);
           })
-        : this.repo.update({ id }, data),
+        : this.repo.update(guard, data),
     );
     await this.publishStatusChanged(updated.id, updated.status, updated.etaAt);
     // §20 B-74 — `notify: false` skips the driver-app assignment notification entirely.
@@ -383,6 +439,19 @@ export class TripsService {
       assigned.push({ tripId: load.id, driverId });
     }
     return { assigned, skipped: loads.length - assigned.length };
+  }
+
+  /** LIVE-003 — a recorded delivery time only comes with the move to DELIVERED, is not in the
+   * future and not before the trip started (422 keyed `completedAt`). */
+  private assertCompletedAt(trip: Trip, dto: UpdateTripDto): void {
+    const at = dto.completedAt as Date;
+    if (dto.status !== 'DELIVERED' || trip.status === 'DELIVERED') {
+      throw completedAtInvalid('A delivery time can only be set when marking the trip delivered.');
+    }
+    if (at.getTime() > Date.now() + COMPLETED_AT_SKEW_MS) throw completedAtInvalid('Delivery time cannot be in the future.');
+    if (trip.startedAt && at.getTime() < trip.startedAt.getTime()) {
+      throw completedAtInvalid('Delivery time cannot be before the trip started.');
+    }
   }
 
   /** 422 unless the planned end (when both are set) is strictly after the planned start. */
@@ -476,6 +545,13 @@ export class TripsService {
     // `Trip.trailerId` has no relation, so the number comes from the trailer row itself.
     const trailerNumber = await this.repo.findTrailerNumber(trailerId, db);
     throw scheduleConflict('trailer', trailerNumber ? `Trailer ${trailerNumber}` : 'This trailer', conflict, { trailerNumber });
+  }
+
+  /** CODE-005 — every driver/unit/trailer already on the trip must still be assignable. */
+  private async assertHoldersAssignable(holders: ScheduleHolders): Promise<void> {
+    if (holders.driverId) await this.assertDriverAssignable(holders.driverId);
+    if (holders.vehicleId) await this.assertVehicleAssignable(holders.vehicleId);
+    if (holders.trailerId) await this.assertTrailerAssignable(holders.trailerId);
   }
 
   /** BE-001 — the driver must exist and be live (422, keyed `driverId` like the trailer check) and

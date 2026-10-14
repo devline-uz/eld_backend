@@ -27,6 +27,13 @@ describe('DevicesRepository', () => {
     expect(device.findUnique).toHaveBeenCalledWith({ where: { serial: 'PT30-001' } });
   });
 
+  it('findBySerial falls back to a case-insensitive match (CODE-009)', async () => {
+    device.findUnique.mockResolvedValue(null);
+    device.findFirst.mockResolvedValue({ id: 'd1', serial: 'pt30-001' });
+    await expect(repo.findBySerial('PT30-001')).resolves.toMatchObject({ id: 'd1' });
+    expect(device.findFirst).toHaveBeenCalledWith({ where: { serial: { equals: 'PT30-001', mode: 'insensitive' } } });
+  });
+
   it('findByVehicleId queries by vehicleId', async () => {
     await repo.findByVehicleId('veh_1');
     expect(device.findUnique).toHaveBeenCalledWith({ where: { vehicleId: 'veh_1' } });

@@ -1,3 +1,4 @@
+import { isIP } from 'node:net';
 import { z } from 'zod';
 
 const bool = (def: 'true' | 'false') =>
@@ -6,11 +7,77 @@ const bool = (def: 'true' | 'false') =>
     .default(def)
     .transform((v) => v === 'true');
 
-export const envSchema = z.object({
+/** CODE-001 — dev-only defaults. Public (they are in this file), so production refuses them. */
+export const DEV_JWT_SECRET = 'dev-only-secret-change-me-32-characters';
+export const DEV_INTEGRATION_ENCRYPTION_KEY = 'ZGV2LW9ubHktMzItYnl0ZS1rZXktY2hhbmdlLW1lISE=';
+
+/** Fragments of template values (`.env*.example`, docs) — compared case-insensitively with
+ * every non-alphanumeric character removed, so `CHANGE_ME`, `change-me`, `ChangeMe` all match. */
+const PLACEHOLDER_FRAGMENTS = ['changeme', 'replaceme', 'placeholder', 'devonly', 'example', 'yoursecret', 'xxxxxxxx'];
+const PLACEHOLDER_EXACT = ['secret', 'jwtsecret', 'password', 'test', 'default'];
+
+function looksLikePlaceholder(value: string): boolean {
+  const norm = value.toLowerCase().replace(/[^a-z0-9]/g, '');
+  return PLACEHOLDER_EXACT.includes(norm) || PLACEHOLDER_FRAGMENTS.some((f) => norm.includes(f));
+}
+
+/** Named ranges understood by Express / proxy-addr for `trust proxy`. */
+const TRUST_PROXY_NAMED = new Set(['loopback', 'linklocal', 'uniquelocal']);
+
+/** One `TRUST_PROXY` entry: a named range, an IP, or an IP/CIDR prefix. */
+function isTrustProxyEntry(entry: string): boolean {
+  if (TRUST_PROXY_NAMED.has(entry)) return true;
+  const [addr, prefix, ...rest] = entry.split('/');
+  const family = isIP(addr);
+  if (!family || rest.length > 0) return false;
+  if (prefix === undefined) return true;
+  if (!/^\d{1,3}$/.test(prefix)) return false;
+  return Number(prefix) <= (family === 4 ? 32 : 128);
+}
+
+/**
+ * CODE-004 — Express `trust proxy`. Only the listed proxy addresses may set `X-Forwarded-For`;
+ * a client connecting directly (any other socket address) can not spoof its IP. `true` and hop
+ * counts are refused: they trust whatever peer connects, so anyone reaching the port directly
+ * could pick their own IP (and their own rate-limit bucket / audit-log IP).
+ * `false`/`none` = no proxy (req.ip is the socket address).
+ */
+const trustProxy = z
+  .string()
+  .default('loopback')
+  .transform((raw, ctx): string[] | false => {
+    const value = raw.trim().toLowerCase();
+    if (value === '' || value === 'false' || value === 'none') return false;
+    if (value === 'true' || /^\d+$/.test(value)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          `"${raw}" trusts any peer, so a client connecting directly could spoof X-Forwarded-For — ` +
+          'list the proxy addresses instead (e.g. "loopback" or "loopback,172.16.0.0/12"), or "false"',
+      });
+      return z.NEVER;
+    }
+    const entries = value.split(',').map((e) => e.trim()).filter(Boolean);
+    const bad = entries.filter((e) => !isTrustProxyEntry(e));
+    if (bad.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `invalid entr${bad.length === 1 ? 'y' : 'ies'} ${bad.map((b) => `"${b}"`).join(', ')} — use loopback, linklocal, uniquelocal, an IP or an IP/CIDR`,
+      });
+      return z.NEVER;
+    }
+    return entries;
+  });
+
+const baseEnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(3000),
   API_PREFIX: z.string().default('api'),
   CORS_ORIGINS: z.string().default('http://localhost:5173'),
+  /** CODE-004 — reverse proxies allowed to set `X-Forwarded-For` (comma-separated: loopback,
+   * linklocal, uniquelocal, IPs, CIDRs; `false` = none). Default `loopback` fits Caddy on the
+   * same host (`docker/caddy/Caddyfile` -> localhost:3000). See `trustProxy` above. */
+  TRUST_PROXY: trustProxy,
 
   // --- database (TZ §22.3) -------------------------------------------------
   DATABASE_URL: z.string().url(),
@@ -44,7 +111,8 @@ export const envSchema = z.object({
   S3_PRESIGN_TTL_SEC: z.coerce.number().int().positive().default(900),
 
   // --- auth (TZ §6) --------------------------------------------------------
-  JWT_SECRET: z.string().min(32).default('dev-only-secret-change-me-32-characters'),
+  /** Dev default only — production refuses it (and any placeholder), see `productionSecrets`. */
+  JWT_SECRET: z.string().min(32).default(DEV_JWT_SECRET),
   /** User (back-office) tokens — TZ §6.1: access 15 min / refresh 30 days. */
   JWT_ACCESS_TTL: z.string().default('15m'),
   JWT_REFRESH_TTL: z.string().default('30d'),
@@ -112,8 +180,8 @@ export const envSchema = z.object({
   /** Base64-encoded 32-byte AES-256-GCM key that encrypts `Integration.config` secrets at
    * rest. Prod value lives in the server secrets folder (this project's `.env`, not
    * committed — same place as POSTGRES/REDIS/MINIO passwords); this default is dev-only,
-   * same convention as JWT_SECRET's dev default above. */
-  INTEGRATION_ENCRYPTION_KEY: z.string().default('ZGV2LW9ubHktMzItYnl0ZS1rZXktY2hhbmdlLW1lISE='),
+   * same convention as JWT_SECRET's dev default above (production refuses it). */
+  INTEGRATION_ENCRYPTION_KEY: z.string().default(DEV_INTEGRATION_ENCRYPTION_KEY),
 
   // --- eRODS transfer (TZ §10) ---------------------------------------------
   /**
@@ -193,6 +261,51 @@ export const envSchema = z.object({
   SWAGGER_ENABLED: bool('true'),
   SHUTDOWN_TIMEOUT_MS: z.coerce.number().int().positive().default(15000),
 });
+
+const MIN_PROD_JWT_SECRET_LENGTH = 32;
+
+/**
+ * CODE-001 — with NODE_ENV=production the process refuses to boot on a missing, built-in,
+ * placeholder or weak JWT secret / integration key. The defaults above are public, so a token
+ * signed with the JWT default would carry any permission matrix. Dev/test keep their defaults.
+ * Messages never include the configured value.
+ */
+function productionSecrets(env: z.infer<typeof baseEnvSchema>, ctx: z.RefinementCtx): void {
+  if (env.NODE_ENV !== 'production') return;
+  const fix = 'generate one with `openssl rand -base64 48`';
+
+  const jwt = env.JWT_SECRET;
+  let jwtProblem: string | null = null;
+  if (jwt === DEV_JWT_SECRET) jwtProblem = 'is unset or equals the built-in dev default';
+  else if (looksLikePlaceholder(jwt)) jwtProblem = 'looks like a template placeholder';
+  else if (jwt.length < MIN_PROD_JWT_SECRET_LENGTH) jwtProblem = `is shorter than ${MIN_PROD_JWT_SECRET_LENGTH} characters`;
+  else if (new Set(jwt).size < 10) jwtProblem = 'has too few distinct characters to be random';
+  if (jwtProblem) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['JWT_SECRET'],
+      message: `${jwtProblem} — refused with NODE_ENV=production; ${fix}`,
+    });
+  }
+
+  const raw = env.INTEGRATION_ENCRYPTION_KEY.trim();
+  const decoded = /^[A-Za-z0-9+/]+={0,2}$/.test(raw) ? Buffer.from(raw, 'base64') : Buffer.alloc(0);
+  let keyProblem: string | null = null;
+  if (raw === DEV_INTEGRATION_ENCRYPTION_KEY) keyProblem = 'is unset or equals the built-in dev default';
+  else if (looksLikePlaceholder(raw) || looksLikePlaceholder(decoded.toString('latin1'))) {
+    keyProblem = 'looks like a template placeholder';
+  } else if (decoded.length !== 32) keyProblem = 'must be standard base64 of exactly 32 bytes';
+  else if (new Set(decoded).size < 16) keyProblem = 'has too few distinct bytes to be random';
+  if (keyProblem) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['INTEGRATION_ENCRYPTION_KEY'],
+      message: `${keyProblem} — refused with NODE_ENV=production; generate one with \`openssl rand -base64 32\``,
+    });
+  }
+}
+
+export const envSchema = baseEnvSchema.superRefine(productionSecrets);
 
 export type AppEnv = z.infer<typeof envSchema>;
 

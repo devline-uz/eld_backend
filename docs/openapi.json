@@ -80532,6 +80532,10 @@
             "minimum": 0,
             "exclusiveMinimum": true,
             "maximum": 10000000
+          },
+          "completedAt": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       },

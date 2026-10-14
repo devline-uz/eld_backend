@@ -40,7 +40,7 @@ const MALFUNCTION_DIAGNOSTIC = 7;
 
 /** MR-13 — every segment gets the fields of the record in force at its start. */
 export function annotateSegments(segments: RodsSegment[], events: ExtrasEvent[]): AnnotatedSegment[] {
-  const sources = (activeRecords(events) as ExtrasEvent[])
+  const sources = activeRecords(events)
     .filter((event) => event.eventType === DUTY || event.eventType === SPECIAL)
     .sort((a, b) => a.eventDateTime.getTime() - b.eventDateTime.getTime() || a.eventSequenceId - b.eventSequenceId);
   // A PC/YM indication re-states the status; the duty record is the one with the location and

@@ -564,8 +564,9 @@ export class DriversService {
       ...dto,
       // `''` / `null` → `null` (an explicit clear); `undefined` (not sent) stays `undefined`.
       ...(dto.email !== undefined && { email: normalizeEmail(dto.email) }),
-      // `''` stays `''` so a PATCH can still clear the phone (an empty phone never conflicts).
-      ...(dto.phone !== undefined && { phone: dto.phone.trim() }),
+      // CODE-010 — `''` / `null` → `null` (an explicit clear; an empty phone never conflicts).
+      ...(dto.phone !== undefined && { phone: trimOrNull(dto.phone) }),
+      ...(dto.eldExemptReason !== undefined && { eldExemptReason: trimOrNull(dto.eldExemptReason) }),
       ...(dto.cdlNumber !== undefined && { cdlNumber: dto.cdlNumber.trim() }),
     };
   }

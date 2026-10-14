@@ -88,6 +88,9 @@ class FakeRepo {
   findViolations = jest.fn(async () => []);
   findUnidentifiedSegments = jest.fn(async () => []);
   findVehicleIdsForDriver = jest.fn(async () => ['veh-1']);
+  findRecordingElds = jest.fn(async () => [
+    { deviceId: 'dev-1', serial: 'PT30_D3ED', vehicleId: 'veh-1', unitNumber: '106' },
+  ]);
   findDailyLog = jest.fn(async (_id: string, date: Date) => this.dailyLogs.get(date.toISOString()) ?? null);
   findDailyLogs = jest.fn(async () => [...this.dailyLogs.values()]);
   findUncertifiedDates = jest.fn(async (): Promise<Date[]> => []);
@@ -1296,5 +1299,13 @@ describe('W-08 — the record table and the grid read the same RODS day', () => 
     repo.events = [evt({ id: 1n, at: '2026-10-10T12:00:00Z', code: 3 }), evt({ id: 2n, at: '2026-10-10T16:00:00Z', code: 1 })];
     const view = await service.getDayView(DRIVER, '2026-10-10', new Date('2026-10-11T10:00:00Z'));
     expect(view.ongoingViolations).toEqual([]);
+  });
+
+  it('LIVE-005 — getDayView names the ELD the day was recorded on, over that RODS day only', async () => {
+    const { service, repo } = build();
+    const view = await service.getDayView(DRIVER, '2026-10-10', new Date('2026-10-11T10:00:00Z'));
+    expect(view.recordedBy).toEqual([{ deviceId: 'dev-1', serial: 'PT30_D3ED', vehicleId: 'veh-1', unitNumber: '106' }]);
+    const [, from, to] = repo.findRecordingElds.mock.calls[0] as unknown as [string, Date, Date];
+    expect(to.getTime() - from.getTime()).toBe(86_400_000);
   });
 });

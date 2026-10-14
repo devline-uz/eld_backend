@@ -1,14 +1,41 @@
 import { Injectable } from '@nestjs/common';
 import type { ContextUser } from '../../core/context/request-context';
 import { CarrierService } from '../carrier/carrier.service';
-import type { LiveDutyStatus } from '../live/live-fleet.mapper';
+import type { DriverDutyStatus, LiveFleetUnit } from '../live/live-fleet.mapper';
 import { LiveFleetService } from '../live/live-fleet.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { UnidentifiedService } from '../unidentified/unidentified.service';
 import { VehiclesService } from '../vehicles/vehicles.service';
 import { ActiveViolationsService } from '../violations/active-violations.service';
 
-const DUTY_ON_STATUSES: LiveDutyStatus[] = ['DRIVING', 'ON_DUTY', 'SLEEPER'];
+/**
+ * QA LIVE-002 / CODE-020 — "on duty" exactly as the Drivers list counts it (`useDriverRosterCounts`:
+ * every driver whose HOS duty status is not OFF_DUTY — Driving, On-duty and Sleeper). Read from the
+ * driver's own HOS status (`driverDutyStatus`), never from the unit's live marker: an ELD-offline,
+ * stale, out-of-service or idle / yard-move unit still has a driver in a known duty status.
+ */
+const DRIVER_ON_DUTY_STATUSES: DriverDutyStatus[] = ['DRIVING', 'ON_DUTY', 'SLEEPER'];
+
+/** Breakdown of the drivers assigned to a unit by HOS duty status; slices always sum to `assigned`. */
+export interface DriverDutyCounts {
+  assigned: number;
+  DRIVING: number;
+  ON_DUTY: number;
+  SLEEPER: number;
+  OFF_DUTY: number;
+  /** Driver assigned but their HOS state could not be computed. */
+  UNKNOWN: number;
+}
+
+export function countDriverDuty(units: Array<Pick<LiveFleetUnit, 'driverId' | 'driverDutyStatus'>>): DriverDutyCounts {
+  const counts: DriverDutyCounts = { assigned: 0, DRIVING: 0, ON_DUTY: 0, SLEEPER: 0, OFF_DUTY: 0, UNKNOWN: 0 };
+  for (const unit of units) {
+    if (!unit.driverId) continue; // a unit without a driver is not a driver
+    counts.assigned += 1;
+    counts[unit.driverDutyStatus ?? 'UNKNOWN'] += 1;
+  }
+  return counts;
+}
 
 type Section = 'liveFleet' | 'drivers' | 'hos' | 'vehicles';
 
@@ -69,13 +96,20 @@ export class DashboardService {
     ]);
 
     const units = can.drivers ? fleet.items : fleet.items.map((u) => ({ ...u, driverPhone: null }));
+    const driverDuty = countDriverDuty(units);
     const counts = {
       total: units.length,
-      onDuty: units.filter((u) => DUTY_ON_STATUSES.includes(u.dutyStatus)).length,
+      // QA LIVE-002 — same definition and source as the Drivers list "On duty" chip.
+      onDuty: DRIVER_ON_DUTY_STATUSES.reduce((sum, status) => sum + driverDuty[status], 0),
       // UI-003 — a stale / silent unit is never "moving" (the mapper already reads it ELD_OFFLINE).
       moving: units.filter((u) => u.dutyStatus === 'DRIVING' && !u.isStale).length,
       idle: units.filter((u) => u.dutyStatus === 'IDLE').length,
-      offline: units.filter((u) => u.dutyStatus === 'ELD_OFFLINE').length,
+      // QA LIVE-011 — units whose paired ELD has been silent > 30 min (`connectivity`, the same
+      // `ELD_OFFLINE_AFTER_MS` line Settings › ELD devices uses), whatever the driver's status or the
+      // unit's record status. It used to count only the units whose duty marker read ELD_OFFLINE.
+      offline: units.filter((u) => u.connectivity === 'ELD_OFFLINE').length,
+      // QA LIVE-002 — the duty donut's slices (assigned drivers by HOS status, + UNKNOWN).
+      driverDuty,
     };
 
     return {

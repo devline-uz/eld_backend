@@ -117,6 +117,13 @@ describe('seed shape matches tz.md §22.3.6 (Figma demo dataset)', () => {
       where: { driverId: john?.id, logDate: today.logDate, type: 'DRIVING_11' },
     });
     expect(violation?.exceededBySec).toBe(26 * 60);
+
+    // LIVE-001 — the violation is backed by real §395 records on that day (not header-only totals).
+    const nextDay = new Date(today.logDate.getTime() + 2 * 86_400_000);
+    const records = await prisma.eldEvent.count({
+      where: { driverId: john?.id, eventType: 1, eventDateTime: { gte: today.logDate, lt: nextDay } },
+    });
+    expect(records).toBeGreaterThan(0);
   });
 
   it('has DVIR #88214 (pre-trip, no defects) and #88208 (post-trip, defects repaired)', async () => {

@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { ApiKey } from '@prisma/client';
+import type { ApiKey, Prisma } from '@prisma/client';
 import { PrismaService } from '../../core/prisma/prisma.service';
 
 export interface CreateApiKeyInput {
@@ -10,6 +10,13 @@ export interface CreateApiKeyInput {
   createdById: string;
   expiresAt?: Date;
 }
+
+/** CODE-003 — what `verify()` needs about the key's creator, fetched in the same query. */
+const CREATOR_SELECT = {
+  createdBy: { select: { status: true, role: { select: { key: true, permissions: true } } } },
+} satisfies Prisma.ApiKeyInclude;
+
+export type ApiKeyWithCreator = Prisma.ApiKeyGetPayload<{ include: typeof CREATOR_SELECT }>;
 
 /**
  * TZ §6.5 — only the SHA-256 `keyHash` + display `prefix` are ever persisted; the
@@ -34,8 +41,8 @@ export class ApiKeysRepository {
 
   /** Looks up by hash regardless of revoked/expired state, so the caller can tell
    * "wrong key" apart from "right key, but revoked/expired" (TZ §20 stable codes). */
-  findByHash(keyHash: string): Promise<ApiKey | null> {
-    return this.prisma.apiKey.findUnique({ where: { keyHash } });
+  findByHash(keyHash: string): Promise<ApiKeyWithCreator | null> {
+    return this.prisma.apiKey.findUnique({ where: { keyHash }, include: CREATOR_SELECT });
   }
 
   revoke(id: string): Promise<ApiKey> {

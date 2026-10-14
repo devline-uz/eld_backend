@@ -303,7 +303,7 @@ describe('TripsService — unit schedule overlap (web panel)', () => {
     repo.findUnitScheduleCandidates.mockResolvedValueOnce([other({ id: 'trp_1', number: 'TRP-1' })]);
     await service.update('trp_1', { plannedEndAt: at(16) });
     expect(repo.findUnitScheduleCandidates).toHaveBeenCalledWith(VEH, { start: at(10), end: at(16) }, 'trp_1', 'tx');
-    expect(repo.update).toHaveBeenCalledWith({ id: 'trp_1' }, expect.anything(), 'tx');
+    expect(repo.update).toHaveBeenCalledWith(expect.objectContaining({ id: 'trp_1' }), expect.anything(), 'tx');
   });
 
   it('update rejects a moved range that overlaps another trip on the unit', async () => {
@@ -553,7 +553,7 @@ describe('TripsService — driver and trailer overlap (TRIP_SCHEDULE_CONFLICT)',
       repo[finder].mockResolvedValueOnce([other({ id: 'trp_1', number: 'TRP-1' })]);
       await service.update('trp_1', { plannedEndAt: at(16) });
       expect(repo[finder]).toHaveBeenCalledWith(ID, { start: at(10), end: at(16) }, 'trp_1', 'tx');
-      expect(repo.update).toHaveBeenCalledWith({ id: 'trp_1' }, expect.anything(), 'tx');
+      expect(repo.update).toHaveBeenCalledWith(expect.objectContaining({ id: 'trp_1' }), expect.anything(), 'tx');
     });
 
     it('update rejects a moved range that overlaps another trip', async () => {
@@ -604,7 +604,7 @@ describe('TripsService — driver and trailer overlap (TRIP_SCHEDULE_CONFLICT)',
     repo.findDriverScheduleCandidates.mockResolvedValueOnce([other()]);
     repo.findTrailerScheduleCandidates.mockResolvedValueOnce([other()]);
     await service.assign('trp_1', { driverId: DRV, trailerId: TRL, notify: false });
-    expect(repo.update).toHaveBeenCalledWith({ id: 'trp_1' }, expect.anything(), 'tx');
+    expect(repo.update).toHaveBeenCalledWith(expect.objectContaining({ id: 'trp_1' }), expect.anything(), 'tx');
   });
 
   it('assign keeping the same driver and trailer does not re-check them', async () => {
@@ -613,7 +613,7 @@ describe('TripsService — driver and trailer overlap (TRIP_SCHEDULE_CONFLICT)',
     await service.assign('trp_1', { driverId: DRV, vehicleId: VEH, trailerId: TRL, notify: false });
     expect(repo.findDriverScheduleCandidates).not.toHaveBeenCalled();
     expect(repo.findTrailerScheduleCandidates).not.toHaveBeenCalled();
-    expect(repo.update).toHaveBeenCalledWith({ id: 'trp_1' }, expect.anything());
+    expect(repo.update).toHaveBeenCalledWith(expect.objectContaining({ id: 'trp_1' }), expect.anything());
   });
 
   it('nests the locks vehicle -> driver -> trailer in one transaction, skipping null ids', async () => {
@@ -856,5 +856,209 @@ describe('TripsService — ASSIGNED <-> PLANNED transitions (BE-011)', () => {
     const { service, repo } = buildService({ id: 'trp_1', status: 'ASSIGNED', driverId: 'drv_1', etaAt: null });
     await service.update('trp_1', { status: 'PLANNED' });
     expect(repo.update.mock.calls[0][1]).toMatchObject({ status: 'PLANNED', driver: { disconnect: true } });
+  });
+});
+
+describe('TripsService — publishing a draft with a driver (CODE-005)', () => {
+  const DRV = '11111111-1111-4111-8111-111111111111';
+  const VEH = '44444444-4444-4444-8444-444444444444';
+  const TRL = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const at = (h: number) => new Date(Date.UTC(2026, 9, 10, h));
+  const draft = (o: Record<string, unknown> = {}) => ({
+    id: 'trp_1',
+    status: 'DRAFT',
+    driverId: DRV,
+    vehicleId: VEH,
+    trailerId: null,
+    plannedStartAt: at(12),
+    plannedEndAt: at(16),
+    etaAt: null,
+    ...o,
+  });
+
+  it('publishes straight to ASSIGNED, notifies the driver and pushes the new status', async () => {
+    const { service, repo, events, alertQueue } = buildService(draft());
+    const result = await service.update('trp_1', { status: 'PLANNED' });
+    expect(result.status).toBe('ASSIGNED');
+    expect(repo.update.mock.calls[0][1]).toMatchObject({ status: 'ASSIGNED' });
+    expect(alertQueue.add).toHaveBeenCalledWith('alert.trip_assigned', { tripId: 'trp_1', driverId: DRV });
+    expect(events.publish).toHaveBeenCalledWith('realtime.push', {
+      room: 'fleet',
+      event: 'trip.status_changed',
+      payload: { tripId: 'trp_1', status: 'ASSIGNED', eta: null },
+    });
+  });
+
+  it('re-runs the driver / unit / trailer overlap check under the schedule locks', async () => {
+    const { service, repo } = buildService(draft({ trailerId: TRL }));
+    await service.update('trp_1', { status: 'PLANNED' });
+    expect(repo.findUnitScheduleCandidates).toHaveBeenCalledWith(VEH, { start: at(12), end: at(16) }, 'trp_1', 'tx');
+    expect(repo.findDriverScheduleCandidates).toHaveBeenCalledWith(DRV, { start: at(12), end: at(16) }, 'trp_1', 'tx');
+    expect(repo.findTrailerScheduleCandidates).toHaveBeenCalledWith(TRL, { start: at(12), end: at(16) }, 'trp_1', 'tx');
+    expect(repo.update).toHaveBeenCalledWith(expect.objectContaining({ id: 'trp_1' }), expect.objectContaining({ status: 'ASSIGNED' }), 'tx');
+  });
+
+  it('a driver booked on another trip in the range -> 409 TRIP_SCHEDULE_CONFLICT, nothing written, no notification', async () => {
+    const { service, repo, alertQueue } = buildService(draft({ vehicleId: null }));
+    repo.findDriverScheduleCandidates.mockResolvedValueOnce([
+      { id: 'trp_other', number: 'TRP-500', status: 'ASSIGNED', plannedStartAt: at(10), plannedEndAt: at(14), startedAt: null, completedAt: null, vehicle: null, driver: { firstName: 'John', lastName: 'Smith' } },
+    ]);
+    await expect(service.update('trp_1', { status: 'PLANNED' })).rejects.toMatchObject({ code: 'TRIP_SCHEDULE_CONFLICT', status: 409 });
+    expect(repo.update).not.toHaveBeenCalled();
+    expect(alertQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('a driver deactivated since the draft was saved -> 409 details.driverId, nothing written', async () => {
+    const { service, repo, alertQueue } = buildService(draft());
+    repo.findDriverForTrip.mockResolvedValueOnce({ id: DRV, status: 'INACTIVE', deletedAt: null });
+    await expect(service.update('trp_1', { status: 'PLANNED' })).rejects.toMatchObject({
+      code: 'CONFLICT',
+      status: 409,
+      details: { driverId: 'This driver is inactive and cannot be assigned a trip.' },
+    });
+    expect(repo.update).not.toHaveBeenCalled();
+    expect(alertQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('a unit put out of service / a deleted driver since the draft was saved is refused too', async () => {
+    const { service, repo } = buildService(draft());
+    repo.findVehicleForTrip.mockResolvedValueOnce({ id: VEH, status: 'OUT_OF_SERVICE', deletedAt: null });
+    await expect(service.update('trp_1', { status: 'PLANNED' })).rejects.toMatchObject({ code: 'VEHICLE_OUT_OF_SERVICE', status: 409 });
+    repo.findDriverForTrip.mockResolvedValueOnce({ id: DRV, status: 'ACTIVE', deletedAt: new Date() });
+    await expect(service.update('trp_1', { status: 'PLANNED' })).rejects.toMatchObject({ code: 'DRIVER_NOT_FOUND', status: 422 });
+    expect(repo.update).not.toHaveBeenCalled();
+  });
+
+  it('a draft without a driver still publishes to PLANNED (unassigned board), unit re-checked, no notification', async () => {
+    const { service, repo, alertQueue } = buildService(draft({ driverId: null }));
+    const result = await service.update('trp_1', { status: 'PLANNED' });
+    expect(result.status).toBe('PLANNED');
+    expect(repo.findVehicleForTrip).toHaveBeenCalledWith(VEH);
+    expect(repo.findDriverForTrip).not.toHaveBeenCalled();
+    expect(alertQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('cancelling a draft re-checks nothing, notifies nobody and needs no planned start', async () => {
+    const { service, repo, alertQueue } = buildService(draft({ plannedStartAt: null, plannedEndAt: null }));
+    const result = await service.update('trp_1', { status: 'CANCELLED' });
+    expect(result.status).toBe('CANCELLED');
+    expect(repo.findDriverForTrip).not.toHaveBeenCalled();
+    expect(repo.findVehicleForTrip).not.toHaveBeenCalled();
+    expect(alertQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('PATCH PLANNED -> ASSIGNED on a trip that already has a driver (e.g. a draft published before this fix) gets the same checks + notification', async () => {
+    const { service, repo, alertQueue } = buildService(draft({ status: 'PLANNED' }));
+    repo.findDriverForTrip.mockResolvedValueOnce({ id: DRV, status: 'TERMINATED', deletedAt: null });
+    await expect(service.update('trp_1', { status: 'ASSIGNED' })).rejects.toMatchObject({ code: 'CONFLICT', status: 409 });
+    expect(repo.update).not.toHaveBeenCalled();
+
+    const result = await service.update('trp_1', { status: 'ASSIGNED' });
+    expect(result.status).toBe('ASSIGNED');
+    expect(repo.findDriverScheduleCandidates).toHaveBeenCalledWith(DRV, { start: at(12), end: at(16) }, 'trp_1', 'tx');
+    expect(alertQueue.add).toHaveBeenCalledWith('alert.trip_assigned', { tripId: 'trp_1', driverId: DRV });
+  });
+
+  it('a plain field edit on an ASSIGNED trip never re-notifies the driver', async () => {
+    const { service, alertQueue } = buildService(draft({ status: 'ASSIGNED' }));
+    await service.update('trp_1', { notes: 'x' });
+    expect(alertQueue.add).not.toHaveBeenCalled();
+  });
+});
+
+describe('TripsService — onTime stamped on delivery (LIVE-003)', () => {
+  const end = new Date('2026-10-10T16:00:00Z');
+
+  afterEach(() => jest.useRealTimers());
+
+  it('delivered before the planned end -> onTime: true; after it -> onTime: false', async () => {
+    jest.useFakeTimers({ now: new Date('2026-10-10T15:59:00Z') });
+    const early = buildService({ id: 'trp_1', status: 'IN_PROGRESS', plannedEndAt: end, completedAt: null, onTime: null, etaAt: null });
+    await early.service.update('trp_1', { status: 'DELIVERED' });
+    expect(early.repo.update.mock.calls[0][1]).toMatchObject({ onTime: true, completedAt: new Date('2026-10-10T15:59:00Z') });
+
+    jest.setSystemTime(new Date('2026-10-10T16:01:00Z'));
+    const late = buildService({ id: 'trp_1', status: 'IN_PROGRESS', plannedEndAt: end, completedAt: null, onTime: null, etaAt: null });
+    await late.service.update('trp_1', { status: 'DELIVERED' });
+    expect(late.repo.update.mock.calls[0][1]).toMatchObject({ onTime: false });
+  });
+
+  it('leaves onTime alone without a planned end, or when it is already set', async () => {
+    const noEnd = buildService({ id: 'trp_1', status: 'IN_PROGRESS', plannedEndAt: null, completedAt: null, onTime: null, etaAt: null });
+    await noEnd.service.update('trp_1', { status: 'DELIVERED' });
+    expect(noEnd.repo.update.mock.calls[0][1]).not.toHaveProperty('onTime');
+
+    const preset = buildService({ id: 'trp_1', status: 'IN_PROGRESS', plannedEndAt: end, completedAt: null, onTime: true, etaAt: null });
+    await preset.service.update('trp_1', { status: 'DELIVERED' });
+    expect(preset.repo.update.mock.calls[0][1]).not.toHaveProperty('onTime');
+  });
+});
+
+describe('TripsService — dispatcher Start trip / Mark delivered (LIVE-003)', () => {
+  const started = new Date('2026-10-10T08:00:00Z');
+  const end = new Date('2026-10-10T16:00:00Z');
+
+  afterEach(() => jest.useRealTimers());
+
+  it('records the delivery time the dispatcher entered and judges onTime against it', async () => {
+    jest.useFakeTimers({ now: new Date('2026-10-10T18:00:00Z') });
+    const { service, repo } = buildService({ id: 'trp_1', status: 'IN_PROGRESS', startedAt: started, plannedEndAt: end, completedAt: null, onTime: null, etaAt: null });
+    await service.update('trp_1', { status: 'DELIVERED', completedAt: new Date('2026-10-10T15:30:00Z') });
+    expect(repo.update.mock.calls[0][1]).toMatchObject({ completedAt: new Date('2026-10-10T15:30:00Z'), onTime: true });
+  });
+
+  it('rejects a delivery time in the future, before the start, or without the move to DELIVERED', async () => {
+    jest.useFakeTimers({ now: new Date('2026-10-10T18:00:00Z') });
+    const { service, repo } = buildService({ id: 'trp_1', status: 'IN_PROGRESS', startedAt: started, plannedEndAt: end, completedAt: null, onTime: null, etaAt: null });
+    await expect(service.update('trp_1', { status: 'DELIVERED', completedAt: new Date('2026-10-10T19:00:00Z') })).rejects.toMatchObject({
+      code: 'VALIDATION_FAILED',
+      status: 422,
+      details: { completedAt: 'Delivery time cannot be in the future.' },
+    });
+    await expect(service.update('trp_1', { status: 'DELIVERED', completedAt: new Date('2026-10-10T07:00:00Z') })).rejects.toMatchObject({
+      details: { completedAt: 'Delivery time cannot be before the trip started.' },
+    });
+    await expect(service.update('trp_1', { notes: 'x', completedAt: new Date('2026-10-10T12:00:00Z') })).rejects.toMatchObject({ status: 422 });
+    expect(repo.update).not.toHaveBeenCalled();
+  });
+
+  it('Start trip (ASSIGNED -> IN_PROGRESS) publishes trip.status_changed', async () => {
+    const { service, events } = buildService({ id: 'trp_1', status: 'ASSIGNED', driverId: 'drv_1', startedAt: null, etaAt: null });
+    await service.update('trp_1', { status: 'IN_PROGRESS' });
+    expect(events.publish).toHaveBeenCalledWith('realtime.push', {
+      room: 'fleet',
+      event: 'trip.status_changed',
+      payload: { tripId: 'trp_1', status: 'IN_PROGRESS', eta: null },
+    });
+  });
+});
+
+describe('TripsService — status-guarded writes (CODE-024)', () => {
+  const gone = () => Object.assign(new Error('not found'), { code: 'P2025' });
+
+  it('update writes only while the trip still has the status it was checked in', async () => {
+    const { service, repo } = buildService({ id: 'trp_1', status: 'ASSIGNED', driverId: 'drv_1', startedAt: null, etaAt: null });
+    await service.update('trp_1', { status: 'IN_PROGRESS' });
+    expect(repo.update).toHaveBeenCalledWith({ id: 'trp_1', status: 'ASSIGNED' }, expect.anything());
+  });
+
+  it('update -> 409 when the status moved between the check and the write (e.g. cancelled meanwhile)', async () => {
+    const { service, repo, events } = buildService({ id: 'trp_1', status: 'IN_PROGRESS', startedAt: null, etaAt: null });
+    repo.update.mockRejectedValueOnce(gone());
+    repo.findById
+      .mockResolvedValueOnce({ id: 'trp_1', status: 'IN_PROGRESS', startedAt: null, etaAt: null })
+      .mockResolvedValueOnce({ id: 'trp_1', status: 'CANCELLED', startedAt: null, etaAt: null });
+    await expect(service.update('trp_1', { status: 'DELIVERED' })).rejects.toMatchObject({ code: 'CONFLICT', status: 409, details: { status: 'CANCELLED' } });
+    expect(events.publish).not.toHaveBeenCalled();
+  });
+
+  it('assign -> 409 when the driver started the trip meanwhile (never overwrites IN_PROGRESS)', async () => {
+    const start = new Date('2026-10-10T08:00:00Z');
+    const DRV = '11111111-1111-4111-8111-111111111111';
+    const trip = { id: 'trp_1', status: 'ASSIGNED', driverId: 'drv_old', vehicleId: null, trailerId: null, plannedStartAt: start, plannedEndAt: null, etaAt: null };
+    const { service, repo } = buildService(trip);
+    repo.withDriverScheduleLock.mockRejectedValueOnce(gone());
+    repo.findById.mockResolvedValueOnce(trip).mockResolvedValueOnce({ ...trip, status: 'IN_PROGRESS' });
+    await expect(service.assign('trp_1', { driverId: DRV, notify: false })).rejects.toMatchObject({ code: 'CONFLICT', status: 409 });
   });
 });

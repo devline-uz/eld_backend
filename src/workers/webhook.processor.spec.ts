@@ -1,3 +1,11 @@
+// CODE-018 — DNS is stubbed: `example.com` resolves to a public address, `internal.example` to a
+// private one. No real lookup runs in unit tests.
+jest.mock('node:dns/promises', () => ({
+  lookup: jest.fn(async (host: string) =>
+    host === 'internal.example' ? [{ address: '10.0.0.5', family: 4 }] : [{ address: '93.184.216.34', family: 4 }],
+  ),
+}));
+
 import { IntegrationsService } from '../modules/integrations/integrations.service';
 import { WebhookDeliveryRepository } from '../modules/webhooks/webhook-delivery.repository';
 import { WebhookProcessor } from './webhook.processor';
@@ -105,6 +113,27 @@ describe('WebhookProcessor', () => {
     );
     const call = deliveries.recordAttempt.mock.calls[0][1] as { responseBody: string };
     expect(call.responseBody).toContain('ECONNREFUSED');
+  });
+
+  it('never follows redirects (a 3xx is a failed attempt)', async () => {
+    fetchMock.mockResolvedValue({ status: 302, text: () => Promise.resolve('') });
+    deliveries.findById.mockResolvedValue(makeDelivery() as never);
+    await processor.process({ data: { deliveryId: 'whd_1' } } as never);
+    expect((fetchMock.mock.calls[0] as [string, RequestInit])[1].redirect).toBe('manual');
+    expect(deliveries.recordAttempt).toHaveBeenCalledWith('whd_1', expect.objectContaining({ status: 'QUEUED', httpStatus: 302 }));
+  });
+
+  it.each([
+    ['a loopback literal', 'https://127.0.0.1/hook'],
+    ['the cloud metadata endpoint', 'https://169.254.169.254/latest/meta-data'],
+    ['a name resolving to a private address', 'https://internal.example/hook'],
+    ['plain http', 'http://example.com/hook'],
+  ])('refuses %s without sending and without retrying (CODE-018)', async (_label, url) => {
+    deliveries.findById.mockResolvedValue(makeDelivery({ url }) as never);
+    await processor.process({ data: { deliveryId: 'whd_1' } } as never);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(deliveries.recordAttempt).toHaveBeenCalledWith('whd_1', expect.objectContaining({ status: 'FAILED', attempts: 1, nextRetryAt: null }));
+    expect(queue.add).not.toHaveBeenCalled();
   });
 
   it('skips silently if the WebhookDelivery row is missing (e.g. purged)', async () => {

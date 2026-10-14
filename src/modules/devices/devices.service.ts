@@ -10,6 +10,7 @@ import {
   CreateDeviceDto,
   DeviceListQueryDto,
   ImportDevicesDto,
+  normalizeDeviceSerial,
   PairDeviceDto,
   UpdateBleStatusDto,
   UpdateDeviceDto,
@@ -121,11 +122,12 @@ export class DevicesService {
   }
 
   async create(dto: CreateDeviceDto): Promise<DeviceView> {
-    if (isReservedVirtualSerial(dto.serial)) throw virtualSerialReserved([{ index: 0, serial: dto.serial }]);
-    const existing = await this.devices.findBySerial(dto.serial);
-    if (existing) throw AppException.conflict(`Device "${dto.serial}" already registered.`);
+    const serial = normalizeDeviceSerial(dto.serial);
+    if (isReservedVirtualSerial(serial)) throw virtualSerialReserved([{ index: 0, serial }]);
+    const existing = await this.devices.findBySerial(serial);
+    if (existing) throw AppException.conflict(`Device "${serial}" already registered.`);
     const created = await this.devices.create({
-      serial: dto.serial,
+      serial,
       bleMacAddress: dto.bleMacAddress,
       model: dto.model,
       firmware: dto.firmware,
@@ -238,14 +240,15 @@ export class DevicesService {
     const summary: ImportSummary = { imported: 0, updated: 0, failed: [] };
     for (let index = 0; index < dto.devices.length; index += 1) {
       const row = dto.devices[index];
+      const serial = normalizeDeviceSerial(row.serial);
       try {
-        const existing = await this.devices.findBySerial(row.serial);
+        const existing = await this.devices.findBySerial(serial);
         if (existing) {
           await this.devices.update({ id: existing.id }, this.toUpdateInput(row));
           summary.updated += 1;
         } else {
           await this.devices.create({
-            serial: row.serial,
+            serial,
             bleMacAddress: row.bleMacAddress,
             model: row.model,
             firmware: row.firmware,

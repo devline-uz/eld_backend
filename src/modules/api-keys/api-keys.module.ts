@@ -1,12 +1,15 @@
 import { Module, OnModuleInit } from '@nestjs/common';
 import { AuditSnapshotRegistry } from '../../common/audit/audit-snapshot.registry';
 import { ApiKeyVerifier } from '../../common/guards/api-key-verifier.port';
+import { RolesModule } from '../roles/roles.module';
 import { ApiKeysAuthAdapter } from './api-keys-auth.adapter';
 import { ApiKeysController } from './api-keys.controller';
 import { ApiKeysRepository } from './api-keys.repository';
 import { ApiKeysService } from './api-keys.service';
 
 @Module({
+  // CODE-003 — `RolesRepository` resolves the creator's permission ceiling for scope checks.
+  imports: [RolesModule],
   controllers: [ApiKeysController],
   providers: [
     ApiKeysService,

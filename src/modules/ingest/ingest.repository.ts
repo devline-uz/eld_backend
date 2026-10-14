@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { Device, DeviceRawEvent, EldEvent, Prisma, Vehicle } from '@prisma/client';
 import { BaseRepository, ModelDelegate } from '../../core/prisma/base.repository';
 import { PrismaService } from '../../core/prisma/prisma.service';
+import { equalsInsensitive } from '../../common/text/insensitive';
 import { activeCodeKeys, AUTO_CHECK_WINDOW_SEC } from './detectors';
 import { EVENT_SEQUENCE_MIN, EVENT_TYPE, LOGIN_CODE, PC_YM_CODE, nextSequenceId } from './event-codes';
 import type { UnitSessionWindow } from './ownership';
@@ -53,8 +54,13 @@ export class IngestRepository extends BaseRepository<
 
   // --- lookups used to verify the untrusted payload ------------------------
 
-  findDeviceBySerial(serial: string): Promise<Device | null> {
-    return this.prisma.device.findUnique({ where: { serial } });
+  /** CODE-009 — the registry stores serials trimmed + upper-cased; exact match first (hot path),
+   * then case-insensitive so an app reporting `pt30_a86e` still resolves its device. */
+  async findDeviceBySerial(serial: string): Promise<Device | null> {
+    return (
+      (await this.prisma.device.findUnique({ where: { serial } })) ??
+      (await this.prisma.device.findFirst({ where: { serial: equalsInsensitive(serial.trim()) } }))
+    );
   }
 
   findVehicle(id: string): Promise<Vehicle | null> {

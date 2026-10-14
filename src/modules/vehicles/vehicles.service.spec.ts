@@ -1,3 +1,4 @@
+import { UpdateVehicleDto } from './dto/vehicles.dto';
 import { AppException } from '../../common/errors/app.exception';
 import type { PushService } from '../../core/firebase/push.service';
 import type { CarrierRepository } from '../carrier/carrier.repository';
@@ -355,6 +356,14 @@ describe('VehiclesService', () => {
       vehiclesRepo.update.mockResolvedValue(makeVehicle() as never);
       await service.update('veh_1', { groupId: null });
       expect(vehiclesRepo.update).toHaveBeenCalledWith({ id: 'veh_1' }, { group: { disconnect: true } });
+    });
+
+    // CODE-010 — the edit form sends `null` for a field the user emptied; it must be cleared.
+    it('`null` clears the plate, issuing state and notes', async () => {
+      vehiclesRepo.findById.mockResolvedValue(makeVehicle({ licensePlate: 'ABC123', plateState: 'OH', notes: 'x' }) as never);
+      vehiclesRepo.update.mockResolvedValue(makeVehicle() as never);
+      await service.update('veh_1', UpdateVehicleDto.parse({ licensePlate: null, plateState: null, notes: null }));
+      expect(vehiclesRepo.update).toHaveBeenCalledWith({ id: 'veh_1' }, { licensePlate: null, plateState: null, notes: null });
     });
   });
 

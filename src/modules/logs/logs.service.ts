@@ -175,7 +175,9 @@ export class LogsService {
       dayStartAt: startAt,
       now,
     });
-    return { ...day, ongoingViolations };
+    // LIVE-005 — the panel's "Recorded by ELD …" line, from the records instead of a placeholder.
+    const recordedBy = await this.repo.findRecordingElds(driverId, startAt, dayEnd(timezone, key));
+    return { ...day, ongoingViolations, recordedBy };
   }
 
   /**
@@ -222,7 +224,7 @@ export class LogsService {
       new Date(startAt.getTime() - 1),
     );
     // Markers that retire a record may sit inside the day, so the whole span decides what is active.
-    const active = activeRecords([...history, ...dayEvents]) as EldEvent[];
+    const active = activeRecords([...history, ...dayEvents]);
     let last: EldEvent | null = null;
     for (const event of active) {
       if (event.eventType !== 1 || event.eventDateTime.getTime() >= startAt.getTime()) continue;

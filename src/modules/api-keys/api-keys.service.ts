@@ -4,8 +4,11 @@ import type { ApiKey } from '@prisma/client';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
 import { sha256 } from '../auth/lib/hash.util';
+import { assertWithinCeiling, CeilingActor, resolveCeiling } from '../roles/permission-ceiling';
+import { RolesRepository } from '../roles/roles.repository';
+import { scopesToPermissionMatrix } from './api-key-scopes';
 import { CreateApiKeyDto } from './dto/api-keys.dto';
-import { ApiKeysRepository } from './api-keys.repository';
+import { ApiKeysRepository, ApiKeyWithCreator } from './api-keys.repository';
 
 const PREFIX_LEN = 8;
 
@@ -24,7 +27,16 @@ function toView(key: ApiKey): ApiKeyView {
  */
 @Injectable()
 export class ApiKeysService {
-  constructor(private readonly repo: ApiKeysRepository) {}
+  constructor(
+    private readonly repo: ApiKeysRepository,
+    private readonly roles: RolesRepository,
+  ) {}
+
+  /** CODE-003 — a key's scopes may not exceed its creator's own levels (SUPER_ADMIN exempt). */
+  private async assertScopesWithinActor(scopes: string[], actor: CeilingActor): Promise<void> {
+    const ceiling = await resolveCeiling(actor, this.roles);
+    assertWithinCeiling(scopesToPermissionMatrix(scopes), ceiling, 'API key scopes cannot exceed your own permissions');
+  }
 
   async list(): Promise<ApiKeyView[]> {
     return (await this.repo.list()).map(toView);
@@ -32,7 +44,8 @@ export class ApiKeysService {
 
   /** Plaintext key is returned exactly once, here, and never persisted. The stored
    * `keyHash` never appears in any response (TZ §6.5). */
-  async create(dto: CreateApiKeyDto, createdById: string): Promise<{ apiKey: ApiKeyView; plaintextKey: string }> {
+  async create(dto: CreateApiKeyDto, actor: CeilingActor): Promise<{ apiKey: ApiKeyView; plaintextKey: string }> {
+    await this.assertScopesWithinActor(dto.scopes, actor);
     const plaintextKey = `obk_${randomBytes(24).toString('base64url')}`;
     const prefix = plaintextKey.slice(0, PREFIX_LEN);
     const apiKey = await this.repo.create({
@@ -40,7 +53,7 @@ export class ApiKeysService {
       keyHash: sha256(plaintextKey),
       prefix,
       scopes: dto.scopes,
-      createdById,
+      createdById: actor.id,
       expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
     });
     return { apiKey: toView(apiKey), plaintextKey };
@@ -55,9 +68,10 @@ export class ApiKeysService {
 
   /** TZ §6.5 — scope change is audited exactly like create/revoke; the plaintext key
    * and hash are never touched, only the `scopes` array. */
-  async updateScopes(id: string, scopes: string[]): Promise<ApiKeyView> {
+  async updateScopes(id: string, scopes: string[], actor: CeilingActor): Promise<ApiKeyView> {
     const key = await this.repo.findById(id);
     if (!key) throw AppException.notFound('API key not found.');
+    await this.assertScopesWithinActor(scopes, actor);
     const updated = await this.repo.updateScopes(id, scopes);
     return toView(updated);
   }
@@ -68,13 +82,18 @@ export class ApiKeysService {
    * stable §20 code instead of collapsing "revoked" and "wrong key" into one API_KEY_INVALID —
    * see bugs.md B-010. A revoked or expired key is rejected here immediately: there is no
    * cache layer between this check and the DB, so a revoke is visible on the very next call.
+   * CODE-003 — the creator is loaded in the same query: a key dies with its creator's account
+   * (DISABLED, or any non-ACTIVE status), and the adapter caps its scopes at the creator's role.
    */
-  async verify(plaintextKey: string): Promise<ApiKey> {
+  async verify(plaintextKey: string): Promise<ApiKeyWithCreator> {
     const key = await this.repo.findByHash(sha256(plaintextKey));
     if (!key) throw new AppException(ERROR_CODES.API_KEY_INVALID, 'Invalid API key.', 401);
     if (key.revokedAt) throw new AppException(ERROR_CODES.API_KEY_REVOKED, 'API key has been revoked.', 401);
     if (key.expiresAt && key.expiresAt < new Date()) {
       throw new AppException(ERROR_CODES.API_KEY_EXPIRED, 'API key has expired.', 401);
+    }
+    if (key.createdBy?.status !== 'ACTIVE') {
+      throw new AppException(ERROR_CODES.API_KEY_REVOKED, 'API key owner is no longer active.', 401);
     }
     await this.repo.touchLastUsed(key.id);
     return key;

@@ -3,6 +3,7 @@ import type { Prisma, Vehicle } from '@prisma/client';
 import { BaseRepository, ModelDelegate } from '../../core/prisma/base.repository';
 import { PrismaService } from '../../core/prisma/prisma.service';
 import { containsInsensitive, equalsInsensitive } from '../../common/text/insensitive';
+import { outOfServiceHoldingDefectsWhere } from './lib/out-of-service-defects';
 
 export interface VehicleListFilter {
   status?: Vehicle['status'];
@@ -140,14 +141,15 @@ export class VehiclesRepository extends BaseRepository<
   }
 
   /**
-   * TZ §5.10 hard rule support — ids of OPEN + CRITICAL defects on this unit. Queried directly
+   * TZ §5.10 hard rule support — ids of the CRITICAL defects still holding this unit out of
+   * service (OPEN, IN_PROGRESS or DEFERRED — QA CODE-008: deferral is not a repair). Queried directly
    * against the `Defect` table (not via `DefectsRepository`) to avoid a `VehiclesModule <->
    * ServiceModule` import cycle; `VehiclesModule` stays the leaf the same way it already is for
    * `DriversModule`.
    */
   findOpenCriticalDefectIds(vehicleId: string): Promise<Array<{ id: string }>> {
     return this.prisma.defect.findMany({
-      where: { vehicleId, status: 'OPEN', severity: 'CRITICAL' },
+      where: outOfServiceHoldingDefectsWhere(vehicleId),
       select: { id: true },
     });
   }

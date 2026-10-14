@@ -112,6 +112,11 @@ services:
     environment:
       NODE_ENV: production
       PORT: 3000
+      # CODE-004 — the host's Caddy reaches this container through the published
+      # 127.0.0.1-only port, so the peer is the compose network gateway (private
+      # range), not loopback. Only host-local processes and this compose network can
+      # connect, so trusting private ranges here does not let clients spoof XFF.
+      TRUST_PROXY: loopback,uniquelocal
     ports:
       - "127.0.0.1:13000:3000"
     depends_on:
@@ -177,6 +182,7 @@ services:
     environment:
       NODE_ENV: development
       PORT: 3001
+      TRUST_PROXY: loopback,uniquelocal # CODE-004 — see the api service
     ports:
       - "127.0.0.1:13001:3001"
     volumes:

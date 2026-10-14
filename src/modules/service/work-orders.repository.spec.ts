@@ -61,6 +61,14 @@ describe('syncVehicleOutOfService (work order "Keep the unit out of service")', 
     await expect(syncVehicleOutOfService(tx, 'veh_1', true)).resolves.toBeNull();
     expect(vehicleUpdate).not.toHaveBeenCalled();
   });
+
+  it('QA CODE-008 — counts DEFERRED out-of-service defects as still holding the unit', async () => {
+    const { tx } = fakeTx({ status: 'OUT_OF_SERVICE', holds: 0 });
+    await syncVehicleOutOfService(tx, 'veh_1', true);
+    expect((tx as unknown as { defect: { count: jest.Mock } }).defect.count).toHaveBeenCalledWith({
+      where: { vehicleId: 'veh_1', status: { in: ['OPEN', 'IN_PROGRESS', 'DEFERRED'] }, OR: [{ severity: 'CRITICAL' }, { outOfService: true }] },
+    });
+  });
 });
 
 describe('holdsUnitOutOfService', () => {

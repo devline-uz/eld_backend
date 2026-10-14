@@ -27,7 +27,7 @@ class FakeRepo {
     shortHaulException: false,
     splitSleeperEnabled: true,
   };
-  events: Array<{ eventType: number; eventCode: number; eventDateTime: Date; recordStatus: number; eventSequenceId: number }> = [];
+  events: Array<{ id?: bigint; supersedesId?: bigint | null; eventType: number; eventCode: number; eventDateTime: Date; recordStatus: number; eventSequenceId: number }> = [];
   dailyLogs: Array<{ logDate: Date; onDutySec: number; drivingSec: number; hasEdits?: boolean }> = [];
   /** B-059 — every header totals write, in call order. */
   headerUpserts: Array<Record<string, unknown>> = [];
@@ -40,11 +40,11 @@ class FakeRepo {
   findDailyLogs = jest.fn(async (_id: string, from: Date, to: Date) => this.dailyLogs.filter((l) => l.logDate >= from && l.logDate <= to));
   /** Batched reads: every fake row belongs to the fake driver, the rest are "other drivers". */
   otherDriverEvents: Array<{ driverId: string; eventType: number; eventCode: number; eventDateTime: Date; recordStatus: number; eventSequenceId: number }> = [];
-  /** Mirrors the SQL: per-driver lower bound, active duty/PC-YM records only, LIMIT per driver. */
+  /** Mirrors the SQL: per-driver lower bound, duty/PC-YM records of status 1 and 2 (CODE-006), LIMIT per driver. */
   findEventsForDrivers = jest.fn(async (windows: Array<{ driverId: string; from: Date }>, to: Date, limit: number) =>
     windows.flatMap((w) =>
       [...this.events.map((e) => ({ ...e, driverId: 'driver-1' })), ...this.otherDriverEvents]
-        .filter((e) => e.driverId === w.driverId && e.recordStatus === 1 && (e.eventType === 1 || e.eventType === 3))
+        .filter((e) => e.driverId === w.driverId && (e.recordStatus === 1 || e.recordStatus === 2) && (e.eventType === 1 || e.eventType === 3))
         .filter((e) => e.eventDateTime >= w.from && e.eventDateTime <= to)
         .sort((a, b) => a.eventDateTime.getTime() - b.eventDateTime.getTime() || a.eventSequenceId - b.eventSequenceId)
         .slice(0, limit),
@@ -86,8 +86,9 @@ class FakeRepo {
 
   autoClear = jest.fn(async (id: string) => {
     const row = this.violations.find((v) => v.id === id)!;
+    if (row.status !== 'OPEN') return false;
     row.status = 'AUTO_CLEARED';
-    return row;
+    return true;
   });
 
   refreshResolved = jest.fn(async (id: string, exceededBySec: number) => {
@@ -535,6 +536,92 @@ describe('HosRecalcService', () => {
       expect(batch.has('flood')).toBe(false);
       expect(batch.get('calm')?.currentStatus).toBe('D');
       expect(error).toHaveBeenCalledWith(expect.objectContaining({ driverId: 'flood', cap: HOS_BATCH_MAX_EVENTS_PER_DRIVER }), expect.any(String));
+    });
+  });
+
+  /**
+   * CODE-006 — repro (agentB/edit1.ts): OFF 00:00, ON 10:00, D 12:00, OFF 20:00; the carrier
+   * proposes "ON@10:00 -> SB from 09:30" and the driver accepts. The accepted plan writes the
+   * "Inactive — Changed" marker on ON@10:00 and the new SB@09:30, but no neutraliser (the new
+   * start is EARLIER, B-048). The log shows SB 2.5 h / ON 0; the engine must see the same.
+   */
+  describe('CODE-006 — the engine reads the same supersede-aware timeline as the RODS log', () => {
+    const at = (hhmm: string) => new Date(`2026-03-02T${hhmm}:00Z`);
+    const EVENING = new Date('2026-03-02T23:59:59Z');
+    const row = (id: number, code: number, when: Date, extra: Record<string, unknown> = {}) => ({
+      id: BigInt(id), supersedesId: null, eventType: 1, eventCode: code, eventDateTime: when, recordStatus: 1, eventSequenceId: id, ...extra,
+    });
+    const ACCEPTED_EARLIER_EDIT = [
+      row(1, 1, at('00:00')),
+      row(2, 4, at('10:00')),
+      row(3, 3, at('12:00')),
+      row(4, 1, at('20:00')),
+      row(5, 2, at('09:30'), { recordStatus: 3, supersedesId: 2n }), // the carrier proposal
+      row(6, 4, at('10:00'), { recordStatus: 2, supersedesId: 2n }), // INACTIVE_MARKER on ON@10:00
+      row(7, 2, at('09:30'), { supersedesId: 5n }), // NEW_ACTIVE SB@09:30
+    ];
+
+    beforeEach(() => {
+      repo.driver = { ...repo.driver, homeTerminalTimezone: 'UTC' };
+      repo.events = ACCEPTED_EARLIER_EDIT;
+    });
+
+    it('single-driver read: SB 2.5 h and no on-duty time from the retired ON@10:00', async () => {
+      const current = await service.computeCurrentState('driver-1', EVENING);
+      expect(current!.state.dailyTotals.sb).toBe(2.5 * H);
+      expect(current!.state.dailyTotals.on).toBe(0);
+      expect(current!.state.dailyTotals.drive).toBe(8 * H);
+    });
+
+    it('batched read (roster / live fleet) gives the identical result', async () => {
+      const single = await service.computeCurrentState('driver-1', EVENING);
+      const batch = await service.computeCurrentStates([repo.driver as never], EVENING);
+      expect(batch.get('driver-1')).toEqual(single!.state);
+    });
+
+    it('the engine day totals equal the RODS day header built from the same records', async () => {
+      await service.recalculate({ driverId: 'driver-1', fromDate: '2026-03-02' }, EVENING);
+      const header = repo.headerUpserts.find((h) => (h.logDate as Date).toISOString().startsWith('2026-03-02'))!;
+      const current = await service.computeCurrentState('driver-1', EVENING);
+      expect(header.sleeperSec).toBe(current!.state.dailyTotals.sb);
+      expect(header.onDutySec).toBe(current!.state.dailyTotals.on);
+      expect(header.drivingSec).toBe(current!.state.dailyTotals.drive);
+    });
+  });
+
+  /**
+   * LIVE-001 — an OPEN violation on a day whose records no longer support it (orphan: seeded
+   * without records, or left behind by a since-corrected log) is AUTO_CLEARED by the next
+   * recalculation that covers the day — never deleted.
+   */
+  describe('LIVE-001 — orphan OPEN violations are cleared by a recalculation over their day', () => {
+    const orphan = (): FakeViolation => ({
+      id: 'orphan', driverId: 'driver-1', logDate: new Date('2025-01-13T00:00:00Z'), type: 'DRIVING_11',
+      occurredAt: new Date('2025-01-13T19:26:00Z'), exceededBySec: 1560, detail: '11-hour driving limit exceeded by 00:26',
+      status: 'OPEN', recalcVersion: 1,
+    });
+
+    it('a day with zero driving loses its OPEN 11-hour violation (kept as AUTO_CLEARED) and its header flag', async () => {
+      repo.violations = [orphan()];
+      const result = await service.recalculate({ driverId: 'driver-1', fromDate: '2025-01-13' }, NOW);
+      expect(result.autoCleared).toBe(1);
+      expect(repo.autoClear).toHaveBeenCalledWith('orphan', expect.objectContaining({ engineVersion: expect.any(String) as unknown }));
+      expect(repo.violations).toHaveLength(1);
+      expect(repo.violations[0].status).toBe('AUTO_CLEARED');
+      expect(repo.dailyFlagUpdates).toContainEqual({ logDate: '2025-01-13', count: 0 });
+    });
+
+    it('a recalculation that starts AFTER the orphan day leaves it alone (scope is the recalculated days)', async () => {
+      repo.violations = [orphan()];
+      await service.recalculate({ driverId: 'driver-1', fromDate: '2025-01-14' }, NOW);
+      expect(repo.violations[0].status).toBe('OPEN');
+    });
+
+    it('a row a human resolved meanwhile is not counted as auto-cleared', async () => {
+      repo.violations = [orphan()];
+      repo.autoClear.mockResolvedValueOnce(false);
+      const result = await service.recalculate({ driverId: 'driver-1', fromDate: '2025-01-13' }, NOW);
+      expect(result.autoCleared).toBe(0);
     });
   });
 });

@@ -79,6 +79,10 @@ export const UpdateDriverDto = CreateDriverDto.omit({ username: true, password: 
      * to the old address, hold window (`DriverEmailChangeService.clearInput`). */
     email: OptionalDriverEmail,
     hosRuleset: HosRulesetEnum.optional(),
+    /** CODE-010 — `null` / `''` clears the phone; omitted → unchanged. */
+    phone: z.string().max(30).nullable().optional(),
+    /** CODE-010 — `null` clears the exemption reason; omitted → unchanged. */
+    eldExemptReason: z.string().max(200).nullable().optional(),
     status: DriverStatusEnum.optional(),
     /** Driver email change — the ACTING web user's own password; required only when `email`
      * differs from the driver's current one (never stored, redacted from logs). */

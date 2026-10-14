@@ -4,15 +4,27 @@ import type { DailyLog, Driver, EldEvent, HosViolation, UnidentifiedSegment } fr
 import { BaseRepository, ModelDelegate } from '../../core/prisma/base.repository';
 import { PrismaService } from '../../core/prisma/prisma.service';
 
+/** LIVE-001 — `HosViolation.resolutionNote` of a row the recalculation cleared (≤ 60 chars, as a human note). */
+export const AUTO_CLEAR_NOTE = 'Auto-cleared: no longer supported by the driver\'s records';
+/** LIVE-001 — `AuditLog.actorId` of the SYSTEM actor that clears violations. */
+export const HOS_RECALC_ACTOR_ID = 'system:hos-recalc';
+
 /** B-055 — one driver's event lower bound for a batched read. */
 export interface HosEventWindow {
   driverId: string;
   from: Date;
 }
 
-/** B-055 — the slim `EldEvent` projection the engine mapper consumes (active records only). */
+/**
+ * B-055 — the slim `EldEvent` projection the engine input is built from. CODE-006: active records
+ * AND their "Inactive — Changed" markers (`recordStatus = 2`, `supersedesId`), so the service can
+ * retire superseded records through `activeRecords` exactly as the RODS view does.
+ */
 export interface HosEventRow {
   driverId: string;
+  id: bigint;
+  recordStatus: number;
+  supersedesId: bigint | null;
   eventType: number;
   eventCode: number;
   eventDateTime: Date;
@@ -71,10 +83,17 @@ export class HosRecalcRepository extends BaseRepository<
     return this.prisma.driver.findUnique({ where: { id: driverId } });
   }
 
-  /** §5.5 — active records only, ordered; the partition key (`eventDateTime`) drives the scan. */
+  /**
+   * §5.5 — the engine input, ordered; the partition key (`eventDateTime`) drives the scan.
+   * CODE-006 — active records PLUS the "Inactive — Changed" markers (`recordStatus = 2`): a record
+   * retired by an accepted edit keeps `recordStatus = 1` on its own (append-only) row and is
+   * identified only through the marker pointing at it (D-019). A marker is written at its
+   * target's own instant, so this window always holds the marker of every record it holds. The
+   * caller filters through `activeRecords` (`logs/rods.ts`), the same rule the RODS view uses.
+   */
   findEvents(driverId: string, from: Date, to: Date): Promise<EldEvent[]> {
     return this.prisma.eldEvent.findMany({
-      where: { driverId, recordStatus: 1, eventDateTime: { gte: from, lte: to } },
+      where: { driverId, recordStatus: { in: [1, 2] }, eventDateTime: { gte: from, lte: to } },
       orderBy: [{ eventDateTime: 'asc' }, { eventSequenceId: 'asc' }],
     });
   }
@@ -92,9 +111,11 @@ export class HosRecalcRepository extends BaseRepository<
    * (driverId, from) pairs LATERAL-joined onto the `(driverId, eventDateTime)` index, so each
    * driver scans only its own window instead of the page sharing one `min(from)` range.
    *
-   * Only the columns `mapEldEventsToNormalized` reads, and only eventType 1 / 3 — the mapper
-   * ignores every other type, so the engine input is unchanged. `(driverId, eventSequenceId,
-   * eventDateTime)` is unique, so the ordering is total and matches `findEvents`.
+   * Only the columns the engine input needs, and only eventType 1 / 3 — the mapper ignores every
+   * other type, so the engine input is unchanged. CODE-006: `recordStatus` 1 and 2 with `id` /
+   * `supersedesId`, so superseded records are retired through `activeRecords` (as `findEvents`).
+   * `(driverId, eventSequenceId, eventDateTime)` is unique, so the ordering is total and matches
+   * `findEvents`.
    *
    * `perDriverLimit` is a hard LIMIT per driver; the caller asks for cap + 1 so it can tell a
    * full window from a truncated one and refuse to compute clocks from the latter.
@@ -104,12 +125,12 @@ export class HosRecalcRepository extends BaseRepository<
     const ids = windows.map((w) => w.driverId);
     const froms = windows.map((w) => w.from.toISOString());
     return this.prisma.$queryRaw<HosEventRow[]>(Prisma.sql`
-      SELECT w."driverId", e."eventType", e."eventCode", e."eventDateTime", e."eventSequenceId", e."locationPrecisionMi"
+      SELECT w."driverId", e."id", e."recordStatus", e."supersedesId", e."eventType", e."eventCode", e."eventDateTime", e."eventSequenceId", e."locationPrecisionMi"
       FROM unnest(${ids}::text[], ${froms}::text[]) WITH ORDINALITY AS w("driverId", "fromIso", ord)
       CROSS JOIN LATERAL (
-        SELECT "eventType", "eventCode", "eventDateTime", "eventSequenceId", "locationPrecisionMi"
+        SELECT "id", "recordStatus", "supersedesId", "eventType", "eventCode", "eventDateTime", "eventSequenceId", "locationPrecisionMi"
         FROM "EldEvent"
-        WHERE "driverId" = w."driverId" AND "recordStatus" = 1 AND "eventType" IN (1, 3)
+        WHERE "driverId" = w."driverId" AND "recordStatus" IN (1, 2) AND "eventType" IN (1, 3)
           AND "eventDateTime" >= w."fromIso"::timestamp AND "eventDateTime" <= ${to}
         ORDER BY "eventDateTime" ASC, "eventSequenceId" ASC
         LIMIT ${perDriverLimit}::int
@@ -149,15 +170,52 @@ export class HosRecalcRepository extends BaseRepository<
     return this.prisma.hosViolation.upsert({
       where: { driverId_logDate_type: { driverId, logDate, type } },
       create: { driverId, logDate, type, occurredAt, exceededBySec, detail, status: 'OPEN' },
-      update: { occurredAt, exceededBySec, detail, status: 'OPEN', recalcVersion: { increment: 1 } },
+      // LIVE-001 — an AUTO_CLEARED row the records support again is re-opened without its clearing
+      // note (the clearing itself stays in `AuditLog`). Never called for a RESOLVED row (rule 3).
+      update: { occurredAt, exceededBySec, detail, status: 'OPEN', resolvedAt: null, resolutionNote: null, recalcVersion: { increment: 1 } },
     });
   }
 
-  /** §8.4 rule 2 — gone from the fresh result but still OPEN: cleared, never deleted. */
-  autoClear(id: string): Promise<HosViolation> {
-    return this.prisma.hosViolation.update({
-      where: { id },
-      data: { status: 'AUTO_CLEARED', recalcVersion: { increment: 1 } },
+  /**
+   * §8.4 rule 2 — gone from the fresh result but still OPEN: cleared, never deleted.
+   *
+   * LIVE-001 — the clearing leaves an audit trail: the row records when and why it was cleared
+   * (`resolvedAt` + `resolutionNote`, `resolvedById` stays null — no human closed it), and an
+   * append-only `AuditLog` entry (`HOS_VIOLATION_AUTO_CLEARED`, SYSTEM actor) keeps the
+   * before / after even if a later recalculation re-opens the row. Guarded on `status = OPEN`, so
+   * a human resolve that won the race is never overwritten. Returns false when nothing changed.
+   */
+  autoClear(id: string, context: { engineVersion: string; now?: Date } = { engineVersion: 'unknown' }): Promise<boolean> {
+    const now = context.now ?? new Date();
+    return this.prisma.$transaction(async (tx) => {
+      const before = await tx.hosViolation.findUnique({ where: { id } });
+      if (!before || before.status !== 'OPEN') return false;
+      const result = await tx.hosViolation.updateMany({
+        where: { id, status: 'OPEN' },
+        data: { status: 'AUTO_CLEARED', resolvedAt: now, resolutionNote: AUTO_CLEAR_NOTE, recalcVersion: { increment: 1 } },
+      });
+      if (result.count !== 1) return false;
+      await tx.auditLog.create({
+        data: {
+          actorId: HOS_RECALC_ACTOR_ID,
+          actorType: 'SYSTEM',
+          action: 'HOS_VIOLATION_AUTO_CLEARED',
+          objectType: 'HosViolation',
+          objectId: id,
+          before: {
+            status: 'OPEN',
+            driverId: before.driverId,
+            logDate: before.logDate.toISOString().slice(0, 10),
+            type: before.type,
+            occurredAt: before.occurredAt.toISOString(),
+            exceededBySec: before.exceededBySec,
+            detail: before.detail,
+          },
+          after: { status: 'AUTO_CLEARED', resolvedAt: now.toISOString(), hosEngineVersion: context.engineVersion },
+          detail: 'HOS recalculation: the driver\'s current records no longer produce this violation (TZ §8.4 rule 2).',
+        },
+      });
+      return true;
     });
   }
 
