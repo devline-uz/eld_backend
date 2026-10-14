@@ -190,7 +190,7 @@ UnidentifiedController_confirm	Haydovchi "bu siz edingizmi?" savoliga javob bera
 UnidentifiedController_listConfirmationRequests	Carrier shu haydovchidan tasdiqlashni so'ragan unidentified segmentlar (PENDING_CONFIRMATION).
 UnidentifiedController_list	Unidentified driving segmentlari ro'yxati.
 UnidentifiedController_get	Bitta segment va uning ortidagi §395 yozuvlari.
-UnidentifiedController_assign	Segmentni haydovchiga biriktiradi (ASSIGNED, audit). `requireDriverConfirmation` bilan haydovchi tasdig'i so'raladi.
+UnidentifiedController_assign	Segmentni haydovchiga taklif qiladi (PENDING_CONFIRMATION). Yozuvlar haydovchi ilovada tasdiqlagandan keyingina uning logiga o'tadi (CODE-029).
 UnidentifiedController_annotate	Segmentga izoh qo'shadi (max 60 belgi).
 UnidentifiedController_reject	Biriktirishni rad etadi: yozuvlar pool'ga qaytadi (recordOrigin = 4, driverId = null). Hech narsa o'chirilmaydi.
 ViolationsController_list	Flot HOS violation'lari (default status=OPEN), haydovchi ismi va unit bilan.

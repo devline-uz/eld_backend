@@ -1,7 +1,10 @@
 import { Injectable } from '@nestjs/common';
-import type { Prisma, VehicleStatus, WorkOrder } from '@prisma/client';
+import { Prisma } from '@prisma/client';
+import type { VehicleStatus, WorkOrder } from '@prisma/client';
 import { BaseRepository, ModelDelegate } from '../../core/prisma/base.repository';
 import { PrismaService } from '../../core/prisma/prisma.service';
+import { AppException } from '../../common/errors/app.exception';
+import { ERROR_CODES } from '../../common/errors/codes';
 import { containsInsensitive } from '../../common/text/insensitive';
 import { outOfServiceHoldingDefectsWhere } from '../vehicles/lib/out-of-service-defects';
 
@@ -52,6 +55,24 @@ export async function syncVehicleOutOfService(
   return 'ACTIVE';
 }
 
+const MAX_NUMBER_ATTEMPTS = 5;
+
+/** P2002 on `WorkOrder.number` — another create took the number between our read and insert. */
+function isNumberCollision(err: unknown): boolean {
+  if (!(err instanceof Prisma.PrismaClientKnownRequestError) || err.code !== 'P2002') return false;
+  const target = err.meta?.target;
+  return Array.isArray(target) ? target.includes('number') : typeof target === 'string' && target.includes('number');
+}
+
+/** `WO-2214`-style sequential number: highest existing numeric suffix + 1. The old "latest
+ * `openedAt`" read repeated a number when two rows shared an `openedAt` or one was back-dated. */
+export async function nextWorkOrderNumber(db: Pick<Prisma.TransactionClient, '$queryRaw'>): Promise<string> {
+  const rows = await db.$queryRaw<{ seq: bigint | null }[]>`
+    SELECT MAX(NULLIF(regexp_replace("number", '[^0-9]', '', 'g'), '')::bigint) AS seq FROM "WorkOrder"`;
+  const lastSeq = Number(rows[0]?.seq ?? 0);
+  return `WO-${(lastSeq + 1).toString().padStart(4, '0')}`;
+}
+
 export interface SyncedWorkOrder {
   workOrder: WorkOrder;
   vehicleStatus: VehicleStatus | null;
@@ -98,31 +119,57 @@ export class WorkOrdersRepository extends BaseRepository<
     return { items, total };
   }
 
-  /** Creates a work order and applies its out-of-service hold in one transaction. */
-  createSynced(data: Prisma.WorkOrderCreateInput, vehicleId: string): Promise<SyncedWorkOrder> {
-    return this.prisma.$transaction(async (tx) => {
-      const workOrder = await tx.workOrder.create({ data });
-      const vehicleStatus = await syncVehicleOutOfService(tx, vehicleId, false);
-      return { workOrder, vehicleStatus };
-    });
+  /**
+   * Creates a work order with its next `WO-####` number, links the given defects and applies its
+   * out-of-service hold in one transaction (QA CODE-033). Two concurrent creates can read the same
+   * last number; the loser hits `WorkOrder.number @unique` (P2002) and is retried with a fresh one.
+   */
+  async createSynced(data: Omit<Prisma.WorkOrderCreateInput, 'number'>, vehicleId: string, defectIds: string[] = []): Promise<SyncedWorkOrder> {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await this.prisma.$transaction(async (tx) => {
+          const number = await nextWorkOrderNumber(tx);
+          const workOrder = await tx.workOrder.create({ data: { ...data, number } });
+          if (defectIds.length) {
+            await tx.defect.updateMany({ where: { id: { in: defectIds } }, data: { workOrderId: workOrder.id } });
+          }
+          const vehicleStatus = await syncVehicleOutOfService(tx, vehicleId, false);
+          return { workOrder, vehicleStatus };
+        });
+      } catch (err) {
+        if (attempt >= MAX_NUMBER_ATTEMPTS || !isNumberCollision(err)) throw err;
+      }
+    }
   }
 
   /** Updates a work order (edit / complete / cancel) and re-derives its unit's status in one
    * transaction. `before` is the row as read prior to the write — it tells whether a hold was released. */
   updateSynced(before: WorkOrder, data: Prisma.WorkOrderUpdateInput): Promise<SyncedWorkOrder> {
     return this.prisma.$transaction(async (tx) => {
-      const workOrder = await tx.workOrder.update({ where: { id: before.id }, data });
+      // CODE-078 — the write only applies to the row in the status it was read in: an edit that
+      // raced a close (or a cancel) no longer reopens a DONE work order. Prisma reports the
+      // missed `where` as P2025.
+      const workOrder = await tx.workOrder
+        .update({ where: { id: before.id, status: before.status }, data })
+        .catch((err: unknown) => {
+          if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2025') {
+            throw new AppException(
+              ERROR_CODES.WORK_ORDER_CLOSED,
+              'This work order was changed by someone else in the meantime. Reload it and try again.',
+              409,
+              { workOrderId: before.id },
+            );
+          }
+          throw err;
+        });
       const released = holdsUnitOutOfService(before) && !holdsUnitOutOfService(workOrder);
       const vehicleStatus = await syncVehicleOutOfService(tx, before.vehicleId, released);
       return { workOrder, vehicleStatus };
     });
   }
 
-  /** `WO-2214`-style sequential number (TZ §5.10 example). Race-safe enough for this volume:
-   * a collision retries once inside a unique-constraint catch at the service layer. */
-  async nextNumber(): Promise<string> {
-    const last = await this.prisma.workOrder.findFirst({ orderBy: { openedAt: 'desc' }, select: { number: true } });
-    const lastSeq = last?.number ? Number(last.number.replace(/\D/g, '')) || 0 : 0;
-    return `WO-${(lastSeq + 1).toString().padStart(4, '0')}`;
+  /** Next `WO-2214`-style number (TZ §5.10 example) — see {@link nextWorkOrderNumber}. */
+  nextNumber(): Promise<string> {
+    return nextWorkOrderNumber(this.prisma);
   }
 }

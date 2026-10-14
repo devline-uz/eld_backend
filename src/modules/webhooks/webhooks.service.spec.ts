@@ -62,6 +62,25 @@ describe('WebhooksService', () => {
     );
   });
 
+  it('CODE-084: notify() with a url override delivers there even without an integration (unsigned)', async () => {
+    integrations.findEnabledByProvider.mockResolvedValue(null);
+    repo.create.mockResolvedValue({ id: 'del_1' } as never);
+
+    await service.notify('alert', { a: 1 }, { url: 'https://alerts.example.com/hook' });
+
+    expect(repo.create).toHaveBeenCalledWith(expect.objectContaining({ integrationId: null, url: 'https://alerts.example.com/hook' }));
+    expect(queue.add).toHaveBeenCalledTimes(1);
+  });
+
+  it('CODE-084: a url override wins over the integration url but keeps the integration for signing', async () => {
+    integrations.findEnabledByProvider.mockResolvedValue({ id: 'int_1', config: { url: 'https://int.example.com' } } as never);
+    repo.create.mockResolvedValue({ id: 'del_2' } as never);
+
+    await service.notify('alert', {}, { url: 'https://alerts.example.com/hook' });
+
+    expect(repo.create).toHaveBeenCalledWith(expect.objectContaining({ integrationId: 'int_1', url: 'https://alerts.example.com/hook' }));
+  });
+
   it('sendTest() throws INTEGRATION_NOT_CONFIGURED instead of silently no-op-ing', async () => {
     integrations.findEnabledByProvider.mockResolvedValue(null);
     await expect(service.sendTest('test.ping', {})).rejects.toThrow(AppException);

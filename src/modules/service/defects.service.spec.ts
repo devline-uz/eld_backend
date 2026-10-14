@@ -3,6 +3,10 @@ import { EventBusService } from '../../core/events/event-bus.service';
 import { VehiclesRepository } from '../vehicles/vehicles.repository';
 import { DefectsRepository } from './defects.repository';
 import { DefectsService } from './defects.service';
+import { WorkOrdersRepository } from './work-orders.repository';
+
+/** Typed matchers — a bare `expect.any()` is `any` to the linter. */
+const ANY_STRING: unknown = expect.any(String);
 
 function makeDefect(overrides: Partial<Record<string, unknown>> = {}) {
   return {
@@ -12,14 +16,19 @@ function makeDefect(overrides: Partial<Record<string, unknown>> = {}) {
     severity: 'CRITICAL',
     status: 'OPEN',
     outOfService: true,
+    workOrderId: null,
+    createdAt: new Date('2026-09-01T00:00:00.000Z'),
     ...overrides,
   };
 }
 
 describe('DefectsService (TZ §5.10 out-of-service rule)', () => {
-  let repo: jest.Mocked<Pick<DefectsRepository, 'findById' | 'update' | 'list' | 'count' | 'findByWorkOrder' | 'countOutOfServiceWorkOrders'>>;
+  let repo: jest.Mocked<
+    Pick<DefectsRepository, 'findById' | 'update' | 'list' | 'count' | 'findByWorkOrder' | 'countOutOfServiceWorkOrders' | 'activeUserExists'>
+  >;
   let vehicles: jest.Mocked<Pick<VehiclesRepository, 'findById' | 'update'>>;
   let events: jest.Mocked<Pick<EventBusService, 'publish'>>;
+  let workOrders: jest.Mocked<Pick<WorkOrdersRepository, 'findById'>>;
   let service: DefectsService;
 
   beforeEach(() => {
@@ -30,10 +39,62 @@ describe('DefectsService (TZ §5.10 out-of-service rule)', () => {
       count: jest.fn(),
       findByWorkOrder: jest.fn(),
       countOutOfServiceWorkOrders: jest.fn().mockResolvedValue(0),
+      activeUserExists: jest.fn().mockResolvedValue(true),
     };
     vehicles = { findById: jest.fn(), update: jest.fn() };
     events = { publish: jest.fn().mockResolvedValue(undefined) };
-    service = new DefectsService(repo as unknown as DefectsRepository, vehicles as unknown as VehiclesRepository, events as unknown as EventBusService);
+    workOrders = { findById: jest.fn() };
+    service = new DefectsService(
+      repo as unknown as DefectsRepository,
+      vehicles as unknown as VehiclesRepository,
+      events as unknown as EventBusService,
+      workOrders as unknown as WorkOrdersRepository,
+    );
+  });
+
+  describe('CODE-077 — resolve carries the work-order link in the same write', () => {
+    const openWo = { id: '11111111-1111-4111-8111-111111111111', vehicleId: 'veh_1', status: 'OPEN' };
+
+    it('links and resolves in ONE update', async () => {
+      const defect = makeDefect({ outOfService: false, severity: 'MINOR' });
+      repo.findById.mockResolvedValue(defect as never);
+      workOrders.findById.mockResolvedValue(openWo as never);
+      repo.update.mockResolvedValue({ ...defect, status: 'REPAIRED' } as never);
+
+      await service.resolve('def_1', { resolutionType: 'REPAIRED', workOrderId: openWo.id }, 'user_1');
+
+      expect(repo.update).toHaveBeenCalledTimes(1);
+      expect(repo.update).toHaveBeenCalledWith(
+        { id: 'def_1' },
+        expect.objectContaining({ status: 'REPAIRED', workOrder: { connect: { id: openWo.id } } }),
+      );
+    });
+
+    it('writes nothing when the link is refused (work order on another unit)', async () => {
+      repo.findById.mockResolvedValue(makeDefect() as never);
+      workOrders.findById.mockResolvedValue({ ...openWo, vehicleId: 'veh_2' } as never);
+      await expect(service.resolve('def_1', { resolutionType: 'REPAIRED', workOrderId: openWo.id }, 'user_1')).rejects.toBeInstanceOf(
+        AppException,
+      );
+      expect(repo.update).not.toHaveBeenCalled();
+    });
+
+    it('leaves the link alone when workOrderId is omitted', async () => {
+      const defect = makeDefect({ outOfService: false, severity: 'MINOR', workOrderId: openWo.id });
+      repo.findById.mockResolvedValue(defect as never);
+      repo.update.mockResolvedValue({ ...defect, status: 'REPAIRED' } as never);
+      await service.resolve('def_1', { resolutionType: 'REPAIRED' }, 'user_1');
+      expect(repo.update.mock.calls[0][1]).not.toHaveProperty('workOrder');
+    });
+  });
+
+  it('CODE-076 — assigning a defect to an unknown or inactive user is a 422', async () => {
+    repo.findById.mockResolvedValue(makeDefect() as never);
+    repo.activeUserExists.mockResolvedValue(false);
+    await expect(service.assign('def_1', { assigneeId: '22222222-2222-4222-8222-222222222222' })).rejects.toMatchObject({
+      code: 'VALIDATION_FAILED',
+    });
+    expect(repo.update).not.toHaveBeenCalled();
   });
 
   it('404s resolving a defect that does not exist', async () => {
@@ -147,15 +208,38 @@ describe('DefectsService (TZ §5.10 out-of-service rule)', () => {
     expect(vehicles.update).not.toHaveBeenCalled();
   });
 
-  it('does not re-run the restore when an already REPAIRED critical defect is edited again', async () => {
+  it('QA CODE-034 — refuses to resolve an already REPAIRED defect again (409, nothing written)', async () => {
     const defect = makeDefect({ status: 'REPAIRED' });
     repo.findById.mockResolvedValue(defect as never);
-    repo.update.mockResolvedValue(defect as never);
+
+    await expect(service.resolve('def_1', { resolutionType: 'REPAIRED' }, 'user_1')).rejects.toMatchObject({ status: 409 });
+
+    expect(repo.update).not.toHaveBeenCalled();
+    expect(repo.count).not.toHaveBeenCalled();
+    expect(vehicles.update).not.toHaveBeenCalled();
+  });
+
+  it('QA CODE-034 — a DEFERRED defect can still be repaired later', async () => {
+    const defect = makeDefect({ status: 'DEFERRED' });
+    repo.findById.mockResolvedValue(defect as never);
+    repo.update.mockResolvedValue({ ...defect, status: 'REPAIRED' } as never);
 
     await service.resolve('def_1', { resolutionType: 'REPAIRED' }, 'user_1');
 
-    expect(repo.count).not.toHaveBeenCalled();
-    expect(vehicles.update).not.toHaveBeenCalled();
+    expect(repo.update).toHaveBeenCalledWith({ id: 'def_1' }, expect.objectContaining({ status: 'REPAIRED' }));
+  });
+
+  it.each([
+    ['in the future', () => new Date(Date.now() + 60 * 60_000).toISOString()],
+    ['before the defect was reported', () => '2026-08-31T23:00:00.000Z'],
+  ])('QA CODE-034 — rejects completedAt %s (422 on completedAt)', async (_label, at) => {
+    repo.findById.mockResolvedValue(makeDefect({ severity: 'MAJOR' }) as never);
+
+    await expect(service.resolve('def_1', { resolutionType: 'REPAIRED', completedAt: at() }, 'user_1')).rejects.toMatchObject({
+      status: 422,
+      details: { completedAt: ANY_STRING },
+    });
+    expect(repo.update).not.toHaveBeenCalled();
   });
 
   it('does not touch the vehicle when resolving a MINOR defect', async () => {
@@ -195,7 +279,7 @@ describe('DefectsService (TZ §5.10 out-of-service rule)', () => {
 
     expect(repo.update).toHaveBeenCalledWith(
       { id: 'def_1' },
-      expect.objectContaining({ correctedBy: 'Joe Mechanic', laborHours: 2.5, partsCostUsd: 120 }),
+      expect.objectContaining({ correctedBy: 'Joe Mechanic', laborHours: 2.5, partsCostUsd: 120, completedAt: new Date('2026-09-20T10:00:00.000Z') }),
     );
   });
 
@@ -215,5 +299,47 @@ describe('DefectsService (TZ §5.10 out-of-service rule)', () => {
     await service.assign('def_1', { assigneeId: null });
 
     expect(repo.update).toHaveBeenCalledWith({ id: 'def_1' }, { assigneeId: null });
+  });
+
+  describe('linkWorkOrder (QA CODE-032)', () => {
+    const openWo = { id: 'wo_1', vehicleId: 'veh_1', status: 'OPEN' };
+
+    it('links an open defect to an open work order of the same unit', async () => {
+      repo.findById.mockResolvedValue(makeDefect() as never);
+      workOrders.findById.mockResolvedValue(openWo as never);
+      repo.update.mockResolvedValue(makeDefect({ workOrderId: 'wo_1' }) as never);
+
+      await service.linkWorkOrder('def_1', { workOrderId: 'wo_1' });
+
+      expect(repo.update).toHaveBeenCalledWith({ id: 'def_1' }, { workOrder: { connect: { id: 'wo_1' } } });
+    });
+
+    it('404s (not 500) on an unknown work order id', async () => {
+      repo.findById.mockResolvedValue(makeDefect() as never);
+      workOrders.findById.mockResolvedValue(null);
+
+      await expect(service.linkWorkOrder('def_1', { workOrderId: 'wo_x' })).rejects.toMatchObject({ status: 404, code: 'WORK_ORDER_NOT_FOUND' });
+      expect(repo.update).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['a work order of another unit', makeDefect(), { ...openWo, vehicleId: 'veh_2' }, 422],
+      ['a DONE work order', makeDefect(), { ...openWo, status: 'DONE' }, 409],
+      ['a REPAIRED defect', makeDefect({ status: 'REPAIRED' }), openWo, 409],
+    ])('refuses %s', async (_label, defect, workOrder, status) => {
+      repo.findById.mockResolvedValue(defect as never);
+      workOrders.findById.mockResolvedValue(workOrder as never);
+
+      await expect(service.linkWorkOrder('def_1', { workOrderId: 'wo_1' })).rejects.toMatchObject({ status });
+      expect(repo.update).not.toHaveBeenCalled();
+    });
+
+    it('does not move a defect off a signed-off work order', async () => {
+      repo.findById.mockResolvedValue(makeDefect({ workOrderId: 'wo_done' }) as never);
+      workOrders.findById.mockResolvedValue({ id: 'wo_done', vehicleId: 'veh_1', status: 'DONE' } as never);
+
+      await expect(service.linkWorkOrder('def_1', { workOrderId: null })).rejects.toMatchObject({ status: 409, code: 'WORK_ORDER_CLOSED' });
+      expect(repo.update).not.toHaveBeenCalled();
+    });
   });
 });

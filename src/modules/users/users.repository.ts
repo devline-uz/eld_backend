@@ -112,4 +112,13 @@ export class UsersRepository extends BaseRepository<
   countActiveSuperAdmins(): Promise<number> {
     return this.prisma.user.count({ where: { status: 'ACTIVE', role: { key: 'SUPER_ADMIN' } } });
   }
+
+  /** CODE-014 — rows that keep a user (ON DELETE RESTRICT): generated reports and created API keys. */
+  async countDeleteBlockers(id: string): Promise<{ reports: number; apiKeys: number }> {
+    const [reports, apiKeys] = await Promise.all([
+      this.prisma.report.count({ where: { requestedById: id } }),
+      this.prisma.apiKey.count({ where: { createdById: id } }),
+    ]);
+    return { reports, apiKeys };
+  }
 }

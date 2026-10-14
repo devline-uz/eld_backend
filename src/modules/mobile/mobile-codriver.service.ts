@@ -105,6 +105,8 @@ export class MobileCoDriverService {
     // D-155 — the outgoing driver's ELD session on the unit ends with their app session (4.5.1.5
     // logout, idempotent: nothing is written when no login is open, so /auth/logout afterwards never doubles it).
     if (outgoing) await this.loginRecords.logout(driverId, 'CO_DRIVER_SWITCH', { onlyVehicleId: pairing.vehicleId });
+    // CODE-012 — the revoked family must stop authorising this driver's cached access on every replica.
+    if (outgoing) await this.auth.evictDriverAccess(driverId);
     // D-130 — the co-driver taking the seat authenticates on the unit: §395 Appendix A 4.5.1.5
     // login (idempotent).
     await this.loginRecords.login(coDriverId, pairing.vehicleId, 'CO_DRIVER_SWITCH');

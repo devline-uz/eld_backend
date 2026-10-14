@@ -1,6 +1,7 @@
 import type { Role } from '@prisma/client';
 import {
   PERMISSION_KEYS,
+  RETIRED_PERMISSION_KEYS,
   PERMISSION_LEVEL_RANK,
   PermissionKey,
   PermissionLevel,
@@ -40,10 +41,13 @@ export interface UserRoleLookup {
 const isLevel = (v: unknown): v is PermissionLevel => v === 'NONE' || v === 'READ' || v === 'FULL';
 
 /** Normalizes a stored/claimed matrix (Prisma `Json`) — any missing or malformed key is NONE. */
+const RETIRED = new Set<string>(RETIRED_PERMISSION_KEYS);
+
 export function levelsOf(matrix: unknown): PermissionMatrix {
   const source = (matrix && typeof matrix === 'object' ? matrix : {}) as Record<string, unknown>;
   return Object.fromEntries(
-    PERMISSION_KEYS.map((key) => [key, isLevel(source[key]) ? source[key] : 'NONE']),
+    // CODE-029 — a retired key grants nothing, so it never counts against a ceiling either.
+    PERMISSION_KEYS.map((key) => [key, !RETIRED.has(key) && isLevel(source[key]) ? source[key] : 'NONE']),
   ) as PermissionMatrix;
 }
 

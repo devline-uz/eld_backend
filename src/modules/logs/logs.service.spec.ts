@@ -13,6 +13,9 @@ import type { RodsEventWriter } from './rods-event-writer';
 import type { AuditRepository } from '../audit/audit.repository';
 import type { EventBusService } from '../../core/events/event-bus.service';
 
+/** Typed matchers — a bare `expect.any()` is `any` to the linter. */
+const ANY_STRING: unknown = expect.any(String);
+
 const TZ = 'America/New_York';
 const DRIVER = 'driver-1';
 
@@ -553,27 +556,24 @@ describe('§9.2 — certification', () => {
     expect(audit.insert).toHaveBeenCalledWith(expect.objectContaining({ action: 'LOG_CERTIFIED' }));
   });
 
-  it('refuses certify-on-behalf without hosCertifyOnBehalf = FULL', async () => {
-    const { service } = build();
+  // CODE-029 — certification is the driver's own signature (§395.8(e)); no on-behalf path.
+  it.each([
+    ['a back-office user without the permission', { id: 'user-1', type: 'user', permissions: { hosCertifyOnBehalf: 'READ' } }],
+    ['a back-office user WITH hosCertifyOnBehalf = FULL', { id: 'user-1', type: 'user', permissions: { hosCertifyOnBehalf: 'FULL' } }],
+    ['an API-key principal', { id: 'key-1', type: 'api-key', permissions: {} }],
+  ])('refuses certification by %s (CERTIFY_DRIVER_ONLY) and writes nothing', async (_label, principal) => {
+    const { service, repo, audit } = build();
     await expect(
-      service.certify({ dates: ['2026-06-01'], driverId: DRIVER }, { id: 'user-1', type: 'user', permissions: { hosCertifyOnBehalf: 'READ' } }),
-    ).rejects.toMatchObject({ code: 'FORBIDDEN', status: 403 });
+      service.certify({ dates: ['2026-06-01'], driverId: DRIVER }, principal as never),
+    ).rejects.toMatchObject({ code: 'CERTIFY_DRIVER_ONLY', status: 403 });
+    expect(repo.certify).not.toHaveBeenCalled();
+    expect(audit.insert).not.toHaveBeenCalled();
   });
 
-  it('treats an API-key principal as certify-on-behalf, so it needs the permission too', async () => {
-    const { service } = build();
-    await expect(
-      service.certify({ dates: ['2026-06-01'], driverId: DRIVER }, { id: 'key-1', type: 'api-key', permissions: {} }),
-    ).rejects.toMatchObject({ code: 'FORBIDDEN', status: 403 });
-  });
-
-  it('audits certify-on-behalf as its own action', async () => {
-    const { service, audit } = build();
-    await service.certify(
-      { dates: ['2026-06-01'], driverId: DRIVER },
-      { id: 'user-1', type: 'user', permissions: { hosCertifyOnBehalf: 'FULL' } },
-    );
-    expect(audit.insert).toHaveBeenCalledWith(expect.objectContaining({ action: 'LOG_CERTIFIED_ON_BEHALF' }));
+  it('a driver always certifies their own log, whatever driverId the body names', async () => {
+    const { service, repo } = build();
+    await service.certify({ dates: ['2026-06-01'], driverId: '00000000-0000-4000-8000-000000000099' }, driver);
+    expect(repo.certify).toHaveBeenCalledWith(expect.objectContaining({ certifierType: 'DRIVER' }));
   });
 
   it('refuses to certify a day that has not happened yet', async () => {
@@ -717,7 +717,7 @@ describe('B-059 — every applied record change rebuilds the DailyLog headers it
 });
 
 describe('daily log generation', () => {
-  it('persists the day header split by the home terminal timezone', async () => {
+  it('builds the day split by the home terminal timezone without writing a header (CODE-068)', async () => {
     const { service, repo } = build();
     repo.events = [
       evt({ id: 1n, at: '2026-06-01T12:00:00Z', code: 3, totalVehicleMiles: 1000 }),
@@ -729,9 +729,56 @@ describe('daily log generation', () => {
     expect(day.timezone).toBe(TZ);
     expect(day.summary.drivingSec).toBe(4 * 3600);
     expect(day.summary.totalDistanceMi).toBe(240);
+    // A read never creates or bumps a DailyLog row.
+    expect(repo.upsertDailyLog).not.toHaveBeenCalled();
+    expect(day.certification.certified).toBe(false);
+  });
+
+  it('CODE-068: the record-change rebuild still persists the header split by the home terminal zone', async () => {
+    const { service, repo } = build();
+    repo.events = [
+      evt({ id: 1n, at: '2026-06-01T12:00:00Z', code: 3, totalVehicleMiles: 1000 }),
+      evt({ id: 2n, at: '2026-06-01T16:00:00Z', code: 1, totalVehicleMiles: 1240 }),
+    ];
+    await service.rebuildDailyLogsForSpan(
+      DRIVER,
+      new Date('2026-06-01T12:00:00Z'),
+      new Date('2026-06-01T16:00:00Z'),
+      new Date('2026-06-02T12:00:00Z'),
+    );
     expect(repo.upsertDailyLog).toHaveBeenCalledWith(
       expect.objectContaining({ timezone: TZ, drivingSec: 4 * 3600, totalDistanceMi: 240 }),
     );
+  });
+
+  it('CODE-068: viewing a future day writes nothing', async () => {
+    const { service, repo } = build();
+    await service.getDay(DRIVER, '2026-06-20', new Date('2026-06-02T12:00:00Z'));
+    expect(repo.upsertDailyLog).not.toHaveBeenCalled();
+  });
+
+  it('CODE-068: a read returns the stored certification of the day', async () => {
+    const { service, repo } = build();
+    repo.dailyLogs.set('2026-06-01T00:00:00.000Z', {
+      id: 'log-1',
+      logDate: new Date('2026-06-01T00:00:00Z'),
+      certified: true,
+      certifiedAt: new Date('2026-06-02T01:00:00Z'),
+      certificationCount: 1,
+      hasViolation: false,
+      violationCount: 0,
+    });
+    const day = await service.getDay(DRIVER, '2026-06-01', new Date('2026-06-02T12:00:00Z'));
+    expect(day.certification.certified).toBe(true);
+    expect(day.summary.certificationCount).toBe(1);
+  });
+
+  it('CODE-067: a range longer than 62 days returns every day (62-day windows), never a truncated list', async () => {
+    const { service } = build();
+    const range = await service.getRange(DRIVER, '2026-01-01', '2026-03-31', new Date('2026-04-02T12:00:00Z'));
+    expect(range.days).toHaveLength(90);
+    expect(range.days[0].date).toBe('2026-01-01');
+    expect(range.days[89].date).toBe('2026-03-31');
   });
 
   it('404s for an unknown driver', async () => {
@@ -826,6 +873,92 @@ describe('MB-10 — GET /mobile/log-edit-requests screen data', () => {
   });
 });
 
+describe('QA CODE-028 — carrier edit requests are validated against the record as it stands', () => {
+  const base = { proposedStatus: 'SB' as const, proposedStart: new Date('2026-06-01T12:00:00Z'), reason: 'Was in the sleeper' };
+  function day(repo: FakeRepo, extra: FakeEvent[] = []) {
+    repo.events = [evt({ id: 1n, at: '2026-06-01T12:00:00Z', code: 4 }), evt({ id: 2n, at: '2026-06-01T14:00:00Z', code: 1 }), ...extra];
+  }
+
+  it('refuses a retired original (recordStatus 2) and a proposal (recordStatus 3) as the target', async () => {
+    const { service, repo, writer } = build();
+    day(repo, [
+      evt({ id: 7n, at: '2026-06-01T12:00:00Z', code: 4, recordStatus: 2 }),
+      evt({ id: 8n, at: '2026-06-01T12:00:00Z', code: 1, recordStatus: 3, recordOrigin: 3, supersedesId: 1n }),
+    ]);
+    for (const id of ['7', '8']) {
+      await expect(service.createEditRequest(DRIVER, { ...base, originalEventId: id }, carrier)).rejects.toMatchObject({ status: 409 });
+    }
+    expect(writer.rows).toEqual([]);
+  });
+
+  it('refuses a second proposal while one is pending on the same record, allows it once that one is resolved', async () => {
+    const { service, repo } = build();
+    day(repo, [evt({ id: 8n, at: '2026-06-01T12:00:00Z', code: 1, recordStatus: 3, recordOrigin: 3, supersedesId: 1n })]);
+    await expect(service.createEditRequest(DRIVER, { ...base, originalEventId: '1' }, carrier)).rejects.toMatchObject({
+      status: 409,
+      details: { pendingRequestId: '8' },
+    });
+
+    // The driver rejected #8 (marker with recordStatus 4 superseding it).
+    repo.events.push(evt({ id: 9n, at: '2026-06-01T12:00:00Z', code: 1, recordStatus: 4, recordOrigin: 2, supersedesId: 8n }));
+    await expect(service.createEditRequest(DRIVER, { ...base, originalEventId: '1' }, carrier)).resolves.toMatchObject({ status: 'PENDING' });
+  });
+
+  it('refuses a proposed start or end in the future (422 on the field)', async () => {
+    const { service, repo } = build();
+    day(repo);
+    const future = new Date(Date.now() + 60 * 60_000);
+    await expect(
+      service.createEditRequest(DRIVER, { ...base, originalEventId: '1', proposedEnd: future }, carrier),
+    ).rejects.toMatchObject({ status: 422, details: { proposedEnd: ANY_STRING } });
+  });
+
+  it('accepting a stale proposal whose original was already replaced is refused (409, nothing written)', async () => {
+    const { service, repo, writer } = build();
+    day(repo);
+    repo.events[0] = evt({ id: 1n, at: '2026-06-01T12:00:00Z', code: 4, recordStatus: 2 });
+    repo.events.push(evt({ id: 5n, at: '2026-06-01T12:00:00Z', code: 2, recordStatus: 3, recordOrigin: 3, supersedesId: 1n }));
+    await expect(service.acceptEditRequest('5', driver, {})).rejects.toMatchObject({ status: 409 });
+    expect(writer.rows).toEqual([]);
+  });
+
+  it('refuses PC / YM when the driver has no such exception', async () => {
+    const { service, repo } = build();
+    day(repo);
+    await expect(
+      service.createEditRequest(DRIVER, { ...base, proposedStatus: 'ON', proposedSpecial: 'YM', originalEventId: '1' }, carrier),
+    ).rejects.toMatchObject({ code: 'SPECIAL_CONDITION_NOT_ALLOWED', status: 422 });
+  });
+});
+
+describe('QA CODE-027 — getEvents reports the effective record status', () => {
+  it('retired originals read 2, pending proposals 3, rejected 4, accepted 2 — the stored status is unchanged', async () => {
+    const { service, repo } = build();
+    repo.events = [
+      // #1 original, retired by #11 (Inactive — Changed) when proposal #3 was accepted (#12 new active).
+      evt({ id: 1n, at: '2026-06-01T12:00:00Z', code: 4 }),
+      evt({ id: 3n, at: '2026-06-01T12:00:00Z', code: 2, recordStatus: 3, recordOrigin: 3, supersedesId: 1n }),
+      evt({ id: 11n, at: '2026-06-01T12:00:00Z', code: 4, recordStatus: 2, supersedesId: 1n }),
+      evt({ id: 12n, at: '2026-06-01T12:00:00Z', code: 2, recordStatus: 1, recordOrigin: 2, supersedesId: 3n }),
+      // #2 active, #5 pending proposal on it, #6 rejected proposal on it (#7 = rejection marker).
+      evt({ id: 2n, at: '2026-06-01T14:00:00Z', code: 1 }),
+      evt({ id: 5n, at: '2026-06-01T14:00:00Z', code: 4, recordStatus: 3, recordOrigin: 3, supersedesId: 2n }),
+      evt({ id: 6n, at: '2026-06-01T14:00:00Z', code: 2, recordStatus: 3, recordOrigin: 3, supersedesId: 2n }),
+      evt({ id: 7n, at: '2026-06-01T14:00:00Z', code: 2, recordStatus: 4, recordOrigin: 2, supersedesId: 6n }),
+    ];
+
+    const { events } = await service.getEvents(DRIVER, '2026-06-01');
+    const byId = Object.fromEntries(events.map((event) => [event.id, event]));
+
+    expect(byId['1']).toMatchObject({ recordStatus: 1, effectiveRecordStatus: 2 });
+    expect(byId['3']).toMatchObject({ recordStatus: 3, effectiveRecordStatus: 2 });
+    expect(byId['12']).toMatchObject({ effectiveRecordStatus: 1 });
+    expect(byId['2']).toMatchObject({ effectiveRecordStatus: 1 });
+    expect(byId['5']).toMatchObject({ effectiveRecordStatus: 3 });
+    expect(byId['6']).toMatchObject({ effectiveRecordStatus: 4 });
+  });
+});
+
 /** Typed wrapper: a nested `expect.objectContaining` is `any` to the linter. */
 function partial(value: Record<string, unknown>): unknown {
   return expect.objectContaining(value) as unknown;
@@ -834,6 +967,8 @@ function partial(value: Record<string, unknown>): unknown {
 describe('B-39 — edit request: PC/YM category, notifyDriver, name-only location (§395.30, §395.1(e))', () => {
   function withOnDutyDay(repo: FakeRepo) {
     repo.events = [evt({ id: 1n, at: '2026-06-01T12:00:00Z', code: 4 }), evt({ id: 2n, at: '2026-06-01T14:00:00Z', code: 1 })];
+    // QA CODE-028 — PC/YM proposals need the driver's exception.
+    repo.driver = { ...repo.driver, allowPersonalConveyance: true, allowYardMove: true };
   }
 
   it('stores a YM proposal inert, carries the category and a name-only location, and honours notifyDriver=false', async () => {
@@ -883,6 +1018,7 @@ describe('B-39 — edit request: PC/YM category, notifyDriver, name-only locatio
   it('a PC proposal over recorded driving is still refused (driving can never be restatused)', async () => {
     const { service, repo } = build();
     repo.events = [evt({ id: 1n, at: '2026-06-01T12:00:00Z', code: 3 }), evt({ id: 2n, at: '2026-06-01T15:00:00Z', code: 1 })];
+    repo.driver = { ...repo.driver, allowPersonalConveyance: true };
     await expect(
       service.createEditRequest(
         DRIVER,

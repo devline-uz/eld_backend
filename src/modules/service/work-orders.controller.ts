@@ -3,7 +3,7 @@ import { ApiBearerAuth, ApiCreatedResponse, ApiOkResponse, ApiOperation, ApiQuer
 import { Audit } from '../../common/decorators/audit.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { FigmaScreen } from '../../common/decorators/figma-screen.decorator';
-import { Perm } from '../../common/decorators/perm.decorator';
+import { Perm, PermAny } from '../../common/decorators/perm.decorator';
 import { apiError, ApiStandardErrors, ERROR_CODES } from '../../common/errors';
 import { zodBody } from '../../common/pipes/zod-validation.pipe';
 import { CreateWorkOrderDto, UpdateWorkOrderDto, WorkOrderListQueryDto } from './dto/service.dto';
@@ -91,7 +91,8 @@ export class WorkOrdersController {
   }
 
   @Post(':id/defects/:defectId')
-  @Perm('maintenance', 'FULL')
+  // CODE-076 — same rule as `PATCH /defects/:id/work-order` (FULL on DVIR or on maintenance).
+  @PermAny(['dvir', 'FULL'], ['maintenance', 'FULL'])
   @Audit({ object: 'WorkOrder', action: 'ATTACH_DEFECT' })
   @ApiOperation({ summary: 'Attaches an open defect to this work order.' })
   @ApiCreatedResponse({ schema: { example: { id: 'wo_1', status: 'OPEN' } } })

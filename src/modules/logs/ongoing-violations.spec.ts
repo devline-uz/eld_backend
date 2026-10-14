@@ -82,6 +82,51 @@ describe('ongoingViolationsAtDayStart', () => {
     expect(ongoing).toEqual([]);
   });
 
+  it('CODE-063: reports nothing when exactly 11 h of driving stops at 00:00', () => {
+    // UTC: drive 12:30–20:30 (8 h), off 30 min, drive 21:00–24:00 (3 h) = exactly 11 h, OFF at 00:00.
+    const events = [
+      event('2026-03-02T12:30:00Z', 3),
+      event('2026-03-02T20:30:00Z', 1),
+      event('2026-03-02T21:00:00Z', 3),
+      event('2026-03-03T00:00:00Z', 1),
+    ];
+    const ongoing = ongoingViolationsAtDayStart({
+      events,
+      driver,
+      ruleset: 'US_70_8_PROPERTY',
+      timezone: 'UTC',
+      dayStartAt: new Date('2026-03-03T00:00:00Z'),
+      now: new Date('2026-03-03T05:00:00Z'),
+    });
+    expect(ongoing).toEqual([]);
+  });
+
+  it('CODE-063: reports nothing for 8 h of driving that ends at 00:00 (break not yet due)', () => {
+    const events = [event('2026-03-02T16:00:00Z', 3), event('2026-03-03T00:00:00Z', 1)];
+    const ongoing = ongoingViolationsAtDayStart({
+      events,
+      driver,
+      ruleset: 'US_70_8_PROPERTY',
+      timezone: 'UTC',
+      dayStartAt: new Date('2026-03-03T00:00:00Z'),
+      now: new Date('2026-03-03T05:00:00Z'),
+    });
+    expect(ongoing).toEqual([]);
+  });
+
+  it('CODE-063: still reports when the driving goes on past 00:00', () => {
+    const events = [event('2026-03-02T12:00:00Z', 3)];
+    const ongoing = ongoingViolationsAtDayStart({
+      events,
+      driver,
+      ruleset: 'US_70_8_PROPERTY',
+      timezone: 'UTC',
+      dayStartAt: new Date('2026-03-03T00:00:00Z'),
+      now: new Date('2026-03-03T05:00:00Z'),
+    });
+    expect(ongoing.map((v) => v.type)).toContain('DRIVING_11');
+  });
+
   it('ignores records retired by an "Inactive — Changed" marker', () => {
     const driving = event('2026-10-08T07:44:00Z', 3);
     const events = [

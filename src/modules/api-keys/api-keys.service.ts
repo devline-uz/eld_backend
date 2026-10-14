@@ -45,6 +45,11 @@ export class ApiKeysService {
   /** Plaintext key is returned exactly once, here, and never persisted. The stored
    * `keyHash` never appears in any response (TZ §6.5). */
   async create(dto: CreateApiKeyDto, actor: CeilingActor): Promise<{ apiKey: ApiKeyView; plaintextKey: string }> {
+    // CODE-079 — `ApiKey.createdById` is a User FK: a key minting keys would 500 on it, and would
+    // let a leaked key outlive its own revocation through a child key. Only people issue keys.
+    if (actor.type && actor.type !== 'user') {
+      throw new AppException(ERROR_CODES.USER_CONTEXT_REQUIRED, 'API keys can only be created by a signed-in user.', 403);
+    }
     await this.assertScopesWithinActor(dto.scopes, actor);
     const plaintextKey = `obk_${randomBytes(24).toString('base64url')}`;
     const prefix = plaintextKey.slice(0, PREFIX_LEN);

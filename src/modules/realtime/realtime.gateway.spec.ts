@@ -10,11 +10,28 @@ describe('RealtimeGateway relay', () => {
     const pubsub = { onRelayed: jest.fn((h: (p: RealtimePushPayload) => void) => ((relay = h), () => undefined)) };
     const emit = jest.fn();
     const to = jest.fn(() => ({ emit }));
+    const disconnectSockets = jest.fn();
+    const inRoom = jest.fn(() => ({ disconnectSockets }));
     const gateway = new RealtimeGateway({} as never, pubsub as never, {} as never);
-    gateway.server = { to } as never;
+    gateway.server = { to, in: inRoom } as never;
     gateway.onModuleInit();
-    return { relay: (p: RealtimePushPayload) => relay!(p), to, emit };
+    return { relay: (p: RealtimePushPayload) => relay!(p), to, emit, inRoom, disconnectSockets };
   }
+
+  it('CODE-012 — auth.revoked tells the user\'s sockets and disconnects them', () => {
+    const { relay, to, emit, inRoom, disconnectSockets } = build();
+    relay({ room: 'user:u1', event: 'auth.revoked', payload: {} });
+    expect(to).toHaveBeenCalledWith('user:u1');
+    expect(emit).toHaveBeenCalledWith('auth.revoked', {});
+    expect(inRoom).toHaveBeenCalledWith('user:u1');
+    expect(disconnectSockets).toHaveBeenCalledWith(true);
+  });
+
+  it('an ordinary push never disconnects anyone', () => {
+    const { relay, disconnectSockets } = build();
+    relay({ room: 'fleet', event: 'telemetry.point', payload: {} });
+    expect(disconnectSockets).not.toHaveBeenCalled();
+  });
 
   it('emits a single-room push to that room', () => {
     const { relay, to, emit } = build();

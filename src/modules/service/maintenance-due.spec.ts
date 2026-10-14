@@ -1,4 +1,4 @@
-import { computeDue } from './maintenance-due';
+import { computeDue, scheduleBaseline } from './maintenance-due';
 
 const NOW = new Date('2026-09-11T00:00:00.000Z');
 
@@ -66,3 +66,55 @@ describe('computeDue (TZ §5.10)', () => {
     expect(result.state).toBe('OVERDUE');
   });
 });
+
+describe('QA CODE-037 — schedule without a recorded service', () => {
+  const now = new Date('2026-10-14T12:00:00.000Z');
+
+  it('is not overdue on creation: counts from the baseline odometer / date', () => {
+    const due = computeDue({
+      intervalMi: 25_000,
+      intervalDays: 90,
+      lastServiceMi: null,
+      lastServiceAt: null,
+      currentOdometerMi: 120_000,
+      now,
+      baselineMi: 120_000,
+      baselineAt: now,
+    });
+    expect(due.state).toBe('OK');
+    expect(due.nextDueMi).toBe(145_000);
+    expect(due.daysRemaining).toBe(90);
+  });
+
+  it('does not evaluate an interval whose baseline is unknown (was: 0 mi / 1970 -> instantly overdue)', () => {
+    const due = computeDue({ intervalMi: 25_000, intervalDays: 90, lastServiceMi: null, lastServiceAt: null, currentOdometerMi: 120_000, now });
+    expect(due).toMatchObject({ state: 'OK', nextDueMi: null, nextDueAt: null, milesRemaining: null, daysRemaining: null });
+  });
+
+  it('a recorded service always wins over the baseline', () => {
+    const due = computeDue({
+      intervalMi: 10_000,
+      intervalDays: null,
+      lastServiceMi: 100_000,
+      lastServiceAt: null,
+      currentOdometerMi: 111_000,
+      now,
+      baselineMi: 110_000,
+    });
+    expect(due.state).toBe('OVERDUE');
+  });
+
+  it('scheduleBaseline recovers the creation baseline from the stored next-due point', () => {
+    expect(
+      scheduleBaseline({ intervalMi: 25_000, intervalDays: 90, nextDueMi: 145_000, nextDueAt: new Date('2027-01-12T12:00:00.000Z') }),
+    ).toEqual({ baselineMi: 120_000, baselineAt: new Date('2026-10-14T12:00:00.000Z') });
+  });
+
+  it('scheduleBaseline treats rows saved by the old 0 mi / 1970 fallback as unknown', () => {
+    expect(scheduleBaseline({ intervalMi: 25_000, intervalDays: 90, nextDueMi: 25_000, nextDueAt: new Date('1970-04-01T00:00:00.000Z') })).toEqual({
+      baselineMi: null,
+      baselineAt: null,
+    });
+  });
+});
+

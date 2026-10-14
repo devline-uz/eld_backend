@@ -1,7 +1,7 @@
 /**
  * TZ §5.9 / §7.4 / §23 — unidentified driving.
- *   `recordOrigin` stays 1 when a carrier assigns a segment, is 4 when the DRIVER assumes it
- *   (Appendix A 4.4.4.2.4(e), MB-3), and is NEVER 2;
+ *   CODE-029 — a carrier assignment only asks the driver; the records are attributed when the
+ *   DRIVER accepts, as origin 4 (Appendix A 4.4.4.2.4(e), MB-3), and are NEVER origin 2;
  *   rejection puts the records back in the pool (origin 4, driverId null);
  *   device-stored records are never lost — nothing is updated or deleted, only appended.
  */
@@ -11,10 +11,12 @@ import type { AuditRepository } from '../audit/audit.repository';
 import type { EventBusService } from '../../core/events/event-bus.service';
 import type { LogsService } from '../logs/logs.service';
 import { buildRodsDay, type RodsEvent } from '../logs/rods';
+import { AssignUnidentifiedDto } from './dto/unidentified.dto';
 import { UnidentifiedService } from './unidentified.service';
 import type { UnidentifiedRepository } from './unidentified.repository';
 
 const DRIVER = 'driver-1';
+const DRIVER_UUID = '6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f';
 
 interface FakeEvent {
   id: bigint;
@@ -127,18 +129,27 @@ function build() {
 
 const actor = { id: 'user-1', type: 'user' as const };
 
+/**
+ * CODE-029 — the only way records are attributed after a carrier assignment: the carrier
+ * proposes (PENDING_CONFIRMATION) and the asked driver accepts in the app.
+ */
+async function assignAndConfirm(service: UnidentifiedService) {
+  await service.assign('seg-1', { driverId: DRIVER }, actor);
+  return service.confirm('seg-1', { accept: true }, { id: DRIVER, type: 'driver' as const });
+}
+
 describe('assignment', () => {
-  it('keeps recordOrigin = 1 on every attributed record and NEVER writes origin 2', async () => {
+  it('CODE-029: the driver-confirmed copies are origin 4 (driver assumed them) and NEVER origin 2', async () => {
     const { service, writer } = build();
 
-    await service.assign('seg-1', { driverId: DRIVER }, actor);
+    await assignAndConfirm(service);
 
     const attributed = writer.calls.find((call) => call.ctx.driverId === DRIVER);
     expect(attributed).toBeDefined();
     const copies = attributed!.rows.filter((row) => row.kind === 'NEW_ACTIVE');
     expect(copies).toHaveLength(2);
     for (const row of copies) {
-      expect(row.recordOrigin).toBe(1);
+      expect(row.recordOrigin).toBe(4);
       expect(row.recordStatus).toBe(1);
     }
     // The §23 invariant, stated as bluntly as the checklist does.
@@ -147,7 +158,7 @@ describe('assignment', () => {
 
   it('sets status, assignedById and assignedAt on the segment', async () => {
     const { service, repo } = build();
-    const view = await service.assign('seg-1', { driverId: DRIVER }, actor);
+    const view = await assignAndConfirm(service);
     expect(view).toMatchObject({ status: 'ASSIGNED', assignedDriverId: DRIVER, assignedById: 'user-1' });
     expect(repo.updateSegment).toHaveBeenCalledWith(
       'seg-1',
@@ -159,7 +170,7 @@ describe('assignment', () => {
     const { service, repo, writer } = build();
     const before = repo.events.map((event) => event.id);
 
-    await service.assign('seg-1', { driverId: DRIVER }, actor);
+    await assignAndConfirm(service);
 
     // No update/delete path was used at all — the originals are still exactly as ingested.
     expect(repo.events.map((event) => event.id)).toEqual(before);
@@ -170,14 +181,14 @@ describe('assignment', () => {
 
   it('closes the assigned segment with an off-duty record when the driver has nothing later', async () => {
     const { service, writer } = build();
-    await service.assign('seg-1', { driverId: DRIVER }, actor);
+    await assignAndConfirm(service);
     const restore = writer.rows.find((row) => row.kind === 'RESTORE');
     expect(restore).toMatchObject({ eventType: 1, eventCode: 1, at: new Date('2026-06-01T13:00:00Z') });
   });
 
   it('writes UNIDENTIFIED_ASSIGNED to the audit log and queues a recalculation', async () => {
     const { service, audit, hosQueue } = build();
-    await service.assign('seg-1', { driverId: DRIVER }, actor);
+    await assignAndConfirm(service);
     expect(audit.insert).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'UNIDENTIFIED_ASSIGNED', objectType: 'UnidentifiedSegment' }),
     );
@@ -186,7 +197,7 @@ describe('assignment', () => {
 
   it('B-059: rebuilds the driver day headers over the segment span after the records are written', async () => {
     const { service, writer, repo, logs } = build();
-    await service.assign('seg-1', { driverId: DRIVER }, actor);
+    await assignAndConfirm(service);
     // B-050 — the rebuild is now part of `LogsService.recordLogChange` (void + rebuild + publish).
     expect(logs.recordLogChange).toHaveBeenCalledWith(
       DRIVER,
@@ -197,14 +208,14 @@ describe('assignment', () => {
     // After both appends and after the segment left PENDING, so hasUnassigned is rebuilt correctly.
     const rebuildOrder = logs.recordLogChange.mock.invocationCallOrder[0];
     expect(rebuildOrder).toBeGreaterThan(writer.append.mock.invocationCallOrder[1]);
-    expect(rebuildOrder).toBeGreaterThan(repo.updateSegment.mock.invocationCallOrder[0]);
+    expect(rebuildOrder).toBeGreaterThan(repo.updateSegment.mock.invocationCallOrder.at(-1)!);
   });
 
   // bugs.md B-050 — the attributed driving changes a (possibly certified) RODS day: §395.8(f)/§9.2
   // require re-certification, through the same hook an accepted edit uses (`LogsService`).
   it('B-050: voids the certification of every day the assigned segment touches', async () => {
     const { service, writer, repo, logs, events } = build();
-    await service.assign('seg-1', { driverId: DRIVER }, actor);
+    await assignAndConfirm(service);
     expect(logs.recordLogChange).toHaveBeenCalledWith(
       DRIVER,
       'America/New_York',
@@ -213,7 +224,7 @@ describe('assignment', () => {
     );
     const order = logs.recordLogChange.mock.invocationCallOrder[0];
     expect(order).toBeGreaterThan(writer.append.mock.invocationCallOrder[1]);
-    expect(order).toBeGreaterThan(repo.updateSegment.mock.invocationCallOrder[0]);
+    expect(order).toBeGreaterThan(repo.updateSegment.mock.invocationCallOrder.at(-1)!);
     expect(events.publish).toHaveBeenCalledWith('unidentified.assigned', expect.objectContaining({ driverId: DRIVER }));
   });
 
@@ -496,11 +507,17 @@ describe('B-83 — assignment that waits for the driver to confirm (§395.32)', 
     );
   });
 
-  it('without the flag the assignment is immediate, as before', async () => {
+  it('CODE-029: without the flag a carrier assignment still only asks the driver', async () => {
     const { service, repo, writer } = build();
-    await service.assign('seg-1', { driverId: DRIVER, requireDriverConfirmation: false }, actor);
-    expect(repo.segment.status).toBe('ASSIGNED');
-    expect(writer.calls.length).toBeGreaterThan(0);
+    await service.assign('seg-1', { driverId: DRIVER }, actor);
+    expect(repo.segment.status).toBe('PENDING_CONFIRMATION');
+    expect(writer.calls).toHaveLength(0);
+  });
+
+  it('CODE-029: requireDriverConfirmation = false is refused by the DTO', () => {
+    expect(AssignUnidentifiedDto.safeParse({ driverId: DRIVER_UUID, requireDriverConfirmation: false }).success).toBe(false);
+    expect(AssignUnidentifiedDto.safeParse({ driverId: DRIVER_UUID, requireDriverConfirmation: true }).success).toBe(true);
+    expect(AssignUnidentifiedDto.safeParse({ driverId: DRIVER_UUID }).success).toBe(true);
   });
 });
 
@@ -551,7 +568,7 @@ describe('CODE-007 — the segment ends where it ends and never overlaps the dri
 
   it('repro: a fully off-duty day gets exactly D 2 h + ON 0.5 h — not D 2 h + ON 12 h', async () => {
     const ctx = repro([['10:00', 3], ['12:00', 4]], at('12:30'));
-    await ctx.service.assign('seg-1', { driverId: DRIVER }, actor);
+    await assignAndConfirm(ctx.service);
 
     const restore = ctx.writer.rows.find((row) => row.kind === 'RESTORE');
     expect(restore).toMatchObject({ eventType: 1, eventCode: 1, at: at('12:30'), recordStatus: 1, recordOrigin: 3 });
@@ -563,7 +580,7 @@ describe('CODE-007 — the segment ends where it ends and never overlaps the dri
 
   it('repro: a pool ending on DRIVING adds only its own driving (D 2 h, not 14 h)', async () => {
     const ctx = repro([['10:00', 3]], at('12:00'));
-    await ctx.service.assign('seg-1', { driverId: DRIVER }, actor);
+    await assignAndConfirm(ctx.service);
     const day = dayAfter(ctx);
     expect(hours(day.drivingSec)).toBe(2);
     expect(hours(day.onDutySec)).toBe(0);
@@ -573,14 +590,14 @@ describe('CODE-007 — the segment ends where it ends and never overlaps the dri
   it("restores the driver's OWN prior status at the segment end (ON stays ON, not OFF)", async () => {
     const ctx = repro([['10:00', 3]], at('12:00'));
     ctx.repo.events.push(ownEvent(12n, at('09:30'), 4));
-    await ctx.service.assign('seg-1', { driverId: DRIVER }, actor);
+    await assignAndConfirm(ctx.service);
     expect(ctx.writer.rows.find((row) => row.kind === 'RESTORE')).toMatchObject({ eventCode: 4, at: at('12:00') });
   });
 
   it('writes no RESTORE when the driver has an own duty-status record exactly at the segment end', async () => {
     const ctx = repro([['10:00', 3]], at('12:00'));
     ctx.repo.events.push(ownEvent(12n, at('12:00'), 4));
-    await ctx.service.assign('seg-1', { driverId: DRIVER }, actor);
+    await assignAndConfirm(ctx.service);
     expect(ctx.writer.rows.some((row) => row.kind === 'RESTORE')).toBe(false);
   });
 
@@ -613,7 +630,7 @@ describe('CODE-007 — the segment ends where it ends and never overlaps the dri
       ownEvent(12n, at('11:00'), 4),
       ownEvent(13n, at('11:00'), 4, { recordStatus: 2, recordOrigin: 3, supersedesId: 12n }),
     );
-    await ctx.service.assign('seg-1', { driverId: DRIVER }, actor);
+    await assignAndConfirm(ctx.service);
     expect(ctx.repo.segment.status).toBe('ASSIGNED');
   });
 

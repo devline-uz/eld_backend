@@ -6,6 +6,7 @@ import {
   HttpStatus,
   Logger,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import type { Request, Response } from 'express';
 import { randomUUID } from 'node:crypto';
 import { RequestContext } from '../../core/context/request-context';
@@ -70,6 +71,11 @@ export class AllExceptionsFilter implements ExceptionFilter {
       };
     }
 
+    // CODE-014 — a constraint error that no service translated is a client-state problem
+    // (duplicate, still referenced, already gone), not a server fault: never a bare 500.
+    const prismaMapped = mapPrismaError(exception);
+    if (prismaMapped) return { ...prismaMapped, traceId, timestamp };
+
     // body-parser rejects an oversized body before Nest sees it and throws a plain
     // `PayloadTooLargeError` (not an HttpException). Ingest batches are capped at 1 MB
     // (TZ §7.3 rule 2), so this must answer 413, not 500.
@@ -124,4 +130,32 @@ function isPayloadTooLarge(exception: unknown): boolean {
   if (typeof exception !== 'object' || exception === null) return false;
   const err = exception as { type?: string; status?: number; statusCode?: number };
   return err.type === 'entity.too.large' || err.status === 413 || err.statusCode === 413;
+}
+
+/** CODE-014 — Prisma known-request errors that mean "conflict with stored data", mapped once here. */
+export function mapPrismaError(
+  exception: unknown,
+): Pick<ErrorEnvelope, 'statusCode' | 'code' | 'message' | 'details'> | null {
+  if (!(exception instanceof Prisma.PrismaClientKnownRequestError)) return null;
+  switch (exception.code) {
+    case 'P2002': {
+      const target = exception.meta?.target;
+      return {
+        statusCode: HttpStatus.CONFLICT,
+        code: ERROR_CODES.CONFLICT,
+        message: 'A record with the same unique value already exists.',
+        details: target !== undefined ? { target } : undefined,
+      };
+    }
+    case 'P2003':
+      return {
+        statusCode: HttpStatus.CONFLICT,
+        code: ERROR_CODES.CONFLICT,
+        message: 'This record is still referenced by other records and cannot be changed or deleted.',
+      };
+    case 'P2025':
+      return { statusCode: HttpStatus.NOT_FOUND, code: ERROR_CODES.NOT_FOUND, message: 'Record not found.' };
+    default:
+      return null;
+  }
 }

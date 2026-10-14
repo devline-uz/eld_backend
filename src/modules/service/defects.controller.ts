@@ -3,7 +3,7 @@ import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@
 import { Audit } from '../../common/decorators/audit.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { FigmaScreen } from '../../common/decorators/figma-screen.decorator';
-import { Perm } from '../../common/decorators/perm.decorator';
+import { Perm, PermAny } from '../../common/decorators/perm.decorator';
 import { apiError, ApiStandardErrors, ERROR_CODES } from '../../common/errors';
 import { zodBody } from '../../common/pipes/zod-validation.pipe';
 import { DefectsService } from './defects.service';
@@ -66,7 +66,9 @@ export class DefectsController {
   }
 
   @Patch(':id/work-order')
-  @Perm('dvir', 'FULL')
+  // CODE-076 — the same rule as `POST /work-orders/:id/defects/:defectId`: linking a defect and a
+  // work order needs FULL on either side of the link (DVIR or maintenance), on both routes.
+  @PermAny(['dvir', 'FULL'], ['maintenance', 'FULL'])
   @Audit({ object: 'Defect', action: 'LINK_WORK_ORDER' })
   @ApiOperation({ summary: 'Attaches (or detaches, with `workOrderId: null`) a defect to a work order.' })
   @ApiOkResponse({ schema: { example: { id: 'def_1', workOrderId: 'wo_1' } } })

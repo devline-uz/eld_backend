@@ -158,7 +158,7 @@ export class HosRecalcRepository extends BaseRepository<
    * §8.4 rule 1 — idempotent write on `@@unique([driverId, logDate, type])`. The row `id`
    * survives every recalculation; only the measured values are refreshed.
    */
-  upsertViolation(args: {
+  async upsertViolation(args: {
     driverId: string;
     logDate: Date;
     type: HosViolation['type'];
@@ -167,12 +167,28 @@ export class HosRecalcRepository extends BaseRepository<
     detail: string;
   }): Promise<HosViolation> {
     const { driverId, logDate, type, occurredAt, exceededBySec, detail } = args;
+    // CODE-069 — link the row to its RODS day header (`rebuildHeaders` runs first in `recalculate`,
+    // so the header exists); `dailyLogId` used to be null on every row.
+    const header = await this.prisma.dailyLog.findUnique({
+      where: { driverId_logDate: { driverId, logDate } },
+      select: { id: true },
+    });
+    const dailyLogId = header?.id ?? null;
     return this.prisma.hosViolation.upsert({
       where: { driverId_logDate_type: { driverId, logDate, type } },
-      create: { driverId, logDate, type, occurredAt, exceededBySec, detail, status: 'OPEN' },
+      create: { driverId, logDate, type, occurredAt, exceededBySec, detail, status: 'OPEN', dailyLogId },
       // LIVE-001 — an AUTO_CLEARED row the records support again is re-opened without its clearing
       // note (the clearing itself stays in `AuditLog`). Never called for a RESOLVED row (rule 3).
-      update: { occurredAt, exceededBySec, detail, status: 'OPEN', resolvedAt: null, resolutionNote: null, recalcVersion: { increment: 1 } },
+      update: {
+        occurredAt,
+        exceededBySec,
+        detail,
+        status: 'OPEN',
+        resolvedAt: null,
+        resolutionNote: null,
+        recalcVersion: { increment: 1 },
+        ...(dailyLogId && { dailyLogId }),
+      },
     });
   }
 

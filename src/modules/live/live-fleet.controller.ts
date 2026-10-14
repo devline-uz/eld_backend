@@ -1,8 +1,10 @@
 import { Controller, Get } from '@nestjs/common';
 import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Perm } from '../../common/decorators/perm.decorator';
 import { ApiStandardErrors } from '../../common/errors';
 import { FigmaScreen } from '../../common/decorators/figma-screen.decorator';
+import type { ContextUser } from '../../core/context/request-context';
 import { LiveFleetService } from './live-fleet.service';
 
 /**
@@ -42,7 +44,11 @@ export class LiveFleetController {
     },
   })
   @ApiStandardErrors()
-  fleet() {
-    return this.live.snapshot();
+  async fleet(@CurrentUser() actor?: ContextUser) {
+    const snapshot = await this.live.snapshot();
+    // CODE-053 — driver phone numbers are `drivers` data (same rule as `/dashboard/summary`).
+    const level = actor?.permissions?.drivers ?? 'NONE';
+    if (level === 'READ' || level === 'FULL') return snapshot;
+    return { ...snapshot, items: snapshot.items.map((u) => ({ ...u, driverPhone: null })) };
   }
 }

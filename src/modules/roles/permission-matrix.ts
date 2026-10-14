@@ -1,4 +1,4 @@
-import { PermissionKey, PermissionLevel, PermissionMatrix } from '../../common/decorators/permission.types';
+import { PermissionKey, PermissionLevel, PermissionMatrix, withRetiredKeysCleared } from '../../common/decorators/permission.types';
 
 export { PERMISSION_KEYS } from '../../common/decorators/permission.types';
 
@@ -19,9 +19,10 @@ const PERMISSION_KEY_LIST: PermissionKey[] = [
   'dataTransfer',
 ];
 
+/** Every live key FULL; retired keys (CODE-029 `hosCertifyOnBehalf`) stay NONE. */
 function allFull(): PermissionMatrix {
   const level: PermissionLevel = 'FULL';
-  return Object.fromEntries(PERMISSION_KEY_LIST.map((k) => [k, level])) as PermissionMatrix;
+  return withRetiredKeysCleared(Object.fromEntries(PERMISSION_KEY_LIST.map((k) => [k, level])) as PermissionMatrix);
 }
 
 export const DEFAULT_ROLE_MATRIX: Record<'SUPER_ADMIN' | 'ADMIN' | 'FLEET_MANAGER' | 'DISPATCHER' | 'VIEWER', PermissionMatrix> = {

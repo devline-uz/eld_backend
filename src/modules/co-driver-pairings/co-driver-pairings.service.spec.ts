@@ -49,7 +49,7 @@ describe('CoDriverPairingsService', () => {
     });
 
     it('rejects an unknown vehicle', async () => {
-      drivers.findById.mockResolvedValue({ id: 'drv_x' } as never);
+      drivers.findById.mockResolvedValue({ id: 'drv_x', status: 'ACTIVE' } as never);
       vehicles.findById.mockResolvedValue(null);
 
       await expect(
@@ -58,7 +58,7 @@ describe('CoDriverPairingsService', () => {
     });
 
     it('rejects a second active pairing for the same co-driver + unit', async () => {
-      drivers.findById.mockResolvedValue({ id: 'drv_x' } as never);
+      drivers.findById.mockResolvedValue({ id: 'drv_x', status: 'ACTIVE' } as never);
       vehicles.findById.mockResolvedValue({ id: 'veh_1' } as never);
       pairings.findActiveForCoDriver.mockResolvedValue({ id: 'pair_existing' } as never);
 
@@ -68,8 +68,19 @@ describe('CoDriverPairingsService', () => {
       expect(pairings.create).not.toHaveBeenCalled();
     });
 
+    it('rejects pairing a driver who is no longer ACTIVE (409)', async () => {
+      drivers.findById
+        .mockResolvedValueOnce({ id: 'drv_1', status: 'ACTIVE', firstName: 'A', lastName: 'B' } as never)
+        .mockResolvedValueOnce({ id: 'drv_2', status: 'TERMINATED', firstName: 'C', lastName: 'D' } as never);
+      vehicles.findById.mockResolvedValue({ id: 'veh_1' } as never);
+      await expect(
+        service.create({ primaryDriverId: 'drv_1', coDriverId: 'drv_2', vehicleId: 'veh_1' }, 'usr_1'),
+      ).rejects.toMatchObject({ status: 409 });
+      expect(pairings.create).not.toHaveBeenCalled();
+    });
+
     it('creates a time-bounded pairing row', async () => {
-      drivers.findById.mockResolvedValue({ id: 'drv_x' } as never);
+      drivers.findById.mockResolvedValue({ id: 'drv_x', status: 'ACTIVE' } as never);
       vehicles.findById.mockResolvedValue({ id: 'veh_1' } as never);
       pairings.findActiveForCoDriver.mockResolvedValue(null);
       pairings.create.mockResolvedValue({ id: 'pair_1' } as never);

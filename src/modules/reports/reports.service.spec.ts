@@ -4,7 +4,9 @@ import type { ContextUser } from '../../core/context/request-context';
 import { ReportsService } from './reports.service';
 
 describe('ReportsService (TZ §15)', () => {
-  const actor: ContextUser = { id: 'usr_1', type: 'user' };
+  const actor: ContextUser = { id: 'usr_1', type: 'user', permissions: { reports: 'FULL', reportsTransfer: 'READ' } };
+  /** CODE-016 — `reports` FULL but no `reportsTransfer`. */
+  const reportsOnly: ContextUser = { id: 'usr_2', type: 'user', permissions: { reports: 'FULL', reportsTransfer: 'NONE' } };
 
   function build() {
     const repo = {
@@ -193,13 +195,92 @@ describe('ReportsService (TZ §15)', () => {
     const from = new Date('2026-09-11T00:00:00.000Z');
     jest.spyOn(Date, 'now').mockReturnValue(from.getTime());
     await service.createSchedule(
-      { reportType: 'ACTIVITY', format: 'CSV', params: {}, cron: '0 6 * * 1', timezone: 'UTC', recipients: [], enabled: true },
+      { reportType: 'ACTIVITY', format: 'CSV', params: { window: 'PREVIOUS_WEEK' }, cron: '0 6 * * 1', timezone: 'UTC', recipients: [], enabled: true },
       actor,
     );
     const [createArgs] = schedules.create.mock.calls[0] as [{ nextRunAt: Date }];
     expect(createArgs.nextRunAt).toBeInstanceOf(Date);
     jest.restoreAllMocks();
   });
+  describe('CODE-016 — FMCSA pack needs reportsTransfer READ on every route', () => {
+    it('generate() refuses FMCSA_PACK without reportsTransfer, nothing queued', async () => {
+      const { service, queue } = build();
+      await expect(
+        service.generate({ type: 'FMCSA_PACK', format: 'PDF', params: { from: '2026-09-01', to: '2026-09-08' } }, reportsOnly),
+      ).rejects.toMatchObject({ code: 'FORBIDDEN', status: 403 });
+      expect(queue.add).not.toHaveBeenCalled();
+      await expect(
+        service.generate({ type: 'FMCSA_PACK', format: 'PDF', params: { from: '2026-09-01', to: '2026-09-08' } }, actor),
+      ).resolves.toMatchObject({ id: 'rpt_1' });
+    });
+
+    it('get/download/file of an FMCSA pack are refused without reportsTransfer; other reports are not', async () => {
+      const { service, repo } = build();
+      repo.findByIdWithRequestedBy.mockResolvedValue({ id: 'rpt_9', type: 'FMCSA_PACK', status: 'READY', fileKey: 'r/p.pdf', requestedBy: null });
+      await expect(service.get('rpt_9', reportsOnly)).rejects.toMatchObject({ status: 403 });
+      await expect(service.download('rpt_9', reportsOnly)).rejects.toMatchObject({ status: 403 });
+      await expect(service.file('rpt_9', reportsOnly)).rejects.toMatchObject({ status: 403 });
+      await expect(service.get('rpt_9', actor)).resolves.toMatchObject({ id: 'rpt_9' });
+      repo.findByIdWithRequestedBy.mockResolvedValue({ id: 'rpt_8', type: 'IFTA', status: 'READY', fileKey: 'r/i.csv', requestedBy: null });
+      await expect(service.get('rpt_8', reportsOnly)).resolves.toMatchObject({ id: 'rpt_8' });
+    });
+
+    it('list() hides FMCSA packs from a caller without reportsTransfer', async () => {
+      const { service, repo } = build();
+      await service.list({ page: 1, limit: 25 }, reportsOnly);
+      expect(repo.list).toHaveBeenCalledWith({ type: { not: 'FMCSA_PACK' } }, 1, 25);
+      repo.list.mockClear();
+      await expect(service.list({ page: 1, limit: 25, type: 'FMCSA_PACK' } as never, reportsOnly)).resolves.toMatchObject({ total: 0 });
+      expect(repo.list).not.toHaveBeenCalled();
+      await service.list({ page: 1, limit: 25 }, actor);
+      expect(repo.list).toHaveBeenCalledWith({}, 1, 25);
+    });
+  });
+
+  describe('CODE-015 — schedule params validated like generate()', () => {
+    const base = { format: 'CSV' as const, cron: '0 6 * * 1', timezone: 'UTC', recipients: [], enabled: true };
+
+    it('createSchedule() refuses params the worker would reject (missing range, oversize range, bad window)', async () => {
+      const { service, schedules } = build();
+      for (const params of [{}, { from: '1900-01-01', to: '2999-12-31' }, { window: 'LAST_CENTURY' }]) {
+        await expect(service.createSchedule({ ...base, reportType: 'ACTIVITY', params }, actor)).rejects.toMatchObject({
+          code: ERROR_CODES.VALIDATION_FAILED,
+        });
+      }
+      // A relative window wider than the type allows (FMCSA pack is capped at 62 days).
+      await expect(
+        service.createSchedule({ ...base, reportType: 'FMCSA_PACK', format: 'PDF', params: { window: 'PREVIOUS_QUARTER' } }, actor),
+      ).rejects.toMatchObject({ code: ERROR_CODES.VALIDATION_FAILED });
+      expect(schedules.create).not.toHaveBeenCalled();
+    });
+
+    it('createSchedule() stores the window (not the period it resolved to today) and drops unknown keys', async () => {
+      const { service, schedules } = build();
+      await service.createSchedule({ ...base, reportType: 'ACTIVITY', params: { window: 'PREVIOUS_MONTH', junk: 1 } }, actor);
+      const [data] = schedules.create.mock.calls[0] as unknown as [{ params: Record<string, unknown> }];
+      expect(data.params).toEqual({ window: 'PREVIOUS_MONTH' });
+    });
+
+    it('updateSchedule() checks a format-only change against the stored type', async () => {
+      const { service, schedules } = build();
+      schedules.findById.mockResolvedValueOnce({
+        id: 'sch_1', reportType: 'FMCSA_PACK', format: 'PDF', params: { window: 'PREVIOUS_MONTH' }, cron: '0 6 1 * *', timezone: 'UTC', enabled: true,
+      } as never);
+      await expect(service.updateSchedule('sch_1', { format: 'XLSX' })).rejects.toMatchObject({ code: ERROR_CODES.VALIDATION_FAILED });
+      expect(schedules.update).not.toHaveBeenCalled();
+    });
+
+    it('updateSchedule() validates new params against the stored type', async () => {
+      const { service, schedules } = build();
+      schedules.findById.mockResolvedValueOnce({
+        id: 'sch_1', reportType: 'ACTIVITY', format: 'CSV', params: { window: 'PREVIOUS_WEEK' }, cron: '0 6 * * 1', timezone: 'UTC', enabled: true,
+      } as never);
+      await expect(service.updateSchedule('sch_1', { params: { from: '2000-01-01', to: '2026-01-01' } })).rejects.toMatchObject({
+        code: ERROR_CODES.VALIDATION_FAILED,
+      });
+    });
+  });
+
   describe('schedule management (web Scheduled reports list)', () => {
     const row = {
       id: 'sch_1', reportType: 'IFTA', format: 'PDF', params: {}, cron: '0 6 1 * *', timezone: 'UTC',

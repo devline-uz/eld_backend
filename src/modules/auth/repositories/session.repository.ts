@@ -64,9 +64,10 @@ export class SessionRepository {
   }
 
   /**
-   * MG-32 — atomic rotation: revokes `oldId` (marking it `rotatedAt`) and creates its successor
-   * in ONE transaction, but only for the caller that wins the `revokedAt IS NULL` claim. Returns
-   * `null` for a loser (a parallel refresh already rotated it) so the caller can take the grace path.
+   * MG-32 + CODE-019 — atomic rotation: revokes `oldId` (marking it `rotatedAt`, and linking it to
+   * its successor via `rotatedToId` for CODE-012 live checks) and creates the successor in ONE
+   * transaction, only for the caller that wins the `revokedAt IS NULL` claim. Returns `null` for a
+   * loser (a parallel refresh already rotated it) so the caller can take the grace path.
    */
   rotate(oldId: string, input: CreateSessionInput): Promise<Session | null> {
     return this.prisma.$transaction(async (tx) => {
@@ -76,7 +77,9 @@ export class SessionRepository {
         data: { revokedAt: now, rotatedAt: now },
       });
       if (claim.count !== 1) return null;
-      return tx.session.create({ data: input });
+      const next = await tx.session.create({ data: input });
+      await tx.session.update({ where: { id: oldId }, data: { rotatedToId: next.id } });
+      return next;
     });
   }
 
@@ -87,6 +90,26 @@ export class SessionRepository {
       data: { revokedAt: new Date() },
     });
     return r.count;
+  }
+
+  /**
+   * CODE-012 — is the session an access token names still live? A refresh rotates the row into a
+   * new one (`rotatedToId`) without ending the sign-in, so the chain is followed to its head; an
+   * explicit revoke/logout/expiry of the head ends every token issued along it.
+   */
+  async isLineageLive(id: string, userId: string, maxHops = 10): Promise<boolean> {
+    let nextId: string | null = id;
+    for (let hop = 0; nextId && hop <= maxHops; hop += 1) {
+      const row: Pick<Session, 'userId' | 'revokedAt' | 'expiresAt' | 'rotatedToId'> | null =
+        await this.prisma.session.findUnique({
+          where: { id: nextId },
+          select: { userId: true, revokedAt: true, expiresAt: true, rotatedToId: true },
+        });
+      if (!row || row.userId !== userId) return false;
+      if (!row.revokedAt) return row.expiresAt > new Date();
+      nextId = row.rotatedToId;
+    }
+    return false;
   }
 
   revoke(id: string): Promise<Session> {

@@ -10,7 +10,8 @@ import type { PrismaService } from '../../core/prisma/prisma.service';
 import { RealtimeRoomAuthorizer } from './room-authorizer';
 
 const DRIVER: ContextUser = { id: 'drv_1', type: 'driver' };
-const USER: ContextUser = { id: 'usr_1', type: 'user', role: 'ADMIN' };
+const USER: ContextUser = { id: 'usr_1', type: 'user', role: 'ADMIN', permissions: { liveFleet: 'READ', hos: 'FULL' } };
+const NO_FLEET: ContextUser = { id: 'usr_2', type: 'user', role: 'VIEWER', permissions: { liveFleet: 'NONE', hos: 'NONE', messaging: 'READ' } };
 
 function build(options: { assignedVehicleId?: string | null; participantCount?: number } = {}) {
   const driverFindUnique = jest.fn().mockResolvedValue({ assignedVehicleId: options.assignedVehicleId ?? null });
@@ -38,6 +39,18 @@ describe('RealtimeRoomAuthorizer', () => {
     await expect(authorizer.mayJoin('fleet', DRIVER)).resolves.toBe(false);
     await expect(authorizer.mayJoin('violations', DRIVER)).resolves.toBe(false);
     await expect(authorizer.mayJoin('fleet', USER)).resolves.toBe(true);
+  });
+
+  it('CODE-013 — fleet / vehicle:* need liveFleet READ, violations needs hos READ', async () => {
+    const { authorizer } = build();
+    await expect(authorizer.mayJoin('violations', USER)).resolves.toBe(true);
+    await expect(authorizer.mayJoin('vehicle:veh_1', USER)).resolves.toBe(true);
+    for (const room of ['fleet', 'violations', 'vehicle:veh_1']) {
+      await expect(authorizer.mayJoin(room, NO_FLEET)).resolves.toBe(false);
+    }
+    // A token with no permission matrix at all gets no broadcast room.
+    await expect(authorizer.mayJoin('fleet', { id: 'usr_3', type: 'user' })).resolves.toBe(false);
+    await expect(authorizer.mayJoin('fleet', { id: 'key_1', type: 'api-key', permissions: { liveFleet: 'FULL' } })).resolves.toBe(false);
   });
 
   it('limits a driver to the vehicle room of their own assigned unit', async () => {

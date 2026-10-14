@@ -34,9 +34,9 @@ export interface PasswordResetCodeSent {
 /**
  * Web panel "Forgot password?" for back-office `User`s (never drivers — mobile has MR-31).
  *
- * 1. `requestCode(email)` — the address must belong to an ACTIVE user (404 otherwise: the
- *    product explicitly wants "No account found with this email"). A 6-digit code is emailed;
- *    only its HMAC is stored, with a 15 min TTL and a 5-guess limit.
+ * 1. `requestCode(email)` — always the same 200 (CODE-081, no account enumeration); only an
+ *    ACTIVE user outside the email-change hold and the resend cooldown actually gets a 6-digit
+ *    code. Only its HMAC is stored, with a 15 min TTL and a 5-guess limit.
  * 2. `resetWithCode(email, code, newPassword)` — proves ownership of the mailbox, sets the new
  *    Argon2id hash, consumes the code and revokes every refresh session of the user.
  *
@@ -59,11 +59,11 @@ export class PasswordResetCodeService {
   async requestCode(email: string, meta: RequestMeta = {}): Promise<PasswordResetCodeSent> {
     this.assertPasswordAuthEnabled();
     const user = await this.findActiveUser(email);
-    if (!user) {
-      throw AppException.notFound('No account found with this email.', {
-        email: 'No account found with this email.',
-      });
-    }
+    // CODE-081 — unknown / INVITED / DISABLED address: the same answer as a real send, so this
+    // public endpoint cannot be used to find out who has an account. Step 2 then fails with the
+    // ordinary "code expired or already used" for an address that never got a code.
+    // Stored addresses are trimmed + lower-cased, so echoing the input that way leaks nothing either.
+    if (!user) return this.sentResponse(email.trim().toLowerCase());
 
     // B-84 email-change hold — the address was confirmed too recently to be trusted for recovery
     // (if the change was not the owner's, the old address can still revert it). No code is mailed;
@@ -74,27 +74,17 @@ export class PasswordResetCodeService {
         .notifyAdminsOfHeldReset(user, new Date(Date.now() - RESET_CODE_TTL_MS))
         .catch((err: unknown) => this.logger.warn({ userId: user.id, err: String(err) }, 'Held password-reset admin notice failed'));
       this.audit('PASSWORD_RESET_HELD', user.id, meta);
-      const message =
-        'The email on this account was changed recently, so a reset code cannot be emailed yet. ' +
-        'Your administrator has been notified — contact them to regain access.';
-      throw new AppException(ERROR_CODES.EMAIL_CHANGE_ON_HOLD, message, HttpStatus.CONFLICT, {
-        email: message,
-        holdUntil: holdUntil.toISOString(),
-      });
+      // CODE-081 — no distinct 409 here either (it would confirm the account exists); the admins
+      // were notified above, and the generic step-2 copy tells the user to contact them.
+      return this.sentResponse(user.email);
     }
 
     const latest = await this.codes.findLatestActive(user.id);
     if (latest) {
       const waitMs = latest.createdAt.getTime() + RESET_CODE_RESEND_COOLDOWN_MS - Date.now();
-      if (waitMs > 0) {
-        const retryAfterSec = Math.ceil(waitMs / 1000);
-        throw new AppException(
-          ERROR_CODES.RATE_LIMITED,
-          `A code was just sent. You can request a new one in ${retryAfterSec} seconds.`,
-          HttpStatus.TOO_MANY_REQUESTS,
-          { retryAfterSec },
-        );
-      }
+      // CODE-081 — inside the 60 s cooldown the live code stays valid and nothing new is mailed;
+      // a 429 only for real accounts would itself be the enumeration signal.
+      if (waitMs > 0) return this.sentResponse(user.email);
     }
 
     // One live code per account: a resend retires the previous one.
@@ -127,12 +117,16 @@ export class PasswordResetCodeService {
     }
 
     this.audit('PASSWORD_RESET_CODE_SENT', user.id, meta);
+    return { ...this.sentResponse(user.email), ...(echo ? { code } : {}) };
+  }
+
+  /** The one response shape for every outcome of step 1 (CODE-081). */
+  private sentResponse(email: string): PasswordResetCodeSent {
     return {
       success: true,
-      email: user.email,
+      email,
       expiresInSec: RESET_CODE_TTL_MS / 1000,
       resendAfterSec: RESET_CODE_RESEND_COOLDOWN_MS / 1000,
-      ...(echo ? { code } : {}),
     };
   }
 

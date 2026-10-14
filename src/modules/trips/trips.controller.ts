@@ -147,8 +147,12 @@ export class TripsController {
   @Post('auto-assign')
   @Perm('trips', 'FULL')
   @Audit({ object: 'Trip', action: 'AUTO_ASSIGN' })
-  @ApiOperation({ summary: 'Greedily assigns every unassigned load to the next free ACTIVE driver.' })
-  @ApiOkResponse({ schema: { example: { assigned: [{ tripId: 'trp_2', driverId: 'drv_1' }], skipped: 0 } } })
+  @ApiOperation({
+    summary: 'Greedily assigns every unassigned load to a free ACTIVE driver (no HOS-hours check).',
+    description:
+      'Each load is assigned on its own (atomic per load). `skipped` = loads left unassigned because no driver was free for that time (or the load has no planned start / delivery time — `noSchedule`); `failed` = loads stopped by another error, each with its reason. The run never aborts half-way.',
+  })
+  @ApiOkResponse({ schema: { example: { assigned: [{ tripId: 'trp_2', driverId: 'drv_1' }], skipped: 1, noSchedule: 0, failed: [] } } })
   @ApiStandardErrors()
   autoAssign() {
     return this.trips.autoAssign();

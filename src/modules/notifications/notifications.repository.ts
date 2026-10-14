@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { AlertRule, Notification, Prisma } from '@prisma/client';
 import { BaseRepository, ModelDelegate } from '../../core/prisma/base.repository';
 import { PrismaService } from '../../core/prisma/prisma.service';
+import { ruleEventsFor } from './lib/alert-events';
 
 @Injectable()
 export class AlertRulesRepository extends BaseRepository<
@@ -41,7 +42,9 @@ export class AlertRulesRepository extends BaseRepository<
    * `mutedUntil` has passed it is cleared here (not just ignored) so the row goes back to
    * reading as a plain un-muted rule everywhere else (list/get/UI) without a date comparison.
    */
-  async findByEvent(event: string): Promise<AlertRule[]> {
+  async findByEvent(event: string, payload: Record<string, unknown> = {}): Promise<AlertRule[]> {
+    // LIVE-027 — a job also matches the editor vocabulary it stands for (`ruleEventsFor`).
+    const events = new Set(ruleEventsFor(event, payload));
     const now = new Date();
     await this.prisma.alertRule.updateMany({
       where: { mutedUntil: { lte: now } },
@@ -52,7 +55,7 @@ export class AlertRulesRepository extends BaseRepository<
     });
     return rows.filter((r) => {
       const conditions = r.conditions as Array<{ event: string }>;
-      return Array.isArray(conditions) && conditions.some((c) => c.event === event);
+      return Array.isArray(conditions) && conditions.some((c) => events.has(c.event));
     });
   }
 }

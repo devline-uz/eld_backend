@@ -64,6 +64,13 @@ export class ReportSchedulerProcessor extends WorkerHost implements OnModuleInit
     let enqueued = 0;
     for (const schedule of due) {
       try {
+        // CODE-080 — `createdById` has no FK, so a deleted owner made `report.create` fail on
+        // every tick forever. Such a schedule is switched off once (and logged once) instead.
+        if (!(await this.ownerExists(schedule.createdById))) {
+          await this.schedulesRepo.update({ id: schedule.id }, { enabled: false, nextRunAt: null });
+          this.logger.warn({ scheduleId: schedule.id, createdById: schedule.createdById }, 'Report schedule disabled: its owner no longer exists');
+          continue;
+        }
         // B-48 — `params.window` is resolved to a concrete `from`/`to` (or `quarter` for
         // IFTA) HERE, on each tick, in the schedule's own timezone — never once at
         // schedule-creation time, or every run would re-generate the same fixed period.
@@ -87,8 +94,25 @@ export class ReportSchedulerProcessor extends WorkerHost implements OnModuleInit
         enqueued += 1;
       } catch (err) {
         this.logger.error({ err, scheduleId: schedule.id }, 'Failed to enqueue a scheduled report');
+        await this.skipToNextRun(schedule, now);
       }
     }
     return { due: due.length, enqueued };
+  }
+
+  private async ownerExists(userId: string): Promise<boolean> {
+    const owner = await this.prisma.user.findUnique({ where: { id: userId }, select: { id: true } });
+    return owner !== null;
+  }
+
+  /** CODE-080 — a failed run still moves `nextRunAt` on, so one bad schedule is retried at its
+   * next cron slot rather than on every one-minute tick. */
+  private async skipToNextRun(schedule: { id: string; cron: string; timezone: string }, now: Date): Promise<void> {
+    try {
+      const nextRunAt = this.reportsService.computeNextRun(schedule.cron, schedule.timezone, now);
+      await this.schedulesRepo.update({ id: schedule.id }, { nextRunAt });
+    } catch (err) {
+      this.logger.error({ err, scheduleId: schedule.id }, 'Failed to advance a failed report schedule');
+    }
   }
 }

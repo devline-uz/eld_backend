@@ -11,6 +11,7 @@ import { AuthService } from './auth.service';
 import { DriverLoginResponse, MeResponse, PasswordResetCodeSentResponse, PasswordResetCompletedResponse, TokenPairResponse } from './dto/auth.responses';
 import { PasswordResetCodeService } from './password-reset-code.service';
 import { apiError, ApiStandardErrors, ERROR_CODES } from '../../common/errors';
+import { AppException } from '../../common/errors/app.exception';
 import { FigmaScreen } from '../../common/decorators/figma-screen.decorator';
 import {
   ConfirmPasswordResetCodeDto,
@@ -44,7 +45,7 @@ export class AuthController {
     description: 'Access+refresh tokens.',
     schema: { example: { accessToken: 'eyJ...', refreshToken: 'a1b2...', tokenType: 'Bearer' } },
   })
-  @ApiStandardErrors({ public: true, errors: [{ status: 401, code: ERROR_CODES.INVALID_CREDENTIALS, message: 'Email or password is incorrect.' }, { status: 423, code: ERROR_CODES.ACCOUNT_LOCKED, message: 'Too many failed attempts — the account is temporarily locked.' }, { status: 403, code: ERROR_CODES.PASSWORD_LOGIN_DISABLED, message: 'AUTH_MODE=production — sign in with Google instead (B-25).' }, apiError.rateLimited('Login is limited to 5 attempts per minute per IP (TZ §6.5).')] })
+  @ApiStandardErrors({ public: true, errors: [{ status: 401, code: ERROR_CODES.INVALID_CREDENTIALS, message: 'Email or password is incorrect.' }, { status: 423, code: ERROR_CODES.ACCOUNT_LOCKED, message: 'CODE-082 — 10 wrong passwords in a row lock the account for 15 minutes (`details.retryAfterSec`). Only a caller who sends the right password sees 423; wrong passwords keep getting 401.' }, { status: 403, code: ERROR_CODES.PASSWORD_LOGIN_DISABLED, message: 'AUTH_MODE=production — sign in with Google instead (B-25).' }, apiError.rateLimited('Login is limited to 5 attempts per minute per IP (TZ §6.5).')] })
   login(@Body(zodBody(LoginDto)) dto: LoginDto, @Req() req: Request) {
     return this.auth.loginUser(dto.email, dto.password, AuthService.meta(req));
   }
@@ -101,10 +102,14 @@ export class AuthController {
     description: 'D-130 — for a driver it also writes the §395 Appendix A 4.5.1.5 logout record (eventType 5, code 2) for the open ELD login, if any.',
   })
   @ApiOkResponse({ schema: { example: { success: true } } })
-  @ApiStandardErrors()
-  async logout(@Body(zodBody(LogoutDto)) dto: LogoutDto, @CurrentUser() actor: ContextUser) {
-    // Same subject mapping as before (an api-key principal never had a refresh session either).
-    await this.auth.logout(actor.type as 'user' | 'driver', dto.refreshToken, actor.type === 'driver' ? actor.id : undefined);
+  @ApiStandardErrors({ errors: [apiError.forbidden('USER_CONTEXT_REQUIRED — an API key has no session to sign out of.')] })
+  async logout(@Body(zodBody(LogoutDto)) dto: LogoutDto, @CurrentUser() actor: ContextUser, @Req() req: Request) {
+    // CODE-079 — an API key never had a refresh session; and the token's own subject is the only
+    // session owner logout will touch (a foreign refresh token is ignored, see AuthService.logout).
+    if (actor.type === 'api-key') {
+      throw new AppException(ERROR_CODES.USER_CONTEXT_REQUIRED, 'API keys have no session to sign out of.', 403);
+    }
+    await this.auth.logout(actor.type, dto.refreshToken, actor.id, AuthService.meta(req));
     return { success: true };
   }
 
@@ -135,28 +140,23 @@ export class AuthController {
   @ApiOperation({
     summary: 'Web "Forgot password?" step 1 — emails a 6-digit code to an ACTIVE back-office user.',
     description:
-      'Back-office `User` accounts only (drivers use `/auth/driver/password/*`). Unknown, INVITED or DISABLED email → 404 ' +
-      '(the product shows "No account found with this email"). The code is stored as an HMAC, expires in 15 minutes, ' +
-      'allows 5 wrong guesses and replaces any earlier code. Calling again within 60 s → 429 with `details.retryAfterSec`. ' +
-      'Refused with 403 PASSWORD_LOGIN_DISABLED when AUTH_MODE=production, exactly like `POST /auth/login`. ' +
-      'Inside the `USER_EMAIL_CHANGE_HOLD_HOURS` hold after an email change no code is mailed: 409 EMAIL_CHANGE_ON_HOLD ' +
-      '(`details.holdUntil`) and the org administrators get an in-app notice.',
+      'Back-office `User` accounts only (drivers use `/auth/driver/password/*`). CODE-081 — always the same 200 body, so ' +
+      'the endpoint never reveals whether an account exists: an unknown, INVITED or DISABLED email gets no code; a repeat ' +
+      'within 60 s keeps the live code and mails nothing; inside the `USER_EMAIL_CHANGE_HOLD_HOURS` hold after an email ' +
+      'change no code is mailed and the org administrators get an in-app notice instead. The code is stored as an HMAC, ' +
+      'expires in 15 minutes, allows 5 wrong guesses and replaces any earlier code. Refused with 403 ' +
+      'PASSWORD_LOGIN_DISABLED when AUTH_MODE=production, exactly like `POST /auth/login`.',
   })
   @ApiEnvelopeResponse(PasswordResetCodeSentResponse, {
-    description: 'Code emailed. `code` is present only with DEV_ECHO_SECRETS=true outside production.',
+    description: 'Same body whether or not a code was mailed (CODE-081). `code` is present only with DEV_ECHO_SECRETS=true outside production, and only when one was actually issued.',
     example: { success: true, email: 'sarah.chen@universal-logistics.example', expiresInSec: 900, resendAfterSec: 60 },
   })
   @ApiStandardErrors({
     public: true,
     errors: [
-      apiError.notFound(ERROR_CODES.NOT_FOUND, 'No account found with this email.'),
       { status: 403, code: ERROR_CODES.PASSWORD_LOGIN_DISABLED, message: 'AUTH_MODE=production — password sign-in (and reset) is off; use Google.' },
-      apiError.conflict(
-        ERROR_CODES.EMAIL_CHANGE_ON_HOLD,
-        'The email on this account was changed recently, so a reset code cannot be emailed yet. Your administrator has been notified.',
-      ),
       { status: 503, code: ERROR_CODES.SERVICE_UNAVAILABLE, message: "We couldn't send the email right now." },
-      apiError.rateLimited('5 requests per minute per IP, and one code per account per 60 s (`details.retryAfterSec`).'),
+      apiError.rateLimited('5 requests per minute per IP.'),
     ],
   })
   requestPasswordResetCode(@Body(zodBody(RequestPasswordResetCodeDto)) dto: RequestPasswordResetCodeDto, @Req() req: Request) {

@@ -24,6 +24,7 @@ import {
   NormalizedVehicleUniques,
   UNIT_NUMBER_TAKEN_MESSAGE,
   VIN_TAKEN_MESSAGE,
+  normalizePlate,
   normalizeUniqueValue,
   normalizeVehicleUniques,
 } from './lib/vehicle-uniques';
@@ -99,6 +100,9 @@ export interface ImportSummary {
   updated: number;
   skipped?: number;
   failed: Array<{ index: number; error: string }>;
+  /** Rows that WERE written but whose `deviceSerial` could not be paired (CODE-042) — never also
+   * counted in `failed`. */
+  warnings?: Array<{ index: number; error: string }>;
 }
 
 export interface VehicleActivityItem {
@@ -181,12 +185,43 @@ export class VehiclesService {
     const deviceChange = await this.resolveDeviceChange(uniques.eldSerial, id);
     await this.assertPlateChangeAvailable(current, uniques);
     await this.assertStatusChangeAllowed(id, dto.status);
+    const leavesService = await this.assertCanLeaveService(current, dto.status);
     await this.assertGroupExists(dto.groupId);
     const data = this.toUpdateInput(dto);
     const write = deviceChange
       ? this.vehicles.saveWithDevice({ id, update: data }, deviceChange.deviceId)
       : this.vehicles.update({ id }, data);
-    return this.conflictOnDuplicate(write);
+    const saved = await this.conflictOnDuplicate(write);
+    if (leavesService) await this.releaseAssignedDriver(id);
+    return saved;
+  }
+
+  /**
+   * CODE-011 — an ACTIVE unit set INACTIVE / OUT_OF_SERVICE by hand must not stay on open trips
+   * (same rule and 409 as `remove()`); returns true when the change takes the unit out of service,
+   * so the caller drops the driver assignment after the write (assign-driver refuses such units).
+   */
+  private async assertCanLeaveService(
+    current: Pick<Vehicle, 'id' | 'status'>,
+    nextStatus: UpdateVehicleDto['status'],
+  ): Promise<boolean> {
+    if (nextStatus === undefined || nextStatus === 'ACTIVE' || nextStatus === current.status) return false;
+    const openTrips = await this.vehicles.findOpenTrips(current.id);
+    if (openTrips.length > 0) {
+      const numbers = openTrips.map((t) => t.number).join(', ');
+      throw AppException.conflict(
+        `This unit still has open trips (${numbers}). Reassign or cancel them before changing its status.`,
+        { openTrips },
+      );
+    }
+    return true;
+  }
+
+  private async releaseAssignedDriver(vehicleId: string): Promise<void> {
+    const driver = await this.drivers.findOne({ assignedVehicleId: vehicleId });
+    if (!driver) return;
+    await this.drivers.update({ id: driver.id }, { assignedVehicle: { disconnect: true } });
+    await publishVehicleUnassigned(this.events, { driverId: driver.id, vehicleId });
   }
 
   /**
@@ -228,7 +263,7 @@ export class VehiclesService {
    * only when it actually changes — saving a unit with its own plate never conflicts. */
   private async assertPlateChangeAvailable(current: Vehicle, uniques: NormalizedVehicleUniques): Promise<void> {
     if (uniques.licensePlate === undefined && uniques.plateState === undefined) return;
-    const currentPlate = normalizeUniqueValue(current.licensePlate) ?? null;
+    const currentPlate = normalizePlate(current.licensePlate) ?? null;
     const currentState = normalizeUniqueValue(current.plateState) ?? null;
     const nextPlate = uniques.licensePlate !== undefined ? uniques.licensePlate : currentPlate;
     const nextState = uniques.plateState !== undefined ? uniques.plateState : currentState;
@@ -309,15 +344,17 @@ export class VehiclesService {
       const numbers = openTrips.map((t) => t.number).join(', ');
       throw AppException.conflict(`This unit still has open trips (${numbers}). Reassign or cancel them first.`, { openTrips });
     }
-    const driver = await this.drivers.findOne({ assignedVehicleId: id });
-    if (driver) {
-      await this.drivers.update({ id: driver.id }, { assignedVehicle: { disconnect: true } });
-      await publishVehicleUnassigned(this.events, { driverId: driver.id, vehicleId: id });
+    // CODE-062 — the delete itself re-checks open trips under the unit's schedule lock, so a trip
+    // created between the check above and here cannot end up on a deleted unit.
+    const result = await this.vehicles.softDeleteUnlessBooked(id);
+    if (!result.deleted) {
+      const numbers = result.openTrips.map((t) => t.number).join(', ');
+      throw AppException.conflict(`This unit still has open trips (${numbers}). Reassign or cancel them first.`, { openTrips: result.openTrips });
     }
-    const removed = await this.vehicles.update({ id }, { status: 'INACTIVE', deletedAt: new Date() });
+    await this.releaseAssignedDriver(id);
     // A deleted unit gives its ELD device back, like its unit number / VIN / plate.
     await this.vehicles.releaseDevice(id);
-    return removed;
+    return result.deleted;
   }
 
   /**
@@ -541,9 +578,11 @@ export class VehiclesService {
     const result: BulkStatusResult = { updated: [], failed: [] };
     for (const id of dto.ids) {
       try {
-        await this.get(id);
+        const current = await this.get(id);
         await this.assertStatusChangeAllowed(id, dto.status);
+        const leavesService = await this.assertCanLeaveService(current, dto.status);
         await this.vehicles.update({ id }, { status: dto.status });
+        if (leavesService) await this.releaseAssignedDriver(id);
         result.updated.push(id);
       } catch (err) {
         result.failed.push({ id, error: err instanceof Error ? err.message : 'Unknown error' });
@@ -624,7 +663,9 @@ export class VehiclesService {
       });
     }
 
-    return buildVehicleHistories(date, historyPoints, driverNameById);
+    // The zone the day was cut in (driver's home terminal, else the carrier's) — the web renders
+    // the day's times in it so they match the day boundaries.
+    return { ...buildVehicleHistories(date, historyPoints, driverNameById), timezone: tz };
   }
 
   private async dayBoundaryTimezone(driverTz: string | undefined): Promise<string> {
@@ -665,26 +706,37 @@ export class VehiclesService {
           knownGroups.add(row.groupId);
         }
         const existing = (await this.vehicles.findByUnitNumber(row.unitNumber)) ?? (await this.vehicles.findByVin(row.vin));
-        let vehicle: Vehicle;
+        if (existing && options.duplicateStrategy === 'SKIP') {
+          summary.skipped = (summary.skipped ?? 0) + 1;
+          continue;
+        }
+        if (existing && options.duplicateStrategy === 'CREATE') {
+          summary.failed.push({ index, error: `Unit "${row.unitNumber}" / VIN "${row.vin}" already exists.` });
+          continue;
+        }
+        // CODE-042 — the pairing is resolved BEFORE anything is written and then saved in the same
+        // transaction as the row, so a row is either written (maybe with a pairing warning) or
+        // failed, never both.
+        let deviceId: string | undefined;
+        if (options.pairDevices && row.deviceSerial) {
+          const pairing = await this.resolveImportDevice(row.deviceSerial, existing?.id);
+          if ('deviceId' in pairing) deviceId = pairing.deviceId;
+          else (summary.warnings ??= []).push({ index, error: pairing.warning });
+        }
         if (existing) {
-          if (options.duplicateStrategy === 'SKIP') {
-            summary.skipped = (summary.skipped ?? 0) + 1;
-            continue;
-          }
-          if (options.duplicateStrategy === 'CREATE') {
-            summary.failed.push({ index, error: `Unit "${row.unitNumber}" / VIN "${row.vin}" already exists.` });
-            continue;
-          }
           await this.assertUnitAndVinAvailable(row, existing.id);
           await this.assertStatusChangeAllowed(existing.id, (row as UpdateVehicleDto).status);
-          vehicle = await this.conflictOnDuplicate(this.vehicles.update({ id: existing.id }, this.toUpdateInput(row)));
+          const leavesService = await this.assertCanLeaveService(existing, (row as UpdateVehicleDto).status);
+          const update = this.toUpdateInput(row);
+          await this.conflictOnDuplicate(
+            deviceId ? this.vehicles.saveWithDevice({ id: existing.id, update }, deviceId) : this.vehicles.update({ id: existing.id }, update),
+          );
+          if (leavesService) await this.releaseAssignedDriver(existing.id);
           summary.updated += 1;
         } else {
-          vehicle = await this.conflictOnDuplicate(this.vehicles.create(this.toCreateInput(row)));
+          const create = this.toCreateInput(row);
+          await this.conflictOnDuplicate(deviceId ? this.vehicles.saveWithDevice({ create }, deviceId) : this.vehicles.create(create));
           summary.imported += 1;
-        }
-        if (options.pairDevices && row.deviceSerial) {
-          await this.pairDeviceQuietly(row.deviceSerial, vehicle.id);
         }
       } catch (err) {
         summary.failed.push({ index, error: err instanceof Error ? err.message : 'Unknown error' });
@@ -701,12 +753,19 @@ export class VehiclesService {
     return { ...row, notes: `Terminal: ${options.defaultTerminal}` };
   }
 
-  /** A bad `deviceSerial` in an import row must never fail the whole vehicle row — it is a
-   * best-effort convenience on top of an already-succeeded create/update. */
-  private async pairDeviceQuietly(serial: string, vehicleId: string): Promise<void> {
-    const device = await this.vehicles.findDeviceBySerial(serial);
-    if (!device || device.vehicleId) return;
-    await this.vehicles.pairDevice(device.id, vehicleId);
+  /**
+   * A bad `deviceSerial` in an import row must never fail the vehicle row — it is a best-effort
+   * convenience, reported as a warning. Lookup is case/space-insensitive and a device left on a
+   * soft-deleted unit counts as free, the same rules as the vehicle form (CODE-042).
+   */
+  private async resolveImportDevice(serial: string, vehicleId: string | undefined): Promise<{ deviceId: string } | { warning: string }> {
+    const normalized = normalizeUniqueValue(serial);
+    if (!normalized) return { warning: ELD_SERIAL_UNKNOWN_MESSAGE };
+    const device = await this.vehicles.findDeviceForPairing(normalized);
+    if (!device) return { warning: `${ELD_SERIAL_UNKNOWN_MESSAGE} (${normalized})` };
+    const heldByLiveUnit = device.vehicleId !== null && device.vehicleId !== vehicleId && !device.vehicle?.deletedAt;
+    if (heldByLiveUnit) return { warning: `${ELD_SERIAL_TAKEN_MESSAGE} (${normalized})` };
+    return { deviceId: device.id };
   }
 
   private async emailImportSummary(actorUserId: string, summary: ImportSummary): Promise<void> {

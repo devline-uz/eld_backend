@@ -210,6 +210,10 @@ const baseEnvSchema = z.object({
   /** TZ §22.5 — separate Sentry projects for dev and prod; defaults to NODE_ENV when unset. */
   SENTRY_ENVIRONMENT: z.string().optional(),
   METRICS_ENABLED: bool('true'),
+  /** CODE-082 — `/metrics` and `/health/deep` answer only callers on a private / loopback address
+   * (Prometheus on the docker network, the box itself) or ones sending `Authorization: Bearer
+   * <METRICS_TOKEN>`. Unset = network rule only. `/health/live` and `/health/ready` stay open. */
+  METRICS_TOKEN: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(24).optional()),
   /** Worker container has no HTTP stack of its own (§3.3) — this is its own health/metrics
    * listener, separate from the API's PORT, so both containers can be probed independently. */
   WORKER_HEALTH_PORT: z.coerce.number().int().positive().default(3002),

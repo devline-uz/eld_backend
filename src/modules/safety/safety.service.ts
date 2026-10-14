@@ -1,11 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
-import { OffsetPage } from '../../common/dto/list-query.dto';
+import { OffsetPage, parseSort } from '../../common/dto/list-query.dto';
 import { addDays, dayDiff } from '../hos/engine/timezone';
 import { MIN_SCORED_MILES } from './lib/harsh-detect';
 import { dateKeyToDbDate, dbDateToKey, fleetScore, periodEndingOn, SCORE_ATTENTION_THRESHOLD, scoreTrend } from './lib/scorecard';
-import { AssignCoachingDto, ScorecardQueryDto, SafetyEventListQueryDto, UpdateSafetyEventDto } from './dto/safety.dto';
+import { AssignCoachingDto, SAFETY_EVENT_SORT_FIELDS, ScorecardQueryDto, SafetyEventListQueryDto, UpdateSafetyEventDto } from './dto/safety.dto';
 import { SafetyRepository } from './safety.repository';
 
 @Injectable()
@@ -14,11 +14,40 @@ export class SafetyService {
 
   async listEvents(query: SafetyEventListQueryDto): Promise<OffsetPage<unknown>> {
     const { items, total } = await this.repo.list(
-      { driverId: query.driverId, vehicleId: query.vehicleId, type: query.type, status: query.status, from: query.from, to: query.to },
+      {
+        driverId: query.driverId,
+        vehicleId: query.vehicleId,
+        type: query.type,
+        status: query.status,
+        from: query.from,
+        to: query.to,
+        q: query.q?.trim() || undefined,
+      },
       query.page,
       query.limit,
+      parseSort(query.sort, SAFETY_EVENT_SORT_FIELDS, { occurredAt: 'desc' }),
     );
     return { items, page: query.page, limit: query.limit, total, totalPages: Math.max(1, Math.ceil(total / query.limit)) };
+  }
+
+  /**
+   * CODE-040 — the Safety page KPIs as server aggregates over the rolling 30-day window and the
+   * 30 days before it (the page used to count only the newest 500 events it had loaded).
+   */
+  async summary(now: Date = new Date()): Promise<SafetySummary> {
+    const day = 24 * 60 * 60 * 1000;
+    const currentFrom = new Date(now.getTime() - 30 * day);
+    const previousFrom = new Date(now.getTime() - 60 * day);
+    const [current, previous] = await Promise.all([
+      this.repo.countsInWindow(currentFrom, now),
+      this.repo.countsInWindow(previousFrom, currentFrom),
+    ]);
+    return {
+      from: currentFrom.toISOString(),
+      to: now.toISOString(),
+      current: toSummaryCounts(current),
+      previous: toSummaryCounts(previous),
+    };
   }
 
   /** §20 B-43 — `dto.driverId` assigns coaching at the driver level: the most recent
@@ -28,6 +57,7 @@ export class SafetyService {
     const eventId = dto.eventId ?? (await this.findEventIdForDriver(dto.driverId!));
     const event = await this.repo.findById({ id: eventId });
     if (!event) throw new AppException(ERROR_CODES.NOT_FOUND, 'Safety event not found.', 404);
+    assertSafetyTransition(event.status, 'COACHED');
     return this.repo.update(
       { id: eventId },
       { status: 'COACHED', coachedById, coachedAt: new Date(), coachingNote: dto.note },
@@ -43,6 +73,7 @@ export class SafetyService {
   async updateEvent(id: string, dto: UpdateSafetyEventDto) {
     const event = await this.repo.findById({ id });
     if (!event) throw new AppException(ERROR_CODES.NOT_FOUND, 'Safety event not found.', 404);
+    assertSafetyTransition(event.status, dto.status);
     return this.repo.update({ id }, dto);
   }
 
@@ -176,4 +207,50 @@ export function sortScorecard(items: ScorecardItem[]): ScorecardItem[] {
     if (b.rank !== null) return 1;
     return b.milesDriven - a.milesDriven || a.driverId.localeCompare(b.driverId);
   });
+}
+
+const HARSH_TYPES = ['HARSH_BRAKING', 'HARSH_ACCEL', 'HARSH_TURN'];
+
+export interface SafetySummaryCounts {
+  total: number;
+  harsh: number;
+  speeding: number;
+  seatbelt: number;
+  coached: number;
+  pendingCoaching: number;
+}
+
+export interface SafetySummary {
+  from: string;
+  to: string;
+  current: SafetySummaryCounts;
+  previous: SafetySummaryCounts;
+}
+
+function toSummaryCounts({ byType, byStatus }: { byType: Map<string, number>; byStatus: Map<string, number> }): SafetySummaryCounts {
+  const of = (m: Map<string, number>, k: string) => m.get(k) ?? 0;
+  return {
+    total: [...byType.values()].reduce((a, b) => a + b, 0),
+    harsh: HARSH_TYPES.reduce((sum, t) => sum + of(byType, t), 0),
+    speeding: of(byType, 'SPEEDING'),
+    seatbelt: of(byType, 'SEATBELT'),
+    coached: of(byStatus, 'COACHED'),
+    pendingCoaching: of(byStatus, 'NEW'),
+  };
+}
+
+/**
+ * CODE-072 — the coaching workflow: NEW → REVIEWED → COACHED, or NEW/REVIEWED → DISMISSED.
+ * COACHED and DISMISSED are final, so a coached event can never be silently re-labelled.
+ */
+const SAFETY_TRANSITIONS: Record<string, readonly string[]> = {
+  NEW: ['REVIEWED', 'COACHED', 'DISMISSED'],
+  REVIEWED: ['COACHED', 'DISMISSED'],
+  COACHED: [],
+  DISMISSED: [],
+};
+
+export function assertSafetyTransition(from: string, to: string): void {
+  if ((SAFETY_TRANSITIONS[from] ?? []).includes(to)) return;
+  throw new AppException(ERROR_CODES.CONFLICT, `A ${from} safety event cannot become ${to}.`, 409, { status: from });
 }

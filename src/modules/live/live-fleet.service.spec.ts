@@ -109,4 +109,13 @@ describe('LiveFleetController', () => {
     const live = { snapshot: jest.fn().mockResolvedValue({ items: [], generatedAt: 'x' }) };
     await expect(new LiveFleetController(live as never).fleet()).resolves.toEqual({ items: [], generatedAt: 'x' });
   });
+
+  it('CODE-053 — hides driverPhone without drivers READ', async () => {
+    const live = { snapshot: jest.fn().mockResolvedValue({ items: [{ vehicleId: 'v', driverPhone: '+1 555' }], generatedAt: 'x' }) };
+    const ctl = new LiveFleetController(live as never);
+    const viewer = { permissions: { liveFleet: 'READ' } } as never;
+    const reader = { permissions: { liveFleet: 'READ', drivers: 'READ' } } as never;
+    await expect(ctl.fleet(viewer)).resolves.toMatchObject({ items: [{ driverPhone: null }] });
+    await expect(ctl.fleet(reader)).resolves.toMatchObject({ items: [{ driverPhone: '+1 555' }] });
+  });
 });

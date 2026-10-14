@@ -28,7 +28,10 @@ export interface OngoingViolation {
 }
 
 export interface OngoingViolationInput {
-  /** Records up to `dayStartAt`, with enough history for the running shift (any status). */
+  /**
+   * Records up to AND including `dayStartAt`, with enough history for the running shift (any
+   * status). A record stamped exactly at `dayStartAt` decides whether the driving carries over.
+   */
   events: RodsEvent[];
   driver: DriverHosConfig;
   ruleset: HosRuleset;
@@ -44,8 +47,14 @@ export function ongoingViolationsAtDayStart(input: OngoingViolationInput): Ongoi
   // A day that has not started yet carries nothing over.
   if (dayStartAt.getTime() > now.getTime()) return [];
 
-  const before = activeRecords(input.events).filter((event) => event.eventDateTime.getTime() < dayStartAt.getTime());
+  const active = activeRecords(input.events);
+  const before = active.filter((event) => event.eventDateTime.getTime() < dayStartAt.getTime());
   if (!before.length) return [];
+  // CODE-063 — driving that STOPS exactly at 00:00 carries nothing into the day: the limit can
+  // only be broken by driving after it was reached, and none happens on this day.
+  const upToStart = mapEldEventsToNormalized(active.filter((event) => event.eventDateTime.getTime() <= dayStartAt.getTime()));
+  const inForceAtStart = upToStart[upToStart.length - 1];
+  if (!inForceAtStart || inForceAtStart.status !== 'D') return [];
 
   const state = computeHos({
     events: mapEldEventsToNormalized(before),

@@ -181,6 +181,20 @@ describe('toLiveFleetUnit (GET /live/fleet, web/tz.md §20 B-3)', () => {
     expect(toLiveFleetUnit(input({ hos: on, special: 'PC' })).dutyStatus).toBe('ON_DUTY');
   });
 
+  it('CODE-052 — a device clock ahead of the server never yields a future lastSeenAt', () => {
+    const ahead = new Date(NOW.getTime() + 5 * 60_000);
+    const unit = toLiveFleetUnit(input({ device: { serial: 'PT30_A86E', bleState: 'CONNECTED', lastSeenAt: ahead } }));
+    expect(unit.lastSeenAt).toBe(NOW.toISOString());
+  });
+
+  it('CODE-022 — an assigned driver without HOS state is described from fresh telemetry, never OFF_DUTY while moving', () => {
+    const base = input({ hos: null });
+    const moving = toLiveFleetUnit({ ...base, telemetry: { ...base.telemetry!, time: NOW, speedMph: 62, engineOn: true } });
+    expect(moving).toMatchObject({ dutyStatus: 'DRIVING', driverDutyStatus: null });
+    const idling = toLiveFleetUnit({ ...base, telemetry: { ...base.telemetry!, time: NOW, speedMph: 0, engineOn: true } });
+    expect(idling.dutyStatus).toBe('IDLE');
+  });
+
   it('a unit without a driver is ELD_OFFLINE after 30 min unseen, OFF_DUTY while its ELD is alive, INACTIVE with no ELD', () => {
     const noDriver = { driver: null, hos: null };
     const stale = toLiveFleetUnit(

@@ -79,8 +79,20 @@ export const CUSTOM_INDEXES: readonly CustomIndex[] = [
   {
     name: 'Device_serial_upper_key',
     table: 'Device',
-    migration: '20261014140000_device_serial_upper_unique',
+    migration: '20261014150000_device_serial_upper_unique',
     why: 'ELD device serial unique ignoring case and surrounding spaces (CODE-009, expression index)',
+  },
+  {
+    name: 'Vehicle_unitNumber_canonical_live_key',
+    table: 'Vehicle',
+    migration: '20261014200000_vehicle_unit_plate_canonical',
+    why: 'live unit number unique ignoring case, surrounding spaces and a leading # (CODE-044, expression index)',
+  },
+  {
+    name: 'Role_name_lower_key',
+    table: 'Role',
+    migration: '20261014210000_user_lockout_role_name_unique',
+    why: 'role display name unique ignoring case and surrounding spaces (CODE-087, expression index)',
   },
 ];
 

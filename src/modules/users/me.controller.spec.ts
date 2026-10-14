@@ -33,14 +33,16 @@ describe('MeController — delegates to UsersService/AuthService', () => {
   });
 
   it('revokeSession revokes and returns { success: true }', async () => {
-    const result = await controller.revokeSession('usr_1', 'sess_1');
-    expect(auth.revokeUserSession).toHaveBeenCalledWith('usr_1', 'sess_1');
+    const req = { ip: '10.0.0.1', headers: { 'user-agent': 'UA' } } as never;
+    const result = await controller.revokeSession('usr_1', 'sess_1', req);
+    expect(auth.revokeUserSession).toHaveBeenCalledWith('usr_1', 'sess_1', { ip: '10.0.0.1', userAgent: 'UA' });
     expect(result).toEqual({ success: true });
   });
 
   it('revokeAllSessions signs out every other session and returns { revoked } (B-50)', async () => {
-    const result = await controller.revokeAllSessions('usr_1', 'sess_1');
-    expect(auth.revokeAllUserSessions).toHaveBeenCalledWith('usr_1', 'sess_1');
+    const req = { ip: '10.0.0.1', headers: { 'user-agent': 'UA' } } as never;
+    const result = await controller.revokeAllSessions('usr_1', req, 'sess_1');
+    expect(auth.revokeAllUserSessions).toHaveBeenCalledWith('usr_1', 'sess_1', { ip: '10.0.0.1', userAgent: 'UA' });
     expect(result).toEqual({ revoked: 2 });
   });
 

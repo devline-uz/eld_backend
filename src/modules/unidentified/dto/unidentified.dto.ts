@@ -18,11 +18,11 @@ export const AssignUnidentifiedDto = z.object({
   driverId: z.string().uuid(),
   annotation: annotation.optional(),
   /**
-   * B-83 — `true`: nothing is attributed yet. The segment goes to `PENDING_CONFIRMATION`, the
-   * driver is asked in the app, and the records move to their log only when they confirm
-   * (`POST /unidentified/:id/confirm`).
+   * B-83 / CODE-029 — driver confirmation is mandatory: every carrier assignment goes to
+   * `PENDING_CONFIRMATION` and the records move to the driver's log only when they confirm
+   * (`POST /unidentified/:id/confirm`). Kept for older clients; `false` is refused (422).
    */
-  requireDriverConfirmation: z.boolean().optional(),
+  requireDriverConfirmation: z.literal(true).optional(),
 });
 export type AssignUnidentifiedDto = z.infer<typeof AssignUnidentifiedDto>;
 

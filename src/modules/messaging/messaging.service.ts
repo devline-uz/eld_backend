@@ -56,6 +56,10 @@ export interface MessageAudioView {
 /** A message as served to the web panel and pushed in `message.new`: `type` + `attachment`
  * come from MB-9 chat uploads (`ChatAttachmentsService.decorate`, TEXT|AUDIO|IMAGE|FILE) or, for a
  * stored AUDIO row (web voice message), from its MESSAGE_AUDIO clip (`withAudio`). */
+/** `Message.clientId @unique` hit by a concurrent copy of the same send. */
+const isUniqueViolation = (err: unknown): boolean =>
+  typeof err === 'object' && err !== null && (err as { code?: string }).code === 'P2002';
+
 export type MessageView = Omit<Message, 'type'> & {
   type: ChatMessageType;
   attachment: ChatAttachmentView | MessageAudioView | null;
@@ -198,12 +202,52 @@ export class MessagingService {
       .catch(() => undefined);
   }
 
+  /**
+   * Idempotent send: the message already stored under `clientId` by the same sender in the same
+   * conversation, or `undefined`. The same `clientId` from anyone else is a 422, never a replay
+   * of their message.
+   */
+  private async replayByClientId(
+    conversationId: string,
+    clientId: string | undefined,
+    participant: ReturnType<typeof toParticipant>,
+  ): Promise<MessageView | undefined> {
+    if (!clientId) return undefined;
+    const existing = await this.repo.findMessageByClientId(clientId);
+    if (!existing) return undefined;
+    const sameSender =
+      existing.conversationId === conversationId &&
+      (existing.senderUserId ?? undefined) === participant.userId &&
+      (existing.senderDriverId ?? undefined) === participant.driverId;
+    if (!sameSender) {
+      const message = 'clientId is already used by another message.';
+      throw new AppException(ERROR_CODES.VALIDATION_FAILED, message, 422, { clientId: message });
+    }
+    const [view] = await this.present([existing]);
+    return view;
+  }
+
   private async assertParticipant(conversationId: string, actor: ContextUser) {
     const conversation = await this.repo.findById(conversationId);
     if (!conversation) throw new AppException(ERROR_CODES.NOT_FOUND, 'Conversation not found.', 404);
     const ok = await this.repo.isParticipant(conversationId, toParticipant(actor));
     if (!ok) throw new AppException(ERROR_CODES.FORBIDDEN, 'Not a participant of this conversation.', 403);
     return conversation;
+  }
+
+  /** Driver disable — staff cannot keep messaging a DIRECT thread whose driver is no longer
+   * ACTIVE (the history stays readable). Group threads still deliver to their active members. */
+  private async assertDirectDriverReachable(
+    conversation: { type: string; participants?: Array<{ driverId: string | null }> },
+    actor: ContextUser,
+  ): Promise<void> {
+    if (actor.type === 'driver' || conversation.type !== 'DIRECT') return;
+    const driverIds = (conversation.participants ?? []).map((p) => p.driverId).filter((id): id is string => id !== null);
+    if (driverIds.length === 0) return;
+    const live = await this.repo.findLiveDriverIds(driverIds);
+    if (driverIds.some((id) => !live.has(id))) {
+      throw AppException.conflict('This driver is no longer active and cannot receive messages.', { driverIds });
+    }
   }
 
   async listMessages(conversationId: string, actor: ContextUser, page: number, limit: number): Promise<OffsetPage<unknown>> {
@@ -217,14 +261,27 @@ export class MessagingService {
   async sendMessage(conversationId: string, dto: SendMessageDto, actor: ContextUser) {
     const conversation = await this.assertParticipant(conversationId, actor);
     const participant = toParticipant(actor);
+    // CODE-017 — a retry with the same `clientId` (web/app resend after a timeout) returns the
+    // stored message instead of a 500 on `Message.clientId @unique`, exactly like the audio path.
+    const replay = await this.replayByClientId(conversationId, dto.clientId, participant);
+    if (replay) return replay;
+    await this.assertDirectDriverReachable(conversation, actor);
     if (dto.attachmentId) await this.chatAttachments.assertSendable(dto.attachmentId, actor);
-    const created = await this.repo.createMessage(conversationId, {
-      body: dto.body,
-      attachmentId: dto.attachmentId,
-      clientId: dto.clientId,
-      senderUserId: participant.userId,
-      senderDriverId: participant.driverId,
-    });
+    let created: Awaited<ReturnType<MessagingRepository['createMessage']>>;
+    try {
+      created = await this.repo.createMessage(conversationId, {
+        body: dto.body,
+        attachmentId: dto.attachmentId,
+        clientId: dto.clientId,
+        senderUserId: participant.userId,
+        senderDriverId: participant.driverId,
+      });
+    } catch (err) {
+      // Two copies of the same send raced past the lookup: the loser replays the winner's row.
+      const raced = isUniqueViolation(err) ? await this.replayByClientId(conversationId, dto.clientId, participant) : undefined;
+      if (raced) return raced;
+      throw err;
+    }
     const [message] = await this.present([created]);
     await this.publishNewMessage(conversationId, conversation.participants ?? [], message);
     if (actor.type !== 'driver') await this.pushToDrivers(conversation, message, participant);
@@ -246,23 +303,9 @@ export class MessagingService {
   ): Promise<MessageView> {
     const conversation = await this.assertParticipant(conversationId, actor);
     const participant = toParticipant(actor);
-    if (dto.clientId) {
-      const existing = await this.repo.findMessageByClientId(dto.clientId);
-      if (existing) {
-        const sameSender =
-          existing.conversationId === conversationId &&
-          (existing.senderUserId ?? undefined) === participant.userId &&
-          (existing.senderDriverId ?? undefined) === participant.driverId;
-        if (!sameSender) {
-          const message = 'clientId is already used by another message.';
-          throw new AppException(ERROR_CODES.VALIDATION_FAILED, message, 422, {
-            clientId: message,
-          });
-        }
-        const [view] = await this.present([existing]);
-        return view;
-      }
-    }
+    const replay = await this.replayByClientId(conversationId, dto.clientId, participant);
+    if (replay) return replay;
+    await this.assertDirectDriverReachable(conversation, actor);
     if (!file || !file.buffer?.length) {
       throw new AppException(ERROR_CODES.VALIDATION_FAILED, 'No audio file was uploaded.', 400, {
         file: 'Required.',
@@ -474,7 +517,7 @@ export class MessagingService {
     const missingDrivers = driverIds.filter((id) => !liveDrivers.has(id));
     const missingUsers = userIds.filter((id) => !users.has(id));
     if (missingDrivers.length === 0 && missingUsers.length === 0) return;
-    throw new AppException(ERROR_CODES.VALIDATION_FAILED, 'Some recipients were not found.', 422, {
+    throw new AppException(ERROR_CODES.VALIDATION_FAILED, 'Some recipients were not found or are no longer active.', 422, {
       ...(missingDrivers.length > 0 && { driverIds: missingDrivers }),
       ...(missingUsers.length > 0 && { userIds: missingUsers }),
     });

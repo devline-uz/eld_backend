@@ -1,4 +1,4 @@
-import { DriversRepository } from './drivers.repository';
+import { DriversRepository, sortRosterKeys } from './drivers.repository';
 
 function makeDelegate() {
   return {
@@ -59,17 +59,29 @@ describe('DriversRepository', () => {
   describe('listRoster', () => {
     const whereOf = () => (driver.findMany.mock.calls[0] as [{ where: Record<string, unknown> }])[0].where;
 
-    it('includes the assigned unit and paginates', async () => {
+    it('includes the assigned unit and paginates (non-text sort stays in SQL)', async () => {
       driver.count.mockResolvedValue(3);
-      const result = await repo.listRoster({}, 2, 10, { lastName: 'asc' });
+      const result = await repo.listRoster({}, 2, 10, { registeredAt: 'asc' });
       expect(driver.findMany).toHaveBeenCalledWith({
         where: { deletedAt: null },
-        orderBy: { lastName: 'asc' },
+        orderBy: { registeredAt: 'asc' },
         skip: 10,
         take: 10,
         include: { assignedVehicle: { select: { id: true, unitNumber: true } } },
       });
       expect(result.total).toBe(3);
+    });
+
+    it('LIVE-023 — a name sort ignores case, then loads only the requested page in that order', async () => {
+      const key = (id: string, firstName: string, lastName: string) => ({ id, firstName, lastName, username: id, cdlNumber: null, homeTerminalName: null });
+      driver.findMany
+        .mockResolvedValueOnce([key('d1', 'Ann', 'Young'), key('d2', 'co-driver', 'test'), key('d3', 'Bob', 'adams'), key('d4', 'Cy', 'Brown')])
+        .mockResolvedValueOnce([{ id: 'd2' }, { id: 'd1' }]);
+      const result = await repo.listRoster({}, 2, 2, { lastName: 'asc' });
+      expect(driver.findMany).toHaveBeenNthCalledWith(1, expect.objectContaining({ where: { deletedAt: null }, select: expect.objectContaining({ id: true, lastName: true }) as object }));
+      expect(driver.findMany).toHaveBeenNthCalledWith(2, expect.objectContaining({ where: { id: { in: ['d2', 'd1'] } } }));
+      expect(result.items.map((d) => d.id)).toEqual(['d2', 'd1']);
+      expect(result.total).toBe(4);
     });
 
     it('builds the terminal/exempt/q/status filters', async () => {
@@ -124,6 +136,57 @@ describe('DriversRepository', () => {
       expect(hosViolation.groupBy).toHaveBeenCalledWith({ by: ['driverId'], where: { driverId: { in: ['d1', 'd2'] }, status: 'OPEN' }, _count: { _all: true } });
       expect(counts.get('d1')).toBe(2);
       expect(counts.get('d2')).toBeUndefined();
+    });
+  });
+  describe('sortRosterKeys (LIVE-023)', () => {
+    const k = (id: string, firstName: string, lastName: string | null) => ({ id, firstName, lastName, username: id, cdlNumber: null, homeTerminalName: null });
+    const rows = [k('a', 'Ann', 'Young'), k('b', 'co-driver', 'test'), k('c', 'test102', 'test102'), k('d', 'Bo', 'test10'), k('e', 'Zed', null)];
+
+    it('orders case-insensitively and number-aware, empty last', () => {
+      expect(sortRosterKeys(rows, 'lastName', 'asc').map((r) => r.lastName)).toEqual(['test', 'test10', 'test102', 'Young', null]);
+    });
+
+    it('descending keeps empty values last', () => {
+      expect(sortRosterKeys(rows, 'lastName', 'desc').map((r) => r.lastName)).toEqual(['Young', 'test102', 'test10', 'test', null]);
+    });
+
+    it('breaks ties on the first name', () => {
+      const tie = [k('x', 'bob', 'Smith'), k('y', 'Al', 'smith')];
+      expect(sortRosterKeys(tie, 'lastName', 'asc').map((r) => r.id)).toEqual(['y', 'x']);
+    });
+  });
+
+  describe('softDeleteUnlessOnTrip (CODE-062)', () => {
+    function lockedRepo(openTrips: Array<{ id: string; number: string; status: string }>) {
+      const calls: string[] = [];
+      const tx = {
+        $executeRawUnsafe: jest.fn(async (_sql: string, key: string) => {
+          calls.push(`lock:${key}`);
+          return 1;
+        }),
+        trip: { findMany: jest.fn(async () => (calls.push('check'), openTrips)) },
+        driver: { update: jest.fn(async () => (calls.push('delete'), { id: 'd1', status: 'TERMINATED' })) },
+      };
+      const prisma = { $transaction: jest.fn(async (fn: (t: typeof tx) => unknown) => fn(tx)) } as never;
+      return { repo: new DriversRepository(prisma), tx, calls };
+    }
+
+    it('takes the trip writers\' per-driver lock, re-checks open trips, then soft-deletes — in one transaction', async () => {
+      const { repo: locked, tx, calls } = lockedRepo([]);
+      const result = await locked.softDeleteUnlessOnTrip('d1');
+      expect(calls).toEqual(['lock:trip-driver:d1', 'check', 'delete']);
+      expect(tx.driver.update).toHaveBeenCalledWith({
+        where: { id: 'd1' },
+        data: expect.objectContaining({ status: 'TERMINATED', deletedAt: expect.any(Date) as Date, assignedVehicle: { disconnect: true } }) as object,
+      });
+      expect(result.deleted).toEqual({ id: 'd1', status: 'TERMINATED' });
+    });
+
+    it('returns the open trips and deletes nothing when a trip got in first', async () => {
+      const { repo: locked, tx } = lockedRepo([{ id: 't1', number: 'TR-1', status: 'ASSIGNED' }]);
+      const result = await locked.softDeleteUnlessOnTrip('d1');
+      expect(result.openTrips).toEqual([{ id: 't1', number: 'TR-1', status: 'ASSIGNED' }]);
+      expect(tx.driver.update).not.toHaveBeenCalled();
     });
   });
 });

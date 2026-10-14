@@ -31,14 +31,16 @@ export class WebhooksService {
   /** Fires an event at the configured `webhook` integration, if one is connected. Returns the
    * created `WebhookDelivery` row, or `null` if no webhook endpoint is configured/enabled —
    * this is a best-effort notification, not a hard dependency for the caller's own operation. */
-  async notify(eventType: string, payload: Record<string, unknown>): Promise<WebhookDelivery | null> {
+  async notify(eventType: string, payload: Record<string, unknown>, opts: { url?: string } = {}): Promise<WebhookDelivery | null> {
     const integration = await this.integrations.findEnabledByProvider('webhook');
-    const url = readUrl(integration?.config);
-    if (!integration || !url) {
+    // CODE-084 — Settings › Notifications can name its own alert endpoint; it wins over the
+    // integration's URL. Signing still uses the integration secret when one is connected.
+    const url = opts.url ?? readUrl(integration?.config);
+    if (!url || (!integration && !opts.url)) {
       this.logger.debug({ eventType }, 'No enabled webhook integration configured — skipping delivery.');
       return null;
     }
-    return this.enqueue({ integrationId: integration.id, url, eventType, payload });
+    return this.enqueue({ integrationId: integration?.id ?? null, url, eventType, payload });
   }
 
   /** Same as `notify`, but throws instead of silently skipping — used by the "send a test

@@ -11,6 +11,7 @@ import { EventBusService } from '../../core/events/event-bus.service';
 import { TRANSACTIONAL_MAIL, TransactionalMailPort } from '../../core/mail/mail.port';
 import { AuthService } from '../auth/auth.service';
 import { emailChangeHoldUntil, isInEmailChangeHold, maskEmail } from '../auth/lib/driver-email-hold';
+import { PrincipalStateService } from '../auth/principal-state.service';
 import { TokenService } from '../auth/token.service';
 import { DriversRepository } from './drivers.repository';
 import { DRIVER_CONFLICT_MESSAGES, normalizeEmail } from './lib/driver-uniques';
@@ -75,6 +76,7 @@ export class DriverEmailChangeService {
     private readonly config: AppConfigService,
     @Inject(TRANSACTIONAL_MAIL) private readonly mail: TransactionalMailPort,
     @Optional() private readonly events?: EventBusService,
+    @Optional() private readonly principals?: PrincipalStateService,
   ) {}
 
   // ------------------------------------------------------------------ policy
@@ -244,6 +246,7 @@ export class DriverEmailChangeService {
     if (!applied) throw invalid();
     // The account's recovery address moved: every refresh token (phone) must sign in again.
     await this.drivers.revokeAllSessions(before.id);
+    await this.principals?.invalidateDriver(before.id);
     this.audit('EMAIL_CHANGE_CONFIRM', before.id, before, await this.load(before.id), { id: before.id, type: 'driver' });
     return { success: true, email: claims.email };
   }
@@ -299,6 +302,7 @@ export class DriverEmailChangeService {
       );
       if (done) {
         await this.drivers.revokeAllSessions(before.id);
+    await this.principals?.invalidateDriver(before.id);
         this.audit('EMAIL_CHANGE_REVERT', before.id, before, await this.load(before.id), actor);
         return { success: true, result: 'REVERTED' };
       }

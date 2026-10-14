@@ -1,5 +1,7 @@
 import { PERMISSION_KEYS } from '../../common/decorators/permission.types';
 import { DEFAULT_ROLE_MATRIX } from './permission-matrix';
+import { PermissionMatrixDto } from './dto/roles.dto';
+import { levelsOf } from './permission-ceiling';
 
 describe('DEFAULT_ROLE_MATRIX (TZ §6.4 — 22-key matrix, all 4 roles)', () => {
   const roles = Object.keys(DEFAULT_ROLE_MATRIX) as (keyof typeof DEFAULT_ROLE_MATRIX)[];
@@ -16,8 +18,10 @@ describe('DEFAULT_ROLE_MATRIX (TZ §6.4 — 22-key matrix, all 4 roles)', () => 
     }
   });
 
-  it('ADMIN is FULL on every key', () => {
-    for (const level of Object.values(DEFAULT_ROLE_MATRIX.ADMIN)) expect(level).toBe('FULL');
+  it('ADMIN is FULL on every live key; the retired hosCertifyOnBehalf is NONE (CODE-029)', () => {
+    for (const [key, level] of Object.entries(DEFAULT_ROLE_MATRIX.ADMIN)) {
+      expect(level).toBe(key === 'hosCertifyOnBehalf' ? 'NONE' : 'FULL');
+    }
   });
 
   it('tz.md correction 1: reportsTransfer is NONE (not READ) for DISPATCHER', () => {
@@ -36,5 +40,18 @@ describe('DEFAULT_ROLE_MATRIX (TZ §6.4 — 22-key matrix, all 4 roles)', () => 
 
   it('VIEWER is read-only or none everywhere (never FULL)', () => {
     for (const level of Object.values(DEFAULT_ROLE_MATRIX.VIEWER)) expect(level).not.toBe('FULL');
+  });
+});
+
+describe('CODE-029 — retired hosCertifyOnBehalf', () => {
+  it('a role write accepts the key from old clients but always stores NONE, and may omit it', () => {
+    const full = Object.fromEntries(Object.keys(DEFAULT_ROLE_MATRIX.ADMIN).map((k) => [k, 'FULL']));
+    expect(PermissionMatrixDto.parse(full).hosCertifyOnBehalf).toBe('NONE');
+    const { hosCertifyOnBehalf: _omitted, ...withoutKey } = full;
+    expect(PermissionMatrixDto.parse(withoutKey).hosCertifyOnBehalf).toBe('NONE');
+  });
+
+  it('a stored FULL never counts against a permission ceiling', () => {
+    expect(levelsOf({ hosCertifyOnBehalf: 'FULL', hos: 'READ' })).toMatchObject({ hosCertifyOnBehalf: 'NONE', hos: 'READ' });
   });
 });

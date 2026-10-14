@@ -86,9 +86,11 @@ export class UnidentifiedService {
   }
 
   /**
-   * §7.4 / §23 — attributes the segment to a driver. Appends an attributed copy of every
-   * record with `recordOrigin = 1` (never 2) and retires the pool record with an
-   * "Inactive — Changed" marker. Writes `UNIDENTIFIED_ASSIGNED` to the audit log.
+   * §7.4 / §395.32 — a carrier assignment is a PROPOSAL (CODE-029): nothing is attributed, the
+   * segment goes to `PENDING_CONFIRMATION` and the driver accepts or declines in the app. Only the
+   * driver's own answer (`confirm`, or a self-claim with `driverAssumed`) attributes the records:
+   * an appended copy of every record (never origin 2) and an "Inactive — Changed" marker on the
+   * pool record, audited as `UNIDENTIFIED_ASSIGNED`.
    */
   async assign(id: string, dto: AssignUnidentifiedDto, actor: ContextUser, opts: { driverAssumed?: boolean } = {}) {
     const segment = await this.requireSegment(id);
@@ -117,14 +119,15 @@ export class UnidentifiedService {
       );
     }
 
-    if (dto.requireDriverConfirmation) {
+    if (!opts.driverAssumed) {
+      // CODE-029 — the carrier never attributes directly; the driver confirms in the app.
       // CODE-007 — refuse up front what the driver could never confirm (re-checked on confirm).
       await this.planAgainstDriverLog(segment, driver);
       return this.requestConfirmation(segment, driver, dto.annotation ?? null, actor);
     }
     return this.attribute(segment, pool, driver, dto.annotation ?? null, actor, {
       assignedById: actor.id,
-      confirmedByDriver: opts.driverAssumed === true,
+      confirmedByDriver: true,
     });
   }
 

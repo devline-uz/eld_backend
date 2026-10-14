@@ -12,6 +12,20 @@ const radiusFields = {
   radiusMeters: z.number().positive().max(500).optional(),
 };
 
+/**
+ * CODE-061 — a polygon vertex must be a real coordinate: latitude -90..90, longitude -180..180,
+ * finite. Out-of-range points used to be stored and the fence silently vanished from the map.
+ * At most 500 vertices; a ring of fewer than 3 DISTINCT points has no area.
+ */
+const PolygonPoint = z.object({ lat: z.number().finite().min(-90).max(90), lon: z.number().finite().min(-180).max(180) });
+const PolygonPoints = z
+  .array(PolygonPoint)
+  .min(3)
+  .max(500)
+  .refine((points) => new Set(points.map((p) => `${p.lat},${p.lon}`)).size >= 3, {
+    message: 'A polygon needs at least 3 different points.',
+  });
+
 /** TZ §5.10 / eld.docs "Live Fleet" §5 — "Geofences chip draws a terminal/customer area". */
 export const CreateGeofenceDto = z
   .object({
@@ -20,7 +34,7 @@ export const CreateGeofenceDto = z
     centerLat: z.number().min(-90).max(90).optional(),
     centerLon: z.number().min(-180).max(180).optional(),
     ...radiusFields,
-    polygon: z.array(z.object({ lat: z.number(), lon: z.number() })).min(3).optional(),
+    polygon: PolygonPoints.optional(),
     /** §20 B-93 — required for `type: 'ADDRESS'`; server geocodes into center/radius. */
     address: z.string().min(1).max(300).optional(),
     category: z.string().max(60).optional(),
@@ -50,7 +64,7 @@ export const UpdateGeofenceDto = z.object({
   centerLat: z.number().min(-90).max(90).optional(),
   centerLon: z.number().min(-180).max(180).optional(),
   ...radiusFields,
-  polygon: z.array(z.object({ lat: z.number(), lon: z.number() })).min(3).optional(),
+  polygon: PolygonPoints.optional(),
   address: z.string().min(1).max(300).optional(),
   category: z.string().max(60).optional(),
   alertOnEnter: z.boolean().optional(),

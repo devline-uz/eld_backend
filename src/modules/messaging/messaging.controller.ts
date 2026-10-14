@@ -258,8 +258,10 @@ export class MessagingController {
   }
 
   @Post('conversations/:id/read')
-  @Perm('messaging', 'FULL')
-  @Audit({ object: 'Conversation', action: 'READ' })
+  // CODE-041 — opening a thread is reading it: READ roles mark their OWN read cursor (the web
+  // calls this on every open). Not audited — it changes nothing but the caller's own cursor, and
+  // an audit row per thread open drowned the real mutations in the audit log.
+  @Perm('messaging', 'READ')
   @ApiOperation({
     summary: "Marks the caller's own copy of a conversation read up to now (§20 B-67).",
   })

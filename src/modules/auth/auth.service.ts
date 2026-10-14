@@ -1,9 +1,9 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import type { Request } from 'express';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
-import { PermissionMatrix } from '../../common/decorators/permission.types';
-import type { ContextUser } from '../../core/context/request-context';
+import { PermissionMatrix, withRetiredKeysCleared } from '../../common/decorators/permission.types';
+import { RequestContext, type ContextUser } from '../../core/context/request-context';
 import { FirebaseService } from '../../core/firebase/firebase.service';
 import { AppConfigService } from '../../core/config/config.service';
 import { AttachmentsService } from '../attachments/attachments.service';
@@ -15,12 +15,15 @@ import { isInEmailChangeHold } from './lib/driver-email-hold';
 import { TRANSACTIONAL_MAIL, TransactionalMailPort } from '../../core/mail/mail.port';
 import { TokenService } from './token.service';
 import { RefreshGraceStore } from './refresh-grace.store';
+import { PrincipalStateService } from './principal-state.service';
 import { DriverAuthRepository } from './repositories/driver-auth.repository';
 import { DriverResetCodeRepository } from './repositories/driver-reset-code.repository';
 import { DriverSessionRepository } from './repositories/driver-session.repository';
 import { SessionRepository } from './repositories/session.repository';
 import { UserAuthRepository, UserWithRole } from './repositories/user-auth.repository';
 import { RodsLoginRecorder } from '../logs/rods-login-recorder';
+import { AUDIT_EVENT, type AuditEventPayload } from '../../common/interceptors/audit.interceptor';
+import { EventBusService } from '../../core/events/event-bus.service';
 
 /** How long a back-office invite stays acceptable after `invitedAt` (web §11.18 footer copy). */
 export const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -28,6 +31,9 @@ export const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 /** MB-17 — driver reset-code policy (documented in Swagger on the forgot/reset endpoints). */
 export const DRIVER_RESET_CODE_TTL_MS = 15 * 60 * 1000;
 export const DRIVER_RESET_CODE_MAX_ATTEMPTS = 5;
+/** CODE-082 — consecutive wrong passwords that lock a back-office account, and for how long. */
+export const LOGIN_LOCK_THRESHOLD = 10;
+export const LOGIN_LOCK_MS = 15 * 60 * 1000;
 
 export interface RequestMeta {
   ip?: string;
@@ -87,6 +93,8 @@ export class AuthService {
     private readonly loginRecords: RodsLoginRecorder,
     private readonly resetCodes: DriverResetCodeRepository,
     private readonly graceStore: RefreshGraceStore,
+    private readonly principals: PrincipalStateService,
+    @Optional() private readonly events?: EventBusService,
   ) {}
 
   // ---------------------------------------------------------------------
@@ -108,10 +116,28 @@ export class AuthService {
     if (!user || !user.passwordHash || user.status !== 'ACTIVE') {
       throw new AppException(ERROR_CODES.INVALID_CREDENTIALS, 'Invalid email or password.', 401);
     }
+    // CODE-082 — per-account lockout on top of the 5/min/IP throttle (which a botnet sidesteps).
+    // A wrong password always answers the same 401, locked or not, so the 423 is never an
+    // enumeration oracle: only a caller who knows the password learns the account is locked.
+    const lockedUntil = user.lockedUntil && user.lockedUntil.getTime() > Date.now() ? user.lockedUntil : null;
     const ok = await verifyPassword(user.passwordHash, password);
     if (!ok) {
+      if (!lockedUntil) {
+        const locked = await this.users.recordFailedLogin(user.id, LOGIN_LOCK_THRESHOLD, new Date(Date.now() + LOGIN_LOCK_MS));
+        if (locked) this.audit('LOGIN_LOCKED', user.id, meta);
+      }
       throw new AppException(ERROR_CODES.INVALID_CREDENTIALS, 'Invalid email or password.', 401);
     }
+    if (lockedUntil) {
+      const retryAfterSec = Math.ceil((lockedUntil.getTime() - Date.now()) / 1000);
+      throw new AppException(
+        ERROR_CODES.ACCOUNT_LOCKED,
+        'Too many failed sign-in attempts. Try again later or reset your password.',
+        423,
+        { retryAfterSec },
+      );
+    }
+    await this.users.clearFailedLogins(user.id);
     return this.completeUserLogin(user, meta);
   }
 
@@ -143,6 +169,7 @@ export class AuthService {
     if (driver.assignedVehicleId) {
       await this.loginRecords.login(driver.id, driver.assignedVehicleId, 'AUTH_LOGIN');
     }
+    this.audit('LOGIN', driver.id, meta, { objectType: 'Driver' });
     return { accessToken, refreshToken, tokenType: 'Bearer', driverId: driver.id };
   }
 
@@ -195,6 +222,17 @@ export class AuthService {
         403,
       );
     }
+    // CODE-082 — the first Google sign-in binds the account to that Google identity; afterwards
+    // the same address re-issued to someone else (recycled Workspace mailbox) must not get in.
+    // An email change clears the binding (`UserEmailChangeService`), so a legitimate new owner can link.
+    if (user.googleUid && decoded.uid !== user.googleUid) {
+      this.audit('LOGIN_REJECTED_GOOGLE_MISMATCH', user.id, meta);
+      throw new AppException(
+        ERROR_CODES.UNAUTHORIZED,
+        'This Google account is not the one linked to this user. Ask an administrator for help.',
+        401,
+      );
+    }
     if (!user.googleUid && decoded.uid) {
       await this.users.setGoogleUid(user.id, decoded.uid);
     }
@@ -204,7 +242,37 @@ export class AuthService {
 
   private async completeUserLogin(user: UserWithRole, meta: RequestMeta): Promise<LoginResult> {
     await this.users.touchLastActive(user.id);
-    return this.issueUserTokens(user, meta);
+    const tokens = await this.issueUserTokens(user, meta);
+    this.audit('LOGIN', user.id, meta);
+    return tokens;
+  }
+
+  /**
+   * CODE-083 — sign-in, sign-out and session revocations are security events (TZ §18), but they
+   * have no `@Audit` route id to hang on, so they publish the same event the interceptor emits.
+   * Fire-and-forget: an audit hiccup must never fail the sign-in it describes.
+   */
+  private audit(
+    action: string,
+    objectId: string,
+    meta: RequestMeta = {},
+    opts: { objectType?: 'User' | 'Driver'; actorId?: string; actorType?: 'user' | 'driver'; after?: Record<string, unknown> } = {},
+  ): void {
+    const objectType = opts.objectType ?? 'User';
+    // An admin disabling a user or a "sign out everywhere" call acts as the signed-in caller; the
+    // public sign-in routes have no caller yet, so the account itself is the actor.
+    const caller = RequestContext.user;
+    const payload: AuditEventPayload = {
+      actorId: opts.actorId ?? caller?.id ?? objectId,
+      actorType: opts.actorType ?? caller?.type ?? (objectType === 'Driver' ? 'driver' : 'user'),
+      action,
+      objectType,
+      objectId,
+      after: opts.after ?? null,
+      ip: meta.ip,
+      userAgent: meta.userAgent,
+    };
+    void this.events?.publish(AUDIT_EVENT, payload);
   }
 
   private async issueUserTokens(user: UserWithRole, meta: RequestMeta): Promise<AccessTokenPair> {
@@ -220,7 +288,7 @@ export class AuthService {
     const accessToken = this.tokens.signUserAccessToken({
       id: user.id,
       roleKey: user.role.key,
-      permissions: user.role.permissions as PermissionMatrix,
+      permissions: withRetiredKeysCleared(user.role.permissions as PermissionMatrix),
       sessionId: session.id,
     });
     return { accessToken, refreshToken, tokenType: 'Bearer' };
@@ -250,6 +318,8 @@ export class AuthService {
       /** Validates the subject and performs the atomic rotation; null = lost the race. */
       rotate: (session: S, newHash: string, familyId: string) => Promise<{ accessToken: string } | null>;
       subjectId: (session: S) => string;
+      /** CODE-012 — evicts the subject from the live-access cache on every replica. */
+      evict: (subjectId: string) => Promise<void>;
     },
   ): Promise<AccessTokenPair> {
     const hash = sha256(refreshToken);
@@ -278,7 +348,12 @@ export class AuthService {
     refreshToken: string,
     hash: string,
     session: S,
-    ops: { revokeFamily: (familyId: string) => Promise<unknown>; subjectId: (s: S) => string },
+    ops: {
+      revokeFamily: (familyId: string) => Promise<unknown>;
+      subjectId: (s: S) => string;
+      /** CODE-012 — evicts the subject from the live-access cache on every replica. */
+      evict: (subjectId: string) => Promise<void>;
+    },
   ): Promise<AccessTokenPair> {
     const windowMs = this.graceStore.windowSeconds * 1000;
     const rotatedAt = session.rotatedAt?.getTime();
@@ -295,6 +370,7 @@ export class AuthService {
       throw new AppException(ERROR_CODES.REFRESH_TOKEN_REUSED, 'Refresh token was already used.', 401);
     }
     if (session.familyId) await ops.revokeFamily(session.familyId);
+    await ops.evict(ops.subjectId(session));
     this.logger.warn(
       { subjectId: ops.subjectId(session), familyId: session.familyId ?? null },
       'Refresh token reuse detected — token family revoked',
@@ -307,6 +383,7 @@ export class AuthService {
       find: (h) => this.sessions.findByRefreshHash(h),
       revokeFamily: (f) => this.sessions.revokeFamily(f),
       subjectId: (s) => s.userId,
+      evict: (id) => this.principals.invalidateUser(id),
       rotate: async (session, newHash, familyId) => {
         const user = await this.users.findByIdWithRole(session.userId);
         if (!user || user.status !== 'ACTIVE') {
@@ -325,7 +402,7 @@ export class AuthService {
         const accessToken = this.tokens.signUserAccessToken({
           id: user.id,
           roleKey: user.role.key,
-          permissions: user.role.permissions as PermissionMatrix,
+          permissions: withRetiredKeysCleared(user.role.permissions as PermissionMatrix),
           sessionId: created.id,
         });
         return { accessToken };
@@ -338,10 +415,14 @@ export class AuthService {
       find: (h) => this.driverSessions.findByRefreshHash(h),
       revokeFamily: (f) => this.driverSessions.revokeFamily(f),
       subjectId: (s) => s.driverId,
+      evict: (id) => this.principals.invalidateDriver(id),
       rotate: async (session, newHash, familyId) => {
         const driver = await this.drivers.findById(session.driverId);
-        if (!driver || driver.status !== 'ACTIVE') {
-          throw new AppException(ERROR_CODES.UNAUTHORIZED, 'Driver no longer exists.', 401);
+        if (!driver || driver.status !== 'ACTIVE' || driver.deletedAt) {
+          // Driver cut-off: a non-ACTIVE or deleted driver loses every app session at once.
+          await this.driverSessions.revokeAllForDriver(session.driverId);
+          await this.principals.invalidateDriver(session.driverId);
+          throw new AppException(ERROR_CODES.DRIVER_DISABLED, 'Driver access has been revoked.', 401);
         }
         const created = await this.driverSessions.rotate(session.id, {
           driverId: driver.id,
@@ -383,17 +464,34 @@ export class AuthService {
     return pair ? { ...pair, tokenType: 'Bearer' } : null;
   }
 
-  async logout(subjectType: 'user' | 'driver', refreshToken: string, subjectId?: string): Promise<void> {
+  /** D-155 + CODE-012 — after the switch revoked the outgoing driver's family, drop their cached access. */
+  evictDriverAccess(driverId: string): Promise<void> {
+    return this.principals.invalidateDriver(driverId);
+  }
+
+  /**
+   * CODE-079 — only the caller's OWN session is revoked: a refresh token belonging to another
+   * user/driver (leaked, or pasted by mistake) is ignored exactly like an unknown one, so this
+   * endpoint can neither sign someone else out nor confirm that a token exists.
+   */
+  async logout(subjectType: 'user' | 'driver', refreshToken: string, subjectId: string, meta: RequestMeta = {}): Promise<void> {
     const hash = sha256(refreshToken);
     if (subjectType === 'user') {
       const session = await this.sessions.findByRefreshHash(hash);
-      if (session && !session.revokedAt) await this.sessions.revoke(session.id);
+      if (session && !session.revokedAt && session.userId === subjectId) {
+        await this.sessions.revoke(session.id);
+        await this.principals.invalidateUser(session.userId);
+        this.audit('LOGOUT', subjectId, meta, { after: { sessionId: session.id } });
+      }
     } else {
       const session = await this.driverSessions.findByRefreshHash(hash);
-      if (session && !session.revokedAt) await this.driverSessions.revoke(session.id);
+      const own = session && session.driverId === subjectId ? session : null;
+      if (own && !own.revokedAt) {
+        await this.driverSessions.revoke(own.id);
+        this.audit('LOGOUT', subjectId, meta, { objectType: 'Driver', after: { sessionId: own.id } });
+      }
       // D-130 — §395 Appendix A 4.5.1.5 logout record for the open login (none open = no record).
-      const driverId = subjectId ?? session?.driverId;
-      if (driverId) await this.loginRecords.logout(driverId, 'AUTH_LOGOUT');
+      await this.loginRecords.logout(subjectId, 'AUTH_LOGOUT');
     }
   }
 
@@ -404,16 +502,23 @@ export class AuthService {
     return sessions.map((s) => ({ ...s, current: s.id === currentSessionId }));
   }
 
-  async revokeUserSession(userId: string, sessionId: string): Promise<void> {
+  async revokeUserSession(userId: string, sessionId: string, meta: RequestMeta = {}): Promise<void> {
     const session = await this.sessions.findActiveById(sessionId, userId);
     if (!session) throw AppException.notFound('Session not found.');
     await this.sessions.revoke(sessionId);
+    await this.principals.invalidateUser(userId);
+    this.audit('SESSION_REVOKED', userId, meta, { after: { sessionId } });
   }
 
   /** B-50 "Sign out everywhere" — revokes every other active session for the user, keeping
    * the caller's own current session (if known) alive. */
-  async revokeAllUserSessions(userId: string, currentSessionId?: string): Promise<number> {
-    return this.sessions.revokeAllForUserExcept(userId, currentSessionId);
+  async revokeAllUserSessions(userId: string, currentSessionId?: string, meta: RequestMeta = {}): Promise<number> {
+    const revoked = await this.sessions.revokeAllForUserExcept(userId, currentSessionId);
+    if (revoked > 0) {
+      await this.principals.invalidateUser(userId);
+      this.audit('SESSIONS_REVOKED', userId, meta, { after: { revoked, keptSessionId: currentSessionId ?? null } });
+    }
+    return revoked;
   }
 
   // ---------------------------------------------------------------------
@@ -520,6 +625,7 @@ export class AuthService {
     if (!(await this.resetCodes.consume(driver.id))) throw invalid();
     await this.drivers.updatePasswordHash(driver.id, await hashPassword(newPassword));
     await this.driverSessions.revokeAllForDriver(driver.id);
+    await this.principals.invalidateDriver(driver.id);
   }
 
   /** MR-31 — completes the reset; single-use (token is bound to the old password hash) and
@@ -532,6 +638,7 @@ export class AuthService {
     }
     await this.drivers.updatePasswordHash(driverId, await hashPassword(newPassword));
     await this.driverSessions.revokeAllForDriver(driverId);
+    await this.principals.invalidateDriver(driverId);
   }
 
   /** Used by `modules/users` (`POST /users`, `POST /users/:id/resend-invite`, TZ §11.7). */
@@ -548,6 +655,7 @@ export class AuthService {
     const passwordHash = await hashPassword(newPassword);
     await this.users.updatePasswordHash(userId, passwordHash);
     await this.sessions.revokeAllForUser(userId);
+    await this.principals.invalidateUser(userId);
   }
 
   // ---------------------------------------------------------------------

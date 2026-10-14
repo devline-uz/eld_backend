@@ -1,6 +1,7 @@
-import type { Prisma, WorkOrder } from '@prisma/client';
+import { Prisma } from '@prisma/client';
+import type { WorkOrder } from '@prisma/client';
 import type { PrismaService } from '../../core/prisma/prisma.service';
-import { holdsUnitOutOfService, syncVehicleOutOfService, WorkOrdersRepository } from './work-orders.repository';
+import { holdsUnitOutOfService, nextWorkOrderNumber, syncVehicleOutOfService, WorkOrdersRepository } from './work-orders.repository';
 
 /** A minimal transaction client: one vehicle, a count of open flagged work orders and of open
  * out-of-service defects. */
@@ -17,7 +18,8 @@ function fakeTx(opts: { status: string | null; holds: number; oosDefects?: numbe
       create: jest.fn(async ({ data }: { data: object }) => ({ id: 'wo_1', vehicleId: 'veh_1', status: 'OPEN', ...data })),
       update: jest.fn(async ({ data }: { data: object }) => ({ id: 'wo_1', vehicleId: 'veh_1', status: 'OPEN', keepOutOfService: true, ...data })),
     },
-    defect: { count: jest.fn(async () => opts.oosDefects ?? 0) },
+    defect: { count: jest.fn(async () => opts.oosDefects ?? 0), updateMany: jest.fn(async () => ({ count: 0 })) },
+    $queryRaw: jest.fn(async () => [{ seq: BigInt(41) }]),
   };
   return { tx: tx as unknown as Prisma.TransactionClient, vehicleUpdate, workOrderCount };
 }
@@ -87,7 +89,11 @@ describe('WorkOrdersRepository synced writes run in one transaction', () => {
   function build(opts: { status: string; holds: number }) {
     const { tx, vehicleUpdate } = fakeTx(opts);
     const prisma = { $transaction: jest.fn(async (fn: (t: Prisma.TransactionClient) => Promise<unknown>) => fn(tx)) };
-    return { repo: new WorkOrdersRepository(prisma as unknown as PrismaService), prisma, vehicleUpdate };
+    return { repo: new WorkOrdersRepository(prisma as unknown as PrismaService), prisma, vehicleUpdate, tx: tx as unknown as FakeTxMocks };
+  }
+  interface FakeTxMocks {
+    workOrder: { create: jest.Mock };
+    defect: { updateMany: jest.Mock };
   }
   const before = { id: 'wo_1', vehicleId: 'veh_1', status: 'OPEN', keepOutOfService: true } as WorkOrder;
 
@@ -106,6 +112,22 @@ describe('WorkOrdersRepository synced writes run in one transaction', () => {
     expect(vehicleUpdate).toHaveBeenCalledWith({ where: { id: 'veh_1' }, data: { status: 'ACTIVE' } });
   });
 
+  it('CODE-078 — updateSynced writes only the row still in the status it was read in', async () => {
+    const { repo, tx } = build({ status: 'ACTIVE', holds: 0 });
+    await repo.updateSynced(before, { title: 'Brakes' });
+    expect((tx as unknown as { workOrder: { update: jest.Mock } }).workOrder.update).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: before.id, status: before.status } }),
+    );
+  });
+
+  it('CODE-078 — a write that raced a close is a 409, never a reopened DONE work order', async () => {
+    const { repo, tx } = build({ status: 'ACTIVE', holds: 0 });
+    (tx as unknown as { workOrder: { update: jest.Mock } }).workOrder.update.mockRejectedValueOnce(
+      new Prisma.PrismaClientKnownRequestError('No record found', { code: 'P2025', clientVersion: 'test' }),
+    );
+    await expect(repo.updateSynced(before, { title: 'Brakes' })).rejects.toMatchObject({ code: 'WORK_ORDER_CLOSED' });
+  });
+
   it('updateSynced turning the flag off restores ACTIVE when nothing else holds the unit', async () => {
     const { repo } = build({ status: 'OUT_OF_SERVICE', holds: 0 });
     await expect(repo.updateSynced(before, { keepOutOfService: false })).resolves.toMatchObject({ vehicleStatus: 'ACTIVE' });
@@ -121,5 +143,43 @@ describe('WorkOrdersRepository synced writes run in one transaction', () => {
     const { repo, vehicleUpdate } = build({ status: 'OUT_OF_SERVICE', holds: 0 });
     await repo.updateSynced({ ...before, keepOutOfService: false }, { title: 'Brakes' });
     expect(vehicleUpdate).not.toHaveBeenCalled();
+  });
+
+  it('QA CODE-033 — createSynced numbers the work order and links its defects in the same transaction', async () => {
+    const { repo, prisma, tx } = build({ status: 'ACTIVE', holds: 0 });
+    const result = await repo.createSynced({ keepOutOfService: false } as Prisma.WorkOrderCreateInput, 'veh_1', ['d1', 'd2']);
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(result.workOrder.number).toBe('WO-0042');
+    expect(tx.defect.updateMany).toHaveBeenCalledWith({ where: { id: { in: ['d1', 'd2'] } }, data: { workOrderId: 'wo_1' } });
+  });
+
+  it('QA CODE-033 — a number collision (P2002 on number) is retried, other errors are not', async () => {
+    const { repo, prisma, tx } = build({ status: 'ACTIVE', holds: 0 });
+    const collision = new Prisma.PrismaClientKnownRequestError('dup', { code: 'P2002', clientVersion: 'x', meta: { target: ['number'] } });
+    tx.workOrder.create.mockRejectedValueOnce(collision);
+    await expect(repo.createSynced({} as Prisma.WorkOrderCreateInput, 'veh_1')).resolves.toMatchObject({ workOrder: { id: 'wo_1' } });
+    expect(prisma.$transaction).toHaveBeenCalledTimes(2);
+
+    tx.workOrder.create.mockRejectedValueOnce(new Error('boom'));
+    await expect(repo.createSynced({} as Prisma.WorkOrderCreateInput, 'veh_1')).rejects.toThrow('boom');
+  });
+
+  it('QA CODE-033 — gives up after repeated collisions', async () => {
+    const { repo, prisma, tx } = build({ status: 'ACTIVE', holds: 0 });
+    const collision = new Prisma.PrismaClientKnownRequestError('dup', { code: 'P2002', clientVersion: 'x', meta: { target: 'WorkOrder_number_key' } });
+    tx.workOrder.create.mockRejectedValue(collision);
+    await expect(repo.createSynced({} as Prisma.WorkOrderCreateInput, 'veh_1')).rejects.toBe(collision);
+    expect(prisma.$transaction).toHaveBeenCalledTimes(5);
+  });
+});
+
+describe('nextWorkOrderNumber', () => {
+  it('continues from the highest numeric suffix, padded to 4', async () => {
+    await expect(nextWorkOrderNumber({ $queryRaw: jest.fn(async () => [{ seq: BigInt(2214) }]) } as never)).resolves.toBe('WO-2215');
+    await expect(nextWorkOrderNumber({ $queryRaw: jest.fn(async () => [{ seq: BigInt(9999) }]) } as never)).resolves.toBe('WO-10000');
+  });
+
+  it('starts at WO-0001 on an empty table', async () => {
+    await expect(nextWorkOrderNumber({ $queryRaw: jest.fn(async () => [{ seq: null }]) } as never)).resolves.toBe('WO-0001');
   });
 });

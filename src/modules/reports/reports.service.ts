@@ -3,6 +3,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import type { Report, ReportSchedule } from '@prisma/client';
 import { Queue } from 'bullmq';
 import cronParser from 'cron-parser';
+import { PERMISSION_LEVEL_RANK } from '../../common/decorators/permission.types';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
 import type { ContextUser } from '../../core/context/request-context';
@@ -20,9 +21,11 @@ import {
   IftaSummaryParamsDto,
   ReportListQueryDto,
   REPORT_TYPE_FORMATS,
+  REPORT_WINDOWS,
   RodsReportParamsDto,
   UpdateReportScheduleDto,
 } from './dto/reports.dto';
+import { resolveScheduleParams } from './lib/report-window';
 import type { ActivitySummaryResult } from './generators/activity-summary.generator';
 import { ActivitySummaryGenerator } from './generators/activity-summary.generator';
 import type { IftaSummary } from './generators/ifta-report.generator';
@@ -69,6 +72,8 @@ export class ReportsService {
 
   /** TZ §15 — "a report is NEVER generated inside a request": enqueue and return 202. */
   async generate(dto: GenerateReportDto, actor: ContextUser): Promise<Report> {
+    // CODE-016 — the FMCSA pack is a §6.4 `reportsTransfer` artefact whichever route queues it.
+    if (dto.type === 'FMCSA_PACK') assertMayAccessFmcsaPack(actor);
     this.assertFormatAllowed(dto.type, dto.format);
     // `params` reaches the worker verbatim, so it is validated against the schema of its own
     // report type HERE and not only on the synchronous preview routes — otherwise a queued
@@ -84,9 +89,14 @@ export class ReportsService {
     return report;
   }
 
-  async list(query: ReportListQueryDto) {
+  async list(query: ReportListQueryDto, actor?: ContextUser) {
+    // CODE-016 — without reportsTransfer READ the FMCSA packs are not listed at all.
+    const hideFmcsa = actor !== undefined && !mayAccessFmcsaPack(actor);
+    if (hideFmcsa && query.type === 'FMCSA_PACK') {
+      return { items: [], page: query.page, limit: query.limit, total: 0, totalPages: 0 };
+    }
     const where = {
-      ...(query.type ? { type: query.type } : {}),
+      ...(query.type ? { type: query.type } : hideFmcsa ? { type: { not: 'FMCSA_PACK' as const } } : {}),
       ...(query.status ? { status: query.status } : {}),
     };
     const { items, total } = await this.repo.list(where, query.page, query.limit);
@@ -100,15 +110,16 @@ export class ReportsService {
   }
 
   /** B-46 — `requestedBy: { id, name }` on read. */
-  async get(id: string) {
+  async get(id: string, actor?: ContextUser) {
     const report = await this.repo.findByIdWithRequestedBy(id);
     if (!report) throw AppException.notFound('Report not found.', undefined);
+    if (report.type === 'FMCSA_PACK' && actor) assertMayAccessFmcsaPack(actor);
     return withRequestedBy(report);
   }
 
   /** Returns a fresh 7-day presigned URL (TZ §15) — never a stored/stale one. */
-  async download(id: string): Promise<{ downloadUrl: string; expiresAt: Date; fileName: string }> {
-    const report = await this.get(id);
+  async download(id: string, actor?: ContextUser): Promise<{ downloadUrl: string; expiresAt: Date; fileName: string }> {
+    const report = await this.get(id, actor);
     if (report.status !== 'READY' || !report.fileKey) {
       throw new AppException(ERROR_CODES.REPORT_NOT_READY, 'Report is not ready for download yet.', 409);
     }
@@ -121,8 +132,8 @@ export class ReportsService {
   /** The READY report's bytes, streamed through the API for the web panel. A presigned URL
    * points at `S3_ENDPOINT` — on the servers that is MinIO on 127.0.0.1, which a browser cannot
    * reach — so the panel downloads through this authenticated route instead. */
-  async file(id: string): Promise<{ fileName: string; contentType: string; body: Buffer }> {
-    const report = await this.get(id);
+  async file(id: string, actor?: ContextUser): Promise<{ fileName: string; contentType: string; body: Buffer }> {
+    const report = await this.get(id, actor);
     if (report.status !== 'READY' || !report.fileKey) {
       throw new AppException(ERROR_CODES.REPORT_NOT_READY, 'Report is not ready for download yet.', 409);
     }
@@ -139,10 +150,13 @@ export class ReportsService {
   async createSchedule(dto: CreateReportScheduleDto, actor: ContextUser): Promise<ReportSchedule> {
     this.assertFormatAllowed(dto.reportType, dto.format);
     const nextRunAt = this.computeNextRun(dto.cron, dto.timezone);
+    // CODE-015 — the scheduler hands these params to the worker on every run, so they get the
+    // same per-type validation (range caps included) as `generate()`, not only at run time.
+    const params = assertScheduleParams(dto.reportType, dto.params, dto.timezone);
     return this.schedules.create({
       reportType: dto.reportType,
       format: dto.format,
-      params: dto.params as object,
+      params: params as object,
       cron: dto.cron,
       timezone: dto.timezone,
       recipients: dto.recipients,
@@ -159,9 +173,17 @@ export class ReportsService {
   async updateSchedule(id: string, dto: UpdateReportScheduleDto): Promise<ReportSchedule> {
     const existing = await this.schedules.findById({ id });
     if (!existing) throw AppException.notFound('Report schedule not found.');
-    if (dto.reportType && dto.format) this.assertFormatAllowed(dto.reportType, dto.format);
     const cron = dto.cron ?? existing.cron;
     const timezone = dto.timezone ?? existing.timezone;
+    // CODE-015 — validate the schedule as it will be AFTER this patch (a format-only or type-only
+    // change is checked against the stored other half), then its params against the final type.
+    const reportType = dto.reportType ?? (existing.reportType as CreateReportScheduleDto['reportType']);
+    const format = dto.format ?? existing.format;
+    if (dto.reportType || dto.format) this.assertFormatAllowed(reportType, format);
+    const params =
+      dto.reportType || dto.params || dto.timezone
+        ? assertScheduleParams(reportType, dto.params ?? (existing.params as Record<string, unknown>), timezone)
+        : undefined;
     // Resuming a paused schedule recomputes `nextRunAt` from now, so a stale past date does not
     // make the scheduler fire a catch-up run the moment it is re-enabled.
     const resuming = dto.enabled === true && !existing.enabled;
@@ -171,7 +193,7 @@ export class ReportsService {
       {
         ...(dto.reportType ? { reportType: dto.reportType } : {}),
         ...(dto.format ? { format: dto.format } : {}),
-        ...(dto.params ? { params: dto.params as object } : {}),
+        ...(params ? { params: params as object } : {}),
         ...(dto.cron ? { cron: dto.cron } : {}),
         ...(dto.timezone ? { timezone: dto.timezone } : {}),
         ...(dto.recipients ? { recipients: dto.recipients } : {}),
@@ -209,6 +231,17 @@ export class ReportsService {
   }
 }
 
+/** CODE-016 — FMCSA audit packs need `reportsTransfer` READ (as `GET /reports/fmcsa-pack`), not
+ * just `reports`. Drivers never reach these routes; an absent matrix is no access. */
+export function mayAccessFmcsaPack(actor: ContextUser): boolean {
+  const level = actor.permissions?.reportsTransfer ?? 'NONE';
+  return PERMISSION_LEVEL_RANK[level] >= PERMISSION_LEVEL_RANK.READ;
+}
+
+function assertMayAccessFmcsaPack(actor: ContextUser): void {
+  if (!mayAccessFmcsaPack(actor)) throw AppException.forbidden('reportsTransfer = READ is required for the FMCSA audit pack.');
+}
+
 const REPORT_PARAM_SCHEMAS = {
   IFTA: IftaReportParamsDto,
   ACTIVITY: ActivityReportParamsDto,
@@ -239,4 +272,27 @@ export function assertReportParams(type: keyof typeof REPORT_PARAM_SCHEMAS, para
     });
   }
   return parsed.data;
+}
+
+/**
+ * CODE-015 — a schedule's params, checked the way the worker will see them: a relative `window`
+ * must be a known one, and the params resolved for a run NOW must pass the report type's own
+ * schema (required fields, range caps). Returns what is stored: the parsed params, keeping the
+ * `window` instead of the concrete period it resolved to this time.
+ */
+export function assertScheduleParams(
+  type: keyof typeof REPORT_PARAM_SCHEMAS,
+  params: Record<string, unknown>,
+  timezone: string,
+): Record<string, unknown> {
+  const window = params.window;
+  if (window !== undefined && !(REPORT_WINDOWS as readonly unknown[]).includes(window)) {
+    throw AppException.unprocessable(ERROR_CODES.VALIDATION_FAILED, `Invalid ${type} report params.`, {
+      issues: [{ path: 'window', message: `Must be one of ${REPORT_WINDOWS.join(', ')}.` }],
+    });
+  }
+  const resolved = assertReportParams(type, resolveScheduleParams(type, params, timezone, new Date())) as Record<string, unknown>;
+  if (window === undefined) return resolved;
+  const { from: _from, to: _to, quarter: _quarter, ...rest } = resolved;
+  return { ...rest, window };
 }
