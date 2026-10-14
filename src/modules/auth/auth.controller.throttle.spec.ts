@@ -1,5 +1,6 @@
 import 'reflect-metadata';
 import { AuthController } from './auth.controller';
+import { UserEmailController } from '../users/user-email.controller';
 
 const LIMIT_KEY = 'THROTTLER:LIMITdefault';
 const TTL_KEY = 'THROTTLER:TTLdefault';
@@ -20,6 +21,12 @@ describe('AuthController — login rate limiting (TZ §6.5)', () => {
 
   it('web reset-code confirm is limited to 10 requests / 60s', () => {
     const handler = AuthController.prototype.confirmPasswordResetCode;
+    expect(Reflect.getMetadata(LIMIT_KEY, handler)).toBe(10);
+    expect(Reflect.getMetadata(TTL_KEY, handler)).toBe(60_000);
+  });
+
+  it.each(['verify', 'cancel'] as const)('B-84 email-change %s link is limited to 10 requests / 60s', (method) => {
+    const handler = UserEmailController.prototype[method];
     expect(Reflect.getMetadata(LIMIT_KEY, handler)).toBe(10);
     expect(Reflect.getMetadata(TTL_KEY, handler)).toBe(60_000);
   });

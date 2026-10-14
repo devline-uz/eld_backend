@@ -13,6 +13,7 @@ import type {
 } from '@prisma/client';
 import { BaseRepository, ModelDelegate } from '../../core/prisma/base.repository';
 import { PrismaService } from '../../core/prisma/prisma.service';
+import { equalsInsensitive } from '../../common/text/insensitive';
 
 export interface DvirCreateInput {
   driverId: string;
@@ -153,7 +154,7 @@ export class MobileRepository extends BaseRepository<
   /** D-129 — the live ACTIVE carrier trailer with this number (case-insensitive), to link a typed DVIR trailer. */
   findActiveTrailerByNumber(number: string): Promise<{ id: string; number: string } | null> {
     return this.prisma.trailer.findFirst({
-      where: { number: { equals: number, mode: 'insensitive' }, deletedAt: null, status: 'ACTIVE' },
+      where: { number: equalsInsensitive(number), deletedAt: null, status: 'ACTIVE' },
       select: { id: true, number: true },
     });
   }

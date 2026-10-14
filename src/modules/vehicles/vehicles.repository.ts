@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { Prisma, Vehicle } from '@prisma/client';
 import { BaseRepository, ModelDelegate } from '../../core/prisma/base.repository';
 import { PrismaService } from '../../core/prisma/prisma.service';
-import { escapeLike } from '../../common/dto/list-query.dto';
+import { containsInsensitive, equalsInsensitive } from '../../common/text/insensitive';
 
 export interface VehicleListFilter {
   status?: Vehicle['status'];
@@ -70,8 +70,8 @@ export class VehiclesRepository extends BaseRepository<
       where: {
         deletedAt: null,
         OR: [
-          { unitNumber: { equals: key, mode: 'insensitive' } },
-          { unitNumber: { equals: `#${key}`, mode: 'insensitive' } },
+          { unitNumber: equalsInsensitive(key) },
+          { unitNumber: equalsInsensitive(`#${key}`) },
         ],
       },
     });
@@ -80,7 +80,7 @@ export class VehiclesRepository extends BaseRepository<
   /** Live (not soft-deleted) unit only — see `findByUnitNumber`. VINs are stored upper-cased (the
    * DTO normalises them); the lookup is case-insensitive anyway. */
   findByVin(vin: string): Promise<Vehicle | null> {
-    return this.prisma.vehicle.findFirst({ where: { vin: { equals: vin.trim(), mode: 'insensitive' }, deletedAt: null } });
+    return this.prisma.vehicle.findFirst({ where: { vin: equalsInsensitive(vin.trim()), deletedAt: null } });
   }
 
   async list(
@@ -95,11 +95,11 @@ export class VehiclesRepository extends BaseRepository<
       ...(filter.groupId && { groupId: filter.groupId === 'none' ? null : filter.groupId }),
       ...(filter.q && {
         OR: [
-          { unitNumber: { contains: escapeLike(filter.q), mode: 'insensitive' } },
-          { vin: { contains: escapeLike(filter.q), mode: 'insensitive' } },
-          { make: { contains: escapeLike(filter.q), mode: 'insensitive' } },
-          { model: { contains: escapeLike(filter.q), mode: 'insensitive' } },
-          { licensePlate: { contains: escapeLike(filter.q), mode: 'insensitive' } },
+          { unitNumber: containsInsensitive(filter.q) },
+          { vin: containsInsensitive(filter.q) },
+          { make: containsInsensitive(filter.q) },
+          { model: containsInsensitive(filter.q) },
+          { licensePlate: containsInsensitive(filter.q) },
         ],
       }),
     };
@@ -193,7 +193,7 @@ export class VehiclesRepository extends BaseRepository<
     const include = { vehicle: { select: { id: true, deletedAt: true } } } as const;
     return (
       (await this.prisma.device.findUnique({ where: { serial }, include })) ??
-      (await this.prisma.device.findFirst({ where: { serial: { equals: serial, mode: 'insensitive' } }, include }))
+      (await this.prisma.device.findFirst({ where: { serial: equalsInsensitive(serial) }, include }))
     );
   }
 
@@ -212,8 +212,8 @@ export class VehiclesRepository extends BaseRepository<
     return this.prisma.vehicle.findFirst({
       where: {
         deletedAt: null,
-        licensePlate: { equals: licensePlate, mode: 'insensitive' },
-        plateState: plateState === null ? null : { equals: plateState, mode: 'insensitive' },
+        licensePlate: equalsInsensitive(licensePlate),
+        plateState: plateState === null ? null : equalsInsensitive(plateState),
         ...(exceptVehicleId && { id: { not: exceptVehicleId } }),
       },
     });

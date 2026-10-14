@@ -5,6 +5,7 @@ import type { StoragePort } from '../../core/storage/storage.port';
 import type { AttachmentsService } from '../attachments/attachments.service';
 import { AuthService } from '../auth/auth.service';
 import { RolesRepository } from '../roles/roles.repository';
+import { UserEmailChangeService } from './user-email-change.service';
 import { UsersRepository } from './users.repository';
 import { UsersService } from './users.service';
 
@@ -29,7 +30,10 @@ const ADM = { id: 'adm_1', role: 'ADMIN' };
 describe('UsersService', () => {
   let users: jest.Mocked<Pick<UsersRepository, 'listWithRoles' | 'findByIdWithRole' | 'findByEmail' | 'create' | 'update' | 'delete' | 'countActiveAdmins' | 'countActiveSuperAdmins'>>;
   let roles: jest.Mocked<Pick<RolesRepository, 'findById'>>;
-  let auth: jest.Mocked<Pick<AuthService, 'issueResetToken' | 'issueUserEmailVerifyToken'>>;
+  let auth: jest.Mocked<Pick<AuthService, 'issueResetToken'>>;
+  let emailChange: jest.Mocked<
+    Pick<UserEmailChangeService, 'assertAvailable' | 'assertRequestable' | 'pendingInput' | 'notifyRequested' | 'resend' | 'cancelPending'>
+  >;
   let storage: jest.Mocked<Pick<StoragePort, 'put' | 'get' | 'delete' | 'exists' | 'presignPut' | 'presignGet'>>;
   let attachments: jest.Mocked<Pick<AttachmentsService, 'presignKey'>>;
   let mail: jest.Mocked<TransactionalMailPort>;
@@ -50,7 +54,14 @@ describe('UsersService', () => {
     roles = { findById: jest.fn() };
     auth = {
       issueResetToken: jest.fn().mockReturnValue('invite-token'),
-      issueUserEmailVerifyToken: jest.fn().mockReturnValue('verify-token'),
+    };
+    emailChange = {
+      assertAvailable: jest.fn().mockResolvedValue(undefined),
+      assertRequestable: jest.fn().mockResolvedValue(undefined),
+      pendingInput: jest.fn((pendingEmail: string, _by: string, _now: Date) => ({ pendingEmail })),
+      notifyRequested: jest.fn().mockResolvedValue({ pendingEmail: 'new@b.com', emailDelivered: true }),
+      resend: jest.fn().mockResolvedValue({ pendingEmail: 'new@b.com', emailedTo: 'new@b.com', emailDelivered: true }),
+      cancelPending: jest.fn().mockResolvedValue(undefined),
     };
     storage = {
       put: jest.fn().mockResolvedValue('avatars/usr_1/x.png'),
@@ -73,6 +84,7 @@ describe('UsersService', () => {
       attachments as unknown as AttachmentsService,
       mail,
       config as unknown as AppConfigService,
+      emailChange as unknown as UserEmailChangeService,
     );
   });
 
@@ -105,12 +117,99 @@ describe('UsersService', () => {
       );
     });
 
-    it('throws conflict when the email is already taken', async () => {
+    it('checks availability of the normalized address and stores it lower-cased', async () => {
       roles.findById.mockResolvedValue({ id: 'role_1', key: 'VIEWER', name: 'Viewer' } as never);
-      users.findByEmail.mockResolvedValue(makeUser() as never);
-      await expect(service.invite({ email: 'a@b.com', roleId: 'role_1' } as never, SA)).rejects.toThrow(
-        AppException,
-      );
+      users.create.mockResolvedValue(makeUser({ role: undefined, email: 'new@b.com' }) as never);
+      await service.invite({ email: '  New@B.COM ', firstName: 'N', lastName: 'U', roleId: 'role_1' }, SA);
+      expect(emailChange.assertAvailable).toHaveBeenCalledWith('new@b.com');
+      expect(users.create).toHaveBeenCalledWith(expect.objectContaining({ email: 'new@b.com' }));
+    });
+
+    it('propagates 409 EMAIL_TAKEN from the availability check without creating the user', async () => {
+      roles.findById.mockResolvedValue({ id: 'role_1', key: 'VIEWER', name: 'Viewer' } as never);
+      emailChange.assertAvailable.mockRejectedValue(new AppException('EMAIL_TAKEN', 'A user with this email address already exists.', 409, { email: 'x' }));
+      await expect(service.invite({ email: 'a@b.com', roleId: 'role_1' } as never, SA)).rejects.toMatchObject({ status: 409, code: 'EMAIL_TAKEN' });
+      expect(users.create).not.toHaveBeenCalled();
+    });
+
+    it('maps a racing unique violation (P2002) on insert to 409 EMAIL_TAKEN with details.email', async () => {
+      roles.findById.mockResolvedValue({ id: 'role_1', key: 'VIEWER', name: 'Viewer' } as never);
+      users.create.mockRejectedValue(Object.assign(new Error('Unique constraint failed'), { code: 'P2002' }));
+      await expect(service.invite({ email: 'a@b.com', roleId: 'role_1' } as never, SA)).rejects.toMatchObject({
+        status: 409,
+        code: 'EMAIL_TAKEN',
+        details: { email: expect.any(String) as string },
+      });
+      expect(mail.send).not.toHaveBeenCalled();
+    });
+
+    it('rethrows other insert errors unchanged', async () => {
+      roles.findById.mockResolvedValue({ id: 'role_1', key: 'VIEWER', name: 'Viewer' } as never);
+      const boom = new Error('db down');
+      users.create.mockRejectedValue(boom);
+      await expect(service.invite({ email: 'a@b.com', roleId: 'role_1' } as never, SA)).rejects.toBe(boom);
+    });
+
+    describe('with the real availability check (UserEmailChangeService)', () => {
+      const HOUR = 3_600_000;
+      let repo: { findByEmailInsensitive: jest.Mock; findIdByPendingEmail: jest.Mock; create: jest.Mock };
+      let rows: Array<{ id: string; email: string; pendingEmail: string | null; pendingEmailRequestedAt: Date | null }>;
+      let real: UsersService;
+
+      beforeEach(() => {
+        rows = [{ id: 'usr_9', email: 'Existing@Fleet.com', pendingEmail: null, pendingEmailRequestedAt: null }];
+        repo = {
+          findByEmailInsensitive: jest.fn(async (e: string) => rows.find((r) => r.email.toLowerCase() === e.toLowerCase()) ?? null),
+          findIdByPendingEmail: jest.fn(async (e: string, since: Date, exceptId?: string) =>
+            rows.find(
+              (r) =>
+                r.id !== exceptId &&
+                r.pendingEmail?.toLowerCase() === e.toLowerCase() &&
+                (r.pendingEmailRequestedAt?.getTime() ?? 0) > since.getTime(),
+            )?.id ?? null,
+          ),
+          create: jest.fn(async (data: { email: string }) => makeUser({ id: 'usr_new', email: data.email, role: undefined })),
+        };
+        const cfg = { get: jest.fn((k: string) => (k === 'USER_EMAIL_CHANGE_TTL' ? '24h' : 'https://panel.example.com')), echoOneTimeSecrets: false };
+        const emailChangeReal = new UserEmailChangeService(
+          repo as unknown as UsersRepository,
+          {} as never,
+          {} as never,
+          cfg as unknown as AppConfigService,
+          mail,
+        );
+        real = new UsersService(
+          repo as unknown as UsersRepository,
+          roles as unknown as RolesRepository,
+          auth as unknown as AuthService,
+          storage,
+          attachments as unknown as AttachmentsService,
+          mail,
+          cfg as unknown as AppConfigService,
+          emailChangeReal,
+        );
+        roles.findById.mockResolvedValue({ id: 'role_1', key: 'VIEWER', name: 'Viewer' } as never);
+      });
+
+      const invite = (email: string) => real.invite({ email, firstName: 'N', lastName: 'U', roleId: 'role_1' }, SA);
+
+      it('409 EMAIL_TAKEN for a case variant of an existing user (incl. a pending INVITED user)', async () => {
+        await expect(invite('existing@fleet.COM')).rejects.toMatchObject({ status: 409, code: 'EMAIL_TAKEN', details: { email: expect.any(String) as string } });
+        expect(repo.create).not.toHaveBeenCalled();
+      });
+
+      it("409 EMAIL_TAKEN for another user's unexpired pendingEmail", async () => {
+        rows.push({ id: 'usr_8', email: 'other@fleet.com', pendingEmail: 'Wanted@Fleet.com', pendingEmailRequestedAt: new Date() });
+        await expect(invite('wanted@fleet.com')).rejects.toMatchObject({ status: 409, code: 'EMAIL_TAKEN' });
+        expect(repo.create).not.toHaveBeenCalled();
+      });
+
+      it('allows an address whose pending change has expired (older than USER_EMAIL_CHANGE_TTL)', async () => {
+        rows.push({ id: 'usr_8', email: 'other@fleet.com', pendingEmail: 'wanted@fleet.com', pendingEmailRequestedAt: new Date(Date.now() - 25 * HOUR) });
+        const result = await invite(' Wanted@Fleet.com ');
+        expect(result.user.email).toBe('wanted@fleet.com');
+        expect(repo.create).toHaveBeenCalledWith(expect.objectContaining({ email: 'wanted@fleet.com' }));
+      });
     });
 
     it('creates the user and emails the invite without echoing the token', async () => {
@@ -259,30 +358,57 @@ describe('UsersService', () => {
       expect(users.update).toHaveBeenCalledWith({ id: 'usr_1' }, { homeTerminalName: 'Dallas, TX' });
     });
 
-    it('B-84 — an email change does not touch User.email; it issues a re-verification token instead', async () => {
-      users.findByIdWithRole.mockResolvedValue(makeUser({ email: 'old@b.com' }) as never);
-      users.findByEmail.mockResolvedValue(null);
-      users.update.mockResolvedValue({} as never);
+    it('B-84 — an email change stores a pending change after availability + re-auth, never User.email', async () => {
+      const current = makeUser({ email: 'old@b.com', role: { id: 'role_2', key: 'DISPATCHER', name: 'Dispatcher' } });
+      users.findByIdWithRole.mockResolvedValue(current as never);
+      users.update.mockResolvedValue({ id: 'usr_1', pendingEmail: 'new@b.com' } as never);
 
-      const result = await service.update('usr_1', { email: 'new@b.com' }, SA);
+      const result = await service.update('usr_1', { email: ' New@B.com ', currentPassword: 'pw' }, ADM);
 
-      expect(users.update).toHaveBeenCalledWith({ id: 'usr_1' }, {});
-      expect(auth.issueUserEmailVerifyToken).toHaveBeenCalledWith('usr_1', 'new@b.com');
-      expect(result.emailVerification).toEqual({ pendingEmail: 'new@b.com', verifyToken: 'verify-token' });
+      expect(emailChange.assertAvailable).toHaveBeenCalledWith('new@b.com', 'usr_1');
+      expect(emailChange.assertRequestable).toHaveBeenCalledWith(current, 'adm_1', { currentPassword: 'pw', reauthIdToken: undefined });
+      expect(emailChange.pendingInput).toHaveBeenCalledWith('new@b.com', 'adm_1', expect.any(Date));
+      const data = users.update.mock.calls[0][1] as Record<string, unknown>;
+      expect(data).toEqual({ pendingEmail: 'new@b.com' });
+      expect(data).not.toHaveProperty('email');
+      expect(emailChange.notifyRequested).toHaveBeenCalledWith({ id: 'usr_1', pendingEmail: 'new@b.com' }, current);
+      expect(result.emailVerification).toEqual({ pendingEmail: 'new@b.com', emailDelivered: true });
     });
 
-    it('B-84 — throws conflict when the new email is already taken by someone else', async () => {
+    it('B-84 — a failed re-auth writes nothing and mails nothing', async () => {
       users.findByIdWithRole.mockResolvedValue(makeUser({ email: 'old@b.com' }) as never);
-      users.findByEmail.mockResolvedValue(makeUser({ id: 'usr_2', email: 'new@b.com' }) as never);
-      await expect(service.update('usr_1', { email: 'new@b.com' }, SA)).rejects.toThrow(AppException);
+      emailChange.assertRequestable.mockRejectedValue(new AppException('REAUTH_REQUIRED', 'Enter your password to change this email.', 401));
+      await expect(service.update('usr_1', { email: 'new@b.com', firstName: 'X' }, SA)).rejects.toMatchObject({ code: 'REAUTH_REQUIRED' });
+      expect(users.update).not.toHaveBeenCalled();
+      expect(emailChange.notifyRequested).not.toHaveBeenCalled();
     });
 
-    it('B-84 — no-op when the email in the dto matches the current email', async () => {
-      users.findByIdWithRole.mockResolvedValue(makeUser({ email: 'same@b.com' }) as never);
+    it('B-84 — a taken (or pending elsewhere) address is a 409 before any password is asked for', async () => {
+      users.findByIdWithRole.mockResolvedValue(makeUser({ email: 'old@b.com' }) as never);
+      emailChange.assertAvailable.mockRejectedValue(new AppException('EMAIL_TAKEN', 'A user with this email address already exists.', 409));
+      await expect(service.update('usr_1', { email: 'new@b.com' }, SA)).rejects.toMatchObject({ status: 409, code: 'EMAIL_TAKEN' });
+      expect(emailChange.assertRequestable).not.toHaveBeenCalled();
+      expect(users.update).not.toHaveBeenCalled();
+    });
+
+    it('B-84 — no-op (no re-auth, no mail) when the email matches the current one case-insensitively', async () => {
+      users.findByIdWithRole.mockResolvedValue(makeUser({ email: 'Same@b.com' }) as never);
       users.update.mockResolvedValue({} as never);
-      const result = await service.update('usr_1', { email: 'same@b.com' }, SA);
-      expect(auth.issueUserEmailVerifyToken).not.toHaveBeenCalled();
+      const result = await service.update('usr_1', { email: 'same@B.com' }, SA);
+      expect(emailChange.assertRequestable).not.toHaveBeenCalled();
+      expect(emailChange.notifyRequested).not.toHaveBeenCalled();
       expect(result.emailVerification).toBeUndefined();
+    });
+
+    it('B-84 — resend / cancel of a pending change follow the privileged-target rule', async () => {
+      users.findByIdWithRole.mockResolvedValue(makeUser() as never);
+      await expect(service.resendEmailChange('usr_1', ADM)).rejects.toThrow(AppException);
+      await expect(service.cancelEmailChange('usr_1', ADM)).rejects.toThrow(AppException);
+      expect(emailChange.resend).not.toHaveBeenCalled();
+      await service.resendEmailChange('usr_1', SA);
+      expect(emailChange.resend).toHaveBeenCalledWith('usr_1');
+      await service.cancelEmailChange('usr_1', SA);
+      expect(emailChange.cancelPending).toHaveBeenCalledWith('usr_1');
     });
   });
 

@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { Prisma, Trailer } from '@prisma/client';
 import { BaseRepository, ModelDelegate } from '../../core/prisma/base.repository';
 import { PrismaService } from '../../core/prisma/prisma.service';
-import { escapeLike } from '../../common/dto/list-query.dto';
+import { containsInsensitive } from '../../common/text/insensitive';
 
 export interface TrailerListFilter {
   q?: string;
@@ -54,8 +54,8 @@ export class TrailersRepository extends BaseRepository<
       ...(filter.status && { status: filter.status }),
       ...(filter.q && {
         OR: [
-          { number: { contains: escapeLike(filter.q), mode: 'insensitive' } },
-          { vin: { contains: escapeLike(filter.q), mode: 'insensitive' } },
+          { number: containsInsensitive(filter.q) },
+          { vin: containsInsensitive(filter.q) },
         ],
       }),
     };

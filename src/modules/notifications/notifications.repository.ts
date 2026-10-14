@@ -100,6 +100,22 @@ export class NotificationsRepository {
     return this.prisma.notification.create({ data });
   }
 
+  /**
+   * Alert-mail address for a recipient — same "live accounts only" rule as
+   * `AlertProcessor.resolveEmail`: an ACTIVE user, or a non-deleted ACTIVE driver with an email.
+   */
+  async findLiveEmail(kind: 'user' | 'driver', id: string): Promise<string | null> {
+    if (kind === 'user') {
+      const user = await this.prisma.user.findUnique({ where: { id }, select: { email: true, status: true } });
+      return user?.status === 'ACTIVE' && user.email ? user.email : null;
+    }
+    const driver = await this.prisma.driver.findUnique({
+      where: { id },
+      select: { email: true, status: true, deletedAt: true },
+    });
+    return driver && driver.status === 'ACTIVE' && !driver.deletedAt && driver.email ? driver.email : null;
+  }
+
   list(
     recipient: { userId?: string; driverId?: string },
     page: number,

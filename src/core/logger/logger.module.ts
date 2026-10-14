@@ -27,6 +27,8 @@ import { RequestContext } from '../context/request-context';
               'req.body.password',
               'req.body.token',
               'req.body.refreshToken',
+              'req.body.currentPassword',
+              'req.body.reauthIdToken',
             ],
             censor: '[redacted]',
           },

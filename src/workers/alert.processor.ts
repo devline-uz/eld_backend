@@ -1,9 +1,10 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
-import { Logger } from '@nestjs/common';
+import { Inject, Logger } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import type { Job } from 'bullmq';
 import { EventBusService } from '../core/events/event-bus.service';
 import { PushService } from '../core/firebase/push.service';
+import { TRANSACTIONAL_MAIL, TransactionalMailPort } from '../core/mail/mail.port';
 import { QUEUES } from '../core/queue/queue.constants';
 import { PrismaService } from '../core/prisma/prisma.service';
 import { AlertDeliveryRepository, AlertRulesRepository } from '../modules/notifications/notifications.repository';
@@ -32,7 +33,8 @@ interface AlertRecipient {
  * `TripsService.assign`, etc.), matches it against `AlertRule.conditions[].event`, then
  * enforces throttle/cooldown/quiet hours (deterministically, via
  * `modules/notifications/lib/alert-policy.ts`) before delivering IN_APP (+ FCM push),
- * EMAIL or WEBHOOK. `SMS` never reaches here — the API rejects it at rule-creation time
+ * EMAIL (real SMTP, `TRANSACTIONAL_MAIL`) or WEBHOOK. `SMS` never reaches here — the API
+ * rejects it at rule-creation time
  * (422 CHANNEL_NOT_AVAILABLE), so no `AlertRule.channels` in the DB ever contains it.
  */
 @Processor(QUEUES.ALERT)
@@ -46,6 +48,8 @@ export class AlertProcessor extends WorkerHost {
     private readonly push: PushService,
     private readonly webhooks: WebhooksService,
     private readonly events: EventBusService,
+    /** Real SMTP (`@Global()` `MailModule`, imported by `worker.ts`). Never throws — see `sendEmail`. */
+    @Inject(TRANSACTIONAL_MAIL) private readonly mail: TransactionalMailPort,
   ) {
     super();
   }
@@ -234,13 +238,53 @@ export class AlertProcessor extends WorkerHost {
       return;
     }
     if (channel === 'EMAIL') {
-      // No SMTP client exists yet (same gap as TransfersModule's MAIL_PORT) — logged for now.
-      this.logger.log({ recipient, payload }, 'EMAIL alert (no SMTP transport configured yet)');
+      await this.sendEmail(recipient, payload, rule, eventName);
       return;
     }
     if (channel === 'WEBHOOK') {
       await this.webhooks.notify('alert', { recipient, ...payload });
       return;
     }
+  }
+
+  /**
+   * EMAIL channel — real SMTP via `TRANSACTIONAL_MAIL`. Anything that keeps the mail from
+   * landing (no live address, no `SMTP_HOST` in dev/CI → `NO_MAIL_TRANSPORT`, SMTP rejection →
+   * `SMTP_SEND_FAILED`) is thrown here so `deliverToRecipient` logs it and marks the
+   * `AlertDelivery` FAILED with that reason. It is never rethrown out of `process`, so a bad
+   * address or a down SMTP server cannot turn into a BullMQ retry storm (or re-send IN_APP).
+   */
+  private async sendEmail(
+    recipient: AlertRecipient,
+    payload: Record<string, unknown>,
+    rule: { id: string; severity: string },
+    eventName: string,
+  ): Promise<void> {
+    const to = await this.resolveEmail(recipient);
+    if (!to) throw new Error('NO_EMAIL_ADDRESS');
+    const title = typeof payload.title === 'string' ? payload.title : 'Alert';
+    const body = deriveNotificationBody(eventName, payload).slice(0, 500);
+    const result = await this.mail.send({
+      to,
+      subject: `OneBook ELD ${rule.severity.toLowerCase()} alert: ${title}`.slice(0, 200),
+      text: [body, '', `Severity: ${rule.severity}`, `Event: ${eventName}`].join('\n'),
+    });
+    if (!result.delivered) throw new Error(result.reference);
+  }
+
+  /** Only live accounts get alert mail: an ACTIVE user, or a non-deleted ACTIVE driver with an email. */
+  private async resolveEmail(recipient: AlertRecipient): Promise<string | null> {
+    if (recipient.kind === 'user') {
+      const user = await this.prisma.user.findUnique({
+        where: { id: recipient.id },
+        select: { email: true, status: true },
+      });
+      return user?.status === 'ACTIVE' && user.email ? user.email : null;
+    }
+    const driver = await this.prisma.driver.findUnique({
+      where: { id: recipient.id },
+      select: { email: true, status: true, deletedAt: true },
+    });
+    return driver && driver.status === 'ACTIVE' && !driver.deletedAt && driver.email ? driver.email : null;
   }
 }

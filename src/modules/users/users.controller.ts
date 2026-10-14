@@ -1,4 +1,5 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Param, Patch, Post } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { ApiBearerAuth, ApiCreatedResponse, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Audit } from '../../common/decorators/audit.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -57,12 +58,51 @@ export class UsersController {
 
   @Patch(':id')
   @Perm('users', 'FULL')
+  // Caps password guessing through the email-change re-auth (per principal), well above editing pace.
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Audit({ object: 'User', action: 'UPDATE' })
-  @ApiOperation({ summary: 'Updates a user, including role assignment (TZ §18 — audited as a role change).' })
-  @ApiOkResponse({ schema: { example: { id: 'usr_3', firstName: 'Dana', lastName: 'Ford', status: 'ACTIVE', role: { key: 'DISPATCHER', name: 'Dispatcher' } } } })
-  @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.NOT_FOUND, 'User not found.'), apiError.conflict(ERROR_CODES.ROLE_IMMUTABLE, 'The ADMIN system role cannot be reassigned away from the last administrator.')] })
+  @ApiOperation({
+    summary: 'Updates a user, including role assignment (TZ §18 — audited as a role change).',
+    description:
+      'B-84 — a changed `email` (after trim + lower-case) is NOT written: it becomes `pendingEmail`, a confirm link is mailed to it ' +
+      '(valid `USER_EMAIL_CHANGE_TTL`, killed by a newer request or a cancel) and a "this wasn\'t me" notice to the old address. ' +
+      'It requires the ACTING user\'s `currentPassword` (or `reauthIdToken` for a Google-only account) — 401 REAUTH_REQUIRED / ' +
+      'REAUTH_FAILED with `details.currentPassword`. 409 EMAIL_TAKEN (`details.email`) when another user has the address or a ' +
+      'pending change to it; 409 EMAIL_CHANGE_ON_HOLD inside the hold window of the previous change. The response then carries ' +
+      '`emailVerification: { pendingEmail, emailDelivered, verifyToken? }` (`verifyToken` only with DEV_ECHO_SECRETS).',
+  })
+  @ApiOkResponse({ schema: { example: { id: 'usr_3', firstName: 'Dana', lastName: 'Ford', status: 'ACTIVE', email: 'dana.ford@example.com', pendingEmail: 'dana@new.example.com', role: { key: 'DISPATCHER', name: 'Dispatcher' }, emailVerification: { pendingEmail: 'dana@new.example.com', emailDelivered: true } } } })
+  @ApiStandardErrors({
+    errors: [
+      apiError.notFound(ERROR_CODES.NOT_FOUND, 'User not found.'),
+      apiError.conflict(ERROR_CODES.EMAIL_TAKEN, 'A user with this email address already exists.'),
+      { status: 401, code: ERROR_CODES.REAUTH_FAILED, message: 'Password is incorrect.' },
+    ],
+  })
   update(@Param('id') id: string, @Body(zodBody(UpdateUserDto)) dto: UpdateUserDto, @CurrentUser() actor: Actor) {
     return this.users.update(id, dto, actor);
+  }
+
+  @Post(':id/email-change/resend')
+  @HttpCode(202)
+  @Perm('users', 'FULL')
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Audit({ object: 'User', action: 'EMAIL_CHANGE_RESEND' })
+  @ApiOperation({ summary: 'B-84 — re-mails the confirm link of the pending email change (same request; the old-address cancel link stays valid).' })
+  @ApiOkResponse({ schema: { example: { pendingEmail: 'new@example.com', emailedTo: 'new@example.com', emailDelivered: true } } })
+  @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.EMAIL_CHANGE_NOT_PENDING, 'This user has no pending email change.')] })
+  resendEmailChange(@Param('id') id: string, @CurrentUser() actor: Actor) {
+    return this.users.resendEmailChange(id, actor);
+  }
+
+  @Delete(':id/email-change')
+  @Perm('users', 'FULL')
+  @Audit({ object: 'User', action: 'EMAIL_CHANGE_CANCEL' })
+  @ApiOperation({ summary: 'B-84 — cancels the pending email change; the current email stays and the emailed links stop working.' })
+  @ApiOkResponse({ schema: { example: { id: 'usr_3', email: 'dana.ford@example.com', pendingEmail: null } } })
+  @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.EMAIL_CHANGE_NOT_PENDING, 'This user has no pending email change.')] })
+  cancelEmailChange(@Param('id') id: string, @CurrentUser() actor: Actor) {
+    return this.users.cancelEmailChange(id, actor);
   }
 
   @Delete(':id')

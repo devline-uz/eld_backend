@@ -53,8 +53,6 @@ export function toOffsetPage<T>(items: T[], total: number, page: number, limit: 
 /**
  * BE-014 — Prisma's `contains` / `startsWith` put the value into `LIKE '%…%'` WITHOUT escaping
  * (verified against Postgres: `q=%` matched every row, `q=_` any one char, a lone `\` nothing).
- * Escape the LIKE metacharacters with Postgres' default escape `\` so web search is literal.
+ * Re-exported from `common/text/insensitive.ts`, which owns it together with the filter helpers.
  */
-export function escapeLike(value: string): string {
-  return value.replace(/[\\%_]/g, '\\$&');
-}
+export { escapeLike } from '../text/insensitive';

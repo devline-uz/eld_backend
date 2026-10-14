@@ -1,4 +1,5 @@
 import { Body, Controller, Delete, Get, HttpCode, Param, Patch, Post, Query } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { ApiBearerAuth, ApiCreatedResponse, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { Audit } from '../../common/decorators/audit.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -17,6 +18,7 @@ import {
 } from './dto/drivers.dto';
 import { DriverRosterService } from './driver-roster.service';
 import { DriversService } from './drivers.service';
+import { DriverEmailChangeService } from './driver-email-change.service';
 import { apiError, ApiStandardErrors, ERROR_CODES } from '../../common/errors';
 import { FigmaScreen } from '../../common/decorators/figma-screen.decorator';
 import { DRIVER_CONFLICT_MESSAGES } from './lib/driver-uniques';
@@ -38,6 +40,7 @@ export class DriversController {
   constructor(
     private readonly drivers: DriversService,
     private readonly roster$: DriverRosterService,
+    private readonly emailChange: DriverEmailChangeService,
   ) {}
 
   @Get()
@@ -153,14 +156,50 @@ export class DriversController {
 
   @Patch(':id')
   @Perm('drivers', 'FULL')
+  // Caps password guessing through the email-change re-auth (per principal), well above editing pace.
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Audit({ object: 'Driver', action: 'UPDATE' })
-  @ApiOperation({ summary: 'Updates a driver profile, CDL, or exception flags.' })
-  @ApiOkResponse({ schema: { example: { id: 'drv_1', username: 'jsmith', status: 'ACTIVE', allowPersonalConveyance: false } } })
-  @ApiStandardErrors({
-    errors: [apiError.notFound(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.'), apiError.fieldConflicts(DRIVER_FIELD_CONFLICTS.slice(1))],
+  @ApiOperation({
+    summary: 'Updates a driver profile, CDL, or exception flags.',
+    description:
+      'A changed `email` (after trim + lower-case) is NOT written: it becomes `pendingEmail`, a confirm link is mailed to it and a ' +
+      '"this wasn\'t me" notice to the old address. It requires the acting user\'s `currentPassword` (or `reauthIdToken` for a ' +
+      'Google-only account) — 401 REAUTH_REQUIRED / REAUTH_FAILED with `details.currentPassword`. Refused with 409 ' +
+      'EMAIL_CHANGE_ON_HOLD inside the hold window of the previous change. The response then carries ' +
+      '`emailVerification: { pendingEmail, emailDelivered, verifyToken? }` (`verifyToken` only with DEV_ECHO_SECRETS).',
   })
-  update(@Param('id') id: string, @Body(zodBody(UpdateDriverDto)) dto: UpdateDriverDto) {
-    return this.drivers.update(id, dto);
+  @ApiOkResponse({ schema: { example: { id: 'drv_1', username: 'jsmith', status: 'ACTIVE', email: 'old@example.com', pendingEmail: 'new@example.com', emailVerification: { pendingEmail: 'new@example.com', emailDelivered: true } } } })
+  @ApiStandardErrors({
+    errors: [
+      apiError.notFound(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.'),
+      apiError.fieldConflicts(DRIVER_FIELD_CONFLICTS.slice(1)),
+      { status: 401, code: ERROR_CODES.REAUTH_FAILED, message: 'Password is incorrect.' },
+    ],
+  })
+  update(@Param('id') id: string, @Body(zodBody(UpdateDriverDto)) dto: UpdateDriverDto, @CurrentUser() actor: ContextUser) {
+    return this.drivers.update(id, dto, actor);
+  }
+
+  @Post(':id/email-change/resend')
+  @HttpCode(202)
+  @Perm('drivers', 'FULL')
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Audit({ object: 'Driver', action: 'EMAIL_CHANGE_RESEND' })
+  @ApiOperation({ summary: 'Re-mails the confirm link of the pending driver email change (same request; the old-address cancel link stays valid).' })
+  @ApiOkResponse({ schema: { example: { pendingEmail: 'new@example.com', emailedTo: 'new@example.com', emailDelivered: true } } })
+  @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.EMAIL_CHANGE_NOT_PENDING, 'This driver has no pending email change.')] })
+  resendEmailChange(@Param('id') id: string) {
+    return this.emailChange.resend(id);
+  }
+
+  @Delete(':id/email-change')
+  @Perm('drivers', 'FULL')
+  @Audit({ object: 'Driver', action: 'EMAIL_CHANGE_CANCEL' })
+  @ApiOperation({ summary: 'Cancels the pending driver email change; the current email stays.' })
+  @ApiOkResponse({ schema: { example: { id: 'drv_1', email: 'old@example.com', pendingEmail: null } } })
+  @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.EMAIL_CHANGE_NOT_PENDING, 'This driver has no pending email change.')] })
+  cancelEmailChange(@Param('id') id: string) {
+    return this.emailChange.cancelPending(id);
   }
 
   @Delete(':id')
@@ -186,7 +225,10 @@ export class DriversController {
   @HttpCode(202)
   @Perm('drivers', 'FULL')
   @Audit({ object: 'Driver', action: 'RESET_PASSWORD' })
-  @ApiOperation({ summary: 'B-81 — carrier-side reset of a driver-app password (email or a one-time code for the dispatcher to read out). Always audited.' })
+  @ApiOperation({
+    summary: 'B-81 — carrier-side reset of a driver-app password (email or a one-time code for the dispatcher to read out). Always audited.',
+    description: 'Inside the hold window after a driver email change the code is NOT emailed to the new address: `emailedTo: null`, `code` for the dispatcher and `emailHoldUntil`.',
+  })
   @ApiOkResponse({ schema: { example: { emailedTo: 'jsmith@example.com' } } })
   @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.')] })
   resetPassword(@Param('id') id: string) {

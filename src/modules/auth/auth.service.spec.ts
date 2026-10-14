@@ -1,5 +1,7 @@
 import { AppException } from '../../common/errors/app.exception';
+import { fakeUserEmailTable } from '../../../test/helpers/fake-user-email-table';
 import { AuthService } from './auth.service';
+import { UserAuthRepository } from './repositories/user-auth.repository';
 import { sha256 } from './lib/hash.util';
 import * as passwordUtil from './lib/password.util';
 import * as hashUtil from './lib/hash.util';
@@ -535,7 +537,29 @@ describe('AuthService', () => {
       await new Promise((r) => setImmediate(r));
       expect(mail.send).not.toHaveBeenCalled();
       expect(resetCodes.upsert).not.toHaveBeenCalled();
-      expect(resetCodes.notifyAdminsOfResetRequest).toHaveBeenCalledWith(noEmail, expect.any(Date));
+      expect(resetCodes.notifyAdminsOfResetRequest).toHaveBeenCalledWith(noEmail, expect.any(Date), 'NO_EMAIL');
+    });
+
+    it('driver email change hold — no code is mailed to a just-changed address; admins are notified instead', async () => {
+      config.get.mockImplementation((key: string) => (key === 'DRIVER_EMAIL_CHANGE_HOLD_HOURS' ? 48 : undefined));
+      const changed = { ...drv, firstName: 'J', lastName: 'S', username: 'john', emailChangedAt: new Date(Date.now() - 3_600_000) };
+      drivers.findByUsernameOrEmail.mockResolvedValue(changed);
+      (config as unknown as { echoOneTimeSecrets: boolean }).echoOneTimeSecrets = true;
+      expect(await service.forgotDriverPassword('d@x.com')).toEqual({});
+      await new Promise((r) => setImmediate(r));
+      expect(mail.send).not.toHaveBeenCalled();
+      expect(resetCodes.upsert).not.toHaveBeenCalled();
+      expect(resetCodes.notifyAdminsOfResetRequest).toHaveBeenCalledWith(changed, expect.any(Date), 'EMAIL_CHANGE_HOLD');
+    });
+
+    it('driver email change hold — once the window has passed the code is mailed again', async () => {
+      config.get.mockImplementation((key: string) => (key === 'DRIVER_EMAIL_CHANGE_HOLD_HOURS' ? 48 : undefined));
+      tokens.signDriverPasswordResetToken = jest.fn().mockReturnValue('drv-reset');
+      drivers.findByUsernameOrEmail.mockResolvedValue({ ...drv, emailChangedAt: new Date(Date.now() - 49 * 3_600_000) });
+      await service.forgotDriverPassword('john');
+      await new Promise((r) => setImmediate(r));
+      expect(resetCodes.notifyAdminsOfResetRequest).not.toHaveBeenCalled();
+      expect(mail.send).toHaveBeenCalledTimes(1);
     });
 
     it('admin notification failure is swallowed (still 200 shape)', async () => {
@@ -689,6 +713,74 @@ describe('AuthService', () => {
     });
   });
 
+  describe('email lookup — case / whitespace-insensitive (login, Google, forgot)', () => {
+    const stored = { ...activeUser, id: 'u-lower', email: 'john@x.com' };
+    const legacy = { ...activeUser, id: 'u-legacy', email: 'Legacy.Mixed@Example.COM' };
+    const google = (email: string) =>
+      firebase.verifyIdToken.mockResolvedValue({ firebase: { sign_in_provider: 'google.com' }, email_verified: true, email, uid: 'g1' });
+
+    beforeEach(() => {
+      // The real repository over an in-memory table that evaluates the filter like Postgres ILIKE.
+      const repo = new UserAuthRepository(fakeUserEmailTable([stored, legacy]).prisma as never);
+      users.findByEmailWithRole.mockImplementation((email: string) => repo.findByEmailWithRole(email));
+      sessions.create.mockResolvedValue({ id: 's1' });
+      (config as unknown as { echoOneTimeSecrets: boolean }).echoOneTimeSecrets = true;
+    });
+
+    it.each([
+      ['mixed case + spaces → lower-case row', '  John@X.COM ', 'u-lower'],
+      ['lower-case input → legacy mixed-case row', 'legacy.mixed@example.com', 'u-legacy'],
+      ['upper case + tab → legacy mixed-case row', '\tLEGACY.MIXED@EXAMPLE.COM', 'u-legacy'],
+    ])('password login: %s', async (_label, input, id) => {
+      await expect(service.loginUser(input, 'pw', {})).resolves.toMatchObject({ accessToken: 'access' });
+      expect(users.touchLastActive).toHaveBeenCalledWith(id);
+    });
+
+    it('password login: unknown / wildcard address keeps the same INVALID_CREDENTIALS 401', async () => {
+      for (const input of ['nobody@x.com', 'j_hn@x.com', '%']) {
+        await expect(service.loginUser(input, 'pw', {})).rejects.toMatchObject({ code: 'INVALID_CREDENTIALS', status: 401 });
+      }
+      expect(passwordUtil.verifyPassword).not.toHaveBeenCalled();
+    });
+
+    it('password login: wrong password on a case-variant address is the same INVALID_CREDENTIALS 401', async () => {
+      (passwordUtil.verifyPassword as jest.Mock).mockResolvedValue(false);
+      await expect(service.loginUser('JOHN@x.com', 'bad', {})).rejects.toMatchObject({ code: 'INVALID_CREDENTIALS', status: 401 });
+    });
+
+    it.each([
+      ['John@X.com', 'u-lower'],
+      ['legacy.mixed@EXAMPLE.com', 'u-legacy'],
+    ])('Google sign-in with %j resolves the stored account', async (email, id) => {
+      google(email);
+      await expect(service.loginGoogle('tok', {})).resolves.toMatchObject({ accessToken: 'access' });
+      expect(users.touchLastActive).toHaveBeenCalledWith(id);
+    });
+
+    it('Google invite acceptance: an INVITED row is activated whatever the case of the Google address', async () => {
+      const invited = { ...stored, status: 'INVITED', invitedAt: new Date(Date.now() - 60_000) };
+      const repo = new UserAuthRepository(fakeUserEmailTable([invited]).prisma as never);
+      users.findByEmailWithRole.mockImplementation((email: string) => repo.findByEmailWithRole(email));
+      users.activateInvited.mockResolvedValue({ ...invited, status: 'ACTIVE' });
+      google('JOHN@X.COM');
+      await expect(service.loginGoogle('tok', {})).resolves.toMatchObject({ accessToken: 'access' });
+      expect(users.activateInvited).toHaveBeenCalledWith('u-lower');
+    });
+
+    it('Google sign-in: a look-alike address with `_` is still USER_NOT_INVITED', async () => {
+      google('j_hn@x.com');
+      await expect(service.loginGoogle('tok', {})).rejects.toMatchObject({ code: 'USER_NOT_INVITED', status: 403 });
+    });
+
+    it.each([' JOHN@x.com ', 'Legacy.Mixed@example.com'])('legacy forgotPassword(%j) issues a reset token', async (input) => {
+      await expect(service.forgotPassword(input)).resolves.toEqual({ resetToken: 'reset-token' });
+    });
+
+    it('legacy forgotPassword with an unknown address still returns {}', async () => {
+      await expect(service.forgotPassword('nobody@x.com')).resolves.toEqual({});
+    });
+  });
+
   describe('forgotPassword / resetPassword', () => {
     it('forgotPassword returns {} when user unknown (no enumeration)', async () => {
       users.findByEmailWithRole.mockResolvedValue(null);
@@ -701,6 +793,14 @@ describe('AuthService', () => {
       users.findByEmailWithRole.mockResolvedValue(activeUser);
       const result = await service.forgotPassword('a@b.com');
       expect(result).toEqual({ resetToken: 'reset-token' });
+    });
+
+    it('B-84 hold — forgotPassword issues no reset token for an address changed inside USER_EMAIL_CHANGE_HOLD_HOURS', async () => {
+      (config as unknown as { echoOneTimeSecrets: boolean }).echoOneTimeSecrets = true;
+      config.get.mockImplementation((key: string) => (key === 'USER_EMAIL_CHANGE_HOLD_HOURS' ? 48 : undefined));
+      users.findByEmailWithRole.mockResolvedValue({ ...activeUser, emailChangedAt: new Date(Date.now() - 3_600_000) });
+      await expect(service.forgotPassword('a@b.com')).resolves.toEqual({});
+      expect(tokens.signPasswordResetToken).not.toHaveBeenCalled();
     });
 
     it('B-093 — forgotPassword hides resetToken on a non-production host without DEV_ECHO_SECRETS', async () => {
@@ -793,6 +893,48 @@ describe('AuthService', () => {
       const driver = { id: 'drv_x', type: 'driver' as const };
       drivers.findById.mockResolvedValue(null);
       expect(await service.meProfile(driver)).toEqual(driver);
+    });
+  });
+
+  describe('assertUserReauth (driver email change)', () => {
+    it('accepts the acting user\'s correct password', async () => {
+      users.findByIdWithRole.mockResolvedValue(activeUser);
+      await expect(service.assertUserReauth('u1', { currentPassword: 'pw' })).resolves.toBeUndefined();
+      expect(passwordUtil.verifyPassword).toHaveBeenCalledWith('hash', 'pw');
+    });
+
+    it('a wrong password is a 401 REAUTH_FAILED on the currentPassword field', async () => {
+      users.findByIdWithRole.mockResolvedValue(activeUser);
+      (passwordUtil.verifyPassword as jest.Mock).mockResolvedValue(false);
+      await expect(service.assertUserReauth('u1', { currentPassword: 'nope' })).rejects.toMatchObject({
+        code: 'REAUTH_FAILED',
+        status: 401,
+        details: { currentPassword: 'Password is incorrect.' },
+      });
+    });
+
+    it('a missing password is a 401 REAUTH_REQUIRED', async () => {
+      users.findByIdWithRole.mockResolvedValue(activeUser);
+      await expect(service.assertUserReauth('u1', {})).rejects.toMatchObject({ code: 'REAUTH_REQUIRED', status: 401 });
+    });
+
+    it('a Google-only account must re-authenticate with Google (fresh token of the same account)', async () => {
+      users.findByIdWithRole.mockResolvedValue({ ...activeUser, passwordHash: null });
+      await expect(service.assertUserReauth('u1', { currentPassword: 'pw' })).rejects.toMatchObject({ code: 'REAUTH_FAILED' });
+      firebase.verifyIdToken.mockResolvedValue({
+        firebase: { sign_in_provider: 'google.com' },
+        email_verified: true,
+        email: 'A@B.com',
+        auth_time: Math.floor(Date.now() / 1000),
+      });
+      await expect(service.assertUserReauth('u1', { reauthIdToken: 'id' })).resolves.toBeUndefined();
+      firebase.verifyIdToken.mockResolvedValue({
+        firebase: { sign_in_provider: 'google.com' },
+        email_verified: true,
+        email: 'a@b.com',
+        auth_time: Math.floor(Date.now() / 1000) - 3600,
+      });
+      await expect(service.assertUserReauth('u1', { reauthIdToken: 'old' })).rejects.toMatchObject({ code: 'REAUTH_FAILED' });
     });
   });
 });

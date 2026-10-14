@@ -1,7 +1,8 @@
 import { z } from 'zod';
 
 export const LoginDto = z.object({
-  email: z.string().email(),
+  // Trimmed here; matched case-insensitively by `UserAuthRepository.findByEmailWithRole`.
+  email: z.string().trim().email(),
   password: z.string().min(1),
 });
 export type LoginDto = z.infer<typeof LoginDto>;
@@ -29,7 +30,7 @@ export const LogoutDto = z.object({
 export type LogoutDto = z.infer<typeof LogoutDto>;
 
 export const ForgotPasswordDto = z.object({
-  email: z.string().email(),
+  email: z.string().trim().email(),
 });
 export type ForgotPasswordDto = z.infer<typeof ForgotPasswordDto>;
 
@@ -47,7 +48,7 @@ export type VerifyEmailChangeDto = z.infer<typeof VerifyEmailChangeDto>;
 
 /** MR-31 — driver self-service reset; `username` or `email` (at least one). */
 export const DriverForgotPasswordDto = z
-  .object({ username: z.string().min(1).max(120).optional(), email: z.string().email().optional() })
+  .object({ username: z.string().min(1).max(120).optional(), email: z.string().trim().email().optional() })
   .refine((v) => Boolean(v.username || v.email), { message: 'username or email is required' });
 export type DriverForgotPasswordDto = z.infer<typeof DriverForgotPasswordDto>;
 
@@ -59,7 +60,7 @@ export const DriverResetPasswordDto = z
   .object({
     token: z.string().min(1).optional(),
     username: z.string().min(1).max(120).optional(),
-    email: z.string().email().optional(),
+    email: z.string().trim().email().optional(),
     code: z.string().regex(/^\d{6}$/, 'code must be 6 digits').optional(),
     newPassword: z.string().min(8),
   })

@@ -12,6 +12,13 @@ import { RolesRepository } from '../roles/roles.repository';
 import { readImageDimensions, stripImageMetadata } from './lib/image-dimensions.util';
 import { buildInviteEmail } from './lib/invite-email';
 import { CreateUserDto, PreferencesDto, UpdateMyProfileDto, UpdateUserDto } from './dto/users.dto';
+import {
+  emailTakenConflict,
+  isUniqueViolation,
+  normalizeUserEmail,
+  UserEmailChangeService,
+  type UserEmailVerificationView,
+} from './user-email-change.service';
 import { UserListItem, UsersRepository, UserWithRole } from './users.repository';
 
 /** The authenticated caller, as passed from the controller (`@CurrentUser()`). */
@@ -28,6 +35,8 @@ export const isPrivilegedRole = (key: string | undefined): boolean => !!key && P
 function assertSuperAdmin(actor: Actor | undefined): void {
   if (actor?.role !== SUPER_ADMIN_KEY) throw AppException.forbidden('Only a Super Admin can manage administrators.');
 }
+
+export type { UserEmailVerificationView } from './user-email-change.service';
 
 export type UserView = Omit<UserWithRole, 'passwordHash'> & { avatarUrl?: string | null };
 
@@ -68,6 +77,7 @@ export class UsersService {
     private readonly attachments: AttachmentsService,
     @Inject(TRANSACTIONAL_MAIL) private readonly mail: TransactionalMailPort,
     private readonly config: AppConfigService,
+    private readonly emailChange: UserEmailChangeService,
   ) {}
 
   /** W-18 Users table — trimmed payload (TZ perf plan item 2): no `passwordHash`, no
@@ -103,21 +113,31 @@ export class UsersService {
     const role = await this.roles.findById({ id: dto.roleId });
     if (!role) throw AppException.notFound('Role not found.');
     if (isPrivilegedRole(role.key)) assertSuperAdmin(actor);
-    const existing = await this.users.findByEmail(dto.email);
-    if (existing) throw AppException.conflict(`A user with email "${dto.email}" already exists.`);
+    // Stored trimmed + lower-case (`User.email` is unique on `lower(email)`), compared case-insensitively.
+    // A pending invite is a `User` row in INVITED status, so `assertAvailable` covers it too, as well
+    // as another account's unexpired pending email change (same 409 EMAIL_TAKEN as `PATCH /users/:id`).
+    const email = normalizeUserEmail(dto.email);
+    await this.emailChange.assertAvailable(email);
 
-    const user = await this.users.create({
-      email: dto.email,
-      firstName: dto.firstName,
-      lastName: dto.lastName,
-      jobTitle: dto.jobTitle,
-      phone: dto.phone,
-      role: { connect: { id: dto.roleId } },
-      invitedById,
-      invitedAt: new Date(),
-      // B-85 — terminal scope: stored, not yet enforced (D-090, tz.md §20.4 question 2 open).
-      terminalScope: dto.terminalIds ?? [],
-    });
+    let user: Awaited<ReturnType<UsersRepository['create']>>;
+    try {
+      user = await this.users.create({
+        email,
+        firstName: dto.firstName,
+        lastName: dto.lastName,
+        jobTitle: dto.jobTitle,
+        phone: dto.phone,
+        role: { connect: { id: dto.roleId } },
+        invitedById,
+        invitedAt: new Date(),
+        // B-85 — terminal scope: stored, not yet enforced (D-090, tz.md §20.4 question 2 open).
+        terminalScope: dto.terminalIds ?? [],
+      });
+    } catch (err) {
+      // A concurrent invite / email confirm took the address between the check and the insert.
+      if (isUniqueViolation(err)) throw emailTakenConflict();
+      throw err;
+    }
     const withRole = { ...user, role };
     const emailDelivered = await this.sendInviteEmail(withRole, dto.message);
     return { user: toView(withRole), emailDelivered, ...this.echoInviteToken(withRole) };
@@ -171,12 +191,13 @@ export class UsersService {
    * *user* rule, so any role can be assigned here as long as it exists.
    */
   /**
-   * B-84 — `email` is deliberately NOT written here: `AuthService.verifyEmailChange` is the
-   * only path that writes `User.email`, so a changed address always goes through
-   * re-verification. `emailVerification` on the return value carries the token the same way
-   * `invite()`/`forgotPassword()` do (outside production only — no mailer in Phase 1).
+   * B-84 — `email` is never written here: a changed address (trim + lower-case, compared
+   * case-insensitively) becomes a pending change (`UserEmailChangeService`) that needs the ACTING
+   * user's re-authentication (`currentPassword` / `reauthIdToken`) and the new owner's confirmation
+   * (`POST /auth/email/verify`). A newer request replaces the pending one and kills its links.
+   * The old address is told, with a cancel / revert link. An unchanged email is a no-op.
    */
-  async update(id: string, dto: UpdateUserDto, actor: Actor): Promise<UserView & { emailVerification?: { pendingEmail: string; verifyToken?: string } }> {
+  async update(id: string, dto: UpdateUserDto, actor: Actor): Promise<UserView & { emailVerification?: UserEmailVerificationView }> {
     const current = await this.getRaw(id);
     let nextRoleKey = current.role.key;
     if (dto.roleId) {
@@ -190,17 +211,18 @@ export class UsersService {
     // the server enforces it so a stale tab or a direct call can't lock every user out of Settings.
     const losesStatus = dto.status !== undefined && dto.status !== 'ACTIVE';
     await this.assertNotLastAdmin(current, nextRoleKey, losesStatus);
-    let emailVerification: { pendingEmail: string; verifyToken?: string } | undefined;
-    if (dto.email !== undefined && dto.email !== current.email) {
-      const existing = await this.users.findByEmail(dto.email);
-      if (existing && existing.id !== id) {
-        throw AppException.conflict(`A user with email "${dto.email}" already exists.`);
-      }
-      const verifyToken = this.auth.issueUserEmailVerifyToken(id, dto.email);
-      emailVerification = { pendingEmail: dto.email, verifyToken };
-      this.logger.log({ userId: id, pendingEmail: dto.email }, 'Email change re-verification requested (no mailer wired in Phase 1)');
+    const requested = dto.email !== undefined ? normalizeUserEmail(dto.email) : undefined;
+    const newEmail = requested !== undefined && requested !== current.email.toLowerCase() ? requested : undefined;
+    if (newEmail) {
+      // Availability first (a taken address is reported before any password is asked for), then the
+      // hold of the previous change and the acting user's re-authentication.
+      await this.emailChange.assertAvailable(newEmail, id);
+      await this.emailChange.assertRequestable(current, actor.id, {
+        currentPassword: dto.currentPassword,
+        reauthIdToken: dto.reauthIdToken,
+      });
     }
-    await this.users.update(
+    const updated = await this.users.update(
       { id },
       {
         ...(dto.firstName !== undefined && { firstName: dto.firstName }),
@@ -210,10 +232,27 @@ export class UsersService {
         ...(dto.roleId !== undefined && { role: { connect: { id: dto.roleId } } }),
         ...(dto.status !== undefined && { status: dto.status }),
         ...(dto.homeTerminalName !== undefined && { homeTerminalName: dto.homeTerminalName }),
+        ...(newEmail ? this.emailChange.pendingInput(newEmail, actor.id, new Date()) : {}),
       },
     );
+    const emailVerification = newEmail ? await this.emailChange.notifyRequested(updated, current) : undefined;
     const view = await this.get(id);
     return emailVerification ? { ...view, emailVerification } : view;
+  }
+
+  /** `POST /users/:id/email-change/resend` — same privileged-target rule as `PATCH`. */
+  async resendEmailChange(id: string, actor: Actor) {
+    const current = await this.getRaw(id);
+    if (isPrivilegedRole(current.role.key)) assertSuperAdmin(actor);
+    return this.emailChange.resend(id);
+  }
+
+  /** `DELETE /users/:id/email-change` — same privileged-target rule as `PATCH`. */
+  async cancelEmailChange(id: string, actor: Actor): Promise<UserView> {
+    const current = await this.getRaw(id);
+    if (isPrivilegedRole(current.role.key)) assertSuperAdmin(actor);
+    await this.emailChange.cancelPending(id);
+    return this.get(id);
   }
 
   /** 409 when the change would remove the last active SUPER_ADMIN, or the last active ADMIN/SUPER_ADMIN. */

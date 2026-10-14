@@ -3,10 +3,12 @@ import { AppConfigService } from '../../core/config/config.service';
 import type { StoragePort } from '../../core/storage/storage.port';
 import type { AttachmentsService } from '../attachments/attachments.service';
 import type { TokenService } from '../auth/token.service';
-import type { MailPort } from '../transfers/mail.port';
+import type { TransactionalMailPort } from '../../core/mail/mail.port';
+import type { AuthService } from '../auth/auth.service';
+import { DriverEmailChangeService } from './driver-email-change.service';
 import { DriversRepository } from './drivers.repository';
 import { DriversService } from './drivers.service';
-import { CreateDriverDocumentDto, CreateDriverDto, UpdateDriverDto } from './dto/drivers.dto';
+import { CreateDriverDocumentDto, CreateDriverDto, ImportDriversDto, UpdateDriverDto } from './dto/drivers.dto';
 
 function makeDriver(overrides: Partial<Record<string, unknown>> = {}) {
   return {
@@ -83,13 +85,45 @@ describe('DriversService', () => {
       | 'createWithVehicle'
       | 'fleetManagerExists'
       | 'findOpenTrips'
+      | 'findLiveIdByPendingEmail'
+      | 'updateIfState'
     >
   >;
-  let tokens: jest.Mocked<Pick<TokenService, 'signDriverEmailVerifyToken' | 'verifyDriverEmailVerifyToken'>>;
-  let mail: jest.Mocked<MailPort>;
+  let tokens: jest.Mocked<
+    Pick<
+      TokenService,
+      | 'signDriverEmailVerifyToken'
+      | 'verifyDriverEmailVerifyToken'
+      | 'signDriverEmailChangeToken'
+      | 'verifyDriverEmailChangeToken'
+      | 'signDriverEmailChangeCancelToken'
+      | 'verifyDriverEmailChangeCancelToken'
+    >
+  >;
+  let mail: jest.Mocked<TransactionalMailPort>;
+  let auth: jest.Mocked<Pick<AuthService, 'assertUserReauth'>>;
+  let events: { publish: jest.Mock };
+  let emailChange: DriverEmailChangeService;
+  const ENV: Record<string, unknown> = { DRIVER_EMAIL_CHANGE_TTL: '24h', DRIVER_EMAIL_CHANGE_HOLD_HOURS: 48, WEB_APP_URL: 'https://web.example' };
+  const makeConfig = (echo: boolean) =>
+    ({ isProduction: false, echoOneTimeSecrets: echo, get: (key: string) => ENV[key] }) as unknown as AppConfigService;
+  /** Builds the service (and its email-change collaborator) over the current mocks. */
+  const build = (cfg: AppConfigService, carrier?: unknown) => {
+    emailChange = new DriverEmailChangeService(repo as never, tokens as never, auth as never, cfg, mail, events as never);
+    return new DriversService(
+      repo as unknown as DriversRepository,
+      tokens as unknown as TokenService,
+      cfg,
+      mail,
+      storage as unknown as StoragePort,
+      attachments as unknown as AttachmentsService,
+      emailChange,
+      carrier as never,
+    );
+  };
   let storage: jest.Mocked<Pick<StoragePort, 'presignPut' | 'presignGet' | 'delete'>>;
   let attachments: jest.Mocked<Pick<AttachmentsService, 'presignKey'>>;
-  let config: Pick<AppConfigService, 'isProduction' | 'echoOneTimeSecrets'>;
+  let config: AppConfigService;
   let service: DriversService;
 
   beforeEach(() => {
@@ -113,21 +147,25 @@ describe('DriversService', () => {
       createWithVehicle: jest.fn(),
       fleetManagerExists: jest.fn().mockResolvedValue(true),
       findOpenTrips: jest.fn().mockResolvedValue([]),
+      findLiveIdByPendingEmail: jest.fn().mockResolvedValue(null),
+      updateIfState: jest.fn().mockResolvedValue(true),
     };
     repo.findByEmail.mockResolvedValue(null);
-    tokens = { signDriverEmailVerifyToken: jest.fn(), verifyDriverEmailVerifyToken: jest.fn() };
+    tokens = {
+      signDriverEmailVerifyToken: jest.fn(),
+      verifyDriverEmailVerifyToken: jest.fn(),
+      signDriverEmailChangeToken: jest.fn().mockReturnValue('confirm-token'),
+      verifyDriverEmailChangeToken: jest.fn(),
+      signDriverEmailChangeCancelToken: jest.fn().mockReturnValue('cancel-token'),
+      verifyDriverEmailChangeCancelToken: jest.fn(),
+    };
+    auth = { assertUserReauth: jest.fn().mockResolvedValue(undefined) };
+    events = { publish: jest.fn().mockResolvedValue(undefined) };
     mail = { send: jest.fn().mockResolvedValue({ delivered: false, reference: 'not-configured' }) };
     storage = { presignPut: jest.fn().mockResolvedValue('https://minio/put'), presignGet: jest.fn().mockResolvedValue('https://minio/get'), delete: jest.fn().mockResolvedValue(undefined) };
     attachments = { presignKey: jest.fn().mockResolvedValue({ url: 'https://minio/get', expiresAt: '2026-09-24T00:15:00.000Z' }) };
-    config = { isProduction: false, echoOneTimeSecrets: true };
-    service = new DriversService(
-      repo as unknown as DriversRepository,
-      tokens as unknown as TokenService,
-      config as AppConfigService,
-      mail,
-      storage as unknown as StoragePort,
-      attachments as unknown as AttachmentsService,
-    );
+    config = makeConfig(true);
+    service = build(config);
   });
 
   it('list parses sort and strips passwordHash from every row', async () => {
@@ -248,6 +286,20 @@ describe('DriversService', () => {
     expect(mail.send).toHaveBeenCalledTimes(1);
   });
 
+  it.each([[''], ['   '], [null]])('create with a blank email (%j) stores no email and sends no invite', async (email) => {
+    repo.findByUsername.mockResolvedValue(null);
+    repo.create.mockImplementation(async (input) => makeDriver({ email: (input as { email?: string | null }).email ?? null }) as never);
+
+    const dto = CreateDriverDto.parse({ ...baseDto, email, sendInvitation: true });
+    const result = await service.create(dto);
+
+    const [createArg] = repo.create.mock.calls[0] as [{ email?: string | null }];
+    expect(createArg.email).toBeUndefined();
+    expect(repo.findByEmail).not.toHaveBeenCalled();
+    expect(result.inviteCode).toBeUndefined();
+    expect(mail.send).not.toHaveBeenCalled();
+  });
+
   it('BE-004 — an admin-entered password is never overwritten by the invitation code', async () => {
     repo.findByUsername.mockResolvedValue(null);
     repo.create.mockResolvedValue(makeDriver({ email: 'jsmith@example.com' }) as never);
@@ -359,7 +411,9 @@ describe('DriversService', () => {
     it('update maps a racing P2002 on email to a 409', async () => {
       repo.findById.mockResolvedValue(makeDriver() as never);
       repo.update.mockRejectedValue(p2002(['email']));
-      await expect(service.update('drv_1', { email: 'y@example.com' })).rejects.toMatchObject(TAKEN.email);
+      await expect(
+        service.update('drv_1', { email: 'y@example.com', currentPassword: 'pw' }, { id: 'usr_1', type: 'user' }),
+      ).rejects.toMatchObject(TAKEN.email);
     });
 
     it('get treats a soft-deleted driver as not found', async () => {
@@ -418,6 +472,7 @@ describe('DriversService', () => {
     });
 
     it('update saving its own values succeeds (lookups exclude the driver itself)', async () => {
+      repo.findById.mockResolvedValue(makeDriver({ email: 'jsmith@example.com' }) as never);
       await service.update('drv_1', { email: 'jsmith@example.com', phone: '6145551000', cdlNumber: 'D1234567' });
       expect(repo.update).toHaveBeenCalled();
     });
@@ -506,8 +561,8 @@ describe('DriversService', () => {
     });
 
     it('B-093 — never echoes an emailed code when echoOneTimeSecrets is off', async () => {
-      config = { isProduction: false, echoOneTimeSecrets: false };
-      service = new DriversService(repo as never, tokens as never, config as never, mail, storage as never, attachments as never);
+      config = makeConfig(false);
+      service = build(config);
       repo.findById.mockResolvedValue(makeDriver({ email: 'jsmith@example.com' }) as never);
       repo.update.mockResolvedValue(makeDriver() as never);
 
@@ -532,6 +587,56 @@ describe('DriversService', () => {
       expect(tokens.signDriverEmailVerifyToken).toHaveBeenCalledWith('drv_1', 'jsmith@example.com');
       expect(result.emailedTo).toBe('jsmith@example.com');
       expect(mail.send).toHaveBeenCalledTimes(1);
+      // A link to the public web page — never the bare token as the mail body.
+      const text = mail.send.mock.calls[0][0].text;
+      expect(text).toContain('https://web.example/driver-email/verify?token=signed-token');
+      expect(text).not.toMatch(/Verification token:/);
+    });
+
+    it('sendVerification echoes the token as `code` only with DEV_ECHO_SECRETS', async () => {
+      repo.findById.mockResolvedValue(makeDriver({ email: 'jsmith@example.com' }) as never);
+      tokens.signDriverEmailVerifyToken.mockReturnValue('signed-token');
+      expect(await build(makeConfig(false)).sendVerification('drv_1')).toEqual({ emailedTo: 'jsmith@example.com' });
+      expect(await build(makeConfig(true)).sendVerification('drv_1')).toEqual({ emailedTo: 'jsmith@example.com', code: 'signed-token' });
+    });
+
+    describe('verifyEmailFromLink (public POST /auth/driver/email/verify)', () => {
+      it('takes the driver from the token, sets emailVerifiedAt atomically and audits it', async () => {
+        tokens.verifyDriverEmailVerifyToken.mockReturnValue({ driverId: 'drv_1', email: 'jsmith@example.com' });
+        repo.findById
+          .mockResolvedValueOnce(makeDriver({ email: 'jsmith@example.com', emailVerifiedAt: null }) as never)
+          .mockResolvedValueOnce(makeDriver({ email: 'jsmith@example.com', emailVerifiedAt: new Date() }) as never);
+        repo.updateIfState.mockResolvedValue(true);
+
+        await expect(emailChange.verifyEmailFromLink('tok')).resolves.toEqual({ success: true, email: 'jsmith@example.com', alreadyVerified: false });
+        const anyDate: unknown = expect.any(Date);
+        expect(repo.findById).toHaveBeenCalledWith({ id: 'drv_1' });
+        expect(repo.updateIfState).toHaveBeenCalledWith('drv_1', { email: 'jsmith@example.com', emailVerifiedAt: null }, { emailVerifiedAt: anyDate });
+        expect(events.publish).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'VERIFY_EMAIL', objectId: 'drv_1' }));
+      });
+
+      it('a repeat click reports alreadyVerified and writes nothing', async () => {
+        tokens.verifyDriverEmailVerifyToken.mockReturnValue({ driverId: 'drv_1', email: 'jsmith@example.com' });
+        repo.findById.mockResolvedValue(makeDriver({ email: 'jsmith@example.com', emailVerifiedAt: new Date() }) as never);
+        await expect(emailChange.verifyEmailFromLink('tok')).resolves.toMatchObject({ alreadyVerified: true });
+        expect(repo.updateIfState).not.toHaveBeenCalled();
+      });
+
+      it('a link for an address the driver no longer has (or a deleted driver) is TOKEN_INVALID', async () => {
+        tokens.verifyDriverEmailVerifyToken.mockReturnValue({ driverId: 'drv_1', email: 'stale@example.com' });
+        repo.findById.mockResolvedValue(makeDriver({ email: 'jsmith@example.com' }) as never);
+        await expect(emailChange.verifyEmailFromLink('tok')).rejects.toMatchObject({ code: 'TOKEN_INVALID', status: 401 });
+        repo.findById.mockResolvedValue(makeDriver({ email: 'stale@example.com', deletedAt: new Date() }) as never);
+        await expect(emailChange.verifyEmailFromLink('tok')).rejects.toMatchObject({ code: 'TOKEN_INVALID' });
+        expect(repo.updateIfState).not.toHaveBeenCalled();
+      });
+
+      it('an expired / wrong-typ token propagates the TokenService error', async () => {
+        tokens.verifyDriverEmailVerifyToken.mockImplementation(() => {
+          throw new AppException('TOKEN_EXPIRED', 'Token expired.', 401);
+        });
+        await expect(emailChange.verifyEmailFromLink('tok')).rejects.toMatchObject({ code: 'TOKEN_EXPIRED' });
+      });
     });
 
     it('verifyEmail sets emailVerifiedAt when the token matches', async () => {
@@ -598,15 +703,7 @@ describe('DriversService', () => {
   describe('UI-005 — hosRuleset defaults to the carrier ruleset', () => {
     const { hosRuleset: _ruleset, ...noRuleset } = baseDto;
     const withCarrier = (hosRuleset: string | null) =>
-      new DriversService(
-        repo as never,
-        tokens as never,
-        config as never,
-        mail,
-        storage as never,
-        attachments as never,
-        { get: jest.fn().mockResolvedValue(hosRuleset ? { hosRuleset } : null) } as never,
-      );
+      build(config, { get: jest.fn().mockResolvedValue(hosRuleset ? { hosRuleset } : null) });
     const createdRuleset = (call = 0) => (repo.create.mock.calls[call] as [{ hosRuleset?: string }])[0].hosRuleset;
 
     beforeEach(() => {
@@ -665,6 +762,22 @@ describe('DriversService', () => {
       expect(summary.failed).toEqual([{ index: 0, error: 'db down' }]);
     });
 
+    it('a blank email cell imports the row with no email and no invitation', async () => {
+      repo.findByUsername.mockResolvedValue(null);
+      repo.create.mockImplementation(async (input) => makeDriver({ email: (input as { email?: string | null }).email ?? null }) as never);
+
+      const dto = ImportDriversDto.parse({
+        drivers: [{ ...baseDto, email: '' }, { ...baseDto, username: 'jdoe', email: '  ' }, { ...baseDto, username: 'kdoe', email: null }],
+        options: { sendInvitations: true },
+      });
+      const summary = await service.importMany(dto);
+
+      expect(summary).toEqual({ imported: 3, updated: 0, skipped: 0, failed: [] });
+      for (const [arg] of repo.create.mock.calls as [{ email?: string | null }][]) expect(arg.email).toBeUndefined();
+      expect(repo.findByEmail).not.toHaveBeenCalled();
+      expect(mail.send).not.toHaveBeenCalled();
+    });
+
     it('B-69 duplicateStrategy SKIP leaves an existing row untouched', async () => {
       repo.findByUsername.mockResolvedValue(makeDriver() as never);
 
@@ -693,6 +806,311 @@ describe('DriversService', () => {
       const [createArg] = repo.create.mock.calls[0] as [{ allowPersonalConveyance: boolean; allowYardMove: boolean }];
       expect(createArg.allowPersonalConveyance).toBe(true);
       expect(createArg.allowYardMove).toBe(true);
+    });
+  });
+
+  describe('driver email change — pending + confirm + old-address cancel + hold + re-auth', () => {
+    const actor = { id: 'usr_1', type: 'user' as const };
+    const requestedAt = new Date('2026-10-13T10:00:00.000Z');
+    const pendingDriver = (overrides: Record<string, unknown> = {}) =>
+      makeDriver({
+        email: 'old@example.com',
+        emailVerifiedAt: new Date('2026-01-01T00:00:00.000Z'),
+        pendingEmail: 'new@example.com',
+        pendingEmailRequestedAt: requestedAt,
+        pendingEmailRequestedById: 'usr_1',
+        ...overrides,
+      });
+    const mailTo = () => (mail.send.mock.calls as [{ to: string; text: string; subject: string }][]).map(([m]) => m);
+
+    beforeEach(() => {
+      repo.findById.mockResolvedValue(makeDriver({ email: 'old@example.com' }) as never);
+      repo.update.mockImplementation((_where, data) =>
+        Promise.resolve(makeDriver({ email: 'old@example.com', ...(data as object) }) as never),
+      );
+    });
+
+    it('a changed email becomes pending: email is NOT written, links go to the new and old addresses', async () => {
+      const result = await service.update('drv_1', { email: ' New@Example.com ', currentPassword: 'pw', firstName: 'Jo' }, actor);
+
+      expect(auth.assertUserReauth).toHaveBeenCalledWith('usr_1', { currentPassword: 'pw', reauthIdToken: undefined });
+      const [, data] = repo.update.mock.calls[0] as [unknown, Record<string, unknown>];
+      expect(data).not.toHaveProperty('email');
+      expect(data).not.toHaveProperty('currentPassword');
+      expect(data).toMatchObject({ firstName: 'Jo', pendingEmail: 'new@example.com', pendingEmailRequestedById: 'usr_1' });
+      expect(result.email).toBe('old@example.com');
+      expect(result.emailVerification).toEqual({ pendingEmail: 'new@example.com', emailDelivered: false, verifyToken: 'confirm-token' });
+
+      const sent = mailTo();
+      expect(sent.map((m) => m.to)).toEqual(['new@example.com', 'old@example.com']);
+      expect(sent[0].text).toContain('https://web.example/driver-email/confirm?token=confirm-token');
+      expect(sent[1].text).toContain('n***@e***.com');
+      expect(sent[1].text).not.toContain('new@example.com');
+      expect(sent[1].text).toContain('https://web.example/driver-email/cancel?token=cancel-token');
+      expect(tokens.signDriverEmailChangeCancelToken).toHaveBeenCalledWith('drv_1', 'new@example.com', 'old@example.com', expect.any(Date));
+      expect(events.publish).toHaveBeenCalledWith('audit.record', expect.objectContaining({ action: 'EMAIL_CHANGE_REQUEST', objectId: 'drv_1' }));
+    });
+
+    it('skips the old-address notice when the driver had no email', async () => {
+      repo.findById.mockResolvedValue(makeDriver({ email: null }) as never);
+      await service.update('drv_1', { email: 'new@example.com', currentPassword: 'pw' }, actor);
+      expect(mailTo().map((m) => m.to)).toEqual(['new@example.com']);
+    });
+
+    describe('clearing the email (blank / null)', () => {
+      it('needs re-auth, clears email + pending + verified, stamps changed, notifies the old address, audits', async () => {
+        repo.findById.mockResolvedValue(pendingDriver() as never);
+        repo.update.mockImplementation((_where, data) => Promise.resolve(pendingDriver(data as Record<string, unknown>) as never));
+
+        const result = await service.update('drv_1', { email: '  ', currentPassword: 'pw', firstName: 'Jo' }, actor);
+
+        expect(auth.assertUserReauth).toHaveBeenCalledWith('usr_1', { currentPassword: 'pw', reauthIdToken: undefined });
+        const [, data] = repo.update.mock.calls[0] as [unknown, Record<string, unknown>];
+        expect(data).toEqual({
+          firstName: 'Jo',
+          email: null,
+          emailVerifiedAt: null,
+          emailChangedAt: expect.any(Date) as unknown,
+          previousEmail: 'old@example.com',
+          pendingEmail: null,
+          pendingEmailRequestedAt: null,
+          pendingEmailRequestedById: null,
+        });
+        expect(result.email).toBeNull();
+        expect(result).not.toHaveProperty('emailVerification');
+
+        const sent = mailTo();
+        expect(sent.map((m) => m.to)).toEqual(['old@example.com']);
+        expect(sent[0].text).toContain('https://web.example/driver-email/cancel?token=cancel-token');
+        expect(tokens.signDriverEmailChangeCancelToken).toHaveBeenCalledWith('drv_1', '', 'old@example.com', data.emailChangedAt);
+        expect(events.publish).toHaveBeenCalledWith('audit.record', expect.objectContaining({ action: 'EMAIL_CHANGE_CLEAR', objectId: 'drv_1' }));
+      });
+
+      it('null clears too; without re-auth proof it is refused and nothing is written or mailed', async () => {
+        auth.assertUserReauth.mockRejectedValue(new AppException('REAUTH_FAILED', 'Password is incorrect.', 401, { currentPassword: 'Password is incorrect.' }));
+        await expect(service.update('drv_1', { email: null }, actor)).rejects.toMatchObject({ code: 'REAUTH_FAILED' });
+        await expect(service.update('drv_1', { email: '' })).rejects.toMatchObject({ code: 'REAUTH_REQUIRED' });
+        expect(repo.update).not.toHaveBeenCalled();
+        expect(mail.send).not.toHaveBeenCalled();
+      });
+
+      it('is refused inside the hold window of a previous change (EMAIL_CHANGE_ON_HOLD)', async () => {
+        repo.findById.mockResolvedValue(makeDriver({ email: 'b@example.com', emailChangedAt: new Date(Date.now() - 3_600_000) }) as never);
+        await expect(service.update('drv_1', { email: '', currentPassword: 'pw' }, actor)).rejects.toMatchObject({
+          code: 'EMAIL_CHANGE_ON_HOLD',
+          status: 409,
+        });
+        expect(repo.update).not.toHaveBeenCalled();
+      });
+
+      it('blank on a driver with no email, or email omitted, is a plain update: no re-auth, no mail', async () => {
+        repo.findById.mockResolvedValue(makeDriver({ email: null }) as never);
+        await service.update('drv_1', { email: '', firstName: 'Jo' }, actor);
+        repo.findById.mockResolvedValue(makeDriver({ email: 'old@example.com' }) as never);
+        await service.update('drv_1', { firstName: 'Jo' }, actor);
+
+        expect(auth.assertUserReauth).not.toHaveBeenCalled();
+        expect(mail.send).not.toHaveBeenCalled();
+        for (const [, data] of repo.update.mock.calls as [unknown, Record<string, unknown>][]) {
+          expect(data).toEqual({ firstName: 'Jo' });
+        }
+      });
+
+      it('the old address\'s link restores a cleared email inside the hold', async () => {
+        const changedAt = new Date(Date.now() - 3_600_000);
+        repo.findById.mockResolvedValue(
+          makeDriver({ email: null, previousEmail: 'old@example.com', emailChangedAt: changedAt }) as never,
+        );
+        tokens.verifyDriverEmailChangeCancelToken.mockReturnValue({
+          driverId: 'drv_1',
+          email: '',
+          oldEmail: 'old@example.com',
+          requestedAt: changedAt.getTime(),
+        });
+        await expect(emailChange.cancelFromLink('tok')).resolves.toEqual({ success: true, result: 'REVERTED' });
+        expect(repo.updateIfState).toHaveBeenCalledWith(
+          'drv_1',
+          expect.objectContaining({ email: null, previousEmail: 'old@example.com' }),
+          expect.objectContaining({ email: 'old@example.com', emailChangedAt: null, previousEmail: null }),
+        );
+      });
+    });
+
+    it('an unchanged email (after trim + lower-case) has no side effects and needs no password', async () => {
+      const result = await service.update('drv_1', { email: '  OLD@example.com', firstName: 'Jo' }, actor);
+      expect(auth.assertUserReauth).not.toHaveBeenCalled();
+      expect(mail.send).not.toHaveBeenCalled();
+      const [, data] = repo.update.mock.calls[0] as [unknown, Record<string, unknown>];
+      expect(data).toEqual({ firstName: 'Jo' });
+      expect(result).not.toHaveProperty('emailVerification');
+    });
+
+    it('a wrong password is rejected and nothing is written or mailed', async () => {
+      auth.assertUserReauth.mockRejectedValue(new AppException('REAUTH_FAILED', 'Password is incorrect.', 401, { currentPassword: 'Password is incorrect.' }));
+      await expect(service.update('drv_1', { email: 'new@example.com', currentPassword: 'bad' }, actor)).rejects.toMatchObject({
+        code: 'REAUTH_FAILED',
+        status: 401,
+      });
+      expect(repo.update).not.toHaveBeenCalled();
+      expect(mail.send).not.toHaveBeenCalled();
+    });
+
+    it('only a signed-in web user may change it (API key / no actor → REAUTH_REQUIRED)', async () => {
+      await expect(service.update('drv_1', { email: 'new@example.com' })).rejects.toMatchObject({ code: 'REAUTH_REQUIRED' });
+      await expect(
+        service.update('drv_1', { email: 'new@example.com', currentPassword: 'pw' }, { id: 'key_1', type: 'api-key' }),
+      ).rejects.toMatchObject({ code: 'REAUTH_REQUIRED' });
+      expect(repo.update).not.toHaveBeenCalled();
+    });
+
+    it('duplicate → 409 EMAIL_TAKEN: another live driver\'s email, or another driver\'s live pending change', async () => {
+      repo.findByEmail.mockResolvedValueOnce(makeDriver({ id: 'drv_2', email: 'new@example.com' }) as never);
+      await expect(service.update('drv_1', { email: 'new@example.com', currentPassword: 'pw' }, actor)).rejects.toMatchObject(TAKEN.email);
+      repo.findLiveIdByPendingEmail.mockResolvedValueOnce('drv_3');
+      await expect(service.update('drv_1', { email: 'new@example.com', currentPassword: 'pw' }, actor)).rejects.toMatchObject(TAKEN.email);
+      expect(repo.findLiveIdByPendingEmail).toHaveBeenCalledWith('new@example.com', expect.any(Date), 'drv_1');
+      expect(repo.update).not.toHaveBeenCalled();
+    });
+
+    it('a new driver cannot take an address another driver has a live pending change to', async () => {
+      repo.findByUsername.mockResolvedValue(null);
+      repo.findLiveIdByPendingEmail.mockResolvedValueOnce('drv_3');
+      await expect(service.create({ ...baseDto, email: 'new@example.com' })).rejects.toMatchObject(TAKEN.email);
+    });
+
+    it('a second change inside the hold window of the previous one is refused (EMAIL_CHANGE_ON_HOLD)', async () => {
+      repo.findById.mockResolvedValue(makeDriver({ email: 'b@example.com', emailChangedAt: new Date(Date.now() - 3_600_000) }) as never);
+      await expect(service.update('drv_1', { email: 'c@example.com', currentPassword: 'pw' }, actor)).rejects.toMatchObject({
+        code: 'EMAIL_CHANGE_ON_HOLD',
+        status: 409,
+      });
+      expect(auth.assertUserReauth).not.toHaveBeenCalled();
+    });
+
+    it('confirm swaps the email, stamps verified/changed, clears pending and revokes every session', async () => {
+      repo.findById.mockResolvedValueOnce(pendingDriver() as never).mockResolvedValue(makeDriver({ email: 'new@example.com' }) as never);
+      tokens.verifyDriverEmailChangeToken.mockReturnValue({ driverId: 'drv_1', email: 'new@example.com', requestedAt: requestedAt.getTime() });
+
+      await expect(emailChange.confirm('tok')).resolves.toEqual({ success: true, email: 'new@example.com' });
+
+      expect(repo.updateIfState).toHaveBeenCalledWith(
+        'drv_1',
+        { pendingEmail: 'new@example.com', pendingEmailRequestedAt: requestedAt },
+        expect.objectContaining({
+          email: 'new@example.com',
+          previousEmail: 'old@example.com',
+          emailVerifiedAt: expect.any(Date) as unknown,
+          emailChangedAt: expect.any(Date) as unknown,
+          pendingEmail: null,
+          pendingEmailRequestedAt: null,
+          pendingEmailRequestedById: null,
+        }),
+      );
+      expect(repo.revokeAllSessions).toHaveBeenCalledWith('drv_1');
+      expect(events.publish).toHaveBeenCalledWith('audit.record', expect.objectContaining({ action: 'EMAIL_CHANGE_CONFIRM', actorType: 'driver' }));
+    });
+
+    it('confirm refuses a superseded / cancelled link and a taken address', async () => {
+      tokens.verifyDriverEmailChangeToken.mockReturnValue({ driverId: 'drv_1', email: 'new@example.com', requestedAt: requestedAt.getTime() - 1 });
+      repo.findById.mockResolvedValue(pendingDriver() as never);
+      await expect(emailChange.confirm('tok')).rejects.toMatchObject({ code: 'TOKEN_INVALID', status: 401 });
+      repo.findById.mockResolvedValue(pendingDriver({ pendingEmail: null, pendingEmailRequestedAt: null }) as never);
+      await expect(emailChange.confirm('tok')).rejects.toMatchObject({ code: 'TOKEN_INVALID' });
+
+      tokens.verifyDriverEmailChangeToken.mockReturnValue({ driverId: 'drv_1', email: 'new@example.com', requestedAt: requestedAt.getTime() });
+      repo.findById.mockResolvedValue(pendingDriver() as never);
+      repo.findByEmail.mockResolvedValueOnce(makeDriver({ id: 'drv_2' }) as never);
+      await expect(emailChange.confirm('tok')).rejects.toMatchObject(TAKEN.email);
+      expect(repo.updateIfState).not.toHaveBeenCalled();
+      expect(repo.revokeAllSessions).not.toHaveBeenCalled();
+    });
+
+    it('"this wasn\'t me" from the old address cancels a pending change', async () => {
+      repo.findById.mockResolvedValue(pendingDriver() as never);
+      tokens.verifyDriverEmailChangeCancelToken.mockReturnValue({
+        driverId: 'drv_1',
+        email: 'new@example.com',
+        oldEmail: 'old@example.com',
+        requestedAt: requestedAt.getTime(),
+      });
+      await expect(emailChange.cancelFromLink('tok')).resolves.toEqual({ success: true, result: 'CANCELLED' });
+      expect(repo.updateIfState).toHaveBeenCalledWith(
+        'drv_1',
+        { pendingEmail: 'new@example.com', pendingEmailRequestedAt: requestedAt },
+        { pendingEmail: null, pendingEmailRequestedAt: null, pendingEmailRequestedById: null },
+      );
+      expect(repo.revokeAllSessions).not.toHaveBeenCalled();
+      expect(events.publish).toHaveBeenCalledWith('audit.record', expect.objectContaining({ action: 'EMAIL_CHANGE_CANCEL' }));
+    });
+
+    it('inside the hold window the same link reverts a confirmed change and revokes sessions; after it, it is refused', async () => {
+      const confirmed = (changedAgoMs: number) =>
+        makeDriver({
+          email: 'new@example.com',
+          previousEmail: 'old@example.com',
+          emailChangedAt: new Date(Date.now() - changedAgoMs),
+          pendingEmail: null,
+          pendingEmailRequestedAt: null,
+        });
+      tokens.verifyDriverEmailChangeCancelToken.mockReturnValue({
+        driverId: 'drv_1',
+        email: 'new@example.com',
+        oldEmail: 'old@example.com',
+        requestedAt: Date.now() - 5 * 3_600_000,
+      });
+      repo.findById.mockResolvedValue(confirmed(3_600_000) as never);
+
+      await expect(emailChange.cancelFromLink('tok')).resolves.toEqual({ success: true, result: 'REVERTED' });
+      expect(repo.updateIfState).toHaveBeenCalledWith(
+        'drv_1',
+        expect.objectContaining({ email: 'new@example.com', previousEmail: 'old@example.com' }),
+        expect.objectContaining({ email: 'old@example.com', emailChangedAt: null, previousEmail: null }),
+      );
+      expect(repo.revokeAllSessions).toHaveBeenCalledWith('drv_1');
+      expect(events.publish).toHaveBeenCalledWith('audit.record', expect.objectContaining({ action: 'EMAIL_CHANGE_REVERT' }));
+
+      repo.updateIfState.mockClear();
+      repo.findById.mockResolvedValue(confirmed(49 * 3_600_000) as never);
+      tokens.verifyDriverEmailChangeCancelToken.mockReturnValue({
+        driverId: 'drv_1',
+        email: 'new@example.com',
+        oldEmail: 'old@example.com',
+        requestedAt: Date.now() - 50 * 3_600_000,
+      });
+      await expect(emailChange.cancelFromLink('tok')).rejects.toMatchObject({ code: 'TOKEN_INVALID' });
+      expect(repo.updateIfState).not.toHaveBeenCalled();
+    });
+
+    it('carrier reset during the hold never mails the new address: the code goes to the dispatcher', async () => {
+      const changedAt = new Date(Date.now() - 3_600_000);
+      repo.findById.mockResolvedValue(makeDriver({ email: 'new@example.com', emailChangedAt: changedAt }) as never);
+      const result = await service.resetPassword('drv_1');
+      expect(mail.send).not.toHaveBeenCalled();
+      expect(result.emailedTo).toBeNull();
+      expect(result.code).toMatch(/^\d{6}$/);
+      expect(result.emailHoldUntil).toBe(new Date(changedAt.getTime() + 48 * 3_600_000).toISOString());
+      expect(repo.revokeAllSessions).toHaveBeenCalledWith('drv_1');
+    });
+
+    it('resend re-mails the same request; cancelPending clears it; both 404 without a pending change', async () => {
+      repo.findById.mockResolvedValue(pendingDriver() as never);
+      await expect(emailChange.resend('drv_1')).resolves.toMatchObject({ pendingEmail: 'new@example.com', emailedTo: 'new@example.com' });
+      expect(tokens.signDriverEmailChangeToken).toHaveBeenCalledWith('drv_1', 'new@example.com', requestedAt);
+      expect(mailTo().map((m) => m.to)).toEqual(['new@example.com']);
+      await emailChange.cancelPending('drv_1');
+      expect(repo.updateIfState).toHaveBeenCalledWith('drv_1', expect.anything(), expect.objectContaining({ pendingEmail: null }));
+
+      repo.findById.mockResolvedValue(makeDriver({ email: 'old@example.com' }) as never);
+      await expect(emailChange.resend('drv_1')).rejects.toMatchObject({ code: 'EMAIL_CHANGE_NOT_PENDING', status: 404 });
+      await expect(emailChange.cancelPending('drv_1')).rejects.toMatchObject({ code: 'EMAIL_CHANGE_NOT_PENDING' });
+    });
+
+    it('an import never changes an existing driver\'s email', async () => {
+      repo.findByUsername.mockResolvedValue(makeDriver({ email: 'old@example.com' }) as never);
+      await service.importMany({ drivers: [{ ...baseDto, email: 'new@example.com' }] });
+      const [, data] = repo.update.mock.calls[0] as [unknown, Record<string, unknown>];
+      expect(data).not.toHaveProperty('email');
+      expect(data).not.toHaveProperty('pendingEmail');
     });
   });
 });

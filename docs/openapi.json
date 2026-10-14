@@ -1639,7 +1639,7 @@
     },
     "/api/auth/password/reset-code": {
       "post": {
-        "description": "Back-office `User` accounts only (drivers use `/auth/driver/password/*`). Unknown, INVITED or DISABLED email → 404 (the product shows \"No account found with this email\"). The code is stored as an HMAC, expires in 15 minutes, allows 5 wrong guesses and replaces any earlier code. Calling again within 60 s → 429 with `details.retryAfterSec`. Refused with 403 PASSWORD_LOGIN_DISABLED when AUTH_MODE=production, exactly like `POST /auth/login`.",
+        "description": "Back-office `User` accounts only (drivers use `/auth/driver/password/*`). Unknown, INVITED or DISABLED email → 404 (the product shows \"No account found with this email\"). The code is stored as an HMAC, expires in 15 minutes, allows 5 wrong guesses and replaces any earlier code. Calling again within 60 s → 429 with `details.retryAfterSec`. Refused with 403 PASSWORD_LOGIN_DISABLED when AUTH_MODE=production, exactly like `POST /auth/login`. Inside the `USER_EMAIL_CHANGE_HOLD_HOURS` hold after an email change no code is mailed: 409 EMAIL_CHANGE_ON_HOLD (`details.holdUntil`) and the org administrators get an in-app notice.",
         "operationId": "AuthController_requestPasswordResetCode",
         "parameters": [],
         "requestBody": {
@@ -1778,6 +1778,53 @@
                     "statusCode": 404,
                     "code": "NOT_FOUND",
                     "message": "No account found with this email.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "EMAIL_CHANGE_ON_HOLD — The email on this account was changed recently, so a reset code cannot be emailed yet. Your administrator has been notified.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 409,
+                    "code": "EMAIL_CHANGE_ON_HOLD",
+                    "message": "The email on this account was changed recently, so a reset code cannot be emailed yet. Your administrator has been notified.",
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
                   }
@@ -2501,197 +2548,6 @@
           }
         },
         "summary": "MR-31/MB-17 — completes a driver password reset with the emailed 6-digit code; revokes all driver sessions.",
-        "tags": [
-          "auth"
-        ],
-        "x-figma-screens": [
-          {
-            "id": "web/sign-in",
-            "title": "Sign in",
-            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.3"
-          }
-        ]
-      }
-    },
-    "/api/auth/email/verify": {
-      "post": {
-        "operationId": "AuthController_verifyEmailChange",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/VerifyEmailChangeDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "example": {
-                    "success": true
-                  }
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "TOKEN_INVALID — The verification link is invalid or expired.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "statusCode",
-                    "code",
-                    "message",
-                    "traceId",
-                    "timestamp"
-                  ],
-                  "properties": {
-                    "statusCode": {
-                      "type": "number"
-                    },
-                    "code": {
-                      "type": "string",
-                      "description": "Stable code from common/errors/codes.ts (append-only)."
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "type": "object",
-                      "additionalProperties": true
-                    },
-                    "traceId": {
-                      "type": "string"
-                    },
-                    "timestamp": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  },
-                  "example": {
-                    "statusCode": 401,
-                    "code": "TOKEN_INVALID",
-                    "message": "The verification link is invalid or expired.",
-                    "traceId": "01J8X3QK9Z0000000000000000",
-                    "timestamp": "2026-09-11T15:41:00.000Z"
-                  }
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "CONFLICT — Another user already has this email.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "statusCode",
-                    "code",
-                    "message",
-                    "traceId",
-                    "timestamp"
-                  ],
-                  "properties": {
-                    "statusCode": {
-                      "type": "number"
-                    },
-                    "code": {
-                      "type": "string",
-                      "description": "Stable code from common/errors/codes.ts (append-only)."
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "type": "object",
-                      "additionalProperties": true
-                    },
-                    "traceId": {
-                      "type": "string"
-                    },
-                    "timestamp": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  },
-                  "example": {
-                    "statusCode": 409,
-                    "code": "CONFLICT",
-                    "message": "Another user already has this email.",
-                    "traceId": "01J8X3QK9Z0000000000000000",
-                    "timestamp": "2026-09-11T15:41:00.000Z"
-                  }
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "VALIDATION_FAILED — Request validation failed.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "statusCode",
-                    "code",
-                    "message",
-                    "traceId",
-                    "timestamp"
-                  ],
-                  "properties": {
-                    "statusCode": {
-                      "type": "number"
-                    },
-                    "code": {
-                      "type": "string",
-                      "description": "Stable code from common/errors/codes.ts (append-only)."
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "type": "object",
-                      "additionalProperties": true
-                    },
-                    "traceId": {
-                      "type": "string"
-                    },
-                    "timestamp": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  },
-                  "example": {
-                    "statusCode": 422,
-                    "code": "VALIDATION_FAILED",
-                    "message": "Request validation failed.",
-                    "details": {
-                      "issues": [
-                        {
-                          "path": "field",
-                          "code": "invalid_type",
-                          "message": "Required"
-                        }
-                      ]
-                    },
-                    "traceId": "01J8X3QK9Z0000000000000000",
-                    "timestamp": "2026-09-11T15:41:00.000Z"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "summary": "B-84 — completes a `PATCH /users/:id { email }` re-verification.",
         "tags": [
           "auth"
         ],
@@ -6006,6 +5862,7 @@
         ]
       },
       "patch": {
+        "description": "B-84 — a changed `email` (after trim + lower-case) is NOT written: it becomes `pendingEmail`, a confirm link is mailed to it (valid `USER_EMAIL_CHANGE_TTL`, killed by a newer request or a cancel) and a \"this wasn't me\" notice to the old address. It requires the ACTING user's `currentPassword` (or `reauthIdToken` for a Google-only account) — 401 REAUTH_REQUIRED / REAUTH_FAILED with `details.currentPassword`. 409 EMAIL_TAKEN (`details.email`) when another user has the address or a pending change to it; 409 EMAIL_CHANGE_ON_HOLD inside the hold window of the previous change. The response then carries `emailVerification: { pendingEmail, emailDelivered, verifyToken? }` (`verifyToken` only with DEV_ECHO_SECRETS).",
         "operationId": "UsersController_update",
         "parameters": [
           {
@@ -6038,9 +5895,15 @@
                     "firstName": "Dana",
                     "lastName": "Ford",
                     "status": "ACTIVE",
+                    "email": "dana.ford@example.com",
+                    "pendingEmail": "dana@new.example.com",
                     "role": {
                       "key": "DISPATCHER",
                       "name": "Dispatcher"
+                    },
+                    "emailVerification": {
+                      "pendingEmail": "dana@new.example.com",
+                      "emailDelivered": true
                     }
                   }
                 }
@@ -6048,7 +5911,7 @@
             }
           },
           "401": {
-            "description": "UNAUTHORIZED — Authentication required.",
+            "description": "REAUTH_FAILED — Password is incorrect.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6085,8 +5948,8 @@
                   },
                   "example": {
                     "statusCode": 401,
-                    "code": "UNAUTHORIZED",
-                    "message": "Authentication required.",
+                    "code": "REAUTH_FAILED",
+                    "message": "Password is incorrect.",
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
                   }
@@ -6189,7 +6052,7 @@
             }
           },
           "409": {
-            "description": "ROLE_IMMUTABLE — The ADMIN system role cannot be reassigned away from the last administrator.",
+            "description": "EMAIL_TAKEN — A user with this email address already exists.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6226,8 +6089,8 @@
                   },
                   "example": {
                     "statusCode": 409,
-                    "code": "ROLE_IMMUTABLE",
-                    "message": "The ADMIN system role cannot be reassigned away from the last administrator.",
+                    "code": "EMAIL_TAKEN",
+                    "message": "A user with this email address already exists.",
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
                   }
@@ -6827,6 +6690,494 @@
           }
         ],
         "summary": "Re-sends the invite email and restarts the 7-day window for a user still in INVITED status.",
+        "tags": [
+          "users"
+        ],
+        "x-figma-screens": [
+          {
+            "id": "web/settings-users",
+            "title": "Settings · Users",
+            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.22"
+          }
+        ]
+      }
+    },
+    "/api/users/{id}/email-change/resend": {
+      "post": {
+        "operationId": "UsersController_resendEmailChange",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "pendingEmail": "new@example.com",
+                    "emailedTo": "new@example.com",
+                    "emailDelivered": true
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHORIZED — Authentication required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 401,
+                    "code": "UNAUTHORIZED",
+                    "message": "Authentication required.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN — Insufficient permissions for this action.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 403,
+                    "code": "FORBIDDEN",
+                    "message": "Insufficient permissions for this action.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "EMAIL_CHANGE_NOT_PENDING — This user has no pending email change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 404,
+                    "code": "EMAIL_CHANGE_NOT_PENDING",
+                    "message": "This user has no pending email change.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "VALIDATION_FAILED — Request validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 422,
+                    "code": "VALIDATION_FAILED",
+                    "message": "Request validation failed.",
+                    "details": {
+                      "issues": [
+                        {
+                          "path": "field",
+                          "code": "invalid_type",
+                          "message": "Required"
+                        }
+                      ]
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "B-84 — re-mails the confirm link of the pending email change (same request; the old-address cancel link stays valid).",
+        "tags": [
+          "users"
+        ],
+        "x-figma-screens": [
+          {
+            "id": "web/settings-users",
+            "title": "Settings · Users",
+            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.22"
+          }
+        ]
+      }
+    },
+    "/api/users/{id}/email-change": {
+      "delete": {
+        "operationId": "UsersController_cancelEmailChange",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "id": "usr_3",
+                    "email": "dana.ford@example.com",
+                    "pendingEmail": null
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHORIZED — Authentication required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 401,
+                    "code": "UNAUTHORIZED",
+                    "message": "Authentication required.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN — Insufficient permissions for this action.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 403,
+                    "code": "FORBIDDEN",
+                    "message": "Insufficient permissions for this action.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "EMAIL_CHANGE_NOT_PENDING — This user has no pending email change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 404,
+                    "code": "EMAIL_CHANGE_NOT_PENDING",
+                    "message": "This user has no pending email change.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "VALIDATION_FAILED — Request validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 422,
+                    "code": "VALIDATION_FAILED",
+                    "message": "Request validation failed.",
+                    "details": {
+                      "issues": [
+                        {
+                          "path": "field",
+                          "code": "invalid_type",
+                          "message": "Required"
+                        }
+                      ]
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "B-84 — cancels the pending email change; the current email stays and the emailed links stop working.",
         "tags": [
           "users"
         ],
@@ -8614,6 +8965,473 @@
             "title": "My profile · Active sessions",
             "source": "eld.docs/web/OneBook-ELD-admin.pdf p.4"
           }
+        ]
+      }
+    },
+    "/api/auth/email/verify": {
+      "post": {
+        "description": "Posted by the web page `/account/email/confirm`. The token is bound to the user, the pending address and the request time, so a newer request or a cancel invalidates it. Swaps `email`, starts the `USER_EMAIL_CHANGE_HOLD_HOURS` hold, unbinds the old Google identity and revokes every session. `alreadyVerified: true` on a repeat click (nothing written).",
+        "operationId": "UserEmailController_verify",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyEmailChangeDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "success": true,
+                    "email": "new@example.com",
+                    "alreadyVerified": false
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "TOKEN_INVALID — This confirmation link is no longer valid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 401,
+                    "code": "TOKEN_INVALID",
+                    "message": "This confirmation link is no longer valid.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "EMAIL_TAKEN — A user with this email address already exists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 409,
+                    "code": "EMAIL_TAKEN",
+                    "message": "A user with this email address already exists.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "VALIDATION_FAILED — Request validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 422,
+                    "code": "VALIDATION_FAILED",
+                    "message": "Request validation failed.",
+                    "details": {
+                      "issues": [
+                        {
+                          "path": "field",
+                          "code": "invalid_type",
+                          "message": "Required"
+                        }
+                      ]
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "RATE_LIMITED — 10 requests per minute per IP.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 429,
+                    "code": "RATE_LIMITED",
+                    "message": "10 requests per minute per IP.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "summary": "B-84 — confirms a `PATCH /users/:id { email }` change from the link mailed to the NEW address.",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/auth/email/cancel": {
+      "post": {
+        "description": "Posted by the web page `/account/email/cancel`. Cancels a pending change (`result: CANCELLED`), or inside the hold window reverts a confirmed one and revokes every session (`result: REVERTED`).",
+        "operationId": "UserEmailController_cancel",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyEmailChangeDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "success": true,
+                    "result": "CANCELLED"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "TOKEN_INVALID — This link can no longer cancel the change. Contact your administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 401,
+                    "code": "TOKEN_INVALID",
+                    "message": "This link can no longer cancel the change. Contact your administrator.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "EMAIL_TAKEN — A user with this email address already exists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 409,
+                    "code": "EMAIL_TAKEN",
+                    "message": "A user with this email address already exists.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "VALIDATION_FAILED — Request validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 422,
+                    "code": "VALIDATION_FAILED",
+                    "message": "Request validation failed.",
+                    "details": {
+                      "issues": [
+                        {
+                          "path": "field",
+                          "code": "invalid_type",
+                          "message": "Required"
+                        }
+                      ]
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "RATE_LIMITED — 10 requests per minute per IP.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 429,
+                    "code": "RATE_LIMITED",
+                    "message": "10 requests per minute per IP.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "summary": "B-84 — \"This wasn't me\" from the notice mailed to a web user's OLD address.",
+        "tags": [
+          "auth"
         ]
       }
     },
@@ -11397,6 +12215,7 @@
         ]
       },
       "patch": {
+        "description": "A changed `email` (after trim + lower-case) is NOT written: it becomes `pendingEmail`, a confirm link is mailed to it and a \"this wasn't me\" notice to the old address. It requires the acting user's `currentPassword` (or `reauthIdToken` for a Google-only account) — 401 REAUTH_REQUIRED / REAUTH_FAILED with `details.currentPassword`. Refused with 409 EMAIL_CHANGE_ON_HOLD inside the hold window of the previous change. The response then carries `emailVerification: { pendingEmail, emailDelivered, verifyToken? }` (`verifyToken` only with DEV_ECHO_SECRETS).",
         "operationId": "DriversController_update",
         "parameters": [
           {
@@ -11428,14 +12247,19 @@
                     "id": "drv_1",
                     "username": "jsmith",
                     "status": "ACTIVE",
-                    "allowPersonalConveyance": false
+                    "email": "old@example.com",
+                    "pendingEmail": "new@example.com",
+                    "emailVerification": {
+                      "pendingEmail": "new@example.com",
+                      "emailDelivered": true
+                    }
                   }
                 }
               }
             }
           },
           "401": {
-            "description": "UNAUTHORIZED — Authentication required.",
+            "description": "REAUTH_FAILED — Password is incorrect.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11472,8 +12296,8 @@
                   },
                   "example": {
                     "statusCode": 401,
-                    "code": "UNAUTHORIZED",
-                    "message": "Authentication required.",
+                    "code": "REAUTH_FAILED",
+                    "message": "Password is incorrect.",
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
                   }
@@ -12202,8 +13026,507 @@
         ]
       }
     },
+    "/api/drivers/{id}/email-change/resend": {
+      "post": {
+        "operationId": "DriversController_resendEmailChange",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "pendingEmail": "new@example.com",
+                    "emailedTo": "new@example.com",
+                    "emailDelivered": true
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHORIZED — Authentication required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 401,
+                    "code": "UNAUTHORIZED",
+                    "message": "Authentication required.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN — Insufficient permissions for this action.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 403,
+                    "code": "FORBIDDEN",
+                    "message": "Insufficient permissions for this action.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "EMAIL_CHANGE_NOT_PENDING — This driver has no pending email change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 404,
+                    "code": "EMAIL_CHANGE_NOT_PENDING",
+                    "message": "This driver has no pending email change.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "VALIDATION_FAILED — Request validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 422,
+                    "code": "VALIDATION_FAILED",
+                    "message": "Request validation failed.",
+                    "details": {
+                      "issues": [
+                        {
+                          "path": "field",
+                          "code": "invalid_type",
+                          "message": "Required"
+                        }
+                      ]
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Re-mails the confirm link of the pending driver email change (same request; the old-address cancel link stays valid).",
+        "tags": [
+          "drivers"
+        ],
+        "x-figma-screens": [
+          {
+            "id": "web/drivers",
+            "title": "Drivers",
+            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.11"
+          },
+          {
+            "id": "web/driver-add",
+            "title": "Add driver",
+            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.12"
+          }
+        ]
+      }
+    },
+    "/api/drivers/{id}/email-change": {
+      "delete": {
+        "operationId": "DriversController_cancelEmailChange",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "id": "drv_1",
+                    "email": "old@example.com",
+                    "pendingEmail": null
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHORIZED — Authentication required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 401,
+                    "code": "UNAUTHORIZED",
+                    "message": "Authentication required.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN — Insufficient permissions for this action.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 403,
+                    "code": "FORBIDDEN",
+                    "message": "Insufficient permissions for this action.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "EMAIL_CHANGE_NOT_PENDING — This driver has no pending email change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 404,
+                    "code": "EMAIL_CHANGE_NOT_PENDING",
+                    "message": "This driver has no pending email change.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "VALIDATION_FAILED — Request validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 422,
+                    "code": "VALIDATION_FAILED",
+                    "message": "Request validation failed.",
+                    "details": {
+                      "issues": [
+                        {
+                          "path": "field",
+                          "code": "invalid_type",
+                          "message": "Required"
+                        }
+                      ]
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Cancels the pending driver email change; the current email stays.",
+        "tags": [
+          "drivers"
+        ],
+        "x-figma-screens": [
+          {
+            "id": "web/drivers",
+            "title": "Drivers",
+            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.11"
+          },
+          {
+            "id": "web/driver-add",
+            "title": "Add driver",
+            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.12"
+          }
+        ]
+      }
+    },
     "/api/drivers/{id}/reset-password": {
       "post": {
+        "description": "Inside the hold window after a driver email change the code is NOT emailed to the new address: `emailedTo: null`, `code` for the dispatcher and `emailHoldUntil`.",
         "operationId": "DriversController_resetPassword",
         "parameters": [
           {
@@ -13725,16 +15048,17 @@
         ]
       }
     },
-    "/api/transfers": {
+    "/api/auth/driver/email/confirm": {
       "post": {
-        "operationId": "TransfersController_create",
+        "description": "Swaps `email` to the pending address, sets `emailVerifiedAt`, starts the reset hold and revokes every driver session.",
+        "operationId": "DriverEmailController_confirm",
         "parameters": [],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/CreateTransferDto"
+                "$ref": "#/components/schemas/DriverEmailChangeTokenDto"
               }
             }
           }
@@ -13746,31 +15070,15 @@
               "application/json": {
                 "schema": {
                   "example": {
-                    "transfer": {
-                      "id": "trf_1",
-                      "fileName": "SMITH38018.csv",
-                      "status": "QUEUED",
-                      "erodsMode": "TEST",
-                      "fileSizeBytes": 2048
-                    },
-                    "warnings": [
-                      {
-                        "code": "ERODS_TEST_MODE",
-                        "level": "warning",
-                        "message": "eRODS is in TEST mode …"
-                      }
-                    ],
-                    "counts": {
-                      "header": 9,
-                      "events": 42
-                    }
+                    "success": true,
+                    "email": "new@example.com"
                   }
                 }
               }
             }
           },
           "401": {
-            "description": "UNAUTHORIZED — Authentication required.",
+            "description": "TOKEN_INVALID — This confirmation link is no longer valid.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13807,8 +15115,8 @@
                   },
                   "example": {
                     "statusCode": 401,
-                    "code": "UNAUTHORIZED",
-                    "message": "Authentication required.",
+                    "code": "TOKEN_INVALID",
+                    "message": "This confirmation link is no longer valid.",
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
                   }
@@ -13816,8 +15124,8 @@
               }
             }
           },
-          "403": {
-            "description": "FORBIDDEN — dataTransfer = FULL is required — only ADMIN and FLEET_MANAGER may send the FMCSA package (§6.4, B-95).",
+          "409": {
+            "description": "EMAIL_TAKEN — A driver with this email address already exists.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13853,306 +15161,9 @@
                     }
                   },
                   "example": {
-                    "statusCode": 403,
-                    "code": "FORBIDDEN",
-                    "message": "dataTransfer = FULL is required — only ADMIN and FLEET_MANAGER may send the FMCSA package (§6.4, B-95).",
-                    "traceId": "01J8X3QK9Z0000000000000000",
-                    "timestamp": "2026-09-11T15:41:00.000Z"
-                  }
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "DRIVER_NOT_FOUND — Driver not found.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "statusCode",
-                    "code",
-                    "message",
-                    "traceId",
-                    "timestamp"
-                  ],
-                  "properties": {
-                    "statusCode": {
-                      "type": "number"
-                    },
-                    "code": {
-                      "type": "string",
-                      "description": "Stable code from common/errors/codes.ts (append-only)."
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "type": "object",
-                      "additionalProperties": true
-                    },
-                    "traceId": {
-                      "type": "string"
-                    },
-                    "timestamp": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  },
-                  "example": {
-                    "statusCode": 404,
-                    "code": "DRIVER_NOT_FOUND",
-                    "message": "Driver not found.",
-                    "traceId": "01J8X3QK9Z0000000000000000",
-                    "timestamp": "2026-09-11T15:41:00.000Z"
-                  }
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "TRANSFER_VALIDATION_FAILED — The generated output file failed Appendix A validation — nothing was sent.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "statusCode",
-                    "code",
-                    "message",
-                    "traceId",
-                    "timestamp"
-                  ],
-                  "properties": {
-                    "statusCode": {
-                      "type": "number"
-                    },
-                    "code": {
-                      "type": "string",
-                      "description": "Stable code from common/errors/codes.ts (append-only)."
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "type": "object",
-                      "additionalProperties": true
-                    },
-                    "traceId": {
-                      "type": "string"
-                    },
-                    "timestamp": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  },
-                  "example": {
-                    "statusCode": 422,
-                    "code": "TRANSFER_VALIDATION_FAILED",
-                    "message": "The generated output file failed Appendix A validation — nothing was sent.",
-                    "details": {
-                      "uncertifiedLogs": 6,
-                      "unassignedSegments": 9
-                    },
-                    "traceId": "01J8X3QK9Z0000000000000000",
-                    "timestamp": "2026-09-11T15:41:00.000Z"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "summary": "Requests an eRODS data transfer: generates the §395 Appendix A output file, validates it, stores it and queues the send step. In TEST mode the file is NOT sent to FMCSA.",
-        "tags": [
-          "transfers"
-        ],
-        "x-figma-screens": [
-          {
-            "id": "web/send-logs-to-safety-official",
-            "title": "Send logs to a safety official",
-            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.16"
-          },
-          {
-            "id": "web/reports-fmcsa-audit-pack",
-            "title": "Reports · FMCSA / DOT audit pack",
-            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.21"
-          }
-        ]
-      },
-      "get": {
-        "operationId": "TransfersController_list",
-        "parameters": [
-          {
-            "name": "driverId",
-            "required": false,
-            "in": "query",
-            "schema": {
-              "type": "string",
-              "format": "uuid"
-            }
-          },
-          {
-            "name": "status",
-            "required": false,
-            "in": "query",
-            "schema": {
-              "type": "string",
-              "enum": [
-                "QUEUED",
-                "TEST_ONLY",
-                "SENT",
-                "ACCEPTED",
-                "REJECTED",
-                "FAILED",
-                "ALL"
-              ],
-              "default": "ALL"
-            }
-          },
-          {
-            "name": "page",
-            "required": false,
-            "in": "query",
-            "schema": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 10000,
-              "default": 1
-            }
-          },
-          {
-            "name": "limit",
-            "required": false,
-            "in": "query",
-            "schema": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 200,
-              "default": 25
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "example": {
-                    "items": [
-                      {
-                        "id": "trf_1",
-                        "sentAt": "2026-09-02T13:14:00.000Z",
-                        "method": "WEB_SERVICES",
-                        "comment": "TERMINAL AUDIT 2025-09-02",
-                        "periodFrom": "2026-07-01",
-                        "periodTo": "2026-08-31",
-                        "status": "ACCEPTED",
-                        "sentById": "usr_1",
-                        "fileName": "SMITH38018.csv"
-                      }
-                    ],
-                    "page": 1,
-                    "limit": 25,
-                    "total": 1,
-                    "totalPages": 1
-                  }
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "UNAUTHORIZED — Authentication required.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "statusCode",
-                    "code",
-                    "message",
-                    "traceId",
-                    "timestamp"
-                  ],
-                  "properties": {
-                    "statusCode": {
-                      "type": "number"
-                    },
-                    "code": {
-                      "type": "string",
-                      "description": "Stable code from common/errors/codes.ts (append-only)."
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "type": "object",
-                      "additionalProperties": true
-                    },
-                    "traceId": {
-                      "type": "string"
-                    },
-                    "timestamp": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  },
-                  "example": {
-                    "statusCode": 401,
-                    "code": "UNAUTHORIZED",
-                    "message": "Authentication required.",
-                    "traceId": "01J8X3QK9Z0000000000000000",
-                    "timestamp": "2026-09-11T15:41:00.000Z"
-                  }
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "FORBIDDEN — Insufficient permissions for this action.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "statusCode",
-                    "code",
-                    "message",
-                    "traceId",
-                    "timestamp"
-                  ],
-                  "properties": {
-                    "statusCode": {
-                      "type": "number"
-                    },
-                    "code": {
-                      "type": "string",
-                      "description": "Stable code from common/errors/codes.ts (append-only)."
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "type": "object",
-                      "additionalProperties": true
-                    },
-                    "traceId": {
-                      "type": "string"
-                    },
-                    "timestamp": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  },
-                  "example": {
-                    "statusCode": 403,
-                    "code": "FORBIDDEN",
-                    "message": "Insufficient permissions for this action.",
+                    "statusCode": 409,
+                    "code": "EMAIL_TAKEN",
+                    "message": "A driver with this email address already exists.",
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
                   }
@@ -14215,70 +15226,9 @@
                 }
               }
             }
-          }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "summary": "Transfer history (§10). `TEST_ONLY` rows are files that were generated but never sent.",
-        "tags": [
-          "transfers"
-        ],
-        "x-figma-screens": [
-          {
-            "id": "web/send-logs-to-safety-official",
-            "title": "Send logs to a safety official",
-            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.16"
           },
-          {
-            "id": "web/reports-fmcsa-audit-pack",
-            "title": "Reports · FMCSA / DOT audit pack",
-            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.21"
-          }
-        ]
-      }
-    },
-    "/api/transfers/{id}": {
-      "get": {
-        "operationId": "TransfersController_get",
-        "parameters": [
-          {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "example": {
-                    "id": "trf_1",
-                    "method": "WEB_SERVICES",
-                    "status": "ACCEPTED",
-                    "erodsMode": "TEST",
-                    "comment": "ROADSIDE INSPECTION 2026-09-10",
-                    "fileName": "SMITH38018.csv",
-                    "fileSizeBytes": 2048,
-                    "counts": {
-                      "header": 9,
-                      "events": 42
-                    },
-                    "sentAt": "2026-09-11T15:41:00.000Z"
-                  }
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "UNAUTHORIZED — Authentication required.",
+          "429": {
+            "description": "RATE_LIMITED — 10 requests per minute per IP.",
             "content": {
               "application/json": {
                 "schema": {
@@ -14314,159 +15264,9 @@
                     }
                   },
                   "example": {
-                    "statusCode": 401,
-                    "code": "UNAUTHORIZED",
-                    "message": "Authentication required.",
-                    "traceId": "01J8X3QK9Z0000000000000000",
-                    "timestamp": "2026-09-11T15:41:00.000Z"
-                  }
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "FORBIDDEN — Insufficient permissions for this action.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "statusCode",
-                    "code",
-                    "message",
-                    "traceId",
-                    "timestamp"
-                  ],
-                  "properties": {
-                    "statusCode": {
-                      "type": "number"
-                    },
-                    "code": {
-                      "type": "string",
-                      "description": "Stable code from common/errors/codes.ts (append-only)."
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "type": "object",
-                      "additionalProperties": true
-                    },
-                    "traceId": {
-                      "type": "string"
-                    },
-                    "timestamp": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  },
-                  "example": {
-                    "statusCode": 403,
-                    "code": "FORBIDDEN",
-                    "message": "Insufficient permissions for this action.",
-                    "traceId": "01J8X3QK9Z0000000000000000",
-                    "timestamp": "2026-09-11T15:41:00.000Z"
-                  }
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "NOT_FOUND — Transfer not found.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "statusCode",
-                    "code",
-                    "message",
-                    "traceId",
-                    "timestamp"
-                  ],
-                  "properties": {
-                    "statusCode": {
-                      "type": "number"
-                    },
-                    "code": {
-                      "type": "string",
-                      "description": "Stable code from common/errors/codes.ts (append-only)."
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "type": "object",
-                      "additionalProperties": true
-                    },
-                    "traceId": {
-                      "type": "string"
-                    },
-                    "timestamp": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  },
-                  "example": {
-                    "statusCode": 404,
-                    "code": "NOT_FOUND",
-                    "message": "Transfer not found.",
-                    "traceId": "01J8X3QK9Z0000000000000000",
-                    "timestamp": "2026-09-11T15:41:00.000Z"
-                  }
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "VALIDATION_FAILED — Request validation failed.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "statusCode",
-                    "code",
-                    "message",
-                    "traceId",
-                    "timestamp"
-                  ],
-                  "properties": {
-                    "statusCode": {
-                      "type": "number"
-                    },
-                    "code": {
-                      "type": "string",
-                      "description": "Stable code from common/errors/codes.ts (append-only)."
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "type": "object",
-                      "additionalProperties": true
-                    },
-                    "traceId": {
-                      "type": "string"
-                    },
-                    "timestamp": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  },
-                  "example": {
-                    "statusCode": 422,
-                    "code": "VALIDATION_FAILED",
-                    "message": "Request validation failed.",
-                    "details": {
-                      "issues": [
-                        {
-                          "path": "field",
-                          "code": "invalid_type",
-                          "message": "Required"
-                        }
-                      ]
-                    },
+                    "statusCode": 429,
+                    "code": "RATE_LIMITED",
+                    "message": "10 requests per minute per IP.",
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
                   }
@@ -14475,604 +15275,44 @@
             }
           }
         },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "summary": "One transfer record.",
+        "summary": "Confirms a driver email change from the link mailed to the NEW address.",
         "tags": [
-          "transfers"
-        ],
-        "x-figma-screens": [
-          {
-            "id": "web/send-logs-to-safety-official",
-            "title": "Send logs to a safety official",
-            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.16"
-          },
-          {
-            "id": "web/reports-fmcsa-audit-pack",
-            "title": "Reports · FMCSA / DOT audit pack",
-            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.21"
-          }
+          "auth"
         ]
       }
     },
-    "/api/transfers/{id}/download": {
-      "get": {
-        "operationId": "TransfersController_download",
-        "parameters": [
-          {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "The Appendix A CSV itself (text/csv), named per §4.8.2.2. Not wrapped in the success envelope.",
-            "content": {
-              "text/csv": {
-                "schema": {
-                  "type": "string"
-                },
-                "example": "Header,ONEB01,Universal Logistics Inc.,1234567\nUser,Smith,John,W8569238,OH\nCMV,101,1FUJGLDR8LLLL1234,993107\n"
-              }
-            }
-          },
-          "401": {
-            "description": "UNAUTHORIZED — Authentication required.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "statusCode",
-                    "code",
-                    "message",
-                    "traceId",
-                    "timestamp"
-                  ],
-                  "properties": {
-                    "statusCode": {
-                      "type": "number"
-                    },
-                    "code": {
-                      "type": "string",
-                      "description": "Stable code from common/errors/codes.ts (append-only)."
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "type": "object",
-                      "additionalProperties": true
-                    },
-                    "traceId": {
-                      "type": "string"
-                    },
-                    "timestamp": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  },
-                  "example": {
-                    "statusCode": 401,
-                    "code": "UNAUTHORIZED",
-                    "message": "Authentication required.",
-                    "traceId": "01J8X3QK9Z0000000000000000",
-                    "timestamp": "2026-09-11T15:41:00.000Z"
-                  }
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "FORBIDDEN — reportsTransfer is NONE for DISPATCHER and VIEWER — even the download is a 403 (§6.4).",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "statusCode",
-                    "code",
-                    "message",
-                    "traceId",
-                    "timestamp"
-                  ],
-                  "properties": {
-                    "statusCode": {
-                      "type": "number"
-                    },
-                    "code": {
-                      "type": "string",
-                      "description": "Stable code from common/errors/codes.ts (append-only)."
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "type": "object",
-                      "additionalProperties": true
-                    },
-                    "traceId": {
-                      "type": "string"
-                    },
-                    "timestamp": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  },
-                  "example": {
-                    "statusCode": 403,
-                    "code": "FORBIDDEN",
-                    "message": "reportsTransfer is NONE for DISPATCHER and VIEWER — even the download is a 403 (§6.4).",
-                    "traceId": "01J8X3QK9Z0000000000000000",
-                    "timestamp": "2026-09-11T15:41:00.000Z"
-                  }
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "NOT_FOUND — Transfer not found.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "statusCode",
-                    "code",
-                    "message",
-                    "traceId",
-                    "timestamp"
-                  ],
-                  "properties": {
-                    "statusCode": {
-                      "type": "number"
-                    },
-                    "code": {
-                      "type": "string",
-                      "description": "Stable code from common/errors/codes.ts (append-only)."
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "type": "object",
-                      "additionalProperties": true
-                    },
-                    "traceId": {
-                      "type": "string"
-                    },
-                    "timestamp": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  },
-                  "example": {
-                    "statusCode": 404,
-                    "code": "NOT_FOUND",
-                    "message": "Transfer not found.",
-                    "traceId": "01J8X3QK9Z0000000000000000",
-                    "timestamp": "2026-09-11T15:41:00.000Z"
-                  }
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "CHECKSUM_MISMATCH — The stored output file does not match its checksum — it is not trustworthy.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "statusCode",
-                    "code",
-                    "message",
-                    "traceId",
-                    "timestamp"
-                  ],
-                  "properties": {
-                    "statusCode": {
-                      "type": "number"
-                    },
-                    "code": {
-                      "type": "string",
-                      "description": "Stable code from common/errors/codes.ts (append-only)."
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "type": "object",
-                      "additionalProperties": true
-                    },
-                    "traceId": {
-                      "type": "string"
-                    },
-                    "timestamp": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  },
-                  "example": {
-                    "statusCode": 422,
-                    "code": "CHECKSUM_MISMATCH",
-                    "message": "The stored output file does not match its checksum — it is not trustworthy.",
-                    "traceId": "01J8X3QK9Z0000000000000000",
-                    "timestamp": "2026-09-11T15:41:00.000Z"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "summary": "Downloads the generated Appendix A output file under its 4.8.2.2 file name. Works in TEST mode — that is how the file reaches an inspector until FMCSA registration completes.",
-        "tags": [
-          "transfers"
-        ],
-        "x-figma-screens": [
-          {
-            "id": "web/send-logs-to-safety-official",
-            "title": "Send logs to a safety official",
-            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.16"
-          },
-          {
-            "id": "web/reports-fmcsa-audit-pack",
-            "title": "Reports · FMCSA / DOT audit pack",
-            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.21"
-          }
-        ]
-      }
-    },
-    "/api/mobile/transfers": {
+    "/api/auth/driver/email/verify": {
       "post": {
-        "description": "The row is returned as it stands right after generation (`status = QUEUED`); the worker moves it to TEST_ONLY / SENT / ACCEPTED / REJECTED / FAILED and fills `referenceId` + `sentAt`. Poll `GET /mobile/transfers` for the receipt (S-10). MB-18 — an offline roadside-inspection transfer is queued by the app and replayed on reconnect: send a `clientId` (idempotent — a replay returns the FIRST result, no second file or send; a clientId used by another operation is 409) and optionally `requestedAt` (device time of the request, echoed back). 4xx is final; retry only on 5xx/network.",
-        "operationId": "MobileTransfersController_create",
+        "description": "Public: the driver id comes from the signed token, which is bound to the driver and the address it was sent to. Sets `emailVerifiedAt`; `alreadyVerified: true` on a repeat click (nothing written).",
+        "operationId": "DriverEmailController_verify",
         "parameters": [],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/MobileCreateTransferDto"
+                "$ref": "#/components/schemas/DriverEmailChangeTokenDto"
               }
             }
           }
         },
-        "responses": {
-          "201": {
-            "description": "Created.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "data",
-                    "traceId",
-                    "timestamp"
-                  ],
-                  "properties": {
-                    "data": {
-                      "$ref": "#/components/schemas/MobileTransferCreatedResponse"
-                    },
-                    "traceId": {
-                      "type": "string",
-                      "description": "Request trace id (same as the §20 error envelope)."
-                    },
-                    "timestamp": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  },
-                  "example": {
-                    "data": {
-                      "id": "trf_1",
-                      "method": "WEB_SERVICES",
-                      "status": "QUEUED",
-                      "erodsMode": "TEST",
-                      "referenceId": null,
-                      "sentAt": null,
-                      "createdAt": "2026-09-10T15:44:02.000Z",
-                      "fileName": "SMITH38018.csv",
-                      "outputFileComment": "ROADSIDE INSPECTION 2026-09-10",
-                      "rangeStart": "2026-09-03T00:00:00.000Z",
-                      "rangeEnd": "2026-09-10T00:00:00.000Z",
-                      "warnings": [
-                        "ERODS_TEST_MODE"
-                      ],
-                      "counts": {
-                        "header": 9,
-                        "events": 42
-                      },
-                      "clientId": "0b9d6f5e-0000-4000-8000-000000000002",
-                      "requestedAt": "2026-09-10T15:40:00.000Z"
-                    },
-                    "traceId": "01J8X3QK9Z0000000000000000",
-                    "timestamp": "2026-10-08T15:41:00.000Z"
-                  }
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "UNAUTHORIZED — Authentication required.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "statusCode",
-                    "code",
-                    "message",
-                    "traceId",
-                    "timestamp"
-                  ],
-                  "properties": {
-                    "statusCode": {
-                      "type": "number"
-                    },
-                    "code": {
-                      "type": "string",
-                      "description": "Stable code from common/errors/codes.ts (append-only)."
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "type": "object",
-                      "additionalProperties": true
-                    },
-                    "traceId": {
-                      "type": "string"
-                    },
-                    "timestamp": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  },
-                  "example": {
-                    "statusCode": 401,
-                    "code": "UNAUTHORIZED",
-                    "message": "Authentication required.",
-                    "traceId": "01J8X3QK9Z0000000000000000",
-                    "timestamp": "2026-09-11T15:41:00.000Z"
-                  }
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "FORBIDDEN — Driver token required (DRIVER_CONTEXT_REQUIRED).",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "statusCode",
-                    "code",
-                    "message",
-                    "traceId",
-                    "timestamp"
-                  ],
-                  "properties": {
-                    "statusCode": {
-                      "type": "number"
-                    },
-                    "code": {
-                      "type": "string",
-                      "description": "Stable code from common/errors/codes.ts (append-only)."
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "type": "object",
-                      "additionalProperties": true
-                    },
-                    "traceId": {
-                      "type": "string"
-                    },
-                    "timestamp": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  },
-                  "example": {
-                    "statusCode": 403,
-                    "code": "FORBIDDEN",
-                    "message": "Driver token required (DRIVER_CONTEXT_REQUIRED).",
-                    "traceId": "01J8X3QK9Z0000000000000000",
-                    "timestamp": "2026-09-11T15:41:00.000Z"
-                  }
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "DRIVER_NOT_FOUND — Driver not found.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "statusCode",
-                    "code",
-                    "message",
-                    "traceId",
-                    "timestamp"
-                  ],
-                  "properties": {
-                    "statusCode": {
-                      "type": "number"
-                    },
-                    "code": {
-                      "type": "string",
-                      "description": "Stable code from common/errors/codes.ts (append-only)."
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "type": "object",
-                      "additionalProperties": true
-                    },
-                    "traceId": {
-                      "type": "string"
-                    },
-                    "timestamp": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  },
-                  "example": {
-                    "statusCode": 404,
-                    "code": "DRIVER_NOT_FOUND",
-                    "message": "Driver not found.",
-                    "traceId": "01J8X3QK9Z0000000000000000",
-                    "timestamp": "2026-09-11T15:41:00.000Z"
-                  }
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "OUTPUT_FILE_INVALID — The generated output file does not conform to §395 Appendix A and was not stored.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "statusCode",
-                    "code",
-                    "message",
-                    "traceId",
-                    "timestamp"
-                  ],
-                  "properties": {
-                    "statusCode": {
-                      "type": "number"
-                    },
-                    "code": {
-                      "type": "string",
-                      "description": "Stable code from common/errors/codes.ts (append-only)."
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "type": "object",
-                      "additionalProperties": true
-                    },
-                    "traceId": {
-                      "type": "string"
-                    },
-                    "timestamp": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  },
-                  "example": {
-                    "statusCode": 422,
-                    "code": "OUTPUT_FILE_INVALID",
-                    "message": "The generated output file does not conform to §395 Appendix A and was not stored.",
-                    "traceId": "01J8X3QK9Z0000000000000000",
-                    "timestamp": "2026-09-11T15:41:00.000Z"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "summary": "Driver-initiated eRODS transfer of the driver's own RODS: generates and validates the §395 Appendix A file, stores it, queues the send. TEST mode never sends to FMCSA (status TEST_ONLY).",
-        "tags": [
-          "mobile"
-        ]
-      },
-      "get": {
-        "operationId": "MobileTransfersController_list",
-        "parameters": [
-          {
-            "name": "limit",
-            "required": false,
-            "in": "query",
-            "schema": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 50,
-              "default": 5
-            }
-          }
-        ],
         "responses": {
           "200": {
-            "description": "OK.",
+            "description": "",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "required": [
-                    "data",
-                    "traceId",
-                    "timestamp"
-                  ],
-                  "properties": {
-                    "data": {
-                      "$ref": "#/components/schemas/MobileTransferListResponse"
-                    },
-                    "traceId": {
-                      "type": "string",
-                      "description": "Request trace id (same as the §20 error envelope)."
-                    },
-                    "timestamp": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  },
                   "example": {
-                    "data": {
-                      "items": [
-                        {
-                          "id": "trf_1",
-                          "method": "WEB_SERVICES",
-                          "status": "TEST_ONLY",
-                          "erodsMode": "TEST",
-                          "referenceId": "ERODS-TEST-26-0910-4821",
-                          "sentAt": "2026-09-10T15:44:02.000Z",
-                          "createdAt": "2026-09-10T15:44:00.000Z",
-                          "fileName": "SMITH38018.csv",
-                          "outputFileComment": "ROADSIDE INSPECTION 2026-09-10",
-                          "rangeStart": "2026-09-03T00:00:00.000Z",
-                          "rangeEnd": "2026-09-10T00:00:00.000Z"
-                        }
-                      ],
-                      "total": 1,
-                      "limit": 5
-                    },
-                    "traceId": "01J8X3QK9Z0000000000000000",
-                    "timestamp": "2026-10-08T15:41:00.000Z"
+                    "success": true,
+                    "email": "jsmith@example.com",
+                    "alreadyVerified": false
                   }
                 }
               }
             }
           },
           "401": {
-            "description": "UNAUTHORIZED — Authentication required.",
+            "description": "TOKEN_EXPIRED — Token expired.",
             "content": {
               "application/json": {
                 "schema": {
@@ -15109,55 +15349,8 @@
                   },
                   "example": {
                     "statusCode": 401,
-                    "code": "UNAUTHORIZED",
-                    "message": "Authentication required.",
-                    "traceId": "01J8X3QK9Z0000000000000000",
-                    "timestamp": "2026-09-11T15:41:00.000Z"
-                  }
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "FORBIDDEN — Driver token required (DRIVER_CONTEXT_REQUIRED).",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "statusCode",
-                    "code",
-                    "message",
-                    "traceId",
-                    "timestamp"
-                  ],
-                  "properties": {
-                    "statusCode": {
-                      "type": "number"
-                    },
-                    "code": {
-                      "type": "string",
-                      "description": "Stable code from common/errors/codes.ts (append-only)."
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "type": "object",
-                      "additionalProperties": true
-                    },
-                    "traceId": {
-                      "type": "string"
-                    },
-                    "timestamp": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  },
-                  "example": {
-                    "statusCode": 403,
-                    "code": "FORBIDDEN",
-                    "message": "Driver token required (DRIVER_CONTEXT_REQUIRED).",
+                    "code": "TOKEN_EXPIRED",
+                    "message": "Token expired.",
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
                   }
@@ -15220,16 +15413,291 @@
                 }
               }
             }
+          },
+          "429": {
+            "description": "RATE_LIMITED — 10 requests per minute per IP.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 429,
+                    "code": "RATE_LIMITED",
+                    "message": "10 requests per minute per IP.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
           }
         },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "summary": "The driver's own most recent transfers (receipts for S-10 / M-27 `Last transfer`).",
+        "summary": "B-29/B-31 — verifies `Driver.email` from the link mailed by `POST /drivers/:id/send-verification`.",
         "tags": [
-          "mobile"
+          "auth"
+        ]
+      }
+    },
+    "/api/auth/driver/email/cancel": {
+      "post": {
+        "description": "Cancels a pending change (`result: CANCELLED`), or inside the hold window reverts a confirmed one and revokes every driver session (`result: REVERTED`).",
+        "operationId": "DriverEmailController_cancel",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DriverEmailChangeTokenDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "success": true,
+                    "result": "CANCELLED"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "TOKEN_INVALID — This link can no longer cancel the change. Contact your carrier.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 401,
+                    "code": "TOKEN_INVALID",
+                    "message": "This link can no longer cancel the change. Contact your carrier.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "EMAIL_TAKEN — A driver with this email address already exists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 409,
+                    "code": "EMAIL_TAKEN",
+                    "message": "A driver with this email address already exists.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "VALIDATION_FAILED — Request validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 422,
+                    "code": "VALIDATION_FAILED",
+                    "message": "Request validation failed.",
+                    "details": {
+                      "issues": [
+                        {
+                          "path": "field",
+                          "code": "invalid_type",
+                          "message": "Required"
+                        }
+                      ]
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "RATE_LIMITED — 10 requests per minute per IP.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 429,
+                    "code": "RATE_LIMITED",
+                    "message": "10 requests per minute per IP.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "summary": "\"This wasn't me\" from the notice mailed to the OLD address.",
+        "tags": [
+          "auth"
         ]
       }
     },
@@ -23923,12 +24391,23 @@
         ],
         "responses": {
           "200": {
-            "description": "",
+            "description": "`triggered` = at least one channel sent/queued. `channels[]` is the per-channel outcome: status SENT | QUEUED | FAILED | SUPPRESSED, with `reason` (NO_EMAIL_ADDRESS, NO_MAIL_TRANSPORT, SMTP_SEND_FAILED, NO_WEBHOOK_CONFIGURED, CHANNEL_DISABLED) when not delivered.",
             "content": {
               "application/json": {
                 "schema": {
                   "example": {
-                    "triggered": true
+                    "triggered": true,
+                    "channels": [
+                      {
+                        "channel": "IN_APP",
+                        "status": "SENT"
+                      },
+                      {
+                        "channel": "EMAIL",
+                        "status": "FAILED",
+                        "reason": "NO_MAIL_TRANSPORT"
+                      }
+                    ]
                   }
                 }
               }
@@ -24137,7 +24616,7 @@
             "bearer": []
           }
         ],
-        "summary": "Sends a test notification through the rule's own channels to the caller. A disabled rule triggers nothing.",
+        "summary": "Sends a test notification through the rule's own channels to the caller (EMAIL goes to the caller's own address). A disabled rule triggers nothing.",
         "tags": [
           "alert-rules"
         ],
@@ -50249,6 +50728,1514 @@
         ]
       }
     },
+    "/api/transfers": {
+      "post": {
+        "operationId": "TransfersController_create",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTransferDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "transfer": {
+                      "id": "trf_1",
+                      "fileName": "SMITH38018.csv",
+                      "status": "QUEUED",
+                      "erodsMode": "TEST",
+                      "fileSizeBytes": 2048
+                    },
+                    "warnings": [
+                      {
+                        "code": "ERODS_TEST_MODE",
+                        "level": "warning",
+                        "message": "eRODS is in TEST mode …"
+                      }
+                    ],
+                    "counts": {
+                      "header": 9,
+                      "events": 42
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHORIZED — Authentication required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 401,
+                    "code": "UNAUTHORIZED",
+                    "message": "Authentication required.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN — dataTransfer = FULL is required — only ADMIN and FLEET_MANAGER may send the FMCSA package (§6.4, B-95).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 403,
+                    "code": "FORBIDDEN",
+                    "message": "dataTransfer = FULL is required — only ADMIN and FLEET_MANAGER may send the FMCSA package (§6.4, B-95).",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "DRIVER_NOT_FOUND — Driver not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 404,
+                    "code": "DRIVER_NOT_FOUND",
+                    "message": "Driver not found.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "TRANSFER_VALIDATION_FAILED — The generated output file failed Appendix A validation — nothing was sent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 422,
+                    "code": "TRANSFER_VALIDATION_FAILED",
+                    "message": "The generated output file failed Appendix A validation — nothing was sent.",
+                    "details": {
+                      "uncertifiedLogs": 6,
+                      "unassignedSegments": 9
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Requests an eRODS data transfer: generates the §395 Appendix A output file, validates it, stores it and queues the send step. In TEST mode the file is NOT sent to FMCSA.",
+        "tags": [
+          "transfers"
+        ],
+        "x-figma-screens": [
+          {
+            "id": "web/send-logs-to-safety-official",
+            "title": "Send logs to a safety official",
+            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.16"
+          },
+          {
+            "id": "web/reports-fmcsa-audit-pack",
+            "title": "Reports · FMCSA / DOT audit pack",
+            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.21"
+          }
+        ]
+      },
+      "get": {
+        "operationId": "TransfersController_list",
+        "parameters": [
+          {
+            "name": "driverId",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "status",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "QUEUED",
+                "TEST_ONLY",
+                "SENT",
+                "ACCEPTED",
+                "REJECTED",
+                "FAILED",
+                "ALL"
+              ],
+              "default": "ALL"
+            }
+          },
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10000,
+              "default": 1
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 25
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "items": [
+                      {
+                        "id": "trf_1",
+                        "sentAt": "2026-09-02T13:14:00.000Z",
+                        "method": "WEB_SERVICES",
+                        "comment": "TERMINAL AUDIT 2025-09-02",
+                        "periodFrom": "2026-07-01",
+                        "periodTo": "2026-08-31",
+                        "status": "ACCEPTED",
+                        "sentById": "usr_1",
+                        "fileName": "SMITH38018.csv"
+                      }
+                    ],
+                    "page": 1,
+                    "limit": 25,
+                    "total": 1,
+                    "totalPages": 1
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHORIZED — Authentication required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 401,
+                    "code": "UNAUTHORIZED",
+                    "message": "Authentication required.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN — Insufficient permissions for this action.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 403,
+                    "code": "FORBIDDEN",
+                    "message": "Insufficient permissions for this action.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "VALIDATION_FAILED — Request validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 422,
+                    "code": "VALIDATION_FAILED",
+                    "message": "Request validation failed.",
+                    "details": {
+                      "issues": [
+                        {
+                          "path": "field",
+                          "code": "invalid_type",
+                          "message": "Required"
+                        }
+                      ]
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Transfer history (§10). `TEST_ONLY` rows are files that were generated but never sent.",
+        "tags": [
+          "transfers"
+        ],
+        "x-figma-screens": [
+          {
+            "id": "web/send-logs-to-safety-official",
+            "title": "Send logs to a safety official",
+            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.16"
+          },
+          {
+            "id": "web/reports-fmcsa-audit-pack",
+            "title": "Reports · FMCSA / DOT audit pack",
+            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.21"
+          }
+        ]
+      }
+    },
+    "/api/transfers/{id}": {
+      "get": {
+        "operationId": "TransfersController_get",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "id": "trf_1",
+                    "method": "WEB_SERVICES",
+                    "status": "ACCEPTED",
+                    "erodsMode": "TEST",
+                    "comment": "ROADSIDE INSPECTION 2026-09-10",
+                    "fileName": "SMITH38018.csv",
+                    "fileSizeBytes": 2048,
+                    "counts": {
+                      "header": 9,
+                      "events": 42
+                    },
+                    "sentAt": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHORIZED — Authentication required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 401,
+                    "code": "UNAUTHORIZED",
+                    "message": "Authentication required.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN — Insufficient permissions for this action.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 403,
+                    "code": "FORBIDDEN",
+                    "message": "Insufficient permissions for this action.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NOT_FOUND — Transfer not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 404,
+                    "code": "NOT_FOUND",
+                    "message": "Transfer not found.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "VALIDATION_FAILED — Request validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 422,
+                    "code": "VALIDATION_FAILED",
+                    "message": "Request validation failed.",
+                    "details": {
+                      "issues": [
+                        {
+                          "path": "field",
+                          "code": "invalid_type",
+                          "message": "Required"
+                        }
+                      ]
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "One transfer record.",
+        "tags": [
+          "transfers"
+        ],
+        "x-figma-screens": [
+          {
+            "id": "web/send-logs-to-safety-official",
+            "title": "Send logs to a safety official",
+            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.16"
+          },
+          {
+            "id": "web/reports-fmcsa-audit-pack",
+            "title": "Reports · FMCSA / DOT audit pack",
+            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.21"
+          }
+        ]
+      }
+    },
+    "/api/transfers/{id}/download": {
+      "get": {
+        "operationId": "TransfersController_download",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The Appendix A CSV itself (text/csv), named per §4.8.2.2. Not wrapped in the success envelope.",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Header,ONEB01,Universal Logistics Inc.,1234567\nUser,Smith,John,W8569238,OH\nCMV,101,1FUJGLDR8LLLL1234,993107\n"
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHORIZED — Authentication required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 401,
+                    "code": "UNAUTHORIZED",
+                    "message": "Authentication required.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN — reportsTransfer is NONE for DISPATCHER and VIEWER — even the download is a 403 (§6.4).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 403,
+                    "code": "FORBIDDEN",
+                    "message": "reportsTransfer is NONE for DISPATCHER and VIEWER — even the download is a 403 (§6.4).",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NOT_FOUND — Transfer not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 404,
+                    "code": "NOT_FOUND",
+                    "message": "Transfer not found.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "CHECKSUM_MISMATCH — The stored output file does not match its checksum — it is not trustworthy.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 422,
+                    "code": "CHECKSUM_MISMATCH",
+                    "message": "The stored output file does not match its checksum — it is not trustworthy.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Downloads the generated Appendix A output file under its 4.8.2.2 file name. Works in TEST mode — that is how the file reaches an inspector until FMCSA registration completes.",
+        "tags": [
+          "transfers"
+        ],
+        "x-figma-screens": [
+          {
+            "id": "web/send-logs-to-safety-official",
+            "title": "Send logs to a safety official",
+            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.16"
+          },
+          {
+            "id": "web/reports-fmcsa-audit-pack",
+            "title": "Reports · FMCSA / DOT audit pack",
+            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.21"
+          }
+        ]
+      }
+    },
+    "/api/mobile/transfers": {
+      "post": {
+        "description": "The row is returned as it stands right after generation (`status = QUEUED`); the worker moves it to TEST_ONLY / SENT / ACCEPTED / REJECTED / FAILED and fills `referenceId` + `sentAt`. Poll `GET /mobile/transfers` for the receipt (S-10). MB-18 — an offline roadside-inspection transfer is queued by the app and replayed on reconnect: send a `clientId` (idempotent — a replay returns the FIRST result, no second file or send; a clientId used by another operation is 409) and optionally `requestedAt` (device time of the request, echoed back). 4xx is final; retry only on 5xx/network.",
+        "operationId": "MobileTransfersController_create",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MobileCreateTransferDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "data",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/MobileTransferCreatedResponse"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "Request trace id (same as the §20 error envelope)."
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "data": {
+                      "id": "trf_1",
+                      "method": "WEB_SERVICES",
+                      "status": "QUEUED",
+                      "erodsMode": "TEST",
+                      "referenceId": null,
+                      "sentAt": null,
+                      "createdAt": "2026-09-10T15:44:02.000Z",
+                      "fileName": "SMITH38018.csv",
+                      "outputFileComment": "ROADSIDE INSPECTION 2026-09-10",
+                      "rangeStart": "2026-09-03T00:00:00.000Z",
+                      "rangeEnd": "2026-09-10T00:00:00.000Z",
+                      "warnings": [
+                        "ERODS_TEST_MODE"
+                      ],
+                      "counts": {
+                        "header": 9,
+                        "events": 42
+                      },
+                      "clientId": "0b9d6f5e-0000-4000-8000-000000000002",
+                      "requestedAt": "2026-09-10T15:40:00.000Z"
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-10-08T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHORIZED — Authentication required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 401,
+                    "code": "UNAUTHORIZED",
+                    "message": "Authentication required.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN — Driver token required (DRIVER_CONTEXT_REQUIRED).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 403,
+                    "code": "FORBIDDEN",
+                    "message": "Driver token required (DRIVER_CONTEXT_REQUIRED).",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "DRIVER_NOT_FOUND — Driver not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 404,
+                    "code": "DRIVER_NOT_FOUND",
+                    "message": "Driver not found.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "OUTPUT_FILE_INVALID — The generated output file does not conform to §395 Appendix A and was not stored.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 422,
+                    "code": "OUTPUT_FILE_INVALID",
+                    "message": "The generated output file does not conform to §395 Appendix A and was not stored.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Driver-initiated eRODS transfer of the driver's own RODS: generates and validates the §395 Appendix A file, stores it, queues the send. TEST mode never sends to FMCSA (status TEST_ONLY).",
+        "tags": [
+          "mobile"
+        ]
+      },
+      "get": {
+        "operationId": "MobileTransfersController_list",
+        "parameters": [
+          {
+            "name": "limit",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50,
+              "default": 5
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "data",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/MobileTransferListResponse"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "Request trace id (same as the §20 error envelope)."
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "data": {
+                      "items": [
+                        {
+                          "id": "trf_1",
+                          "method": "WEB_SERVICES",
+                          "status": "TEST_ONLY",
+                          "erodsMode": "TEST",
+                          "referenceId": "ERODS-TEST-26-0910-4821",
+                          "sentAt": "2026-09-10T15:44:02.000Z",
+                          "createdAt": "2026-09-10T15:44:00.000Z",
+                          "fileName": "SMITH38018.csv",
+                          "outputFileComment": "ROADSIDE INSPECTION 2026-09-10",
+                          "rangeStart": "2026-09-03T00:00:00.000Z",
+                          "rangeEnd": "2026-09-10T00:00:00.000Z"
+                        }
+                      ],
+                      "total": 1,
+                      "limit": 5
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-10-08T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHORIZED — Authentication required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 401,
+                    "code": "UNAUTHORIZED",
+                    "message": "Authentication required.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN — Driver token required (DRIVER_CONTEXT_REQUIRED).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 403,
+                    "code": "FORBIDDEN",
+                    "message": "Driver token required (DRIVER_CONTEXT_REQUIRED).",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "VALIDATION_FAILED — Request validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 422,
+                    "code": "VALIDATION_FAILED",
+                    "message": "Request validation failed.",
+                    "details": {
+                      "issues": [
+                        {
+                          "path": "field",
+                          "code": "invalid_type",
+                          "message": "Required"
+                        }
+                      ]
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "The driver's own most recent transfers (receipts for S-10 / M-27 `Last transfer`).",
+        "tags": [
+          "mobile"
+        ]
+      }
+    },
     "/api/mobile/hos-state": {
       "post": {
         "operationId": "HosStateController_hosStateSubmit",
@@ -67936,224 +69923,6 @@
           "type"
         ]
       },
-      "TransferMethod": {
-        "type": "string",
-        "enum": [
-          "WEB_SERVICES",
-          "EMAIL"
-        ]
-      },
-      "TransferStatus": {
-        "type": "string",
-        "enum": [
-          "QUEUED",
-          "TEST_ONLY",
-          "SENT",
-          "ACCEPTED",
-          "REJECTED",
-          "FAILED"
-        ]
-      },
-      "ErodsMode": {
-        "type": "string",
-        "enum": [
-          "TEST",
-          "PRODUCTION"
-        ]
-      },
-      "MobileTransferCreatedResponse": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "method": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/TransferMethod"
-              }
-            ]
-          },
-          "status": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/TransferStatus"
-              }
-            ]
-          },
-          "erodsMode": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/ErodsMode"
-              }
-            ]
-          },
-          "referenceId": {
-            "type": "string",
-            "nullable": true
-          },
-          "sentAt": {
-            "type": "string",
-            "format": "date-time",
-            "nullable": true
-          },
-          "createdAt": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "fileName": {
-            "type": "string"
-          },
-          "outputFileComment": {
-            "type": "string"
-          },
-          "rangeStart": {
-            "type": "string",
-            "format": "date-time",
-            "description": "First RODS day at UTC midnight (a `@db.Date` column)."
-          },
-          "rangeEnd": {
-            "type": "string",
-            "format": "date-time",
-            "description": "Last RODS day at UTC midnight (a `@db.Date` column)."
-          },
-          "warnings": {
-            "description": "§10.3 pre-send warning codes (UNCERTIFIED_LOGS, UNRESOLVED_UNIDENTIFIED, ACTIVE_MALFUNCTION, ERODS_TEST_MODE).",
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "counts": {
-            "type": "object",
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "description": "Data-line count per output-file segment."
-          },
-          "clientId": {
-            "type": "string",
-            "nullable": true,
-            "description": "MB-18 — echo of the request `clientId` (offline-queued transfers)."
-          },
-          "requestedAt": {
-            "type": "string",
-            "format": "date-time",
-            "nullable": true,
-            "description": "MB-18 — when the driver asked for the transfer on the device."
-          }
-        },
-        "required": [
-          "id",
-          "method",
-          "status",
-          "erodsMode",
-          "referenceId",
-          "sentAt",
-          "createdAt",
-          "fileName",
-          "outputFileComment",
-          "rangeStart",
-          "rangeEnd",
-          "warnings",
-          "counts",
-          "clientId",
-          "requestedAt"
-        ]
-      },
-      "MobileTransferView": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "method": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/TransferMethod"
-              }
-            ]
-          },
-          "status": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/TransferStatus"
-              }
-            ]
-          },
-          "erodsMode": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/ErodsMode"
-              }
-            ]
-          },
-          "referenceId": {
-            "type": "string",
-            "nullable": true
-          },
-          "sentAt": {
-            "type": "string",
-            "format": "date-time",
-            "nullable": true
-          },
-          "createdAt": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "fileName": {
-            "type": "string"
-          },
-          "outputFileComment": {
-            "type": "string"
-          },
-          "rangeStart": {
-            "type": "string",
-            "format": "date-time",
-            "description": "First RODS day at UTC midnight (a `@db.Date` column)."
-          },
-          "rangeEnd": {
-            "type": "string",
-            "format": "date-time",
-            "description": "Last RODS day at UTC midnight (a `@db.Date` column)."
-          }
-        },
-        "required": [
-          "id",
-          "method",
-          "status",
-          "erodsMode",
-          "referenceId",
-          "sentAt",
-          "createdAt",
-          "fileName",
-          "outputFileComment",
-          "rangeStart",
-          "rangeEnd"
-        ]
-      },
-      "MobileTransferListResponse": {
-        "type": "object",
-        "properties": {
-          "items": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/MobileTransferView"
-            }
-          },
-          "total": {
-            "type": "integer"
-          },
-          "limit": {
-            "type": "integer"
-          }
-        },
-        "required": [
-          "items",
-          "total",
-          "limit"
-        ]
-      },
       "NotificationKind": {
         "type": "string",
         "enum": [
@@ -68833,6 +70602,13 @@
         "enum": [
           "MILES",
           "KILOMETERS"
+        ]
+      },
+      "ErodsMode": {
+        "type": "string",
+        "enum": [
+          "TEST",
+          "PRODUCTION"
         ]
       },
       "BootstrapCarrierView": {
@@ -72824,6 +74600,217 @@
           "items"
         ]
       },
+      "TransferMethod": {
+        "type": "string",
+        "enum": [
+          "WEB_SERVICES",
+          "EMAIL"
+        ]
+      },
+      "TransferStatus": {
+        "type": "string",
+        "enum": [
+          "QUEUED",
+          "TEST_ONLY",
+          "SENT",
+          "ACCEPTED",
+          "REJECTED",
+          "FAILED"
+        ]
+      },
+      "MobileTransferCreatedResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "method": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/TransferMethod"
+              }
+            ]
+          },
+          "status": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/TransferStatus"
+              }
+            ]
+          },
+          "erodsMode": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ErodsMode"
+              }
+            ]
+          },
+          "referenceId": {
+            "type": "string",
+            "nullable": true
+          },
+          "sentAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "fileName": {
+            "type": "string"
+          },
+          "outputFileComment": {
+            "type": "string"
+          },
+          "rangeStart": {
+            "type": "string",
+            "format": "date-time",
+            "description": "First RODS day at UTC midnight (a `@db.Date` column)."
+          },
+          "rangeEnd": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Last RODS day at UTC midnight (a `@db.Date` column)."
+          },
+          "warnings": {
+            "description": "§10.3 pre-send warning codes (UNCERTIFIED_LOGS, UNRESOLVED_UNIDENTIFIED, ACTIVE_MALFUNCTION, ERODS_TEST_MODE).",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "counts": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "Data-line count per output-file segment."
+          },
+          "clientId": {
+            "type": "string",
+            "nullable": true,
+            "description": "MB-18 — echo of the request `clientId` (offline-queued transfers)."
+          },
+          "requestedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "MB-18 — when the driver asked for the transfer on the device."
+          }
+        },
+        "required": [
+          "id",
+          "method",
+          "status",
+          "erodsMode",
+          "referenceId",
+          "sentAt",
+          "createdAt",
+          "fileName",
+          "outputFileComment",
+          "rangeStart",
+          "rangeEnd",
+          "warnings",
+          "counts",
+          "clientId",
+          "requestedAt"
+        ]
+      },
+      "MobileTransferView": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "method": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/TransferMethod"
+              }
+            ]
+          },
+          "status": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/TransferStatus"
+              }
+            ]
+          },
+          "erodsMode": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ErodsMode"
+              }
+            ]
+          },
+          "referenceId": {
+            "type": "string",
+            "nullable": true
+          },
+          "sentAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "fileName": {
+            "type": "string"
+          },
+          "outputFileComment": {
+            "type": "string"
+          },
+          "rangeStart": {
+            "type": "string",
+            "format": "date-time",
+            "description": "First RODS day at UTC midnight (a `@db.Date` column)."
+          },
+          "rangeEnd": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Last RODS day at UTC midnight (a `@db.Date` column)."
+          }
+        },
+        "required": [
+          "id",
+          "method",
+          "status",
+          "erodsMode",
+          "referenceId",
+          "sentAt",
+          "createdAt",
+          "fileName",
+          "outputFileComment",
+          "rangeStart",
+          "rangeEnd"
+        ]
+      },
+      "MobileTransferListResponse": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MobileTransferView"
+            }
+          },
+          "total": {
+            "type": "integer"
+          },
+          "limit": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit"
+        ]
+      },
       "HosCompareSkipReason": {
         "type": "string",
         "enum": [
@@ -73847,8 +75834,19 @@
             "maxLength": 80
           },
           "email": {
-            "type": "string",
-            "format": "email"
+            "oneOf": [
+              {
+                "type": "string",
+                "format": "email",
+                "maxLength": 254
+              },
+              {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 0
+              }
+            ],
+            "nullable": true
           },
           "phone": {
             "type": "string",
@@ -74553,7 +76551,8 @@
         "properties": {
           "email": {
             "type": "string",
-            "format": "email"
+            "format": "email",
+            "maxLength": 254
           },
           "firstName": {
             "type": "string",
@@ -74948,6 +76947,19 @@
           "MEDICAL_CARD",
           "MVR",
           "OTHER"
+        ]
+      },
+      "DriverEmailChangeTokenDto": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "token"
         ]
       },
       "DriverForgotPasswordDto": {
@@ -78085,8 +80097,19 @@
             "maxLength": 80
           },
           "email": {
-            "type": "string",
-            "format": "email"
+            "oneOf": [
+              {
+                "type": "string",
+                "format": "email",
+                "maxLength": 254
+              },
+              {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 0
+              }
+            ],
+            "nullable": true
           },
           "phone": {
             "type": "string",
@@ -78148,6 +80171,16 @@
           },
           "status": {
             "$ref": "#/components/schemas/DriverStatusEnum"
+          },
+          "currentPassword": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "reauthIdToken": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
           }
         }
       },
@@ -78536,11 +80569,22 @@
           },
           "email": {
             "type": "string",
-            "format": "email"
+            "format": "email",
+            "maxLength": 254
           },
           "homeTerminalName": {
             "type": "string",
             "maxLength": 120
+          },
+          "currentPassword": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "reauthIdToken": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
           }
         }
       },

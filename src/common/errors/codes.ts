@@ -39,6 +39,13 @@ export const ERROR_CODES = {
   /** Web "Forgot password?" — no usable code: never requested, expired, already used, or locked
    * after too many wrong attempts. 422, `details: { code: message }`; request a new code. */
   RESET_CODE_EXPIRED: 'RESET_CODE_EXPIRED',
+  /** Driver email change — `PATCH /drivers/:id` with a new `email` needs the acting web user to
+   * re-confirm their identity (`currentPassword`, or `reauthIdToken` for a Google-only account).
+   * 401, `details: { currentPassword: message }`. Never a session code: the web keeps its token. */
+  REAUTH_REQUIRED: 'REAUTH_REQUIRED',
+  /** Driver email change — the re-entered password (or Google re-auth) did not match. 401,
+   * `details: { currentPassword: message }`. */
+  REAUTH_FAILED: 'REAUTH_FAILED',
 
   // --- fleet (TZ §5.3, §5.4) ----------------------------------------------
   DRIVER_NOT_FOUND: 'DRIVER_NOT_FOUND',
@@ -84,6 +91,11 @@ export const ERROR_CODES = {
   DRIVER_DOCUMENT_NOT_FOUND: 'DRIVER_DOCUMENT_NOT_FOUND',
   /** §20 B-7 — co-driver pairing not found / already ended. */
   CO_DRIVER_PAIRING_NOT_FOUND: 'CO_DRIVER_PAIRING_NOT_FOUND',
+  /** Driver email change — another change is refused while the hold window of the last confirmed
+   * change is still open (`DRIVER_EMAIL_CHANGE_HOLD_HOURS`). 409, `details: { email, holdUntil }`. */
+  EMAIL_CHANGE_ON_HOLD: 'EMAIL_CHANGE_ON_HOLD',
+  /** Driver email change — `POST/DELETE /drivers/:id/email-change` with no pending change. 404. */
+  EMAIL_CHANGE_NOT_PENDING: 'EMAIL_CHANGE_NOT_PENDING',
 
   // --- ingest (TZ §7) ------------------------------------------------------
   CHECKSUM_MISMATCH: 'CHECKSUM_MISMATCH',

@@ -70,6 +70,12 @@ export const CUSTOM_INDEXES: readonly CustomIndex[] = [
     migration: '20261007110000_trailer_soft_delete',
     why: 'trailer number unique among live (deletedAt IS NULL) trailers',
   },
+  {
+    name: 'User_email_lower_key',
+    table: 'User',
+    migration: '20261014120000_user_email_lowercase',
+    why: 'web-user email unique ignoring case (expression index on lower(email))',
+  },
 ];
 
 export const CUSTOM_INDEX_NAMES: ReadonlySet<string> = new Set(CUSTOM_INDEXES.map((i) => i.name));

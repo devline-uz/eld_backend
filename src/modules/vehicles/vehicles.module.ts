@@ -4,7 +4,6 @@ import { CarrierModule } from '../carrier/carrier.module';
 import { DriversModule } from '../drivers/drivers.module';
 import { MobileModule } from '../mobile/mobile.module';
 import { NotificationsModule } from '../notifications/notifications.module';
-import { TransfersModule } from '../transfers/transfers.module';
 import { UsersModule } from '../users/users.module';
 import { TrailersController } from './trailers.controller';
 import { TrailersRepository } from './trailers.repository';
@@ -21,7 +20,8 @@ import { VehiclesService } from './vehicles.service';
  * `DriversRepository`). Never the reverse: keeps the module graph acyclic instead of using
  * `forwardRef`, and matches the DVIR out-of-service rule living on the vehicle, not the driver.
  * `NotificationsModule` (B-74 notify), `CarrierModule` (histories day-boundary fallback tz),
- * `UsersModule`/`TransfersModule` (B-69 `emailSummary`), `MobileModule` (FCM push on
+ * `UsersModule` (B-69 `emailSummary` recipient; the mail itself is the `@Global()`
+ * `MailModule`'s real SMTP `TRANSACTIONAL_MAIL`), `MobileModule` (FCM push on
  * assign-driver — reads `MobileRepository.findPushTokens`, never imports `VehiclesModule`
  * back) are all one-directional the same way — none of them import `VehiclesModule` back.
  * Telemetry reads (B-4 histories, telemetry read
@@ -44,7 +44,6 @@ import { VehiclesService } from './vehicles.service';
     NotificationsModule,
     CarrierModule,
     UsersModule,
-    TransfersModule,
     forwardRef(() => MobileModule),
   ],
   controllers: [VehiclesController, TrailersController, VehicleGroupsController],

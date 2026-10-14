@@ -1,7 +1,8 @@
-import { Inject, Injectable, Optional } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { EventBusService } from '../../core/events/event-bus.service';
 import { publishVehicleUnassigned } from '../vehicles/vehicle-assignment-events';
 import { randomBytes, randomInt } from 'node:crypto';
+import ms from 'ms';
 import type { Driver, DriverDocument, HosRuleset, Prisma } from '@prisma/client';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
@@ -12,7 +13,9 @@ import { AttachmentsService } from '../attachments/attachments.service';
 import { CarrierRepository } from '../carrier/carrier.repository';
 import { hashPassword } from '../auth/lib/password.util';
 import { TokenService } from '../auth/token.service';
-import { MAIL_PORT, MailPort } from '../transfers/mail.port';
+import { TRANSACTIONAL_MAIL, TransactionalMailPort } from '../../core/mail/mail.port';
+import type { ContextUser } from '../../core/context/request-context';
+import { DriverEmailChangeService, EmailVerificationView } from './driver-email-change.service';
 import {
   CreateDriverDocumentDto,
   DRIVER_DOCUMENT_CONTENT_TYPES,
@@ -110,13 +113,17 @@ export interface DriverDocumentView {
  */
 @Injectable()
 export class DriversService {
+  private readonly logger = new Logger(DriversService.name);
+
   constructor(
     private readonly drivers: DriversRepository,
     private readonly tokens: TokenService,
     private readonly config: AppConfigService,
-    @Inject(MAIL_PORT) private readonly mail: MailPort,
+    /** Real SMTP (`MailModule`) — invites, verification, carrier reset. Not the eRODS `MAIL_PORT`. */
+    @Inject(TRANSACTIONAL_MAIL) private readonly mail: TransactionalMailPort,
     @Inject(STORAGE_PORT) private readonly storage: StoragePort,
     private readonly attachments: AttachmentsService,
+    private readonly emailChange: DriverEmailChangeService,
     /** UI-005 — read-only: the carrier's default `hosRuleset` for a driver created without one. */
     @Optional() private readonly carrier?: CarrierRepository,
     @Optional() private readonly events?: EventBusService,
@@ -179,6 +186,10 @@ export class DriversService {
     if (values.email) {
       const existing = await this.drivers.findByEmail(values.email);
       if (existing && existing.id !== exceptDriverId) throw driverConflict('email');
+      // Another driver's still-valid pending change has reserved this address.
+      if (await this.drivers.findLiveIdByPendingEmail(values.email, this.emailChange.pendingCutoff(), exceptDriverId)) {
+        throw driverConflict('email');
+      }
     }
     const phone = phoneKey(values.phone);
     if (phone && (await this.drivers.findLiveIdByPhoneKey(phone, exceptDriverId))) throw driverConflict('phone');
@@ -229,13 +240,43 @@ export class DriversService {
     return { ...toView(created), inviteCode };
   }
 
-  async update(id: string, dto: UpdateDriverDto): Promise<DriverView> {
-    await this.getRaw(id);
-    const data = this.normalizeUpdate(dto);
-    await this.assertUniquesAvailable(data, id);
+  /**
+   * `PATCH /drivers/:id`. `email` is never written here: a changed address becomes a pending change
+   * (`DriverEmailChangeService`) that needs the acting user's re-authentication and the new
+   * owner's confirmation. An unchanged email (after trim + lower-case) is a no-op. A blank email
+   * (`''` / `null`) on a driver that has one clears it at once, behind the same hold + re-auth gate,
+   * with a notice (and revert link) to the old address; blank on a driver without one is a no-op.
+   */
+  async update(
+    id: string,
+    dto: UpdateDriverDto,
+    actor?: ContextUser,
+  ): Promise<DriverView & { emailVerification?: EmailVerificationView }> {
+    const current = await this.getRaw(id);
+    const { currentPassword, reauthIdToken, ...fields } = dto;
+    const { email, ...data } = this.normalizeUpdate(fields);
+    const currentEmail = normalizeEmail(current.email) ?? null;
+    // `undefined` = not sent (unchanged); `null` = sent blank → clear, but only when there is one.
+    const newEmail = typeof email === 'string' && email !== currentEmail ? email : undefined;
+    const clearing = email === null && currentEmail !== null;
+    await this.assertUniquesAvailable({ ...data, email: newEmail }, id);
     await this.assertFleetManagerExists(dto.fleetManagerId);
-    const updated = await this.conflictOnDuplicate(this.drivers.update({ id }, this.toUpdateInput(data)));
-    return toView(updated);
+    if (clearing) {
+      // Removing the address is as sensitive as changing it: same hold check and re-auth.
+      await this.emailChange.assertRequestable(current, actor, { currentPassword, reauthIdToken });
+      const input = { ...this.toUpdateInput(data), ...this.emailChange.clearInput(current, new Date()) };
+      const updated = await this.conflictOnDuplicate(this.drivers.update({ id }, input));
+      await this.emailChange.notifyCleared(updated, current);
+      return toView(updated);
+    }
+    if (newEmail === undefined) {
+      return toView(await this.conflictOnDuplicate(this.drivers.update({ id }, this.toUpdateInput(data))));
+    }
+    await this.emailChange.assertRequestable(current, actor, { currentPassword, reauthIdToken });
+    const input = { ...this.toUpdateInput(data), ...this.emailChange.pendingInput(newEmail, (actor as ContextUser).id, new Date()) };
+    const updated = await this.conflictOnDuplicate(this.drivers.update({ id }, input));
+    const emailVerification = await this.emailChange.notifyRequested(updated, current);
+    return { ...toView(updated), emailVerification };
   }
 
   /** Soft-delete only — see bugs.md B-009 (hard `DELETE` breaks on the `EldEvent` FK's
@@ -297,7 +338,10 @@ export class DriversService {
             continue;
           }
           const { username: _username, password: _password, assignedVehicleId: _unit, ...updateRow } = row;
-          const data = this.normalizeUpdate(updateRow);
+          const normalized = this.normalizeUpdate(updateRow);
+          // An existing driver's email is never changed by an import: that needs the profile's
+          // re-authenticated, confirmed email-change flow. The other fields still update.
+          const { email: _importEmail, ...data } = normalized;
           await this.assertUniquesAvailable(data, existing.id);
           await this.assertFleetManagerExists(updateRow.fleetManagerId);
           await this.conflictOnDuplicate(this.drivers.update({ id: existing.id }, this.toUpdateInput(data)));
@@ -345,13 +389,20 @@ export class DriversService {
    * Immediately rotates the driver's app password to a fresh one-time code; the code is
    * emailed when the driver has an email on file, otherwise returned for the dispatcher to
    * read out loud (`tz.md` "yoki dispetcher aytib beradigan bir martalik kod"). */
-  async resetPassword(id: string): Promise<{ emailedTo: string | null; code?: string }> {
+  async resetPassword(
+    id: string,
+  ): Promise<{ emailedTo: string | null; code?: string; emailHoldUntil?: string }> {
     const driver = await this.getRaw(id);
     const code = this.generateOneTimeCode();
     await this.drivers.update({ id }, { passwordHash: await hashPassword(code) });
     // B-094 — a carrier reset is typically "lost/stolen phone": the old refresh tokens must
     // stop working too, not just the old password (same as AuthService.resetPassword for users).
     await this.drivers.revokeAllSessions(id);
+    // Driver email change hold — a just-changed address is not trusted with a password yet: the
+    // code goes to the dispatcher (the same path as a driver without an email), never to the mail.
+    if (driver.email && this.emailChange.isInHold(driver)) {
+      return { emailedTo: null, code, emailHoldUntil: this.emailChange.holdUntil(driver)?.toISOString() };
+    }
     if (driver.email) {
       await this.mail.send({
         to: driver.email,
@@ -372,12 +423,24 @@ export class DriversService {
     const driver = await this.getRaw(id);
     if (!driver.email) throw AppException.unprocessable(ERROR_CODES.VALIDATION_FAILED, 'Driver has no email on file to verify.');
     const token = this.tokens.signDriverEmailVerifyToken(driver.id, driver.email);
-    await this.mail.send({
+    // The mail carries a link to the public web page `/driver-email/verify`, which posts the
+    // token to `POST /auth/driver/email/verify` on a click — never the raw token.
+    const link = new URL('/driver-email/verify', this.config.get('WEB_APP_URL'));
+    link.searchParams.set('token', token);
+    const rawTtl = this.config.get('JWT_PASSWORD_RESET_TTL');
+    const ttl = typeof rawTtl === 'string' && rawTtl ? ms(rawTtl as ms.StringValue) : undefined;
+    const expiry = typeof ttl === 'number' && ttl > 0 ? ms(ttl, { long: true }) : null;
+    const result = await this.mail.send({
       to: driver.email,
       subject: 'Verify your OneBook ELD driver email',
-      text: `Verification token: ${token}`,
+      text:
+        `Your carrier asked to verify the email on your OneBook ELD driver account (${driver.username}).\n\n` +
+        `Verify it here: ${link.toString()}\n\n` +
+        (expiry ? `The link expires in ${expiry}. ` : '') +
+        'If you did not expect this, ignore this email.',
       attachments: [],
     });
+    if (!result.delivered) this.logger.warn({ driverId: driver.id, reason: result.reference }, 'Driver email verification link was not delivered');
     return { emailedTo: driver.email, ...(this.config.echoOneTimeSecrets ? { code: token } : {}) };
   }
 
@@ -472,8 +535,8 @@ export class DriversService {
   }
 
   /** Shared by `create({ sendInvitation: true })` and the drivers-import `sendInvitations`
-   * option — Phase 1 has no SMTP client wired for real, `MAIL_PORT`'s default provider logs
-   * and returns undelivered (see `mail.port.ts`); the code is still returned outside
+   * option — sent through the SMTP transport (`TRANSACTIONAL_MAIL`; without `SMTP_HOST` it logs
+   * and reports undelivered); the code is still returned with `DEV_ECHO_SECRETS` outside
    * production so the flow is testable end-to-end, matching `AuthService.forgotPassword`. */
   private async dispatchOneTimeCode(driver: Driver, subject: string): Promise<string | undefined> {
     if (!driver.email) return undefined;
@@ -499,7 +562,8 @@ export class DriversService {
   private normalizeUpdate(dto: UpdateDriverDto): UpdateDriverDto {
     return {
       ...dto,
-      ...(dto.email !== undefined && { email: normalizeEmail(dto.email) ?? undefined }),
+      // `''` / `null` → `null` (an explicit clear); `undefined` (not sent) stays `undefined`.
+      ...(dto.email !== undefined && { email: normalizeEmail(dto.email) }),
       // `''` stays `''` so a PATCH can still clear the phone (an empty phone never conflicts).
       ...(dto.phone !== undefined && { phone: dto.phone.trim() }),
       ...(dto.cdlNumber !== undefined && { cdlNumber: dto.cdlNumber.trim() }),

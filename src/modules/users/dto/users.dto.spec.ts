@@ -53,3 +53,17 @@ describe.each([
     }
   });
 });
+
+describe('CreateUserDto.email (POST /users)', () => {
+  it('trims surrounding whitespace', () => {
+    const result = CreateUserDto.safeParse({ ...createBase, email: '  New.User@Fleet.example ' });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.email).toBe('New.User@Fleet.example');
+  });
+
+  it('rejects an address longer than 254 characters', () => {
+    const email = `${'a'.repeat(64)}@${'b'.repeat(63)}.${'c'.repeat(63)}.${'d'.repeat(63)}.com`;
+    expect(email.length).toBeGreaterThan(254);
+    expect(CreateUserDto.safeParse({ ...createBase, email }).success).toBe(false);
+  });
+});

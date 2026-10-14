@@ -5,6 +5,9 @@ function buildProcessor(overrides: {
   deliveriesTodayCount?: number;
   lastDelivered?: { sentAt: Date } | null;
   notificationChannels?: unknown;
+  user?: { email: string; status: string } | null;
+  driver?: { email: string | null; status: string; deletedAt: Date | null; homeTerminalTimezone?: string } | null;
+  mailResult?: { delivered: boolean; reference: string };
 } = {}) {
   const created: unknown[] = [];
   const sentIds: string[] = [];
@@ -24,8 +27,17 @@ function buildProcessor(overrides: {
     markFailed: jest.fn(async () => undefined),
   };
   const prisma = {
-    user: { findMany: jest.fn(async () => []) },
-    driver: { findUnique: jest.fn(async () => ({ homeTerminalTimezone: 'America/Chicago' })) },
+    user: {
+      findMany: jest.fn(async () => []),
+      findUnique: jest.fn(async () => (overrides.user === undefined ? { email: 'dispatch@example.com', status: 'ACTIVE' } : overrides.user)),
+    },
+    driver: {
+      findUnique: jest.fn(async () =>
+        overrides.driver === undefined
+          ? { homeTerminalTimezone: 'America/Chicago', email: 'driver@example.com', status: 'ACTIVE', deletedAt: null }
+          : overrides.driver,
+      ),
+    },
     carrier: {
       findFirst: jest.fn(async () => ({ timezone: 'America/New_York', notificationChannels: overrides.notificationChannels ?? {} })),
     },
@@ -34,6 +46,7 @@ function buildProcessor(overrides: {
   const push = { sendToDriver: jest.fn(async () => undefined) };
   const webhooks = { notify: jest.fn(async () => null) };
   const events = { publish: jest.fn(async () => undefined) };
+  const mail = { send: jest.fn(async () => overrides.mailResult ?? { delivered: true, reference: '<msg@x>' }) };
 
   const processor = new AlertProcessor(
     rules as never,
@@ -42,8 +55,9 @@ function buildProcessor(overrides: {
     push as never,
     webhooks as never,
     events as never,
+    mail,
   );
-  return { processor, rules, deliveries, prisma, push, webhooks, events, created, sentIds, suppressed };
+  return { processor, rules, deliveries, prisma, push, webhooks, events, mail, created, sentIds, suppressed };
 }
 
 const baseRule = {
@@ -148,13 +162,14 @@ describe('AlertProcessor', () => {
 
   it('TZ §20 B-87 — a disabled org EMAIL channel suppresses delivery without attempting to send', async () => {
     const rule = { ...baseRule, channels: ['EMAIL'] };
-    const { processor, deliveries, suppressed } = buildProcessor({
+    const { processor, deliveries, suppressed, mail } = buildProcessor({
       rulesFound: [rule],
       notificationChannels: { email: { enabled: false } },
     });
     await processor.process({ name: 'alert.odometer_anomaly', data: { driverId: 'drv_1' } } as never);
     expect(deliveries.create).toHaveBeenCalledTimes(1);
     expect(suppressed).toEqual([{ id: 'del_1', reason: 'CHANNEL_DISABLED' }]);
+    expect(mail.send).not.toHaveBeenCalled();
   });
 
   it('TZ §20 B-87 — a disabled org WEBHOOK channel suppresses delivery and never calls WebhooksService', async () => {
@@ -185,6 +200,84 @@ describe('AlertProcessor', () => {
     const { processor, deliveries } = buildProcessor({ rulesFound: [rule] });
     await processor.process({ name: 'alert.edit_request', data: { requestId: 'evt_1' } } as never);
     expect(deliveries.create).not.toHaveBeenCalled();
+  });
+
+  describe('EMAIL channel (real SMTP via TRANSACTIONAL_MAIL)', () => {
+    const emailRule = { ...baseRule, channels: ['EMAIL'] };
+
+    it('emails a driver recipient and marks the delivery SENT', async () => {
+      const { processor, mail, sentIds, deliveries } = buildProcessor({ rulesFound: [emailRule] });
+      await processor.process({ name: 'alert.hos_violation', data: { driverId: 'drv_1' } } as never);
+      expect(mail.send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          to: 'driver@example.com',
+          subject: 'OneBook ELD warning alert: Alert',
+          text: expect.stringContaining('An HOS violation was detected.') as string,
+        }),
+      );
+      expect(sentIds).toEqual(['del_1']);
+      expect(deliveries.markFailed).not.toHaveBeenCalled();
+    });
+
+    it('emails an ACTIVE user recipient', async () => {
+      const rule = { ...emailRule, recipients: { userIds: ['usr_1'] } };
+      const { processor, mail, sentIds } = buildProcessor({ rulesFound: [rule] });
+      await processor.process({ name: 'alert.odometer_anomaly', data: { title: 'Odometer jump' } } as never);
+      expect(mail.send).toHaveBeenCalledWith(expect.objectContaining({ to: 'dispatch@example.com', subject: 'OneBook ELD warning alert: Odometer jump' }));
+      expect(sentIds).toEqual(['del_1']);
+    });
+
+    it('marks the delivery FAILED (and does not throw) when SMTP does not deliver', async () => {
+      const { processor, deliveries, sentIds } = buildProcessor({
+        rulesFound: [emailRule],
+        mailResult: { delivered: false, reference: 'SMTP_SEND_FAILED' },
+      });
+      await expect(processor.process({ name: 'alert.hos_violation', data: { driverId: 'drv_1' } } as never)).resolves.toBeUndefined();
+      expect(deliveries.markFailed).toHaveBeenCalledWith('del_1', 'SMTP_SEND_FAILED');
+      expect(sentIds).toHaveLength(0);
+    });
+
+    it('without SMTP_HOST (dev/CI) records NO_MAIL_TRANSPORT as the failure reason', async () => {
+      const { processor, deliveries } = buildProcessor({
+        rulesFound: [emailRule],
+        mailResult: { delivered: false, reference: 'NO_MAIL_TRANSPORT' },
+      });
+      await processor.process({ name: 'alert.hos_violation', data: { driverId: 'drv_1' } } as never);
+      expect(deliveries.markFailed).toHaveBeenCalledWith('del_1', 'NO_MAIL_TRANSPORT');
+    });
+
+    it('never sends to a driver without an email and marks the delivery FAILED', async () => {
+      const { processor, mail, deliveries } = buildProcessor({
+        rulesFound: [emailRule],
+        driver: { email: null, status: 'ACTIVE', deletedAt: null, homeTerminalTimezone: 'America/Chicago' },
+      });
+      await processor.process({ name: 'alert.hos_violation', data: { driverId: 'drv_1' } } as never);
+      expect(mail.send).not.toHaveBeenCalled();
+      expect(deliveries.markFailed).toHaveBeenCalledWith('del_1', 'NO_EMAIL_ADDRESS');
+    });
+
+    it('never emails a DISABLED user', async () => {
+      const rule = { ...emailRule, recipients: { userIds: ['usr_1'] } };
+      const { processor, mail, deliveries } = buildProcessor({
+        rulesFound: [rule],
+        user: { email: 'gone@example.com', status: 'DISABLED' },
+      });
+      await processor.process({ name: 'alert.odometer_anomaly', data: {} } as never);
+      expect(mail.send).not.toHaveBeenCalled();
+      expect(deliveries.markFailed).toHaveBeenCalledWith('del_1', 'NO_EMAIL_ADDRESS');
+    });
+
+    it('a failed EMAIL does not block the IN_APP delivery of the same rule', async () => {
+      const rule = { ...baseRule, channels: ['EMAIL', 'IN_APP'] };
+      const { processor, prisma, sentIds, deliveries } = buildProcessor({
+        rulesFound: [rule],
+        mailResult: { delivered: false, reference: 'SMTP_SEND_FAILED' },
+      });
+      await processor.process({ name: 'alert.hos_violation', data: { driverId: 'drv_1' } } as never);
+      expect(deliveries.markFailed).toHaveBeenCalledWith('del_1', 'SMTP_SEND_FAILED');
+      expect(prisma.notification.create).toHaveBeenCalledTimes(1);
+      expect(sentIds).toEqual(['del_2']);
+    });
   });
 
   it('IN_APP is never gated by the org channel toggles', async () => {

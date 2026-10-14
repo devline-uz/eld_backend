@@ -4,6 +4,8 @@ import { AttachmentsModule } from '../attachments/attachments.module';
 import { AuthModule } from '../auth/auth.module';
 import { RolesModule } from '../roles/roles.module';
 import { MeController } from './me.controller';
+import { UserEmailChangeService } from './user-email-change.service';
+import { UserEmailController } from './user-email.controller';
 import { UsersController } from './users.controller';
 import { UsersRepository } from './users.repository';
 import { UsersService } from './users.service';
@@ -11,8 +13,8 @@ import { UsersService } from './users.service';
 @Module({
   // AttachmentsModule — B-51 avatarUrl reuses the reusable presign helper (AttachmentsService).
   imports: [AuthModule, RolesModule, AttachmentsModule],
-  controllers: [UsersController, MeController],
-  providers: [UsersService, UsersRepository],
+  controllers: [UsersController, MeController, UserEmailController],
+  providers: [UsersService, UsersRepository, UserEmailChangeService],
   exports: [UsersService, UsersRepository],
 })
 export class UsersModule implements OnModuleInit {

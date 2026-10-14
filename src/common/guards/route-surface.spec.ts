@@ -30,8 +30,17 @@ const PUBLIC_ROUTES = new Set([
   // B-84 — email re-verification token is self-authenticating (same convention as
   // password/reset above); no bearer token exists yet if the caller followed the link cold.
   'POST /auth/email/verify',
+  // B-84 — "this wasn't me" link mailed to a web user's OLD address (user id + both addresses +
+  // request time bound in the signed token, throttled 10/min); cancels or, in the hold, reverts.
+  'POST /auth/email/cancel',
   // MR-31 — driver password reset mirrors the user flow above: always-200 forgot (no
   // enumeration), emailed single-use code on reset; the caller has no session by definition.
+  // Driver email change — signed links from the confirm mail (new address) and notice (old address).
+  'POST /auth/driver/email/confirm',
+  'POST /auth/driver/email/cancel',
+  // B-29/B-31 — signed verify link from `POST /drivers/:id/send-verification` (driver id + address
+  // bound in the token, throttled 10/min); the driver is never a panel user.
+  'POST /auth/driver/email/verify',
   'POST /auth/driver/password/forgot',
   'POST /auth/driver/password/reset',
   // MR-7 / MR-30 — app update gate and legal URLs must work before login (docs/mobile-requests-2026-10-08.md);
