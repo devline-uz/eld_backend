@@ -20,6 +20,8 @@ export interface UserTokenSubject {
 
 export interface DriverTokenSubject {
   id: string;
+  /** D-155 — the `DriverSession.id` issued alongside; lets the server find the caller's session family. */
+  sessionId?: string;
 }
 
 const PASSWORD_RESET_TYP = 'password_reset';
@@ -135,7 +137,7 @@ export class TokenService extends TokenVerifier {
   }
 
   signDriverAccessToken(driver: DriverTokenSubject): string {
-    const claims: AccessTokenClaims = { sub: driver.id, typ: 'driver' };
+    const claims: AccessTokenClaims = { sub: driver.id, typ: 'driver', sid: driver.sessionId };
     return jwt.sign(claims, this.secret, {
       expiresIn: this.config.get('JWT_DRIVER_ACCESS_TTL'),
     } as jwt.SignOptions);

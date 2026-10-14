@@ -15,6 +15,8 @@ import { EventBusService } from '../../core/events/event-bus.service';
 import { publishBootstrapChanged, publishVehicleUnassigned } from '../vehicles/vehicle-assignment-events';
 import { RodsLoginRecorder } from '../logs/rods-login-recorder';
 
+const LEDGER_TYPE = 'co_driver_switch';
+
 /**
  * mobile/tz.md §21.1 MB-3, screens S-11/S-18/S-19 — the driver-seat handoff between an
  * active `CoDriverPairing`'s two drivers.
@@ -52,7 +54,21 @@ export class MobileCoDriverService {
     };
   }
 
-  async switch(driverId: string, dto: CoDriverSwitchDto, actor: ContextUser, meta: RequestMeta): Promise<AccessTokenPair> {
+  async switch(driverId: string, dto: CoDriverSwitchDto, actor: ContextUser, meta: RequestMeta, sessionId?: string): Promise<AccessTokenPair> {
+    // D-155 — replay: the same clientId returns the first pair (encrypted under the password, short TTL).
+    if (dto.clientId) {
+      const prior = await this.mobileRepo.findSyncedByClientId(driverId, dto.clientId);
+      if (prior) {
+        if (prior.type !== LEDGER_TYPE) throw AppException.conflict('clientId already used by another operation.', { clientId: dto.clientId });
+        const pair = await this.auth.recallSwitchPair(dto.coDriverPassword, `${driverId}:${dto.clientId}`);
+        if (pair) return pair;
+        throw AppException.conflict('This switch was already applied — sign in as the co-driver.', { clientId: dto.clientId });
+      }
+    }
+    // D-155 — the caller's own session family goes with the switch; a caller whose session was
+    // already revoked (stale token, no clientId replay) must not swap the seats back.
+    const outgoing = await this.auth.resolveDriverSessionFamily(driverId, sessionId);
+    if (outgoing?.revoked) throw new AppException(ERROR_CODES.TOKEN_INVALID, 'Session was revoked — sign in again.', 401);
     const pairing = await this.mobileRepo.findActivePairing(driverId);
     if (!pairing) {
       throw new AppException(ERROR_CODES.NOT_FOUND, 'No active co-driver pairing for this driver.', 404);
@@ -84,9 +100,13 @@ export class MobileCoDriverService {
       newPrimaryDriverId: coDriverId,
       newCoDriverId: driverId,
       vehicleId: pairing.vehicleId,
+      ...(outgoing ? { revokeFamily: { driverId, familyId: outgoing.familyId } } : {}),
     });
+    // D-155 — the outgoing driver's ELD session on the unit ends with their app session (4.5.1.5
+    // logout, idempotent: nothing is written when no login is open, so /auth/logout afterwards never doubles it).
+    if (outgoing) await this.loginRecords.logout(driverId, 'CO_DRIVER_SWITCH', { onlyVehicleId: pairing.vehicleId });
     // D-130 — the co-driver taking the seat authenticates on the unit: §395 Appendix A 4.5.1.5
-    // login (idempotent). The handing-over driver stays logged in as the co-driver (4.1.4(b)).
+    // login (idempotent).
     await this.loginRecords.login(coDriverId, pairing.vehicleId, 'CO_DRIVER_SWITCH');
 
     await this.writeAudit(actor, 'CO_DRIVER_SWITCHED', driverId, {
@@ -98,6 +118,10 @@ export class MobileCoDriverService {
     await publishBootstrapChanged(this.events, driverId, 'co_driver_switched');
     await publishBootstrapChanged(this.events, coDriverId, 'co_driver_switched');
 
+    if (dto.clientId) {
+      await this.auth.stashSwitchPair(dto.coDriverPassword, `${driverId}:${dto.clientId}`, { accessToken: tokens.accessToken, refreshToken: tokens.refreshToken });
+      await this.mobileRepo.recordSyncedResult(driverId, dto.clientId, LEDGER_TYPE, now, 'ACCEPTED', null, { coDriverId, pairingId: pairing.id });
+    }
     return tokens;
   }
 

@@ -43,7 +43,9 @@ export class MobileCoDriverController {
    * a login endpoint and gets the same 5/min/IP budget as `/auth/driver/login` (§6.5). */
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post('switch')
-  @ApiOperation({ summary: 'S-11/S-18/S-19 — hands the driver seat to the paired co-driver; returns the CO-DRIVER\'s own token pair.' })
+  @ApiOperation({ summary: 'S-11/S-18/S-19 — hands the driver seat to the paired co-driver; returns the CO-DRIVER\'s own token pair.',
+    description: 'D-155 — the CALLER\'s own session family (from the access token `sid`) is revoked atomically with the seat swap; their other devices stay signed in. The app must drop the old tokens and MUST NOT call /auth/logout with them (harmless if it does: 200 {success:true}, no further effect). Optional `clientId`: a replay (within REFRESH_REUSE_GRACE_SECONDS, same password) returns the first pair; later replay = 409 CONFLICT, sign in as the co-driver. A stale caller token (session already revoked) without a replaying clientId = 401 TOKEN_INVALID.',
+  })
   @ApiEnvelopeResponse(TokenPairResponse, { status: 201, example: { accessToken: 'eyJ...', refreshToken: 'a1b2...', tokenType: 'Bearer' } })
   @ApiStandardErrors({
     errors: [
@@ -52,7 +54,7 @@ export class MobileCoDriverController {
     ],
   })
   switch(@Body(zodBody(CoDriverSwitchDto)) dto: CoDriverSwitchDto, @CurrentUser() actor: ContextUser, @Req() req: Request) {
-    return this.service.switch(actor.id, dto, actor, AuthService.meta(req));
+    return this.service.switch(actor.id, dto, actor, AuthService.meta(req), actor.sessionId);
   }
 
   @Post('leave')
