@@ -90,6 +90,17 @@ export const apiError = {
       .map((c) => `${c.code} (details.${c.field}: "${c.message}")`)
       .join('; ')}.`,
   }),
+  /**
+   * Several 422 codes on one route (Swagger keeps one response per status): the example is the
+   * first entry, the description lists every `code` with its meaning.
+   */
+  unprocessableOneOf: (errors: Array<{ code: ErrorCode; message: string; details?: Record<string, unknown> }>): ApiErrorSpec => ({
+    status: 422,
+    code: errors[0].code,
+    message: errors[0].message,
+    ...(errors[0].details ? { details: errors[0].details } : {}),
+    description: `Unprocessable — one of: ${errors.map((e) => `${e.code} (${e.message})`).join('; ')}`,
+  }),
   rateLimited: (message = 'Too many requests — try again later.'): ApiErrorSpec => ({
     status: 429,
     code: ERROR_CODES.RATE_LIMITED,

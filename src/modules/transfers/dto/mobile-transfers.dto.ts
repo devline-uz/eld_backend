@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { transferRangeBound } from './transfers.dto';
 
 /**
  * mobile/tz.md §21 MB-4 / screens M-28, P-13 — `POST /mobile/transfers`. Same shape as the
@@ -8,9 +9,13 @@ import { z } from 'zod';
 export const MobileCreateTransferDto = z
   .object({
     method: z.enum(['WEB_SERVICES', 'EMAIL']),
-    /** RODS day (YYYY-MM-DD) in the driver's home-terminal timezone. */
-    rangeStart: z.coerce.date(),
-    rangeEnd: z.coerce.date(),
+    /**
+     * B-172 — first / last RODS day, counted in the driver's home-terminal timezone (at most 8
+     * days inclusive). `YYYY-MM-DD` is taken as that RODS day; an ISO instant is mapped to the
+     * home-terminal day it falls on.
+     */
+    rangeStart: transferRangeBound,
+    rangeEnd: transferRangeBound,
     outputFileComment: z.string().trim().max(60).default(''),
     /** EMAIL only — re-validated against `*.fmcsa.dot.gov` by `FmcsaTransferService`. */
     recipient: z.string().trim().max(254).optional(),

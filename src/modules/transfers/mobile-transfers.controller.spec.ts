@@ -51,4 +51,14 @@ describe('MobileTransfersController (mobile/tz.md MB-4)', () => {
     const parsed = MobileCreateTransferDto.parse({ method: 'WEB_SERVICES', rangeStart: '2026-09-03', rangeEnd: '2026-09-10', driverId: 'drv_OTHER' });
     expect(parsed).not.toHaveProperty('driverId');
   });
+
+  it('B-172 DTO: a YYYY-MM-DD bound stays a RODS day key (not UTC midnight); an ISO instant becomes a Date; bad dates fail', () => {
+    const keys = MobileCreateTransferDto.parse({ method: 'WEB_SERVICES', rangeStart: '2026-10-06', rangeEnd: '2026-10-13' });
+    expect(keys.rangeStart).toBe('2026-10-06');
+    const instants = MobileCreateTransferDto.parse({ method: 'WEB_SERVICES', rangeStart: '2026-10-06T06:00:00Z', rangeEnd: '2026-10-14T05:59:00Z' });
+    expect(instants.rangeEnd).toEqual(new Date('2026-10-14T05:59:00Z'));
+    expect(MobileCreateTransferDto.safeParse({ method: 'WEB_SERVICES', rangeStart: '2026-02-30', rangeEnd: '2026-03-01' }).success).toBe(false);
+    expect(MobileCreateTransferDto.safeParse({ method: 'WEB_SERVICES', rangeStart: 'nope', rangeEnd: '2026-03-01' }).success).toBe(false);
+    expect(MobileCreateTransferDto.safeParse({ method: 'WEB_SERVICES', rangeStart: '2026-13-45', rangeEnd: '2026-03-01' }).success).toBe(false);
+  });
 });

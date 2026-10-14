@@ -14,10 +14,60 @@
  * roadside even when the log set is imperfect. Errors block, because the resulting file
  * would be meaningless or non-conformant.
  */
+import { dayEnd, dayKey, dayStart } from '../hos/engine/timezone';
 import { inclusiveDayCount } from './filename';
 
-/** §10.3 — the RODS range an inspector may ask for: today plus the previous 7 days. */
+/**
+ * §10.3 — the RODS range an inspector may ask for: today plus the previous 7 days. Counted in
+ * RODS days of the driver's home-terminal timezone (§395.2 "24-hour period" starting at the
+ * home-terminal midnight), never in UTC calendar days (B-172).
+ */
 export const MAX_TRANSFER_RANGE_DAYS = 8;
+
+/** A transfer range bound: a RODS day key `YYYY-MM-DD` (taken as-is) or an instant. */
+export type TransferRangeBound = string | Date;
+
+const DAY_KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** The request range resolved to home-terminal RODS days (B-172, D-156). */
+export interface ResolvedTransferRange {
+  /** First / last RODS day key in the home-terminal timezone. */
+  startKey: string;
+  endKey: string;
+  /** The day keys as UTC-midnight dates — the `@db.Date` form of `DataTransfer.rangeStart/End` and `DailyLog.logDate`. */
+  rangeStart: Date;
+  rangeEnd: Date;
+  /** Real instants: home-terminal midnight that opens `startKey` / closes `endKey` (DST-safe, 23/25 h days). */
+  fromInstant: Date;
+  toInstant: Date;
+}
+
+/**
+ * B-172 — maps a request range onto home-terminal RODS days. A `YYYY-MM-DD` bound is already a
+ * RODS day; an instant is converted to the RODS day it falls on in `timezone`. Shared by the
+ * back-office and the driver route (both go through `TransfersService.create`).
+ */
+export function resolveTransferRange(
+  timezone: string,
+  start: TransferRangeBound,
+  end: TransferRangeBound,
+): ResolvedTransferRange {
+  const startKey = boundDayKey(timezone, start);
+  const endKey = boundDayKey(timezone, end);
+  return {
+    startKey,
+    endKey,
+    rangeStart: new Date(`${startKey}T00:00:00.000Z`),
+    rangeEnd: new Date(`${endKey}T00:00:00.000Z`),
+    fromInstant: dayStart(timezone, startKey),
+    toInstant: dayEnd(timezone, endKey),
+  };
+}
+
+function boundDayKey(timezone: string, bound: TransferRangeBound): string {
+  if (typeof bound === 'string' && DAY_KEY_RE.test(bound)) return bound;
+  return dayKey(timezone, bound instanceof Date ? bound : new Date(bound));
+}
 
 export type PreSendLevel = 'warning' | 'error';
 
@@ -36,6 +86,7 @@ export interface PreSendFinding {
 
 export interface PreSendContext {
   driverExists: boolean;
+  /** RODS day keys as UTC-midnight dates (`ResolvedTransferRange.rangeStart/End`), so a UTC day count is a home-terminal day count. */
   rangeStart: Date;
   rangeEnd: Date;
   /** Unidentified segments touching the range that are still unresolved (PENDING / PENDING_CONFIRMATION). */

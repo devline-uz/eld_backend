@@ -110,5 +110,11 @@ describe('Appendix A 4.8.2.2 — output file name', () => {
     it('is unaffected by the time of day', () => {
       expect(inclusiveDayCount(new Date('2026-09-04T23:59:59Z'), new Date('2026-09-11T00:00:01Z'))).toBe(8);
     });
+
+    it('B-172: counts days of the given timezone, not UTC (Denver Oct 6 00:00 .. Oct 13 23:59 MDT = 8)', () => {
+      expect(inclusiveDayCount(new Date('2026-10-06T06:00:00Z'), new Date('2026-10-14T05:59:00Z'))).toBe(9);
+      expect(inclusiveDayCount(new Date('2026-10-06T06:00:00Z'), new Date('2026-10-14T05:59:00Z'), 'America/Denver')).toBe(8);
+      expect(inclusiveDayCount(new Date('2026-10-06T06:00:00Z'), new Date('2026-10-14T06:00:00Z'), 'America/Denver')).toBe(9);
+    });
   });
 });

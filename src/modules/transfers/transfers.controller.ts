@@ -32,14 +32,19 @@ export class TransfersController {
   @ApiOperation({
     summary:
       'Requests an eRODS data transfer: generates the §395 Appendix A output file, validates it, stores it and queues the send step. In TEST mode the file is NOT sent to FMCSA.',
+    description:
+      "B-172 — the range is counted in home-terminal-timezone days, at most 8 (inclusive). `rangeStart`/`rangeEnd` may be `YYYY-MM-DD` (that home-terminal RODS day) or an ISO instant (mapped to the home-terminal day it falls on); the file covers the driver's home-terminal midnight-to-midnight days, DST-aware.",
   })
   @ApiStandardErrors({
     errors: [
       apiError.forbidden('dataTransfer = FULL is required — only ADMIN and FLEET_MANAGER may send the FMCSA package (§6.4, B-95).'),
       apiError.notFound(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.'),
-      apiError.unprocessable(ERROR_CODES.INVALID_TRANSFER_RECIPIENT, 'Email transfer is accepted only for an fmcsa.dot.gov address (§10).'),
-      { status: 422, code: ERROR_CODES.RANGE_TOO_LARGE, message: 'The requested date range exceeds the allowed transfer window.' },
-      { status: 422, code: ERROR_CODES.TRANSFER_VALIDATION_FAILED, message: 'The generated output file failed Appendix A validation — nothing was sent.', details: { uncertifiedLogs: 6, unassignedSegments: 9 } },
+      apiError.unprocessableOneOf([
+        { code: ERROR_CODES.RANGE_TOO_LARGE, message: "Requested range is 9 days; §395.24 / Appendix A allows at most 8. The range is counted in home-terminal-timezone days (midnight to midnight in the driver's homeTerminalTimezone), at most 8 inclusive", details: { findings: [{ code: 'RANGE_TOO_LARGE', level: 'error', details: { days: 9, max: 8 } }] } },
+        { code: ERROR_CODES.INVALID_TRANSFER_RECIPIENT, message: 'EMAIL transfer recipient must be an @fmcsa.dot.gov address (§10.4)' },
+        { code: ERROR_CODES.VALIDATION_FAILED, message: 'Request validation failed, e.g. EMAIL without recipient, outputFileComment over 60 chars, or an invalid date' },
+        { code: ERROR_CODES.OUTPUT_FILE_INVALID, message: 'The generated output file does not conform to §395 Appendix A and was not stored' },
+      ]),
     ],
   })
   @ApiOkResponse({
