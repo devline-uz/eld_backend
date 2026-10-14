@@ -1,4 +1,5 @@
 import type { PrismaClient } from '@prisma/client';
+import { startsWithInsensitive } from '../../common/text/insensitive';
 
 /**
  * pt30_pt40/tz.md §9.5 — dev-only cleanup of PT Emulator ("Virtual ELD") data, driven by
@@ -34,7 +35,7 @@ export function parsePurgeArgs(argv: string[]): { before: Date; dryRun: boolean 
 
 export async function purgeVirtualEldData(prisma: PurgeClient, before: Date, dryRun: boolean): Promise<VirtualEldPurgeResult> {
   const devices = await prisma.device.findMany({
-    where: { OR: [{ isVirtual: true }, { serial: { startsWith: 'V', mode: 'insensitive' } }] },
+    where: { OR: [{ isVirtual: true }, { serial: startsWithInsensitive('V') }] },
     select: { id: true },
   });
   const ids = devices.map((d) => d.id);

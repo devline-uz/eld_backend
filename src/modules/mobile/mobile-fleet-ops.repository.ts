@@ -14,6 +14,7 @@ import type {
   Vehicle,
 } from '@prisma/client';
 import { PrismaService } from '../../core/prisma/prisma.service';
+import { containsInsensitive, inInsensitive } from '../../common/text/insensitive';
 
 export type VehicleWithDevice = Vehicle & { device: Device | null };
 export type DvirWithDetail = Prisma.DvirGetPayload<{ include: { defects: { include: { photos: true } }; photos: true; trailer: { select: { number: true } } } }>;
@@ -51,11 +52,11 @@ export class MobileFleetOpsRepository {
     if (q) {
       and.push({
         OR: [
-          { unitNumber: { contains: q, mode: 'insensitive' } },
-          { vin: { contains: q, mode: 'insensitive' } },
-          { make: { contains: q, mode: 'insensitive' } },
-          { model: { contains: q, mode: 'insensitive' } },
-          { device: { is: { serial: { contains: q, mode: 'insensitive' } } } },
+          { unitNumber: containsInsensitive(q) },
+          { vin: containsInsensitive(q) },
+          { make: containsInsensitive(q) },
+          { model: containsInsensitive(q) },
+          { device: { is: { serial: containsInsensitive(q) } } },
         ],
       });
     }
@@ -196,7 +197,7 @@ export class MobileFleetOpsRepository {
    * only to LINK a typed trailer number — an unmatched number is accepted as free text. */
   findTrailersByNumbers(numbers: string[]): Promise<Trailer[]> {
     return this.prisma.trailer.findMany({
-      where: { number: { in: numbers, mode: 'insensitive' }, deletedAt: null, status: 'ACTIVE' },
+      where: { number: inInsensitive(numbers), deletedAt: null, status: 'ACTIVE' },
     });
   }
 
@@ -252,7 +253,7 @@ export class MobileFleetOpsRepository {
       where: {
         deletedAt: null,
         status: 'ACTIVE',
-        ...(term ? { OR: [{ number: { contains: term, mode: 'insensitive' } }, { vin: { contains: term, mode: 'insensitive' } }] } : {}),
+        ...(term ? { OR: [{ number: containsInsensitive(term) }, { vin: containsInsensitive(term) }] } : {}),
       },
       orderBy: { number: 'asc' },
       take: limit,

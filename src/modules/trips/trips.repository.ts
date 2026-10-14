@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { Driver, Prisma, Trip, Vehicle } from '@prisma/client';
 import { BaseRepository, ModelDelegate } from '../../core/prisma/base.repository';
 import { PrismaService } from '../../core/prisma/prisma.service';
-import { escapeLike } from '../../common/dto/list-query.dto';
+import { containsInsensitive } from '../../common/text/insensitive';
 
 export interface TripListFilter {
   status?: Trip['status'];
@@ -84,8 +84,8 @@ export class TripsRepository extends BaseRepository<
       ...(filter.driverId && { driverId: filter.driverId }),
       ...(filter.q && {
         OR: [
-          { number: { contains: escapeLike(filter.q), mode: 'insensitive' } },
-          { shippingDocument: { contains: escapeLike(filter.q), mode: 'insensitive' } },
+          { number: containsInsensitive(filter.q) },
+          { shippingDocument: containsInsensitive(filter.q) },
         ],
       }),
     };

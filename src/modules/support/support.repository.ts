@@ -3,7 +3,7 @@ import type { Feedback, Prisma, SupportTicket } from '@prisma/client';
 import { BaseRepository, ModelDelegate } from '../../core/prisma/base.repository';
 import { syncLedgerKey } from '../mobile/mobile.repository';
 import { PrismaService } from '../../core/prisma/prisma.service';
-import { escapeLike } from '../../common/dto/list-query.dto';
+import { containsInsensitive } from '../../common/text/insensitive';
 
 export interface TicketListFilter {
   status?: SupportTicket['status'];
@@ -50,9 +50,9 @@ export class SupportRepository extends BaseRepository<
       ...(filter.priority && { priority: filter.priority }),
       ...(filter.q && {
         OR: [
-          { number: { contains: escapeLike(filter.q), mode: 'insensitive' } },
-          { subject: { contains: escapeLike(filter.q), mode: 'insensitive' } },
-          { category: { contains: escapeLike(filter.q), mode: 'insensitive' } },
+          { number: containsInsensitive(filter.q) },
+          { subject: containsInsensitive(filter.q) },
+          { category: containsInsensitive(filter.q) },
         ],
       }),
     };

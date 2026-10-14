@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { Device, Prisma } from '@prisma/client';
 import { BaseRepository, ModelDelegate } from '../../core/prisma/base.repository';
 import { PrismaService } from '../../core/prisma/prisma.service';
-import { escapeLike } from '../../common/dto/list-query.dto';
+import { containsInsensitive } from '../../common/text/insensitive';
 
 export interface DeviceListFilter {
   status?: Device['status'];
@@ -63,9 +63,9 @@ export class DevicesRepository extends BaseRepository<
       ...(filter.isVirtual !== undefined && { isVirtual: filter.isVirtual }),
       ...(filter.q && {
         OR: [
-          { serial: { contains: escapeLike(filter.q), mode: 'insensitive' } },
-          { bleMacAddress: { contains: escapeLike(filter.q), mode: 'insensitive' } },
-          { firmware: { contains: escapeLike(filter.q), mode: 'insensitive' } },
+          { serial: containsInsensitive(filter.q) },
+          { bleMacAddress: containsInsensitive(filter.q) },
+          { firmware: containsInsensitive(filter.q) },
         ],
       }),
     };
