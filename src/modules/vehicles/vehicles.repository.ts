@@ -26,8 +26,12 @@ export type VehicleWrite =
   | { create: Prisma.VehicleCreateInput }
   | { id: string; update: Prisma.VehicleUpdateInput };
 
+/** CODE-085 — the paired ELD serial rides on the vehicle row, so the Vehicles list and unit
+ * profile show it under `vehicles` READ without needing `devices` (DISPATCHER / VIEWER). */
+export type VehicleWithSerial = Vehicle & { eldSerial: string | null };
+
 export interface VehicleListPage {
-  items: Vehicle[];
+  items: VehicleWithSerial[];
   total: number;
 }
 
@@ -107,10 +111,16 @@ export class VehiclesRepository extends BaseRepository<
       }),
     };
     const [items, total] = await Promise.all([
-      this.prisma.vehicle.findMany({ where, orderBy, skip: (page - 1) * limit, take: limit }),
+      this.prisma.vehicle.findMany({
+        where,
+        orderBy,
+        skip: (page - 1) * limit,
+        take: limit,
+        include: { device: { select: { serial: true } } },
+      }),
       this.prisma.vehicle.count({ where }),
     ]);
-    return { items, total };
+    return { items: items.map(({ device, ...vehicle }) => ({ ...vehicle, eldSerial: device?.serial ?? null })), total };
   }
 
   /** UI-004 — global record-status counts; independent of any list filter / search / page. */

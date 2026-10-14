@@ -1,5 +1,5 @@
 /** TZ §8.4 — recalculation is idempotent and never duplicates a violation. */
-import { HOS_BATCH_CHUNK_SIZE, HOS_BATCH_MAX_EVENTS_PER_DRIVER, HosRecalcService, RECALC_LOOKBACK_DAYS } from './hos-recalc.service';
+import { HOS_BATCH_CHUNK_SIZE, HOS_BATCH_MAX_EVENTS_PER_DRIVER, HOS_BREAK_DUE_ALERT, HOS_VIOLATION_ALERT, HosRecalcService, RECALC_LOOKBACK_DAYS, stableBreakDeadlineMs } from './hos-recalc.service';
 import type { HosRecalcRepository } from './hos-recalc.repository';
 
 const H = 3600;
@@ -632,5 +632,128 @@ describe('HosRecalcService', () => {
       const result = await service.recalculate({ driverId: 'driver-1', fromDate: '2025-01-13' }, NOW);
       expect(result.autoCleared).toBe(0);
     });
+  });
+});
+
+describe('HosRecalcService — HOS alerts (hos.violation / hos.break_due)', () => {
+  let repo: FakeRepo;
+  type AlertCall = [string, Record<string, unknown>, { jobId: string }];
+  let queue: { add: jest.Mock<Promise<unknown>, AlertCall> };
+  let service: HosRecalcService;
+
+  beforeEach(() => {
+    jest.useFakeTimers({ now: NOW, doNotFake: ['nextTick', 'setImmediate'] });
+    repo = new FakeRepo();
+    repo.driver = { ...repo.driver, firstName: 'John', lastName: 'Smith' };
+    queue = { add: jest.fn<Promise<unknown>, AlertCall>(async () => ({})) };
+    service = new HosRecalcService(repo as unknown as HosRecalcRepository, queue as never);
+  });
+  afterEach(() => jest.useRealTimers());
+
+  const jobsNamed = (alert: string): AlertCall[] => queue.add.mock.calls.filter(([name]) => name === alert);
+  const violationJobs = (): AlertCall[] => jobsNamed(HOS_VIOLATION_ALERT);
+
+  it('alerts each NEW violation once, keyed on the row id', async () => {
+    repo.events = OVER_LIMIT_DAY;
+    await service.recalculate({ driverId: 'driver-1', fromDate: '2025-01-14' }, NOW);
+    const jobs = violationJobs();
+    expect(jobs.map(([, payload]) => String(payload.type)).sort()).toEqual(['BREAK_30', 'DRIVING_11']);
+    for (const [, payload, opts] of jobs) {
+      expect(opts.jobId).toBe(`hos-violation-${String(payload.violationId)}`);
+      expect(payload.message).toContain('John Smith');
+    }
+  });
+
+  it('a repeated recalculation re-offers only the same job ids (BullMQ drops a duplicate jobId)', async () => {
+    repo.events = OVER_LIMIT_DAY;
+    await service.recalculate({ driverId: 'driver-1', fromDate: '2025-01-14' }, NOW);
+    const first = new Set(violationJobs().map(([, , opts]) => opts.jobId));
+    queue.add.mockClear();
+    await service.recalculate({ driverId: 'driver-1', fromDate: '2025-01-14' }, NOW);
+    const second = violationJobs().map(([, , opts]) => opts.jobId);
+    expect(second.length).toBeGreaterThan(0);
+    for (const id of second) expect(first.has(id)).toBe(true);
+  });
+
+  it('a violation first filed by a silent / non-live run alerts on the next live run while < 24 h old', async () => {
+    repo.events = OVER_LIMIT_DAY;
+    await service.recalculate({ driverId: 'driver-1', fromDate: '2025-01-14', silent: true }, NOW);
+    expect(queue.add).not.toHaveBeenCalled();
+    await service.recalculate({ driverId: 'driver-1', fromDate: '2025-01-14' }, NOW);
+    const jobs = violationJobs();
+    expect(jobs.length).toBe(repo.violations.length);
+    expect(jobs.map(([, , opts]) => opts.jobId)).toEqual(repo.violations.map((row) => `hos-violation-${row.id}`));
+  });
+
+  it('silent (backfill) runs file the rows but raise no alert', async () => {
+    repo.events = OVER_LIMIT_DAY;
+    await service.recalculate({ driverId: 'driver-1', fromDate: '2025-01-14', silent: true }, NOW);
+    expect(repo.violations).toHaveLength(2);
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it('a violation that crossed its limit more than a day ago is filed without an alert', async () => {
+    repo.events = OVER_LIMIT_DAY;
+    const later = new Date(NOW.getTime() + 2 * 24 * H * 1000);
+    jest.setSystemTime(later);
+    await service.recalculate({ driverId: 'driver-1', fromDate: '2025-01-14' }, later);
+    expect(repo.violations.length).toBeGreaterThan(0);
+    expect(violationJobs()).toHaveLength(0);
+  });
+
+  it('a recalculation at an instant away from the wall clock (stale cap) never alerts', async () => {
+    repo.events = OVER_LIMIT_DAY;
+    jest.setSystemTime(new Date(NOW.getTime() + 3 * H * 1000));
+    await service.recalculate({ driverId: 'driver-1', fromDate: '2025-01-14' }, NOW);
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it('raises break-due for a driver nearing the 8-hour mark, one job per 5-minute step', async () => {
+    // Driving since 19:00Z; at 02:40Z that is 7 h 40 m — the break is due in 20 minutes.
+    repo.events = [duty('2025-01-14T19:00:00Z', 3, 1)];
+    const at = new Date('2025-01-15T02:40:00Z');
+    jest.setSystemTime(at);
+    await service.recalculate({ driverId: 'driver-1', fromDate: '2025-01-14' }, at);
+    const jobs = jobsNamed(HOS_BREAK_DUE_ALERT);
+    expect(jobs).toHaveLength(1);
+    const [, payload, opts] = jobs[0];
+    expect(payload.minutesUntilBreak).toBe(20);
+    expect(opts.jobId).toBe(`hos-break-due-driver-1-${Date.parse('2025-01-15T03:00:00Z')}-4`);
+  });
+
+  it('break-due job id is stable across recalcs a few seconds apart (sub-second drift of now)', async () => {
+    repo.events = [duty('2025-01-14T19:00:00Z', 3, 1)];
+    const ids: string[] = [];
+    for (const at of [new Date('2025-01-15T02:40:00.400Z'), new Date('2025-01-15T02:40:03.700Z'), new Date('2025-01-15T02:41:30.250Z')]) {
+      queue.add.mockClear();
+      jest.setSystemTime(at);
+      await service.recalculate({ driverId: 'driver-1', fromDate: '2025-01-14' }, at);
+      const jobs = jobsNamed(HOS_BREAK_DUE_ALERT);
+      expect(jobs).toHaveLength(1);
+      ids.push(String(jobs[0][2].jobId));
+    }
+    expect(new Set(ids).size).toBe(1);
+    expect(ids[0]).toBe(`hos-break-due-driver-1-${Date.parse('2025-01-15T03:00:00Z')}-4`);
+  });
+
+  it('stableBreakDeadlineMs removes the ±0.5 s drift', () => {
+    const since = new Date('2025-01-14T19:00:00Z');
+    const due = Date.parse('2025-01-15T03:00:00Z');
+    expect(stableBreakDeadlineMs(since, new Date(due + 400))).toBe(due);
+    expect(stableBreakDeadlineMs(since, new Date(due - 300))).toBe(due);
+  });
+
+  it('no break-due while off duty', async () => {
+    repo.events = [duty('2025-01-14T19:00:00Z', 3, 1), duty('2025-01-15T02:00:00Z', 1, 2)];
+    const at = new Date('2025-01-15T02:40:00Z');
+    jest.setSystemTime(at);
+    await service.recalculate({ driverId: 'driver-1', fromDate: '2025-01-14' }, at);
+    expect(jobsNamed(HOS_BREAK_DUE_ALERT)).toHaveLength(0);
+  });
+
+  it('a queue failure never fails the recalculation', async () => {
+    queue.add.mockRejectedValue(new Error('redis down'));
+    repo.events = OVER_LIMIT_DAY;
+    await expect(service.recalculate({ driverId: 'driver-1', fromDate: '2025-01-14' }, NOW)).resolves.toMatchObject({ upserted: 2 });
   });
 });

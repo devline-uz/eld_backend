@@ -15,7 +15,7 @@ export class NotificationView {
   @ApiProperty({ type: String }) body!: string;
   @ApiProperty({ type: String, nullable: true }) objectType!: string | null;
   @ApiProperty({ type: String, nullable: true }) objectId!: string | null;
-  @ApiProperty({ type: String, nullable: true, example: 'VIOLATIONS', description: 'Segment: VIOLATIONS | MAINTENANCE | null.' }) category!: string | null;
+  @ApiProperty({ type: String, nullable: true, example: 'VIOLATIONS', description: 'Segment: VIOLATIONS | MAINTENANCE | CONNECTIVITY | null.' }) category!: string | null;
   @ApiProperty({ enum: AlertSeverity, enumName: 'AlertSeverity', nullable: true }) severity!: AlertSeverity | null;
   @ApiProperty({ ...DT, nullable: true }) readAt!: string | null;
   @ApiProperty(DT) createdAt!: string;
@@ -25,6 +25,7 @@ export class NotificationCountsView {
   @ApiProperty({ ...INT, description: 'Total rows (read + unread).' }) all!: number;
   @ApiProperty(INT) violations!: number;
   @ApiProperty(INT) maintenance!: number;
+  @ApiProperty({ ...INT, description: 'ELD connectivity (connection lost, disconnected, malfunction).' }) connectivity!: number;
 }
 
 export class NotificationListResponse {

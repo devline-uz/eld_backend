@@ -168,6 +168,29 @@ export class IngestRepository extends BaseRepository<
     return result.count;
   }
 
+  /** B-123 — certified RODS-day headers of one driver whose UTC date falls in `[from, to]`. */
+  findCertifiedHeaders(
+    tx: IngestTx,
+    driverId: string,
+    from: Date,
+    to: Date,
+  ): Promise<Array<{ id: string; driverId: string; logDate: Date; timezone: string; certifiedAt: Date | null }>> {
+    return tx.dailyLog.findMany({
+      where: { driverId, certified: true, logDate: { gte: from, lte: to } },
+      select: { id: true, driverId: true, logDate: true, timezone: true, certifiedAt: true },
+    });
+  }
+
+  /** B-123 — void the signatures (count kept, so the day reads "re-certification required"). */
+  async voidCertifications(tx: IngestTx, ids: string[]): Promise<number> {
+    if (!ids.length) return 0;
+    const result = await tx.dailyLog.updateMany({
+      where: { id: { in: ids }, certified: true },
+      data: { certified: false, certifiedAt: null, certifiedById: null, certifierType: null },
+    });
+    return result.count;
+  }
+
   /** Ids of just-inserted events, by uuid — needed for `UnidentifiedSegment.eventIds`. */
   async findEventIdsByUuids(tx: IngestTx, uuids: string[]): Promise<bigint[]> {
     if (!uuids.length) return [];

@@ -93,11 +93,12 @@ const ROLE_MATRIX: Record<string, Record<(typeof PERMISSION_KEYS)[number], Permi
     devices: 'FULL', alertRules: 'FULL', users: 'NONE', roles: 'NONE', integrations: 'NONE',
     auditLog: 'NONE', support: 'FULL', carrierSettings: 'NONE', dataTransfer: 'FULL',
   },
+  // CODE-085 — dvir / maintenance / safety / devices NONE (mirrors permission-matrix.ts).
   DISPATCHER: {
     dashboard: 'FULL', liveFleet: 'FULL', vehicles: 'READ', drivers: 'READ', hos: 'READ',
-    hosEdit: 'NONE', hosCertifyOnBehalf: 'NONE', dvir: 'READ', maintenance: 'READ',
-    safety: 'READ', trips: 'FULL', reports: 'READ', reportsTransfer: 'NONE', messaging: 'FULL',
-    devices: 'READ', alertRules: 'NONE', users: 'NONE', roles: 'NONE', integrations: 'NONE',
+    hosEdit: 'NONE', hosCertifyOnBehalf: 'NONE', dvir: 'NONE', maintenance: 'NONE',
+    safety: 'NONE', trips: 'FULL', reports: 'READ', reportsTransfer: 'NONE', messaging: 'FULL',
+    devices: 'NONE', alertRules: 'NONE', users: 'NONE', roles: 'NONE', integrations: 'NONE',
     auditLog: 'NONE', support: 'FULL', carrierSettings: 'NONE', dataTransfer: 'NONE',
   },
   VIEWER: {
@@ -807,6 +808,24 @@ async function main(): Promise<void> {
       name: 'ELD connection lost',
       severity: 'WARNING',
       conditions: [{ event: 'alert.eld_status_stale' }],
+      channels: ['IN_APP'],
+      recipients: { roles: ['SUPER_ADMIN', 'ADMIN', 'FLEET_MANAGER', 'DISPATCHER'] },
+      enabled: true,
+      isSystem: true,
+    },
+  });
+
+  // HOS alerts — `HosRecalcService` enqueues `alert.hos_violation` for every NEW violation; this
+  // rule fills the office bell ("Violations" segment). Same row as migration
+  // 20261014220000_default_hos_violation_alert_rule (existing databases).
+  await prisma.alertRule.upsert({
+    where: { key: 'default_hos_violation' },
+    update: {},
+    create: {
+      key: 'default_hos_violation',
+      name: 'HOS violation',
+      severity: 'CRITICAL',
+      conditions: [{ event: 'hos.violation' }],
       channels: ['IN_APP'],
       recipients: { roles: ['SUPER_ADMIN', 'ADMIN', 'FLEET_MANAGER', 'DISPATCHER'] },
       enabled: true,

@@ -359,6 +359,18 @@ describe('DriverRosterService — BUG-002 stuck duty status', () => {
     );
   });
 
+  it('LIVE-027: the alert sentence shows the time in the carrier zone, not raw ISO', async () => {
+    const { service: hos } = makeHos(events);
+    const queue = makeQueue();
+    const repo = { ...makeDriversRepo([makeDriver()]), carrierTimezone: jest.fn().mockResolvedValue('America/Denver') };
+    const service = new DriverRosterService(repo as unknown as DriversRepository, hos, queue as never);
+    await service.clocks('drv_1', NOW);
+    const [[, payload]] = queue.add.mock.calls as Array<[string, { message: string }]>;
+    const message = payload.message;
+    expect(message).toContain('since Oct 8, 02:28 MDT');
+    expect(message).not.toContain('2026-10-08T08:28');
+  });
+
   it('marks the roster row stale', async () => {
     const { service: hos } = makeHos(events);
     const service = new DriverRosterService(makeDriversRepo([makeDriver()]) as unknown as DriversRepository, hos, makeQueue() as never);
