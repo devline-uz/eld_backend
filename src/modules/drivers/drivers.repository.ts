@@ -3,7 +3,8 @@ import type { AdverseDrivingInvocation, Driver, DriverDocument, Prisma } from '@
 import { BaseRepository, ModelDelegate } from '../../core/prisma/base.repository';
 import { PrismaService } from '../../core/prisma/prisma.service';
 import { findAdverseInvokedToday } from './lib/adverse-driving';
-import { escapeLike } from '../../common/dto/list-query.dto';
+import { emailEqualsInsensitive } from '../../common/email/email-lookup';
+import { containsInsensitive, equalsInsensitive } from '../../common/text/insensitive';
 
 export interface DriverListFilter {
   status?: Driver['status'];
@@ -66,7 +67,7 @@ export class DriversRepository extends BaseRepository<
    * pre-write so a collision surfaces as a clean 409 instead of an unhandled `P2002`. Emails are
    * stored lower-cased (B-100); the lookup is case-insensitive for legacy rows. */
   findByEmail(email: string): Promise<Driver | null> {
-    return this.prisma.driver.findFirst({ where: { email: { equals: email, mode: 'insensitive' }, deletedAt: null } });
+    return this.prisma.driver.findFirst({ where: { email: emailEqualsInsensitive(email), deletedAt: null } });
   }
 
   /**
@@ -150,11 +151,11 @@ export class DriversRepository extends BaseRepository<
       ...(filter.status && { status: filter.status }),
       ...(filter.q && {
         OR: [
-          { username: { contains: escapeLike(filter.q), mode: 'insensitive' } },
-          { firstName: { contains: escapeLike(filter.q), mode: 'insensitive' } },
-          { lastName: { contains: escapeLike(filter.q), mode: 'insensitive' } },
-          { cdlNumber: { contains: escapeLike(filter.q), mode: 'insensitive' } },
-          { email: { contains: escapeLike(filter.q), mode: 'insensitive' } },
+          { username: containsInsensitive(filter.q) },
+          { firstName: containsInsensitive(filter.q) },
+          { lastName: containsInsensitive(filter.q) },
+          { cdlNumber: containsInsensitive(filter.q) },
+          { email: containsInsensitive(filter.q) },
         ],
       }),
     };
@@ -175,17 +176,17 @@ export class DriversRepository extends BaseRepository<
     const where: Prisma.DriverWhereInput = {
       deletedAt: null,
       ...(filter.status && { status: filter.status }),
-      ...(filter.terminal && { homeTerminalName: { equals: filter.terminal, mode: 'insensitive' } }),
+      ...(filter.terminal && { homeTerminalName: equalsInsensitive(filter.terminal) }),
       ...(filter.exempt !== undefined && { eldExempt: filter.exempt }),
       ...(filter.hasOpenViolation === true && { violations: { some: activeViolationWhere(filter.violationExclude) } }),
       ...(filter.hasOpenViolation === false && { violations: { none: activeViolationWhere(filter.violationExclude) } }),
       ...(filter.q && {
         OR: [
-          { username: { contains: escapeLike(filter.q), mode: 'insensitive' } },
-          { firstName: { contains: escapeLike(filter.q), mode: 'insensitive' } },
-          { lastName: { contains: escapeLike(filter.q), mode: 'insensitive' } },
-          { cdlNumber: { contains: escapeLike(filter.q), mode: 'insensitive' } },
-          { email: { contains: escapeLike(filter.q), mode: 'insensitive' } },
+          { username: containsInsensitive(filter.q) },
+          { firstName: containsInsensitive(filter.q) },
+          { lastName: containsInsensitive(filter.q) },
+          { cdlNumber: containsInsensitive(filter.q) },
+          { email: containsInsensitive(filter.q) },
         ],
       }),
     };
@@ -266,6 +267,29 @@ export class DriversRepository extends BaseRepository<
       create: data,
       update: rest,
     });
+  }
+
+  /** Driver email change — another LIVE driver with a still-valid (requested after `since`)
+   * pending change to this address, so two drivers can't race to claim the same email. */
+  async findLiveIdByPendingEmail(email: string, since: Date, exceptDriverId?: string): Promise<string | null> {
+    const row = await this.prisma.driver.findFirst({
+      where: {
+        deletedAt: null,
+        pendingEmail: emailEqualsInsensitive(email),
+        pendingEmailRequestedAt: { gt: since },
+        ...(exceptDriverId && { id: { not: exceptDriverId } }),
+      },
+      select: { id: true },
+    });
+    return row?.id ?? null;
+  }
+
+  /** Driver email change — a compare-and-set write: applies `data` only while the driver is live
+   * and still in the state `expect` describes (same pending request / same current email), so
+   * two clicks of the same link, or a link racing a cancel, can never both win. */
+  async updateIfState(id: string, expect: Prisma.DriverWhereInput, data: Prisma.DriverUpdateManyMutationInput): Promise<boolean> {
+    const res = await this.prisma.driver.updateMany({ where: { id, deletedAt: null, ...expect }, data });
+    return res.count > 0;
   }
 
   /** B-094 — revokes every live `DriverSession` (refresh token) of one driver. */

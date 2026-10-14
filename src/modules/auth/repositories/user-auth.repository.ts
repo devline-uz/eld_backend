@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { Role, User } from '@prisma/client';
 import { PrismaService } from '../../../core/prisma/prisma.service';
+import { emailEqualsInsensitive } from '../../../common/email/email-lookup';
 
 export type UserWithRole = User & { role: Role };
 
@@ -9,16 +10,11 @@ export type UserWithRole = User & { role: Role };
 export class UserAuthRepository {
   constructor(private readonly prisma: PrismaService) {}
 
+  /** Password login, Google sign-in / invite acceptance, forgot-password and reset-code: the address
+   * as typed (or as Google returns it) may differ in case / surrounding spaces from the stored one,
+   * and pre-normalization rows may be mixed-case — trimmed, literal, case-insensitive match. */
   findByEmailWithRole(email: string): Promise<UserWithRole | null> {
-    return this.prisma.user.findUnique({ where: { email }, include: { role: true } });
-  }
-
-  /** Web "Forgot password?" — the address as typed may differ in case from the stored one. */
-  findByEmailInsensitiveWithRole(email: string): Promise<UserWithRole | null> {
-    return this.prisma.user.findFirst({
-      where: { email: { equals: email, mode: 'insensitive' } },
-      include: { role: true },
-    });
+    return this.prisma.user.findFirst({ where: { email: emailEqualsInsensitive(email) }, include: { role: true } });
   }
 
   findByIdWithRole(id: string): Promise<UserWithRole | null> {
@@ -43,13 +39,6 @@ export class UserAuthRepository {
   }
 
   findByEmail(email: string): Promise<User | null> {
-    return this.prisma.user.findUnique({ where: { email } });
-  }
-
-  /** B-84 — applies a re-verified email change. `googleUid` is cleared: the old Google
-   * identity was bound to the previous address and must not silently authenticate the new
-   * one (TZ §6.2 — no auto-registration/identity-hijack path). */
-  applyVerifiedEmail(id: string, email: string): Promise<User> {
-    return this.prisma.user.update({ where: { id }, data: { email, googleUid: null } });
+    return this.prisma.user.findFirst({ where: { email: emailEqualsInsensitive(email) } });
   }
 }

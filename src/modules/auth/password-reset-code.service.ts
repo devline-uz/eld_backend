@@ -7,6 +7,7 @@ import { AppConfigService } from '../../core/config/config.service';
 import { EventBusService } from '../../core/events/event-bus.service';
 import { TRANSACTIONAL_MAIL, TransactionalMailPort } from '../../core/mail/mail.port';
 import type { RequestMeta } from './auth.service';
+import { emailChangeHoldUntil } from './lib/driver-email-hold';
 import { buildPasswordResetCodeEmail } from './lib/password-reset-code-email';
 import { hashPassword } from './lib/password.util';
 import { PasswordResetCodeRepository } from './repositories/password-reset-code.repository';
@@ -61,6 +62,24 @@ export class PasswordResetCodeService {
     if (!user) {
       throw AppException.notFound('No account found with this email.', {
         email: 'No account found with this email.',
+      });
+    }
+
+    // B-84 email-change hold — the address was confirmed too recently to be trusted for recovery
+    // (if the change was not the owner's, the old address can still revert it). No code is mailed;
+    // the org admins get an in-app notice instead (same fallback as the driver forgot flow).
+    const holdUntil = emailChangeHoldUntil(user.emailChangedAt, this.config.get('USER_EMAIL_CHANGE_HOLD_HOURS'));
+    if (holdUntil && Date.now() < holdUntil.getTime()) {
+      await this.codes
+        .notifyAdminsOfHeldReset(user, new Date(Date.now() - RESET_CODE_TTL_MS))
+        .catch((err: unknown) => this.logger.warn({ userId: user.id, err: String(err) }, 'Held password-reset admin notice failed'));
+      this.audit('PASSWORD_RESET_HELD', user.id, meta);
+      const message =
+        'The email on this account was changed recently, so a reset code cannot be emailed yet. ' +
+        'Your administrator has been notified — contact them to regain access.';
+      throw new AppException(ERROR_CODES.EMAIL_CHANGE_ON_HOLD, message, HttpStatus.CONFLICT, {
+        email: message,
+        holdUntil: holdUntil.toISOString(),
       });
     }
 
@@ -158,7 +177,7 @@ export class PasswordResetCodeService {
 
   /** ACTIVE back-office users only: INVITED accept through Google, DISABLED are locked out. */
   private async findActiveUser(email: string): Promise<UserWithRole | null> {
-    const user = await this.users.findByEmailInsensitiveWithRole(email.trim());
+    const user = await this.users.findByEmailWithRole(email);
     return user && user.status === 'ACTIVE' ? user : null;
   }
 

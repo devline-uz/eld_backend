@@ -118,7 +118,12 @@ export class DriverResetCodeRepository {
    * MB-16 — in-app notification for every ACTIVE ADMIN (single-carrier install, tz §27.3).
    * Skipped when an unread request for the same driver is already pending (anti-spam).
    */
-  async notifyAdminsOfResetRequest(driver: { id: string; firstName: string; lastName: string; username: string }, dedupeSince: Date): Promise<number> {
+  async notifyAdminsOfResetRequest(
+    driver: { id: string; firstName: string; lastName: string; username: string },
+    dedupeSince: Date,
+    /** Why no code was mailed: no email on file, or the driver-email-change hold is active. */
+    reason: 'NO_EMAIL' | 'EMAIL_CHANGE_HOLD' = 'NO_EMAIL',
+  ): Promise<number> {
     const pending = await this.prisma.notification.findFirst({
       where: { type: 'DRIVER_PASSWORD_RESET', objectId: driver.id, readAt: null, createdAt: { gte: dedupeSince } },
       select: { id: true },
@@ -136,7 +141,10 @@ export class DriverResetCodeRepository {
         type: 'DRIVER_PASSWORD_RESET',
         kind: 'OTHER' as const,
         title: 'Driver password reset requested',
-        body: `${name} (${driver.username}) requested a password reset but has no email on file. Reset it from the driver profile.`,
+        body:
+          reason === 'EMAIL_CHANGE_HOLD'
+            ? `${name} (${driver.username}) requested a password reset, but their email was changed recently, so no code was emailed (security hold). Verify the request and reset it from the driver profile.`
+            : `${name} (${driver.username}) requested a password reset but has no email on file. Reset it from the driver profile.`,
         objectType: 'Driver',
         objectId: driver.id,
         category: 'drivers',

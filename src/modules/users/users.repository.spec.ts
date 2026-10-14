@@ -1,11 +1,11 @@
 import { UsersRepository } from './users.repository';
 
 describe('UsersRepository', () => {
-  let user: { findMany: jest.Mock; findUnique: jest.Mock };
+  let user: { findMany: jest.Mock; findUnique: jest.Mock; findFirst: jest.Mock };
   let repo: UsersRepository;
 
   beforeEach(() => {
-    user = { findMany: jest.fn(), findUnique: jest.fn() };
+    user = { findMany: jest.fn(), findUnique: jest.fn(), findFirst: jest.fn() };
     repo = new UsersRepository({ user } as never);
   });
 
@@ -23,6 +23,8 @@ describe('UsersRepository', () => {
         lastActiveAt: true,
         invitedAt: true,
         createdAt: true,
+        pendingEmail: true,
+        pendingEmailRequestedAt: true,
         role: { select: { id: true, key: true, name: true } },
       },
       orderBy: { createdAt: 'desc' },
@@ -34,8 +36,13 @@ describe('UsersRepository', () => {
     expect(user.findUnique).toHaveBeenCalledWith({ where: { id: 'usr_1' }, include: { role: true } });
   });
 
-  it('findByEmail queries by email', async () => {
-    await repo.findByEmail('a@b.com');
-    expect(user.findUnique).toHaveBeenCalledWith({ where: { email: 'a@b.com' } });
+  it('findByEmail trims + lower-cases and matches case-insensitively with LIKE metacharacters escaped', async () => {
+    await repo.findByEmail('  A_b@B.com ');
+    expect(user.findFirst).toHaveBeenCalledWith({ where: { email: { equals: 'a\\_b@b.com', mode: 'insensitive' } } });
+  });
+
+  it('findByEmailInsensitive uses the same normalized, escaped filter', async () => {
+    await repo.findByEmailInsensitive(' John@X.com');
+    expect(user.findFirst).toHaveBeenCalledWith({ where: { email: { equals: 'john@x.com', mode: 'insensitive' } } });
   });
 });

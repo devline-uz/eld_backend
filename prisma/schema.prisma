@@ -79,6 +79,9 @@ model Carrier {
 
 model User {
   id           String       @id @default(uuid())
+  /// Stored trimmed + lower-cased and looked up case-insensitively (`src/common/email/email-lookup.ts`).
+  /// Also unique on `lower(email)` via the expression index `User_email_lower_key` (migration
+  /// 20261014120000_user_email_lowercase) — not representable here; see custom-indexes.ts.
   email        String       @unique
   passwordHash String?
   googleUid    String?      @unique
@@ -103,6 +106,17 @@ model User {
   /// §20 B-11 — `{ language, timezone, dateFormat, distanceUnit, savedViews, tableColumns }`.
   preferences      Json?
 
+  /// Web-user email change (`PATCH /users/:id { email }`, B-84) — the requested address is held
+  /// here until its owner confirms the link mailed to it; `email` is never written directly.
+  pendingEmail              String?
+  pendingEmailRequestedAt   DateTime?
+  /// `User.id` of the web user who requested the change (re-authenticated). No FK: audit data.
+  pendingEmailRequestedById String?
+  /// When the last change was CONFIRMED — starts the `USER_EMAIL_CHANGE_HOLD_HOURS` window.
+  emailChangedAt            DateTime?
+  /// The address before the last confirmed change; the old-address "this wasn't me" link reverts to it.
+  previousEmail             String?
+
   role                Role                  @relation(fields: [roleId], references: [id])
   sessions            Session[]
   passwordResetCodes  PasswordResetCode[]
@@ -112,6 +126,7 @@ model User {
   reports             Report[]
 
   @@index([status])
+  @@index([pendingEmail])
 }
 
 model Role {
@@ -219,6 +234,16 @@ model Driver {
   /// migration 20260927090000_soft_delete_partial_uniques. NULLs stay distinct.
   email           String?
   emailVerifiedAt DateTime?
+  /// Driver email change (web `PATCH /drivers/:id { email }`) — the requested address is held here
+  /// until its owner confirms the link mailed to it; `email` is never written directly.
+  pendingEmail              String?
+  pendingEmailRequestedAt   DateTime?
+  /// `User.id` of the web user who requested the change (re-authenticated). No FK: audit data.
+  pendingEmailRequestedById String?
+  /// When the last change was CONFIRMED — starts the `DRIVER_EMAIL_CHANGE_HOLD_HOURS` window.
+  emailChangedAt            DateTime?
+  /// The address before the last confirmed change; the old-address "this wasn't me" link reverts to it.
+  previousEmail             String?
   phone           String?
   cdlNumber       String
   cdlState        String
@@ -275,6 +300,7 @@ model Driver {
   // in src/core/prisma/custom-indexes.ts so `npm run migrate:dev` never drops them.
   @@index([username])
   @@index([email])
+  @@index([pendingEmail])
 }
 
 /// 49 CFR §395.1(b)(1) — adverse driving conditions INVOKED for one RODS day (home-terminal day,

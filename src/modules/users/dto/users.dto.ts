@@ -13,7 +13,9 @@ const e164PhoneSchema = z
   .refine((v) => v === '' || (E164_PATTERN.test(v) && isValidPhoneNumber(v)), { message: MY_PROFILE_PHONE_MESSAGE });
 
 export const CreateUserDto = z.object({
-  email: z.string().email(),
+  /** Trimmed here; lower-cased by `UsersService.invite` (`normalizeUserEmail`) before the
+   * case-insensitive availability check and the write. */
+  email: z.string().trim().email().max(254),
   firstName: z.string().min(1).max(80),
   lastName: z.string().min(1).max(80),
   jobTitle: z.string().max(120).optional(),
@@ -36,8 +38,13 @@ export const UpdateUserDto = z.object({
   roleId: z.string().uuid().optional(),
   status: z.enum(['INVITED', 'ACTIVE', 'DISABLED']).optional(),
   /** B-84 — changing this does NOT touch `User.email` directly; see `UsersService.update`. */
-  email: z.string().email().optional(),
+  email: z.string().trim().email().max(254).optional(),
   homeTerminalName: z.string().max(120).optional(),
+  /** B-84 — the ACTING web user's own password; required only when `email` differs from the
+   * user's current one (never stored, redacted from logs). */
+  currentPassword: z.string().min(1).max(128).optional(),
+  /** B-84 — Google-only accounts: a fresh Firebase ID token instead of a password. */
+  reauthIdToken: z.string().min(1).max(4096).optional(),
 });
 export type UpdateUserDto = z.infer<typeof UpdateUserDto>;
 

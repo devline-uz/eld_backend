@@ -24,7 +24,6 @@ import {
   RefreshTokenDto,
   RequestPasswordResetCodeDto,
   ResetPasswordDto,
-  VerifyEmailChangeDto,
 } from './dto/auth.dto';
 
 /** TZ §11.1 — auth endpoint list. Every rule lives in AuthService; this stays thin. */
@@ -139,7 +138,9 @@ export class AuthController {
       'Back-office `User` accounts only (drivers use `/auth/driver/password/*`). Unknown, INVITED or DISABLED email → 404 ' +
       '(the product shows "No account found with this email"). The code is stored as an HMAC, expires in 15 minutes, ' +
       'allows 5 wrong guesses and replaces any earlier code. Calling again within 60 s → 429 with `details.retryAfterSec`. ' +
-      'Refused with 403 PASSWORD_LOGIN_DISABLED when AUTH_MODE=production, exactly like `POST /auth/login`.',
+      'Refused with 403 PASSWORD_LOGIN_DISABLED when AUTH_MODE=production, exactly like `POST /auth/login`. ' +
+      'Inside the `USER_EMAIL_CHANGE_HOLD_HOURS` hold after an email change no code is mailed: 409 EMAIL_CHANGE_ON_HOLD ' +
+      '(`details.holdUntil`) and the org administrators get an in-app notice.',
   })
   @ApiEnvelopeResponse(PasswordResetCodeSentResponse, {
     description: 'Code emailed. `code` is present only with DEV_ECHO_SECRETS=true outside production.',
@@ -150,6 +151,10 @@ export class AuthController {
     errors: [
       apiError.notFound(ERROR_CODES.NOT_FOUND, 'No account found with this email.'),
       { status: 403, code: ERROR_CODES.PASSWORD_LOGIN_DISABLED, message: 'AUTH_MODE=production — password sign-in (and reset) is off; use Google.' },
+      apiError.conflict(
+        ERROR_CODES.EMAIL_CHANGE_ON_HOLD,
+        'The email on this account was changed recently, so a reset code cannot be emailed yet. Your administrator has been notified.',
+      ),
       { status: 503, code: ERROR_CODES.SERVICE_UNAVAILABLE, message: "We couldn't send the email right now." },
       apiError.rateLimited('5 requests per minute per IP, and one code per account per 60 s (`details.retryAfterSec`).'),
     ],
@@ -213,16 +218,6 @@ export class AuthController {
   async resetDriverPassword(@Body(zodBody(DriverResetPasswordDto)) dto: DriverResetPasswordDto) {
     if (dto.token) await this.auth.resetDriverPassword(dto.token, dto.newPassword);
     else await this.auth.resetDriverPasswordWithCode((dto.username ?? dto.email) as string, dto.code as string, dto.newPassword);
-    return { success: true };
-  }
-
-  @Public()
-  @Post('email/verify')
-  @ApiOperation({ summary: 'B-84 — completes a `PATCH /users/:id { email }` re-verification.' })
-  @ApiOkResponse({ schema: { example: { success: true } } })
-  @ApiStandardErrors({ public: true, errors: [{ status: 401, code: ERROR_CODES.TOKEN_INVALID, message: 'The verification link is invalid or expired.' }, apiError.conflict(ERROR_CODES.CONFLICT, 'Another user already has this email.')] })
-  async verifyEmailChange(@Body(zodBody(VerifyEmailChangeDto)) dto: VerifyEmailChangeDto) {
-    await this.auth.verifyEmailChange(dto.token);
     return { success: true };
   }
 

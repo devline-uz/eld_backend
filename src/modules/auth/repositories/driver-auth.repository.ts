@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { Driver } from '@prisma/client';
 import { PrismaService } from '../../../core/prisma/prisma.service';
+import { emailEqualsInsensitive } from '../../../common/email/email-lookup';
 
 @Injectable()
 export class DriverAuthRepository {
@@ -10,12 +11,13 @@ export class DriverAuthRepository {
     return this.prisma.driver.findFirst({ where: { username, deletedAt: null } });
   }
 
-  /** MR-31 — login identifier OR email (case-insensitive), live rows only. */
+  /** MR-31 — login identifier OR email (case-insensitive, trimmed, LIKE-metacharacters literal),
+   * live rows only. */
   findByUsernameOrEmail(identifier: string): Promise<Driver | null> {
     return this.prisma.driver.findFirst({
       where: {
         deletedAt: null,
-        OR: [{ username: identifier }, { email: { equals: identifier, mode: 'insensitive' } }],
+        OR: [{ username: identifier }, { email: emailEqualsInsensitive(identifier) }],
       },
     });
   }

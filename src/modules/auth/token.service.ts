@@ -26,10 +26,19 @@ const PASSWORD_RESET_TYP = 'password_reset';
 const DRIVER_PASSWORD_RESET_TYP = 'driver_password_reset';
 /** §20 B-29/B-30/B-31 — `POST /drivers/:id/send-verification` / `verify-email`. */
 const DRIVER_EMAIL_VERIFY_TYP = 'driver_email_verify';
-/** B-84 — `PATCH /users/:id { email }` re-verification. Same shape as the driver one above,
- * kept as its own `typ` so a driver verify link can never be replayed against a user (TZ §6.1
- * — two distinct subjects, never cross-usable). */
-const USER_EMAIL_VERIFY_TYP = 'user_email_verify';
+/** B-84 — `PATCH /users/:id { email }` confirm link mailed to the NEW address. Its own `typ` so
+ * a driver link can never be replayed against a user (TZ §6.1 — two distinct subjects). Bound to
+ * the pending address AND its request time (like the driver one), so a newer request or a cancel
+ * invalidates every older link. (Replaces the unbound `user_email_verify` token: links issued
+ * before the pending state existed no longer verify.) */
+const USER_EMAIL_CHANGE_TYP = 'user_email_change';
+/** B-84 — the "this wasn't me" link mailed to the OLD address of a web user. */
+const USER_EMAIL_CHANGE_CANCEL_TYP = 'user_email_change_cancel';
+/** Driver email change — the confirm link mailed to the NEW address. Bound to the pending
+ * address AND its request time, so a newer request or a cancel invalidates every older link. */
+const DRIVER_EMAIL_CHANGE_TYP = 'driver_email_change';
+/** Driver email change — the "this wasn't me" link mailed to the OLD address. */
+const DRIVER_EMAIL_CHANGE_CANCEL_TYP = 'driver_email_change_cancel';
 
 interface AccessTokenClaims {
   sub: string;
@@ -53,10 +62,53 @@ interface DriverEmailVerifyClaims {
   email: string;
 }
 
-interface UserEmailVerifyClaims {
+interface DriverEmailChangeClaims {
   sub: string;
-  typ: typeof USER_EMAIL_VERIFY_TYP;
+  typ: typeof DRIVER_EMAIL_CHANGE_TYP;
+  /** The pending (new) address. */
   email: string;
+  /** `pendingEmailRequestedAt` in epoch ms. */
+  rqa: number;
+}
+
+interface DriverEmailChangeCancelClaims {
+  sub: string;
+  typ: typeof DRIVER_EMAIL_CHANGE_CANCEL_TYP;
+  /** The requested (new) address. */
+  email: string;
+  /** The address the notice was mailed to (the one a revert restores). */
+  old: string;
+  rqa: number;
+}
+
+export interface DriverEmailChangeClaimsView {
+  driverId: string;
+  email: string;
+  requestedAt: number;
+}
+
+interface UserEmailChangeClaims {
+  sub: string;
+  typ: typeof USER_EMAIL_CHANGE_TYP;
+  /** The pending (new) address. */
+  email: string;
+  /** `pendingEmailRequestedAt` in epoch ms. */
+  rqa: number;
+}
+
+interface UserEmailChangeCancelClaims {
+  sub: string;
+  typ: typeof USER_EMAIL_CHANGE_CANCEL_TYP;
+  email: string;
+  /** The address the notice was mailed to (the one a revert restores). */
+  old: string;
+  rqa: number;
+}
+
+export interface UserEmailChangeClaimsView {
+  userId: string;
+  email: string;
+  requestedAt: number;
 }
 
 /**
@@ -134,20 +186,80 @@ export class TokenService extends TokenVerifier {
     return { driverId: claims.sub, email: claims.email };
   }
 
-  /** B-84 — `PATCH /users/:id { email }` issues one of these; the caller only ever applies
-   * the new email once this comes back verified (no outbound-mail transport yet, see
-   * `AuthService.forgotPassword` — same "return outside production" convention). */
-  signUserEmailVerifyToken(userId: string, email: string): string {
-    const claims: UserEmailVerifyClaims = { sub: userId, typ: USER_EMAIL_VERIFY_TYP, email };
-    return jwt.sign(claims, this.secret, { expiresIn: this.config.get('JWT_PASSWORD_RESET_TTL') } as jwt.SignOptions);
+  /** Driver email change — confirm link for the NEW address (`DRIVER_EMAIL_CHANGE_TTL`). */
+  signDriverEmailChangeToken(driverId: string, pendingEmail: string, requestedAt: Date): string {
+    const claims: DriverEmailChangeClaims = { sub: driverId, typ: DRIVER_EMAIL_CHANGE_TYP, email: pendingEmail, rqa: requestedAt.getTime() };
+    return jwt.sign(claims, this.secret, { expiresIn: this.config.get('DRIVER_EMAIL_CHANGE_TTL') } as jwt.SignOptions);
   }
 
-  verifyUserEmailVerifyToken(token: string): { userId: string; email: string } {
-    const claims = this.verifyRaw<UserEmailVerifyClaims>(token);
-    if (claims.typ !== USER_EMAIL_VERIFY_TYP) {
-      throw new AppException(ERROR_CODES.TOKEN_INVALID, 'Not a user email-verification token.', 401);
+  verifyDriverEmailChangeToken(token: string): DriverEmailChangeClaimsView {
+    const claims = this.verifyRaw<DriverEmailChangeClaims>(token);
+    if (claims.typ !== DRIVER_EMAIL_CHANGE_TYP || typeof claims.rqa !== 'number') {
+      throw new AppException(ERROR_CODES.TOKEN_INVALID, 'Not a driver email-change token.', 401);
     }
-    return { userId: claims.sub, email: claims.email };
+    return { driverId: claims.sub, email: claims.email, requestedAt: claims.rqa };
+  }
+
+  /** Driver email change — "this wasn't me" link for the OLD address. Lives for the confirm
+   * window plus the post-change hold, so it can still revert a confirmed change. */
+  signDriverEmailChangeCancelToken(driverId: string, newEmail: string, oldEmail: string, requestedAt: Date): string {
+    const claims: DriverEmailChangeCancelClaims = {
+      sub: driverId,
+      typ: DRIVER_EMAIL_CHANGE_CANCEL_TYP,
+      email: newEmail,
+      old: oldEmail,
+      rqa: requestedAt.getTime(),
+    };
+    const confirmMs = ms(this.config.get('DRIVER_EMAIL_CHANGE_TTL') as ms.StringValue);
+    const holdMs = this.config.get('DRIVER_EMAIL_CHANGE_HOLD_HOURS') * 3_600_000;
+    const ttlSec = Math.max(60, Math.ceil(((typeof confirmMs === 'number' ? confirmMs : 0) + holdMs) / 1000));
+    return jwt.sign(claims, this.secret, { expiresIn: ttlSec });
+  }
+
+  verifyDriverEmailChangeCancelToken(token: string): DriverEmailChangeClaimsView & { oldEmail: string } {
+    const claims = this.verifyRaw<DriverEmailChangeCancelClaims>(token);
+    if (claims.typ !== DRIVER_EMAIL_CHANGE_CANCEL_TYP || typeof claims.rqa !== 'number') {
+      throw new AppException(ERROR_CODES.TOKEN_INVALID, 'Not a driver email-change cancel token.', 401);
+    }
+    return { driverId: claims.sub, email: claims.email, oldEmail: claims.old, requestedAt: claims.rqa };
+  }
+
+  /** B-84 — web-user email change confirm link for the NEW address (`USER_EMAIL_CHANGE_TTL`). */
+  signUserEmailChangeToken(userId: string, pendingEmail: string, requestedAt: Date): string {
+    const claims: UserEmailChangeClaims = { sub: userId, typ: USER_EMAIL_CHANGE_TYP, email: pendingEmail, rqa: requestedAt.getTime() };
+    return jwt.sign(claims, this.secret, { expiresIn: this.config.get('USER_EMAIL_CHANGE_TTL') } as jwt.SignOptions);
+  }
+
+  verifyUserEmailChangeToken(token: string): UserEmailChangeClaimsView {
+    const claims = this.verifyRaw<UserEmailChangeClaims>(token);
+    if (claims.typ !== USER_EMAIL_CHANGE_TYP || typeof claims.rqa !== 'number') {
+      throw new AppException(ERROR_CODES.TOKEN_INVALID, 'Not a user email-change token.', 401);
+    }
+    return { userId: claims.sub, email: claims.email, requestedAt: claims.rqa };
+  }
+
+  /** B-84 — "this wasn't me" link for the OLD address of a web user. Lives for the confirm window
+   * plus the post-change hold (`USER_EMAIL_CHANGE_HOLD_HOURS`), so it can still revert a confirmed change. */
+  signUserEmailChangeCancelToken(userId: string, newEmail: string, oldEmail: string, requestedAt: Date): string {
+    const claims: UserEmailChangeCancelClaims = {
+      sub: userId,
+      typ: USER_EMAIL_CHANGE_CANCEL_TYP,
+      email: newEmail,
+      old: oldEmail,
+      rqa: requestedAt.getTime(),
+    };
+    const confirmMs = ms(this.config.get('USER_EMAIL_CHANGE_TTL') as ms.StringValue);
+    const holdMs = this.config.get('USER_EMAIL_CHANGE_HOLD_HOURS') * 3_600_000;
+    const ttlSec = Math.max(60, Math.ceil(((typeof confirmMs === 'number' ? confirmMs : 0) + holdMs) / 1000));
+    return jwt.sign(claims, this.secret, { expiresIn: ttlSec });
+  }
+
+  verifyUserEmailChangeCancelToken(token: string): UserEmailChangeClaimsView & { oldEmail: string } {
+    const claims = this.verifyRaw<UserEmailChangeCancelClaims>(token);
+    if (claims.typ !== USER_EMAIL_CHANGE_CANCEL_TYP || typeof claims.rqa !== 'number') {
+      throw new AppException(ERROR_CODES.TOKEN_INVALID, 'Not a user email-change cancel token.', 401);
+    }
+    return { userId: claims.sub, email: claims.email, oldEmail: claims.old, requestedAt: claims.rqa };
   }
 
   /** TokenVerifier port — consumed by the transport-only `JwtAuthGuard`. */

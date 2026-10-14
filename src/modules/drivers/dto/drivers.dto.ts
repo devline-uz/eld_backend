@@ -11,13 +11,23 @@ export const HosRulesetEnum = z.enum([
   'US_60_7_PASSENGER',
 ]);
 
+/** A real address (trimmed, RFC 5321 length cap) or blank: `''` / whitespace-only / `null` mean
+ * "no email". `Driver.email` is nullable; the service turns blank into no value on create and
+ * into a clear on update (`normalizeEmail`). */
+const OptionalDriverEmail = z
+  .union([z.string().trim().email().max(254), z.string().trim().length(0)])
+  .nullable()
+  .optional();
+
 /** TZ §5.3 — driver identity, CDL, and the per-driver exception flags. */
 export const CreateDriverDto = z.object({
   // BE-015 — identity fields are trimmed; whitespace-only is rejected.
   username: z.string().trim().min(3).max(40),
   firstName: z.string().trim().min(1).max(80),
   lastName: z.string().trim().min(1).max(80),
-  email: z.string().email().optional(),
+  // Trimmed before the format check (a pasted trailing space is not a 422); RFC 5321 length cap.
+  // Optional: `''` / whitespace / `null` (a blank form field or CSV cell) = no email, no invite.
+  email: OptionalDriverEmail,
   phone: z.string().max(30).optional(),
   cdlNumber: z.string().trim().min(1).max(40),
   /** BE-017 — a US state / Canadian province code, upper-cased. */
@@ -63,7 +73,19 @@ export type CreateDriverDto = z.infer<typeof CreateDriverDto>;
 export const UpdateDriverDto = CreateDriverDto.omit({ username: true, password: true, assignedVehicleId: true })
   .partial()
   // Not the create-time description: on update an omitted ruleset is left unchanged.
-  .extend({ hosRuleset: HosRulesetEnum.optional(), status: DriverStatusEnum.optional() });
+  .extend({
+    /** Omitted → unchanged. A different address → a pending change (confirm link). `''` / `null`
+     * (blank after trim) → CLEARS the email, a sensitive change like any other: re-auth, notice
+     * to the old address, hold window (`DriverEmailChangeService.clearInput`). */
+    email: OptionalDriverEmail,
+    hosRuleset: HosRulesetEnum.optional(),
+    status: DriverStatusEnum.optional(),
+    /** Driver email change — the ACTING web user's own password; required only when `email`
+     * differs from the driver's current one (never stored, redacted from logs). */
+    currentPassword: z.string().min(1).max(128).optional(),
+    /** Driver email change — Google-only accounts: a fresh Firebase ID token instead of a password. */
+    reauthIdToken: z.string().min(1).max(4096).optional(),
+  });
 export type UpdateDriverDto = z.infer<typeof UpdateDriverDto>;
 
 export const DriverListQueryDto = z.object({
@@ -138,3 +160,9 @@ export const InvokeAdverseDrivingDto = z.object({
   annotation: z.string().trim().min(4).max(255),
 });
 export type InvokeAdverseDrivingDto = z.infer<typeof InvokeAdverseDrivingDto>;
+
+/** Driver email change — the public confirm / "this wasn't me" link landing pages post the token. */
+export const DriverEmailChangeTokenDto = z.object({
+  token: z.string().min(1).max(4096),
+});
+export type DriverEmailChangeTokenDto = z.infer<typeof DriverEmailChangeTokenDto>;

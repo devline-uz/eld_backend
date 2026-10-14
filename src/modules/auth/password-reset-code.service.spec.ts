@@ -3,6 +3,7 @@ import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
 import { AUDIT_EVENT } from '../../common/interceptors/audit.interceptor';
 import { ConfirmPasswordResetCodeDto } from './dto/auth.dto';
+import { fakeUserEmailTable } from '../../../test/helpers/fake-user-email-table';
 import * as passwordUtil from './lib/password.util';
 import {
   PasswordResetCodeService,
@@ -10,6 +11,7 @@ import {
   RESET_CODE_RESEND_COOLDOWN_MS,
   RESET_CODE_TTL_MS,
 } from './password-reset-code.service';
+import { UserAuthRepository } from './repositories/user-auth.repository';
 
 jest.mock('./lib/password.util');
 
@@ -50,7 +52,7 @@ describe('PasswordResetCodeService (web "Forgot password?")', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    users = { findByEmailInsensitiveWithRole: jest.fn().mockResolvedValue(activeUser), updatePasswordHash: jest.fn() };
+    users = { findByEmailWithRole: jest.fn().mockResolvedValue(activeUser), updatePasswordHash: jest.fn() };
     codes = {
       findLatestActive: jest.fn().mockResolvedValue(null),
       invalidateAllForUser: jest.fn(),
@@ -75,10 +77,32 @@ describe('PasswordResetCodeService (web "Forgot password?")', () => {
   });
 
   describe('requestCode', () => {
+    it('B-84 hold — mails no code to an address changed inside USER_EMAIL_CHANGE_HOLD_HOURS; admins are notified (409)', async () => {
+      env.USER_EMAIL_CHANGE_HOLD_HOURS = 48;
+      codes.notifyAdminsOfHeldReset = jest.fn().mockResolvedValue(2);
+      users.findByEmailWithRole.mockResolvedValue({ ...activeUser, emailChangedAt: new Date(Date.now() - 3_600_000) });
+      await expect(service.requestCode('sarah.chen@example.com')).rejects.toMatchObject({
+        code: 'EMAIL_CHANGE_ON_HOLD',
+        status: 409,
+        details: { holdUntil: expect.any(String) as string },
+      });
+      expect(mail.send).not.toHaveBeenCalled();
+      expect(codes.create).not.toHaveBeenCalled();
+      expect(codes.notifyAdminsOfHeldReset).toHaveBeenCalledWith(expect.objectContaining({ id: 'u1' }), expect.any(Date));
+      expect(events.publish).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ action: 'PASSWORD_RESET_HELD' }));
+    });
+
+    it('B-84 hold — after the hold ends the code is mailed as usual', async () => {
+      env.USER_EMAIL_CHANGE_HOLD_HOURS = 48;
+      users.findByEmailWithRole.mockResolvedValue({ ...activeUser, emailChangedAt: new Date(Date.now() - 49 * 3_600_000) });
+      await expect(service.requestCode('sarah.chen@example.com')).resolves.toMatchObject({ success: true });
+      expect(mail.send).toHaveBeenCalled();
+    });
+
     it('emails a 6-digit code to an existing active user and stores only its HMAC', async () => {
       const result = await service.requestCode(' sarah.chen@example.com ', { ip: '1.2.3.4' });
 
-      expect(users.findByEmailInsensitiveWithRole).toHaveBeenCalledWith('sarah.chen@example.com');
+      expect(users.findByEmailWithRole).toHaveBeenCalledWith(' sarah.chen@example.com ');
       expect(result).toEqual({ success: true, email: activeUser.email, expiresInSec: 900, resendAfterSec: 60 });
       const [message] = mail.send.mock.calls[0] as [{ to: string; text: string }];
       expect(message.to).toBe(activeUser.email);
@@ -93,7 +117,7 @@ describe('PasswordResetCodeService (web "Forgot password?")', () => {
     });
 
     it('404s with a field error when no user has that email', async () => {
-      users.findByEmailInsensitiveWithRole.mockResolvedValue(null);
+      users.findByEmailWithRole.mockResolvedValue(null);
       const err = await caught(service.requestCode('nobody@example.com'));
       expect(err.getStatus()).toBe(404);
       expect(err.code).toBe(ERROR_CODES.NOT_FOUND);
@@ -102,7 +126,7 @@ describe('PasswordResetCodeService (web "Forgot password?")', () => {
     });
 
     it.each(['INVITED', 'DISABLED'])('treats a %s user as not found', async (status) => {
-      users.findByEmailInsensitiveWithRole.mockResolvedValue({ ...activeUser, status });
+      users.findByEmailWithRole.mockResolvedValue({ ...activeUser, status });
       const err = await caught(service.requestCode('sarah.chen@example.com'));
       expect(err.getStatus()).toBe(404);
       expect(codes.create).not.toHaveBeenCalled();
@@ -113,7 +137,7 @@ describe('PasswordResetCodeService (web "Forgot password?")', () => {
       const err = await caught(service.requestCode('sarah.chen@example.com'));
       expect(err.getStatus()).toBe(403);
       expect(err.code).toBe(ERROR_CODES.PASSWORD_LOGIN_DISABLED);
-      expect(users.findByEmailInsensitiveWithRole).not.toHaveBeenCalled();
+      expect(users.findByEmailWithRole).not.toHaveBeenCalled();
     });
 
     it('enforces the resend cooldown with 429 + retryAfterSec', async () => {
@@ -203,7 +227,7 @@ describe('PasswordResetCodeService (web "Forgot password?")', () => {
     it('refuses when no code was requested, or the user is gone', async () => {
       const err = await caught(service.resetWithCode('sarah.chen@example.com', '123456', 'N3wPassword!'));
       expect(err.code).toBe(ERROR_CODES.RESET_CODE_EXPIRED);
-      users.findByEmailInsensitiveWithRole.mockResolvedValue(null);
+      users.findByEmailWithRole.mockResolvedValue(null);
       const err2 = await caught(service.resetWithCode('ghost@example.com', '123456', 'N3wPassword!'));
       expect(err2.code).toBe(ERROR_CODES.RESET_CODE_EXPIRED);
     });
@@ -238,6 +262,35 @@ describe('PasswordResetCodeService (web "Forgot password?")', () => {
     });
     it('rejects a code that is not 6 digits', () => {
       expect(ConfirmPasswordResetCodeDto.safeParse({ ...base, code: '12345a', newPassword: 'abcdefgh' }).success).toBe(false);
+    });
+  });
+  describe('email lookup — case / whitespace-insensitive', () => {
+    beforeEach(() => {
+      const repo = new UserAuthRepository(
+        fakeUserEmailTable([activeUser, { ...activeUser, id: 'u2', email: 'lower@example.com' }]).prisma as never,
+      );
+      users.findByEmailWithRole.mockImplementation((email: string) => repo.findByEmailWithRole(email));
+    });
+
+    it.each([
+      ['legacy mixed-case row, lower-case input', 'sarah.chen@example.com', 'u1'],
+      ['legacy mixed-case row, upper-case + spaces', '  SARAH.CHEN@EXAMPLE.COM ', 'u1'],
+      ['lower-case row, mixed-case + spaces', ' Lower@Example.com ', 'u2'],
+    ])('requestCode: %s', async (_label, input, userId) => {
+      await expect(service.requestCode(input)).resolves.toMatchObject({ success: true });
+      expect(codes.create).toHaveBeenCalledWith(expect.objectContaining({ userId }));
+    });
+
+    it('requestCode: a wildcard look-alike is "not found", not another account', async () => {
+      const err = await caught(service.requestCode('s_rah.chen@example.com'));
+      expect(err).toBeInstanceOf(AppException);
+      expect(codes.create).not.toHaveBeenCalled();
+    });
+
+    it('resetWithCode: a case-variant address finds the same account', async () => {
+      codes.findLatestActive.mockResolvedValue(liveCode());
+      await service.resetWithCode(' SARAH.chen@EXAMPLE.com', '123456', 'new-password-1');
+      expect(users.updatePasswordHash).toHaveBeenCalledWith('u1', 'argon-new');
     });
   });
 });

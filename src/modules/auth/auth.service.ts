@@ -11,6 +11,7 @@ import { CarrierRepository } from '../carrier/carrier.repository';
 import { hashPassword, verifyPassword } from './lib/password.util';
 import { randomInt, randomBytes, timingSafeEqual } from 'node:crypto';
 import { randomOpaqueToken, sha256 } from './lib/hash.util';
+import { isInEmailChangeHold } from './lib/driver-email-hold';
 import { TRANSACTIONAL_MAIL, TransactionalMailPort } from '../../core/mail/mail.port';
 import { TokenService } from './token.service';
 import { DriverAuthRepository } from './repositories/driver-auth.repository';
@@ -326,6 +327,9 @@ export class AuthService {
     const user = await this.users.findByEmailWithRole(email);
     // Always 200 regardless of whether the email exists — no user-enumeration oracle.
     if (!user) return {};
+    // B-84 email-change hold — a just-changed address is not trusted for recovery: no reset token
+    // is issued for it (same rule as `POST /auth/password/reset-code`).
+    if (isInEmailChangeHold(user.emailChangedAt, this.config.get('USER_EMAIL_CHANGE_HOLD_HOURS'))) return {};
     const token = this.issueResetToken(user.id, user.passwordHash);
     this.logger.log({ userId: user.id }, 'Password reset requested (no mailer wired in Phase 1)');
     // Phase 1 has no outbound-email integration (TZ §14 covers in-app/push, not SMTP). The
@@ -342,11 +346,20 @@ export class AuthService {
   async forgotDriverPassword(identifier: string): Promise<{ resetToken?: string; resetCode?: string }> {
     const driver = await this.drivers.findByUsernameOrEmail(identifier);
     if (!driver) return {};
-    if (!driver.email) {
+    // Driver email change hold — a just-changed address is not trusted for recovery yet: no code
+    // is mailed to it; the admins are notified instead, exactly like a driver without an email.
+    const onHold = Boolean(
+      driver.email && isInEmailChangeHold(driver.emailChangedAt, this.config.get('DRIVER_EMAIL_CHANGE_HOLD_HOURS')),
+    );
+    if (!driver.email || onHold) {
       // Not awaited — same timing-oracle reasoning as the mail below.
       void Promise.resolve()
         .then(() =>
-          this.resetCodes.notifyAdminsOfResetRequest(driver, new Date(Date.now() - DRIVER_RESET_CODE_TTL_MS)),
+          this.resetCodes.notifyAdminsOfResetRequest(
+            driver,
+            new Date(Date.now() - DRIVER_RESET_CODE_TTL_MS),
+            onHold ? 'EMAIL_CHANGE_HOLD' : 'NO_EMAIL',
+          ),
         )
         .catch((err: unknown) => {
           this.logger.warn({ driverId: driver.id, err: String(err) }, 'Driver password-reset admin notification failed');
@@ -441,27 +454,59 @@ export class AuthService {
   }
 
   // ---------------------------------------------------------------------
-  // Email re-verification — B-84 `PATCH /users/:id { email }`
+  // Re-authentication of the acting web user (driver email change)
   // ---------------------------------------------------------------------
 
-  /** Used by `modules/users` — the new address is not written to `User.email` until the
-   * returned token comes back through `verifyEmailChange` (TZ §18-adjacent: a changed email
-   * is itself a login-affecting change, so it should not take effect silently). Same
-   * "return outside production only" convention as `forgotPassword` — no mailer in Phase 1. */
-  issueUserEmailVerifyToken(userId: string, email: string): string | undefined {
-    const token = this.tokens.signUserEmailVerifyToken(userId, email);
-    return this.config.echoOneTimeSecrets ? token : undefined;
+  /**
+   * The acting back-office user re-confirms who they are before a sensitive change (a driver's
+   * email). Password accounts re-enter their password (Argon2 `verifyPassword`); a Google-only
+   * account (no password hash, or `AUTH_MODE=production` where passwords are off) sends a fresh
+   * Firebase ID token of the same Google account instead. There is no 2FA in this project.
+   * Every failure is a 401 with a non-session code, so the web keeps its own session.
+   */
+  async assertUserReauth(userId: string, proof: { currentPassword?: string; reauthIdToken?: string }): Promise<void> {
+    const field = { currentPassword: 'Enter your password to confirm this change.' };
+    const user = await this.users.findByIdWithRole(userId);
+    if (!user || user.status !== 'ACTIVE') {
+      throw new AppException(ERROR_CODES.REAUTH_FAILED, 'Your account could not be re-verified.', 401, field);
+    }
+    if (proof.reauthIdToken) {
+      await this.assertGoogleReauth(user, proof.reauthIdToken);
+      return;
+    }
+    const passwordAllowed = this.config.get('AUTH_MODE') !== 'production' && Boolean(user.passwordHash);
+    if (!proof.currentPassword) {
+      throw new AppException(
+        ERROR_CODES.REAUTH_REQUIRED,
+        passwordAllowed ? 'Enter your password to change this email.' : 'Confirm with Google to change this email.',
+        401,
+        passwordAllowed ? field : { reauthIdToken: 'Confirm with Google to change this email.' },
+      );
+    }
+    if (!passwordAllowed || !(await verifyPassword(user.passwordHash as string, proof.currentPassword))) {
+      throw new AppException(ERROR_CODES.REAUTH_FAILED, 'Password is incorrect.', 401, { currentPassword: 'Password is incorrect.' });
+    }
   }
 
-  async verifyEmailChange(token: string): Promise<void> {
-    const { userId, email } = this.tokens.verifyUserEmailVerifyToken(token);
-    const user = await this.users.findByIdWithRole(userId);
-    if (!user) throw new AppException(ERROR_CODES.TOKEN_INVALID, 'This verification link is no longer valid.', 401);
-    const existing = await this.users.findByEmail(email);
-    if (existing && existing.id !== userId) {
-      throw AppException.conflict(`A user with email "${email}" already exists.`);
+  private async assertGoogleReauth(user: UserWithRole, idToken: string): Promise<void> {
+    const fail = () =>
+      new AppException(ERROR_CODES.REAUTH_FAILED, 'Google re-authentication failed.', 401, { reauthIdToken: 'Google re-authentication failed.' });
+    if (!this.firebase.enabled) throw fail();
+    const decoded = await this.firebase.verifyIdToken(idToken).catch(() => {
+      throw fail();
+    });
+    const expectedAud = this.config.get('FIREBASE_PROJECT_ID');
+    const authTimeMs = typeof decoded.auth_time === 'number' ? decoded.auth_time * 1000 : 0;
+    if (
+      decoded.firebase?.sign_in_provider !== 'google.com' ||
+      (expectedAud && decoded.aud !== expectedAud) ||
+      decoded.email_verified !== true ||
+      decoded.email?.toLowerCase() !== user.email.toLowerCase() ||
+      // A token minted from an old sign-in is not a re-authentication.
+      Date.now() - authTimeMs > 5 * 60_000
+    ) {
+      throw fail();
     }
-    await this.users.applyVerifiedEmail(userId, email);
   }
 
   // ---------------------------------------------------------------------

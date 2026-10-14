@@ -132,6 +132,13 @@ export const FIGMA_UNMAPPED_ROUTES: Record<string, string> = {
   'GET /api/mobile/conversations/{id}/messages': 'Driver app M-16 conversation thread (mobile/tz.md MB-15).',
   'POST /api/mobile/conversations/{id}/messages': 'Driver app M-16 composer / quick replies (mobile/tz.md MB-15).',
   'POST /api/mobile/conversations/{id}/read': 'Driver app M-16 open-thread read receipt (mobile/tz.md MB-15).',
+  // Public landings of links mailed to a DRIVER (web pages /driver-email/*) — no panel screen in Figma.
+  'POST /api/auth/driver/email/confirm': 'Driver email change confirm link (web /driver-email/confirm) — public, no Figma screen.',
+  'POST /api/auth/driver/email/cancel': 'Driver email change "this wasn\'t me" link (web /driver-email/cancel) — public, no Figma screen.',
+  'POST /api/auth/driver/email/verify': 'Driver email verify link from send-verification (web /driver-email/verify) — public, no Figma screen.',
+  // Public landings of links mailed to a WEB USER (web pages /account/email/*) — no panel screen in Figma.
+  'POST /api/auth/email/verify': 'Web-user email change confirm link (web /account/email/confirm) — public, no Figma screen.',
+  'POST /api/auth/email/cancel': 'Web-user email change "this wasn\'t me" link (web /account/email/cancel) — public, no Figma screen.',
   // Mobile requests 2026-10-08 (docs/mobile-requests-2026-10-08.md) — mobile Figma export still missing from eld.docs.
   'GET /api/mobile/app-config': 'Driver app pre-login update gate / About (MR-7) — public; mobile Figma export missing.',
   'GET /api/mobile/legal/{kind}': 'Driver app Privacy policy / Terms links (MR-30) — public; mobile Figma export missing.',

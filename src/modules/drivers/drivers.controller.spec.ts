@@ -19,6 +19,8 @@ describe('DriversController permissions', () => {
     ['import', 'FULL'],
     ['update', 'FULL'],
     ['remove', 'FULL'],
+    ['resendEmailChange', 'FULL'],
+    ['cancelEmailChange', 'FULL'],
   ] as const)('%s requires drivers:%s', (method, level) => {
     expect(permOf(method)).toEqual({ key: 'drivers', level });
   });
@@ -48,7 +50,11 @@ describe('DriversController — delegates to DriversService', () => {
     roster: jest.fn().mockResolvedValue({ items: [], page: 1, limit: 25, total: 0, totalPages: 1 }),
     clocks: jest.fn().mockResolvedValue({ driveRemainingSec: 0 }),
   };
-  const controller = new DriversController(service as never, rosterService as never);
+  const emailChange = {
+    resend: jest.fn().mockResolvedValue({ pendingEmail: 'n@example.com' }),
+    cancelPending: jest.fn().mockResolvedValue({ id: 'drv_1' }),
+  };
+  const controller = new DriversController(service as never, rosterService as never, emailChange as never);
 
   it('roster', async () => {
     const query = { page: 2, limit: 10, q: 'smith' } as never;
@@ -91,8 +97,16 @@ describe('DriversController — delegates to DriversService', () => {
 
   it('update', async () => {
     const dto = { firstName: 'Jane' } as never;
-    await controller.update('drv_1', dto);
-    expect(service.update).toHaveBeenCalledWith('drv_1', dto);
+    const actor = { id: 'usr_1', type: 'user' as const };
+    await controller.update('drv_1', dto, actor);
+    expect(service.update).toHaveBeenCalledWith('drv_1', dto, actor);
+  });
+
+  it('email-change resend / cancel delegate to DriverEmailChangeService', async () => {
+    await controller.resendEmailChange('drv_1');
+    expect(emailChange.resend).toHaveBeenCalledWith('drv_1');
+    await controller.cancelEmailChange('drv_1');
+    expect(emailChange.cancelPending).toHaveBeenCalledWith('drv_1');
   });
 
   it('remove', async () => {

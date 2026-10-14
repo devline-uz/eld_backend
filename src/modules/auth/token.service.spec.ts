@@ -95,4 +95,20 @@ describe('TokenService', () => {
       expect(() => badTokens.refreshTtlMs('user')).toThrow();
     });
   });
+
+  it('driver email-change confirm / cancel tokens round-trip, bind the request time, and are never cross-usable', () => {
+    const at = new Date('2026-10-13T10:00:00.000Z');
+    const confirm = tokens.signDriverEmailChangeToken('drv_1', 'new@example.com', at);
+    expect(tokens.verifyDriverEmailChangeToken(confirm)).toEqual({ driverId: 'drv_1', email: 'new@example.com', requestedAt: at.getTime() });
+    const cancel = tokens.signDriverEmailChangeCancelToken('drv_1', 'new@example.com', 'old@example.com', at);
+    expect(tokens.verifyDriverEmailChangeCancelToken(cancel)).toEqual({
+      driverId: 'drv_1',
+      email: 'new@example.com',
+      oldEmail: 'old@example.com',
+      requestedAt: at.getTime(),
+    });
+    expect(() => tokens.verifyDriverEmailChangeToken(cancel)).toThrow(AppException);
+    expect(() => tokens.verifyDriverEmailChangeCancelToken(confirm)).toThrow(AppException);
+    expect(() => tokens.verifyDriverEmailVerifyToken(confirm)).toThrow(AppException);
+  });
 });
