@@ -1,5 +1,5 @@
 /** B-39 / B-72 — request validation for carrier proposals (§395.30, §395.1(e)). */
-import { CertificationStatusQueryDto, CertifyDto, CreateEditRequestDto, CreateLogEntryDto, ProposeEventDto } from './logs.dto';
+import { CertificationStatusQueryDto, CertifyDto, CreateEditRequestDto, CreateLogEntryDto, LogDateQueryDto, LogRangeQueryDto, ProposeEventDto } from './logs.dto';
 import { DutyStatusDto } from '../../mobile/dto/mobile.dto';
 
 const base = {
@@ -85,5 +85,19 @@ describe('MR-5 / MR-6 / MR-23 / MR-26 — driver entry and certify DTOs', () => 
     expect(CertificationStatusQueryDto.parse({})).toEqual({ days: 8 });
     expect(CertificationStatusQueryDto.parse({ days: '14' })).toEqual({ days: 14 });
     expect(CertificationStatusQueryDto.safeParse({ days: '15' }).success).toBe(false);
+  });
+});
+
+describe('CODE-067 / CODE-068 — log date and range queries', () => {
+  it('rejects a date that does not exist instead of rolling it over', () => {
+    expect(LogDateQueryDto.safeParse({ date: '2026-02-31' }).success).toBe(false);
+    expect(LogDateQueryDto.safeParse({ date: '2026-02-28' }).success).toBe(true);
+  });
+
+  it('caps a range at 62 days with a field error on `to`', () => {
+    expect(LogRangeQueryDto.safeParse({ from: '2026-01-01', to: '2026-03-03' }).success).toBe(true);
+    const tooLong = LogRangeQueryDto.safeParse({ from: '2026-01-01', to: '2026-03-04' });
+    expect(tooLong.success).toBe(false);
+    expect(tooLong.error?.issues[0]?.path).toEqual(['to']);
   });
 });

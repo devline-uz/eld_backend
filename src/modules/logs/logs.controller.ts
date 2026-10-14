@@ -230,22 +230,22 @@ export class LogsController {
   @Post(':driverId/certify')
   @ApiOperation({
     summary:
-      'Certifies one or more RODS days (§9.2). A driver certifies their own log; a back-office user needs hosCertifyOnBehalf = FULL and the action is always audited.',
+      'Certifies one or more RODS days (§9.2). CODE-029 — driver tokens only: a driver certifies their own log; any back-office user or API key gets 403 CERTIFY_DRIVER_ONLY (§395.8(e)).',
   })
   @ApiCreatedResponse({
-    description: 'Certification is the driver signature; on-behalf certification is always written to the audit log.',
+    description: 'Certification is the driver signature (driver token only).',
     schema: {
       example: {
         driverId: 'drv_1',
         certified: [
-          { date: '2026-09-10', certifiedAt: '2026-09-11T15:41:00.000Z', certifiedBy: 'usr_1', onBehalf: true, signatureCount: 1 },
+          { date: '2026-09-10', certifiedAt: '2026-09-11T15:41:00.000Z', certifiedBy: 'drv_1', onBehalf: false, signatureCount: 1 },
         ],
       },
     },
   })
   @ApiStandardErrors({
     errors: [
-      apiError.forbidden('Certifying on behalf of a driver requires hosCertifyOnBehalf = FULL.'),
+      { status: 403, code: ERROR_CODES.CERTIFY_DRIVER_ONLY, message: 'Only the driver can certify their log, in the driver app.' },
       apiError.notFound(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.'),
     ],
   })

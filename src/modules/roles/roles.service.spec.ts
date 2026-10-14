@@ -6,13 +6,16 @@ describe('RolesService — super admin rules', () => {
   let repo: {
     findById: jest.Mock;
     findByKey: jest.Mock;
+    findByNameInsensitive: jest.Mock;
     create: jest.Mock;
     update: jest.Mock;
     delete: jest.Mock;
     countUsersWithRole: jest.Mock;
+    userIdsWithRole: jest.Mock;
     findRoleOfUser: jest.Mock;
   };
   let service: RolesService;
+  let principals: { invalidateUsers: jest.Mock };
   const role = (key: string, permissions: object = {}) => ({
     id: `r_${key}`,
     key,
@@ -32,13 +35,46 @@ describe('RolesService — super admin rules', () => {
     repo = {
       findById: jest.fn(),
       findByKey: jest.fn().mockResolvedValue(null),
+      findByNameInsensitive: jest.fn().mockResolvedValue(null),
       create: jest.fn().mockImplementation(async (data: object) => ({ id: 'r_new', ...data })),
       update: jest.fn().mockResolvedValue({}),
       delete: jest.fn(),
       countUsersWithRole: jest.fn().mockResolvedValue(0),
+      userIdsWithRole: jest.fn().mockResolvedValue(['u_1', 'u_2']),
       findRoleOfUser: jest.fn(async (id: string) => heldRoles[id] ?? null),
     };
-    service = new RolesService(repo as unknown as RolesRepository);
+    principals = { invalidateUsers: jest.fn().mockResolvedValue(undefined) };
+    service = new RolesService(repo as unknown as RolesRepository, principals as never);
+  });
+
+  describe('CODE-087 — role names unique ignoring case', () => {
+    const matrix = DEFAULT_ROLE_MATRIX.VIEWER;
+
+    it('refuses to create a role whose name only differs in case (409, field error), and stores names trimmed', async () => {
+      repo.findByNameInsensitive.mockResolvedValueOnce({ id: 'r_x', name: 'Dispatcher' });
+      await expect(service.create({ key: 'DISP_2', name: ' dispatcher ', permissions: matrix }, SA)).rejects.toMatchObject({
+        status: 409,
+        details: { name: 'A role named "Dispatcher" already exists.' },
+      });
+      expect(repo.findByNameInsensitive).toHaveBeenCalledWith('dispatcher', undefined);
+      expect(repo.create).not.toHaveBeenCalled();
+
+      await service.create({ key: 'NIGHT', name: '  Night shift ', permissions: matrix }, SA);
+      expect(repo.create).toHaveBeenCalledWith(expect.objectContaining({ name: 'Night shift' }));
+    });
+
+    it('turns a concurrent-create unique violation into 409, not 500', async () => {
+      repo.create.mockRejectedValueOnce(Object.assign(new Error('unique'), { code: 'P2002' }));
+      await expect(service.create({ key: 'NIGHT', name: 'Night', permissions: matrix }, SA)).rejects.toMatchObject({ status: 409 });
+    });
+
+    it('a rename checks other roles only (renaming to its own name in another case is fine)', async () => {
+      repo.findById.mockResolvedValue(role('CUSTOM'));
+      await service.update('r_CUSTOM', { name: 'custom' }, SA);
+      expect(repo.findByNameInsensitive).toHaveBeenCalledWith('custom', 'r_CUSTOM');
+      repo.findByNameInsensitive.mockResolvedValueOnce({ id: 'r_other', name: 'Viewer' });
+      await expect(service.update('r_CUSTOM', { name: 'VIEWER' }, SA)).rejects.toMatchObject({ status: 409 });
+    });
   });
 
   it('forbids a non-SUPER_ADMIN from editing the ADMIN role (403 FORBIDDEN)', async () => {
@@ -55,6 +91,15 @@ describe('RolesService — super admin rules', () => {
     repo.findById.mockResolvedValue(role('ADMIN'));
     await service.update('r_ADMIN', { name: 'Admin 2' }, SA);
     expect(repo.update).toHaveBeenCalled();
+    // A rename changes no access: nobody is re-authorized.
+    expect(principals.invalidateUsers).not.toHaveBeenCalled();
+  });
+
+  it('CODE-012 — a permission edit re-authorizes every holder of the role (cache + sockets)', async () => {
+    repo.findById.mockResolvedValue(role('ADMIN'));
+    await service.update('r_ADMIN', { permissions: DEFAULT_ROLE_MATRIX.VIEWER }, SA);
+    expect(repo.userIdsWithRole).toHaveBeenCalledWith('r_ADMIN');
+    expect(principals.invalidateUsers).toHaveBeenCalledWith(['u_1', 'u_2']);
   });
 
   it('SUPER_ADMIN role is immutable even for a SUPER_ADMIN, and cannot be deleted', async () => {
@@ -89,13 +134,16 @@ describe('RolesService — permission ceiling (CODE-002)', () => {
 
   let repo: Record<string, jest.Mock>;
   let service: RolesService;
+  let principals: { invalidateUsers: jest.Mock };
 
   beforeEach(() => {
     repo = {
       findById: jest.fn(),
       findByKey: jest.fn().mockResolvedValue(null),
+      findByNameInsensitive: jest.fn().mockResolvedValue(null),
       create: jest.fn().mockImplementation(async (data: object) => ({ id: 'r_new', ...data })),
       update: jest.fn().mockImplementation(async (_w: unknown, data: object) => data),
+      userIdsWithRole: jest.fn().mockResolvedValue(['u_1', 'u_2']),
       findRoleOfUser: jest.fn(async (id: string) =>
         id === 'mgr_1'
           ? managerRole
@@ -104,7 +152,8 @@ describe('RolesService — permission ceiling (CODE-002)', () => {
             : null,
       ),
     };
-    service = new RolesService(repo as unknown as RolesRepository);
+    principals = { invalidateUsers: jest.fn().mockResolvedValue(undefined) };
+    service = new RolesService(repo as unknown as RolesRepository, principals as never);
   });
 
   it('rejects creating an all-FULL role from a custom role (403, lists the exceeding keys)', async () => {

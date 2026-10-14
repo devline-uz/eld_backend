@@ -2,7 +2,7 @@ import { countDriverDuty, DashboardService } from './dashboard.service';
 import type { CarrierService } from '../carrier/carrier.service';
 import type { LiveFleetService } from '../live/live-fleet.service';
 import type { NotificationsService } from '../notifications/notifications.service';
-import type { UnidentifiedService } from '../unidentified/unidentified.service';
+import type { DashboardRepository } from './dashboard.repository';
 import type { VehiclesService } from '../vehicles/vehicles.service';
 import type { ActiveViolationsService } from '../violations/active-violations.service';
 
@@ -20,9 +20,8 @@ describe('DashboardService — reuses each feature module\'s own service via Pro
     }),
   };
   const violations = { list: jest.fn().mockResolvedValue({ items: [{ id: 'vio_1' }], total: 3, page: 1, limit: 25, totalPages: 1 }) };
-  const unidentified = {
-    list: jest.fn().mockResolvedValue({ items: [{ id: 'seg_1', durationSec: 1200 }, { id: 'seg_2', durationSec: 600 }], total: 2, page: 1, limit: 25, totalPages: 1 }),
-  };
+  // CODE-021 — an aggregate over every PENDING segment (40 × 600 s), not one 25-row page.
+  const repo = { pendingUnidentified: jest.fn().mockResolvedValue({ total: 40, totalDurationSec: 24000 }) };
   const notifications = { list: jest.fn().mockResolvedValue({ items: [], total: 4, page: 1, limit: 1, totalPages: 4 }) };
   const carrier = { get: jest.fn().mockResolvedValue({ id: 'carrier', name: 'Universal Logistics Inc.', timezone: 'America/New_York' }) };
   const vehicles = {
@@ -37,7 +36,7 @@ describe('DashboardService — reuses each feature module\'s own service via Pro
   const service = new DashboardService(
     liveFleet as unknown as LiveFleetService,
     violations as unknown as ActiveViolationsService,
-    unidentified as unknown as UnidentifiedService,
+    repo as unknown as DashboardRepository,
     notifications as unknown as NotificationsService,
     carrier as unknown as CarrierService,
     vehicles as unknown as VehiclesService,
@@ -58,13 +57,13 @@ describe('DashboardService — reuses each feature module\'s own service via Pro
       driverDuty: { assigned: 4, DRIVING: 2, ON_DUTY: 2, SLEEPER: 0, OFF_DUTY: 0, UNKNOWN: 0 },
     });
     expect(result.violations).toEqual({ items: [{ id: 'vio_1' }], total: 3 });
-    expect(result.unidentified).toEqual({ total: 2, totalDurationSec: 1800 });
+    expect(result.unidentified).toEqual({ total: 40, totalDurationSec: 24000 });
     expect(result.notifications).toEqual({ unreadCount: 4 });
     expect(result.carrier).toEqual({ id: 'carrier', name: 'Universal Logistics Inc.', timezone: 'America/New_York' });
     expect(result.vehicles).toEqual({ active: 40, total: 45, inactive: 3, outOfService: 2 });
 
     expect(violations.list).toHaveBeenCalledWith({ status: 'OPEN', page: 1, limit: 25 }, now);
-    expect(unidentified.list).toHaveBeenCalledWith({ status: 'PENDING', page: 1, limit: 25 });
+    expect(repo.pendingUnidentified).toHaveBeenCalled();
     expect(notifications.list).toHaveBeenCalledWith(actor, { page: 1, limit: 1, unreadOnly: true });
     expect(vehicles.list).toHaveBeenCalledWith({ page: 1, limit: 1, status: 'ACTIVE' });
     expect(vehicles.list).toHaveBeenCalledWith({ page: 1, limit: 1 });
@@ -78,13 +77,13 @@ describe('DashboardService — reuses each feature module\'s own service via Pro
 
     expect(result.liveFleet).toEqual({ items: [], generatedAt: now.toISOString(), counts: { total: 0, onDuty: 0, moving: 0, idle: 0, offline: 0, driverDuty: { assigned: 0, DRIVING: 0, ON_DUTY: 0, SLEEPER: 0, OFF_DUTY: 0, UNKNOWN: 0 } } });
     expect(result.violations).toEqual({ items: [], total: 0 });
-    expect(result.unidentified).toEqual({ total: 0, totalDurationSec: 0 });
+    expect(result.unidentified).toEqual({ total: 0, totalDurationSec: 0, awaitingDriver: 0, awaitingDriverDurationSec: 0 });
     expect(result.vehicles).toEqual({ active: 0, total: 0, inactive: 0, outOfService: 0 });
     expect(result.notifications).toEqual({ unreadCount: 4 });
     expect(result.carrier.name).toBe('Universal Logistics Inc.');
     expect(liveFleet.snapshot).not.toHaveBeenCalled();
     expect(violations.list).not.toHaveBeenCalled();
-    expect(unidentified.list).not.toHaveBeenCalled();
+    expect(repo.pendingUnidentified).not.toHaveBeenCalled();
     expect(vehicles.list).not.toHaveBeenCalled();
   });
 

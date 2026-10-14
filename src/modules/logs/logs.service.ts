@@ -2,7 +2,7 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable, Logger } from '@nestjs/common';
 import { EditorType, type Prisma } from '@prisma/client';
 import { Queue } from 'bullmq';
-import type { EldEvent } from '@prisma/client';
+import type { DailyLog, EldEvent } from '@prisma/client';
 import { locationTextOf } from '../../common/geo-location/location-description';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
@@ -122,13 +122,22 @@ export class LogsService {
   async getDay(driverId: string, date: string | undefined, now: Date = new Date()) {
     const driver = await this.requireDriver(driverId);
     const key = date ?? dayKey(driver.homeTerminalTimezone, now);
-    const days = await this.buildDays(driverId, key, key, now, true);
+    // CODE-068 — a read never writes: the header is persisted by the record-change paths
+    // (`rebuildDailyLogsForSpan`, `hos.recalc`, `certify`), not by looking at a day.
+    const days = await this.buildDays(driverId, key, key, now, true, false);
     return days[0];
   }
 
   async getRange(driverId: string, from: string, to: string, now: Date = new Date()) {
     await this.requireDriver(driverId);
-    const days = await this.buildDays(driverId, from, to, now);
+    // CODE-067 — never a silently truncated answer. HTTP callers get the documented 422 from
+    // `LogRangeQueryDto` (62 days); internal callers (RODS / activity reports, up to 366 days)
+    // are served in 62-day windows so every requested day is returned.
+    const days = [];
+    for (let windowFrom = from; windowFrom <= to; windowFrom = addDays(windowFrom, MAX_RANGE_DAYS)) {
+      const windowTo = addDays(windowFrom, MAX_RANGE_DAYS - 1) < to ? addDays(windowFrom, MAX_RANGE_DAYS - 1) : to;
+      days.push(...(await this.buildDays(driverId, windowFrom, windowTo, now, false, false)));
+    }
     return { driverId, from, to, days: days.map((day) => day.summary) };
   }
 
@@ -142,7 +151,7 @@ export class LogsService {
     const timezone = driver.homeTerminalTimezone;
     const todayKey = dayKey(timezone, now);
     const fromKey = addDays(todayKey, -7);
-    const days = await this.buildDays(driverId, fromKey, todayKey, now, true);
+    const days = await this.buildDays(driverId, fromKey, todayKey, now, true, false);
     return { driverId, timezone, generatedAt: now, days };
   }
 
@@ -159,7 +168,8 @@ export class LogsService {
     const startAt = dayStart(timezone, key);
     const history = startAt.getTime() > now.getTime()
       ? []
-      : await this.repo.findEvents(driverId, dayStart(timezone, addDays(key, -RODS_HEADER_LOOKBACK_DAYS)), new Date(startAt.getTime() - 1));
+      // CODE-063 — up to and including 00:00: a stop stamped at midnight ends the carried driving.
+      : await this.repo.findEvents(driverId, dayStart(timezone, addDays(key, -RODS_HEADER_LOOKBACK_DAYS)), startAt);
     const ongoingViolations = ongoingViolationsAtDayStart({
       events: history,
       driver: {
@@ -196,12 +206,17 @@ export class LogsService {
     const startAt = dayStart(timezone, key);
     const events = await this.repo.findEvents(driverId, startAt, dayEnd(timezone, key));
     const carriedIn = await this.findCarriedIn(driverId, timezone, key, startAt, events, now);
+    // QA CODE-027 — `EldEvent` is append-only, so a retired original keeps `recordStatus = 1` and a
+    // resolved proposal keeps `3` on their own rows; the markers that retire / resolve them may sit
+    // outside this day's window, so they are fetched by id.
+    const markers = await this.repo.findSupersedingEvents([...events, ...(carriedIn ? [carriedIn] : [])].map((event) => event.id));
+    const withEffective = (event: EldEvent) => ({ ...this.toEventView(event), effectiveRecordStatus: effectiveRecordStatus(event, markers) });
     return {
       driverId,
       date: key,
       timezone,
-      events: events.map((event) => this.toEventView(event)),
-      carriedIn: carriedIn ? this.toEventView(carriedIn) : null,
+      events: events.map(withEffective),
+      carriedIn: carriedIn ? withEffective(carriedIn) : null,
     };
   }
 
@@ -240,10 +255,13 @@ export class LogsService {
   }
 
   /**
-   * Rebuilds every RODS day in the range and persists the `DailyLog` header. Certification
-   * state is never written here — only `certify()` and `invalidate` touch it (§9.2).
+   * Rebuilds every RODS day in the range and, with `persist`, writes the `DailyLog` header.
+   * Certification state is never written here — only `certify()` and `invalidate` touch it (§9.2).
+   * CODE-068 — read paths pass `persist = false`: viewing a day (even a future one) no longer
+   * creates or bumps a header row; the stored header, when there is one, supplies the
+   * certification and violation flags.
    */
-  private async buildDays(driverId: string, fromKey: string, toKey: string, now: Date, extras = false) {
+  private async buildDays(driverId: string, fromKey: string, toKey: string, now: Date, extras = false, persist = true) {
     const driver = await this.requireDriver(driverId);
     const timezone = driver.homeTerminalTimezone;
     const keys = dayKeyRange(fromKey, toKey);
@@ -261,6 +279,7 @@ export class LogsService {
       utcDate(toKey),
     );
     const headers = await this.repo.findDailyLogs(driverId, utcDate(fromKey), utcDate(toKey));
+    const headersByKey = new Map(headers.map((h) => [dayKey('UTC', h.logDate), h]));
     // MR-12 / MR-16 — read-path extras only (the header rebuild paths never need them).
     const trips = extras ? await this.repo.findTripsForDriver(driverId, windowStart, windowEnd) : [];
     // D-129 — the driver's no-trip day details, merged into the same per-day `trip` block.
@@ -293,7 +312,9 @@ export class LogsService {
       const key = totals.logDate;
       const dayViolations = violations.filter((row) => dayKey('UTC', row.logDate) === key);
       const { logDate: _logDate, ...headerTotals } = totals;
-      const header = await this.repo.upsertDailyLog({ driverId, logDate: utcDate(key), ...headerTotals });
+      const header = persist
+        ? await this.repo.upsertDailyLog({ driverId, logDate: utcDate(key), ...headerTotals })
+        : readOnlyHeader(headersByKey.get(key), headerTotals, dayViolations);
 
       const dayEvents = events.filter(
         (event) =>
@@ -360,7 +381,16 @@ export class LogsService {
       throw new AppException(ERROR_CODES.NOT_FOUND, 'Original record not found for this driver.', 404);
     }
 
+    // QA CODE-028 — a proposal targets a record as it stands now: an active duty-status record
+    // (never a retired original or another inert proposal), no time in the future, at most one
+    // pending proposal per record, and PC/YM only when the driver's exceptions allow it.
     const now = new Date();
+    this.assertEditableOriginal(original);
+    this.assertNotFuture(now, { proposedStart: dto.proposedStart, proposedEnd: dto.proposedEnd ?? null });
+    const special: SpecialCategory = dto.proposedSpecial ?? 'NONE';
+    this.assertSpecialAllowed(driver, special);
+    await this.assertNoPendingProposal(original.id);
+
     const context = await this.loadEditContext(driverId, timezone, original.eventDateTime, now);
     const target = {
       id: original.id,
@@ -382,7 +412,6 @@ export class LogsService {
       ),
     );
 
-    const special: SpecialCategory = dto.proposedSpecial ?? 'NONE';
     const rows = planEditRequest(target, {
       status: dto.proposedStatus,
       startAt: dto.proposedStart,
@@ -472,6 +501,10 @@ export class LogsService {
         eventDateTime: dto.eventDateTime.toISOString(),
       });
     }
+    // QA CODE-028 — the end of the proposed record cannot be in the future either, and PC/YM need
+    // the driver's exception.
+    this.assertNotFuture(now, { endDateTime: dto.endDateTime ?? null });
+    this.assertSpecialAllowed(driver, dto.proposedSpecial ?? 'NONE');
     const context = await this.loadEditContext(driverId, timezone, dto.eventDateTime, now);
     this.assertDrivingImmutable(
       checkEditProposal(
@@ -628,6 +661,16 @@ export class LogsService {
   /** §9.1 step 3 — the driver accepts: new record active (1), old record inactive (2). */
   async acceptEditRequest(requestId: string, actor: ContextUser, dto: ResolveEditRequestDto) {
     const { request, original, driver } = await this.loadPendingRequest(requestId, actor);
+    // QA CODE-028 — two proposals on one original: once one is accepted the original is retired,
+    // and accepting the other would fork the record chain.
+    if (original && original.recordStatus !== 1) {
+      throw new AppException(
+        ERROR_CODES.CONFLICT,
+        'The record this edit request targets was already replaced — the request is out of date.',
+        409,
+        { requestId, originalEventId: String(original.id) },
+      );
+    }
     const timezone = driver.homeTerminalTimezone;
     const now = new Date();
     const anchor = original ? original.eventDateTime : request.eventDateTime;
@@ -918,25 +961,19 @@ export class LogsService {
   // =========================================================================
 
   async certify(dto: CertifyDto, actor: ContextUser) {
-    // Anything that is not a driver token certifies "on behalf" and therefore needs
-    // hosCertifyOnBehalf = FULL — an API-key principal must not slip past that check.
-    const onBehalf = actor.type !== 'driver';
-    const driverId = onBehalf ? dto.driverId : actor.id;
-    if (!driverId) {
+    // CODE-029 — certification is the driver's own signature (§395.8(e)): only a driver token
+    // certifies, and only their own log. A back-office user or API-key principal is refused,
+    // whatever its permissions; there is no on-behalf certification any more.
+    if (actor.type !== 'driver') {
       throw new AppException(
-        ERROR_CODES.VALIDATION_FAILED,
-        '`driverId` is required when certifying on a driver\'s behalf.',
-        422,
-      );
-    }
-    if (onBehalf && (actor.permissions?.hosCertifyOnBehalf ?? 'NONE') !== 'FULL') {
-      throw new AppException(
-        ERROR_CODES.FORBIDDEN,
-        'Certifying on a driver\'s behalf requires hosCertifyOnBehalf = FULL (TZ §9.2).',
+        ERROR_CODES.CERTIFY_DRIVER_ONLY,
+        'Only the driver can certify their log, in the driver app (§395.8(e)).',
         403,
-        { key: 'hosCertifyOnBehalf', required: 'FULL' },
+        { driverId: dto.driverId ?? null },
       );
     }
+    const onBehalf = false;
+    const driverId = actor.id;
 
     if (!dto.clientId) return this.certifyDays(driverId, onBehalf, dto, actor);
 
@@ -1356,6 +1393,45 @@ export class LogsService {
     return { request, original, driver };
   }
 
+  /** QA CODE-028 — only an ACTIVE (recordStatus 1) duty-status record can be the target of a
+   * carrier edit; a retired original (2) or an inert proposal (3/4) would fork the record chain. */
+  private assertEditableOriginal(original: EldEvent): void {
+    if (original.recordStatus !== 1 || original.eventType !== 1) {
+      throw new AppException(
+        ERROR_CODES.CONFLICT,
+        'Only an active duty-status record can be edited — this one was already replaced or is a pending proposal.',
+        409,
+        { originalEventId: String(original.id), recordStatus: original.recordStatus },
+      );
+    }
+  }
+
+  /** QA CODE-028 — at most one pending carrier proposal per record. */
+  private async assertNoPendingProposal(originalId: bigint): Promise<void> {
+    const proposals = (await this.repo.findSupersedingEvents([originalId])).filter((row) => row.recordStatus === 3);
+    if (!proposals.length) return;
+    const markers = await this.repo.findSupersedingEvents(proposals.map((row) => row.id));
+    const pending = proposals.find((row) => !markers.some((marker) => String(marker.supersedesId) === String(row.id)));
+    if (pending) {
+      throw new AppException(
+        ERROR_CODES.CONFLICT,
+        'This record already has a pending edit request — wait for the driver to accept or reject it.',
+        409,
+        { originalEventId: String(originalId), pendingRequestId: String(pending.id) },
+      );
+    }
+  }
+
+  /** QA CODE-028 — a proposed time cannot be in the future (field -> message details). */
+  private assertNotFuture(now: Date, times: Record<string, Date | null>): void {
+    for (const [field, at] of Object.entries(times)) {
+      if (at && at.getTime() > now.getTime()) {
+        const message = 'A proposed time cannot be in the future.';
+        throw new AppException(ERROR_CODES.VALIDATION_FAILED, message, 422, { [field]: message });
+      }
+    }
+  }
+
   /** MR-23 — §395.1(e) PC/YM only when the driver's exceptions allow it (carrier-set). */
   private assertSpecialAllowed(
     driver: { allowPersonalConveyance: boolean; allowYardMove: boolean },
@@ -1442,6 +1518,19 @@ export class LogsService {
   }
 }
 
+/**
+ * QA CODE-027 — the §395.8 record status a record has NOW, from the append-only markers pointing at
+ * it: an active record retired by an "Inactive — Changed" marker reads 2; a carrier proposal reads
+ * 3 while pending, 4 once rejected and 2 once accepted (its content lives on in the new active
+ * record). The stored `recordStatus` is returned unchanged next to it.
+ */
+export function effectiveRecordStatus(event: Pick<EldEvent, 'id' | 'recordStatus'>, markers: Pick<EldEvent, 'supersedesId' | 'recordStatus'>[]): number {
+  const pointing = markers.filter((marker) => marker.supersedesId !== null && String(marker.supersedesId) === String(event.id));
+  if (event.recordStatus === 1) return pointing.some((marker) => marker.recordStatus === 2) ? 2 : 1;
+  if (event.recordStatus === 3 && pointing.length) return pointing.some((marker) => marker.recordStatus === 4) ? 4 : 2;
+  return event.recordStatus;
+}
+
 /** "YYYY-MM-DD" → the UTC midnight Prisma stores in a `@db.Date` column. */
 function utcDate(key: string): Date {
   return new Date(`${key}T00:00:00.000Z`);
@@ -1513,4 +1602,29 @@ function firstId(ids: Map<string, bigint>, rows: AppendRow[], kind?: string): bi
     if (id !== undefined) return id;
   }
   return 0n;
+}
+
+/**
+ * CODE-068 — the header a READ returns without writing one: the stored row when it exists (its
+ * certification is authoritative), with this build's totals; otherwise an uncertified header
+ * whose violation flags come from the OPEN violations filed on the day.
+ */
+function readOnlyHeader(
+  stored: DailyLog | undefined,
+  totals: { hasUnassigned: boolean; hasEdits: boolean },
+  dayViolations: Array<{ status: string }>,
+) {
+  const open = dayViolations.filter((row) => row.status === 'OPEN').length;
+  return {
+    certified: stored?.certified ?? false,
+    certifiedAt: stored?.certifiedAt ?? null,
+    certifiedById: stored?.certifiedById ?? null,
+    certifierType: stored?.certifierType ?? null,
+    certificationCount: stored?.certificationCount ?? 0,
+    signatureUrl: stored?.signatureUrl ?? null,
+    hasViolation: stored?.hasViolation ?? open > 0,
+    violationCount: stored?.violationCount ?? open,
+    hasUnassigned: totals.hasUnassigned,
+    hasEdits: totals.hasEdits,
+  };
 }

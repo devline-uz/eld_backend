@@ -12,3 +12,11 @@ prisma/generated/
 !.env.development.example
 !.env.production.example
 scripts/sim/.state/
+# CODE-088 — service-account / private keys must never be committed (FIREBASE_CREDENTIALS_FILE
+# points outside the repo; keep it there).
+firebase-key.json
+*firebase-adminsdk*.json
+*service-account*.json
+*.pem
+*.p12
+*.key

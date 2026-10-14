@@ -62,6 +62,12 @@ export class DvirAdminRepository extends BaseRepository<
     });
   }
 
+  /** CODE-074 — the carrier zone the compliance days are counted in (singleton `Carrier` row). */
+  async carrierTimezone(): Promise<string> {
+    const carrier = await this.prisma.carrier.findUnique({ where: { id: 'carrier' }, select: { timezone: true } });
+    return carrier?.timezone ?? 'America/New_York';
+  }
+
   submittedPreTrips(from: Date, to: Date): Promise<Array<{ vehicleId: string; submittedAt: Date }>> {
     return this.prisma.dvir.findMany({
       where: { type: 'PRE_TRIP', submittedAt: { gte: from, lte: to } },

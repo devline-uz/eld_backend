@@ -54,3 +54,18 @@ describe('SafetyRepository — scorecard queries (D-141)', () => {
     expect(await repo.milesByDriver(a, b)).toEqual(new Map([['d1', 120], ['d2', 0]]));
   });
 });
+
+describe('SafetyRepository.list (CODE-073)', () => {
+  it('applies `sort` and `q` (location, LIKE-escaped) instead of ignoring them', async () => {
+    const findMany = jest.fn(async () => []);
+    const count = jest.fn(async () => 0);
+    const repo = new SafetyRepository({ safetyEvent: { findMany, count } } as unknown as PrismaService);
+    await repo.list({ q: '50%' }, 2, 10, { severity: 'desc' });
+    expect(findMany).toHaveBeenCalledWith({
+      where: { locationName: { contains: '50\\%', mode: 'insensitive' } },
+      orderBy: [{ severity: 'desc' }, { id: 'asc' }],
+      skip: 10,
+      take: 10,
+    });
+  });
+});

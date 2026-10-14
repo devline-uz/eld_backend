@@ -1,7 +1,9 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Put, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Req, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import type { Request } from 'express';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { UserGuard } from '../../common/guards/user.guard';
 import { zodBody } from '../../common/pipes/zod-validation.pipe';
 import { AuthService } from '../auth/auth.service';
 import { PreferencesDto, UpdateMyProfileDto } from './dto/users.dto';
@@ -18,10 +20,12 @@ interface UploadedMulterFile {
   size: number;
 }
 
-/** TZ §11.7 `/me/*` — the caller's own profile, sessions and session revocation. */
+/** TZ §11.7 `/me/*` — the caller's own profile, sessions and session revocation.
+ * CODE-079 — back-office users only (`UserGuard`): driver and API-key tokens get 403. */
 @FigmaScreen('web/my-profile')
 @ApiTags('me')
 @ApiBearerAuth()
+@UseGuards(UserGuard)
 @Controller('me')
 export class MeController {
   constructor(
@@ -57,8 +61,8 @@ export class MeController {
   @ApiOperation({ summary: "Signs the current user out of every other active session (\"Sign out everywhere\", B-50)." })
   @ApiOkResponse({ schema: { example: { revoked: 3 } } })
   @ApiStandardErrors()
-  async revokeAllSessions(@CurrentUser('id') userId: string, @CurrentUser('sessionId') sessionId?: string) {
-    const revoked = await this.auth.revokeAllUserSessions(userId, sessionId);
+  async revokeAllSessions(@CurrentUser('id') userId: string, @Req() req: Request, @CurrentUser('sessionId') sessionId?: string) {
+    const revoked = await this.auth.revokeAllUserSessions(userId, sessionId, AuthService.meta(req));
     return { revoked };
   }
 
@@ -66,8 +70,8 @@ export class MeController {
   @ApiOperation({ summary: "Revokes one of the current user's sessions." })
   @ApiOkResponse({ schema: { example: { success: true } } })
   @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.NOT_FOUND, 'Session not found for this user.')] })
-  async revokeSession(@CurrentUser('id') userId: string, @Param('id') id: string) {
-    await this.auth.revokeUserSession(userId, id);
+  async revokeSession(@CurrentUser('id') userId: string, @Param('id') id: string, @Req() req: Request) {
+    await this.auth.revokeUserSession(userId, id, AuthService.meta(req));
     return { success: true };
   }
 

@@ -6,7 +6,7 @@ describe('HosRecalcRepository', () => {
   const prisma = {
     driver: { findUnique: jest.fn() },
     eldEvent: { findMany: jest.fn() },
-    dailyLog: { findMany: jest.fn(), updateMany: jest.fn(), upsert: jest.fn() },
+    dailyLog: { findMany: jest.fn(), updateMany: jest.fn(), upsert: jest.fn(), findUnique: jest.fn() },
     unidentifiedSegment: { findMany: jest.fn() },
     hosViolation: { findMany: jest.fn(), upsert: jest.fn(), update: jest.fn(), findUnique: jest.fn(), updateMany: jest.fn() },
     auditLog: { create: jest.fn() },
@@ -129,6 +129,14 @@ describe('HosRecalcRepository', () => {
   it('creates the row OPEN', async () => {
     await repo.upsertViolation({ driverId: 'd', logDate: new Date(0), type: 'BREAK_30', occurredAt: new Date(0), exceededBySec: 1, detail: 'x' });
     expect(lastArgs(prisma.hosViolation.upsert).create.status).toBe('OPEN');
+  });
+
+  it('CODE-069: links the row to its RODS day header (dailyLogId) on create and update', async () => {
+    prisma.dailyLog.findUnique.mockResolvedValueOnce({ id: 'log-14' });
+    await repo.upsertViolation({ driverId: 'd', logDate: new Date(0), type: 'BREAK_30', occurredAt: new Date(0), exceededBySec: 1, detail: 'x' });
+    const args = lastArgs(prisma.hosViolation.upsert);
+    expect(args.create.dailyLogId).toBe('log-14');
+    expect(args.update.dailyLogId).toBe('log-14');
   });
 
   it('refreshes the measured values on update and bumps recalcVersion', async () => {

@@ -5,7 +5,7 @@ import { NotificationChannelsDto } from './dto/notifications.dto';
 
 export interface NotificationChannelsShape {
   email: { enabled: boolean };
-  webhook: { enabled: boolean; url?: string };
+  webhook: { enabled: boolean; url?: string | null };
 }
 
 const DEFAULTS: NotificationChannelsShape = { email: { enabled: true }, webhook: { enabled: true } };

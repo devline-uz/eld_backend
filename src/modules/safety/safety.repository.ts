@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { DriverScore, Prisma, SafetyEvent } from '@prisma/client';
 import { BaseRepository, ModelDelegate } from '../../core/prisma/base.repository';
 import { PrismaService } from '../../core/prisma/prisma.service';
+import { containsInsensitive } from '../../common/text/insensitive';
 
 export interface SafetyEventFilter {
   driverId?: string;
@@ -10,6 +11,8 @@ export interface SafetyEventFilter {
   status?: SafetyEvent['status'];
   from?: Date;
   to?: Date;
+  /** CODE-073 — free text over the location name. */
+  q?: string;
 }
 
 @Injectable()
@@ -34,7 +37,12 @@ export class SafetyRepository extends BaseRepository<
     return this.prisma.safetyEvent;
   }
 
-  async list(filter: SafetyEventFilter, page: number, limit: number) {
+  async list(
+    filter: SafetyEventFilter,
+    page: number,
+    limit: number,
+    orderBy: Prisma.SafetyEventOrderByWithRelationInput = { occurredAt: 'desc' },
+  ) {
     const where: Prisma.SafetyEventWhereInput = {
       ...(filter.driverId && { driverId: filter.driverId }),
       ...(filter.vehicleId && { vehicleId: filter.vehicleId }),
@@ -43,12 +51,27 @@ export class SafetyRepository extends BaseRepository<
       ...((filter.from || filter.to) && {
         occurredAt: { ...(filter.from && { gte: filter.from }), ...(filter.to && { lte: filter.to }) },
       }),
+      ...(filter.q && { locationName: containsInsensitive(filter.q) }),
     };
     const [items, total] = await Promise.all([
-      this.prisma.safetyEvent.findMany({ where, orderBy: { occurredAt: 'desc' }, skip: (page - 1) * limit, take: limit }),
+      // CODE-073 — `sort` was ignored; the tie-break keeps pages stable.
+      this.prisma.safetyEvent.findMany({ where, orderBy: [orderBy, { id: 'asc' }], skip: (page - 1) * limit, take: limit }),
       this.prisma.safetyEvent.count({ where }),
     ]);
     return { items, total };
+  }
+
+  /** CODE-040 — event counts per type and per status for `[from, to)` (Safety page KPIs). */
+  async countsInWindow(from: Date, to: Date): Promise<{ byType: Map<string, number>; byStatus: Map<string, number> }> {
+    const where: Prisma.SafetyEventWhereInput = { occurredAt: { gte: from, lt: to } };
+    const [types, statuses] = await Promise.all([
+      this.prisma.safetyEvent.groupBy({ by: ['type'], where, _count: { _all: true } }),
+      this.prisma.safetyEvent.groupBy({ by: ['status'], where, _count: { _all: true } }),
+    ]);
+    return {
+      byType: new Map(types.map((g) => [g.type, g._count._all])),
+      byStatus: new Map(statuses.map((g) => [g.status, g._count._all])),
+    };
   }
 
   createMany(rows: Prisma.SafetyEventCreateManyInput[]): Promise<Prisma.BatchPayload> {

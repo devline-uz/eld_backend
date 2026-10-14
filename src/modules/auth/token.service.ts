@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import jwt from 'jsonwebtoken';
 import ms from 'ms';
 import type { ContextUser } from '../../core/context/request-context';
@@ -7,6 +7,7 @@ import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
 import { TokenVerifier } from '../../common/guards/token-verifier.port';
 import { PermissionMatrix } from '../../common/decorators/permission.types';
+import { PrincipalStateService } from './principal-state.service';
 
 export interface UserTokenSubject {
   id: string;
@@ -119,7 +120,11 @@ export interface UserEmailChangeClaimsView {
  */
 @Injectable()
 export class TokenService extends TokenVerifier {
-  constructor(private readonly config: AppConfigService) {
+  constructor(
+    private readonly config: AppConfigService,
+    /** CODE-012 — optional only so token-format unit tests can build the service alone. */
+    @Optional() private readonly principals?: PrincipalStateService,
+  ) {
     super();
   }
 
@@ -267,6 +272,19 @@ export class TokenService extends TokenVerifier {
     const claims = this.verifyRaw<AccessTokenClaims>(token);
     if (claims.typ !== 'user' && claims.typ !== 'driver') {
       throw new AppException(ERROR_CODES.TOKEN_INVALID, 'Not an access token.', 401);
+    }
+    if (claims.typ === 'user' && this.principals) {
+      // CODE-012 — a disabled/deleted user, a revoked session or a changed role must take effect
+      // before the token expires: state (and the permission matrix) comes from the DB.
+      const live = await this.principals.resolveUser(claims.sub, claims.sid);
+      if (!live) throw new AppException(ERROR_CODES.TOKEN_INVALID, 'Session is no longer active.', 401);
+      return { id: claims.sub, type: 'user', role: live.roleKey, permissions: live.permissions, sessionId: claims.sid };
+    }
+    if (claims.typ === 'driver' && this.principals) {
+      // Driver disable — an INACTIVE/TERMINATED/deleted driver, or one whose app sessions were all
+      // revoked, is cut off before the 24 h access token expires.
+      const live = await this.principals.resolveDriver(claims.sub);
+      if (!live) throw new AppException(ERROR_CODES.DRIVER_DISABLED, 'Driver access has been revoked.', 401);
     }
     return {
       id: claims.sub,

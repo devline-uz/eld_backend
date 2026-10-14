@@ -6,8 +6,10 @@ import { ERROR_CODES } from '../../common/errors/codes';
 import { EventBusService } from '../../core/events/event-bus.service';
 import { holdsVehicleOutOfService, outOfServiceHoldingDefectsWhere } from '../vehicles/lib/out-of-service-defects';
 import { VehiclesRepository } from '../vehicles/vehicles.repository';
+import { assertDefectLinkable, assertWorkOrderEditable, resolveCompletedAt } from './defect-rules';
 import { DefectsRepository } from './defects.repository';
 import { AssignDefectDto, DefectListQueryDto, LinkDefectWorkOrderDto, ResolveDefectDto } from './dto/service.dto';
+import { WorkOrdersRepository } from './work-orders.repository';
 
 const SORTABLE_FIELDS = ['createdAt', 'severity', 'status'] as const;
 
@@ -29,6 +31,7 @@ export class DefectsService {
     private readonly repo: DefectsRepository,
     private readonly vehicles: VehiclesRepository,
     private readonly events: EventBusService,
+    private readonly workOrders: WorkOrdersRepository,
   ) {}
 
   async list(query: DefectListQueryDto): Promise<OffsetPage<Defect>> {
@@ -62,17 +65,24 @@ export class DefectsService {
    */
   async resolve(id: string, dto: ResolveDefectDto, resolvedById: string): Promise<Defect> {
     const defect = await this.getOrThrow(id);
+    // QA CODE-034 — a repaired / not-required defect stays resolved; the time is validated.
+    const completedAt = resolveCompletedAt(defect, dto.completedAt, new Date());
     const status = dto.resolutionType === 'DEFERRED' ? 'DEFERRED' : 'REPAIRED';
+    // CODE-077 — a changed work-order link is checked BEFORE anything is written and applied in
+    // the same update as the resolution: either both land or neither does.
+    const relink = dto.workOrderId !== undefined && dto.workOrderId !== defect.workOrderId;
+    if (relink) await this.assertLink(defect, dto.workOrderId ?? null);
     const updated = await this.repo.update(
       { id },
       {
+        ...(relink && { workOrder: dto.workOrderId ? { connect: { id: dto.workOrderId } } : { disconnect: true } }),
         status,
         resolutionType: dto.resolutionType,
         resolvedAt: new Date(),
         resolvedById,
         resolutionNote: dto.resolutionNote ?? null,
         correctedBy: dto.correctedBy ?? null,
-        completedAt: dto.completedAt ? new Date(dto.completedAt) : new Date(),
+        completedAt,
         laborHours: dto.laborHours ?? null,
         partsCostUsd: dto.partsCostUsd ?? null,
       },
@@ -89,14 +99,38 @@ export class DefectsService {
     return updated;
   }
 
+  /** QA CODE-032 — the target must exist (404, not a Prisma 500), be open and on the same unit,
+   * and a defect is never moved off a work order that is already signed off. */
   async linkWorkOrder(id: string, dto: LinkDefectWorkOrderDto): Promise<Defect> {
-    await this.getOrThrow(id);
+    const defect = await this.getOrThrow(id);
+    await this.assertLink(defect, dto.workOrderId);
     return this.repo.update({ id }, { workOrder: dto.workOrderId ? { connect: { id: dto.workOrderId } } : { disconnect: true } });
   }
 
-  /** §20 B-40 — defect assignee/shop (`null` clears it). */
+  /** QA CODE-032 — the link rules shared by `linkWorkOrder` and `resolve` (CODE-077). */
+  private async assertLink(defect: Defect, workOrderId: string | null): Promise<void> {
+    if (defect.workOrderId && defect.workOrderId !== workOrderId) {
+      const current = await this.workOrders.findById({ id: defect.workOrderId });
+      if (current) assertWorkOrderEditable(current);
+    }
+    if (workOrderId) {
+      const workOrder = await this.workOrders.findById({ id: workOrderId });
+      if (!workOrder) {
+        throw new AppException(ERROR_CODES.WORK_ORDER_NOT_FOUND, 'Work order not found.', 404, { workOrderId });
+      }
+      assertDefectLinkable(defect, workOrder);
+    }
+  }
+
+  /** §20 B-40 — defect assignee/shop (`null` clears it). CODE-076 — the assignee must be an
+   * active user; any uuid used to be stored (and rendered as "Unassigned"). */
   async assign(id: string, dto: AssignDefectDto): Promise<Defect> {
     await this.getOrThrow(id);
+    if (dto.assigneeId && !(await this.repo.activeUserExists(dto.assigneeId))) {
+      throw new AppException(ERROR_CODES.VALIDATION_FAILED, 'The assignee must be an active user.', 422, {
+        assigneeId: 'Pick an active user.',
+      });
+    }
     return this.repo.update({ id }, { assigneeId: dto.assigneeId });
   }
 

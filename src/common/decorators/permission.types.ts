@@ -37,3 +37,20 @@ export type PermissionMatrix = Record<PermissionKey, PermissionLevel>;
 
 /** NONE < READ < FULL — the one ordering every level comparison uses. */
 export const PERMISSION_LEVEL_RANK: Readonly<Record<PermissionLevel, number>> = { NONE: 0, READ: 1, FULL: 2 };
+
+/**
+ * CODE-029 — keys kept in the contract (stored role rows and older clients still carry them) but
+ * no longer granting anything: certification is driver-only, so `hosCertifyOnBehalf` is always
+ * read and stored as NONE. Never remove a key here; retire it.
+ */
+export const RETIRED_PERMISSION_KEYS = ['hosCertifyOnBehalf'] as const satisfies readonly PermissionKey[];
+
+/** Forces every retired key to NONE — applied to role writes and to the live permission matrix. */
+export function withRetiredKeysCleared<T extends Partial<Record<PermissionKey, PermissionLevel>>>(matrix: T): T {
+  const out = { ...matrix };
+  for (const key of RETIRED_PERMISSION_KEYS) {
+    if (key in out) (out as Record<string, PermissionLevel>)[key] = 'NONE';
+  }
+  return out;
+}
+

@@ -23,6 +23,8 @@ export const ERROR_CODES = {
   TOKEN_EXPIRED: 'TOKEN_EXPIRED',
   TOKEN_INVALID: 'TOKEN_INVALID',
   REFRESH_TOKEN_REUSED: 'REFRESH_TOKEN_REUSED',
+  /** CODE-019 — the same refresh token raced in two requests; the loser is refused, the session lives. */
+  REFRESH_TOKEN_ROTATED: 'REFRESH_TOKEN_ROTATED',
   EMAIL_NOT_VERIFIED: 'EMAIL_NOT_VERIFIED',
   USER_NOT_INVITED: 'USER_NOT_INVITED',
   ACCOUNT_LOCKED: 'ACCOUNT_LOCKED',
@@ -31,6 +33,8 @@ export const ERROR_CODES = {
   API_KEY_REVOKED: 'API_KEY_REVOKED',
   API_KEY_EXPIRED: 'API_KEY_EXPIRED',
   DRIVER_CONTEXT_REQUIRED: 'DRIVER_CONTEXT_REQUIRED',
+  /** CODE-079 — a back-office-only route (`/me/*`) called with a driver or API-key token. 403. */
+  USER_CONTEXT_REQUIRED: 'USER_CONTEXT_REQUIRED',
   /** B-25 — `AUTH_MODE=production` blocks `POST /auth/login`; the back office must use Google Sign-In. */
   PASSWORD_LOGIN_DISABLED: 'PASSWORD_LOGIN_DISABLED',
   /** Web "Forgot password?" — `POST /auth/password/reset-code/confirm`: the emailed 6-digit code
@@ -46,6 +50,9 @@ export const ERROR_CODES = {
   /** Driver email change — the re-entered password (or Google re-auth) did not match. 401,
    * `details: { currentPassword: message }`. */
   REAUTH_FAILED: 'REAUTH_FAILED',
+  /** Driver app — the driver was set INACTIVE / TERMINATED / deleted, or every app session was
+   * revoked. 401 on any driver request and on refresh; the app must sign out (no retry). */
+  DRIVER_DISABLED: 'DRIVER_DISABLED',
 
   // --- fleet (TZ §5.3, §5.4) ----------------------------------------------
   DRIVER_NOT_FOUND: 'DRIVER_NOT_FOUND',
@@ -119,6 +126,9 @@ export const ERROR_CODES = {
   /** CODE-007 — the driver's own log already covers part of the segment (own records inside it,
    * or driving / PC / YM in force when it starts). 409; fix the driver's log first. */
   UNIDENTIFIED_OVERLAPS_DRIVER_LOG: 'UNIDENTIFIED_OVERLAPS_DRIVER_LOG',
+  /** CODE-029 — a RODS day is certified only by the driver themself (§395.8(e)); 403 for any
+   * back-office or API-key principal. */
+  CERTIFY_DRIVER_ONLY: 'CERTIFY_DRIVER_ONLY',
   HOS_ENGINE_VERSION_MISMATCH: 'HOS_ENGINE_VERSION_MISMATCH',
   /** MR-23 — PC/YM (`specialCondition`) requested by a driver whose exceptions do not allow it
    * (`Driver.allowPersonalConveyance` / `allowYardMove`, §395.1(e)). 422. */

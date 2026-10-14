@@ -79,7 +79,7 @@ const SELF_SCOPED_ROUTES = new Map<string, string>([
   ],
   [
     'POST /logs/:driverId/certify',
-    'A driver certifies their own day (`driverId` from the token); any other principal is treated as on-behalf and needs hosCertifyOnBehalf = FULL inside LogsService.',
+    'CODE-029 — driver only: a driver certifies their own day (`driverId` from the token); LogsService refuses every other principal (user, API key) with 403 CERTIFY_DRIVER_ONLY.',
   ],
 ]);
 
@@ -96,10 +96,20 @@ const SERVICE_AUDITED_ROUTES = new Set([
   'POST /integrations/webhook/test',
 ]);
 
-/** Mutations deliberately gated at READ (tz.md §20 B-12): a user who can only *view* support
+/** Mutations deliberately NOT audited: they only move the caller's own state and would flood the
+ * audit log (CODE-041 — every thread open marks it read). */
+const UNAUDITED_OWN_STATE_ROUTES = new Set(['POST /conversations/:id/read']);
+
+/** Mutations deliberately gated at READ (tz.md §20 B-12, CODE-041): a user who can only *view* support
  * may still open a ticket/chat or leave feedback about the product — the row is their own and
  * carries no fleet data. Everything else that writes needs FULL. */
-const READ_LEVEL_MUTATIONS = new Set(['POST /support/tickets', 'POST /support/chats', 'POST /feedback']);
+const READ_LEVEL_MUTATIONS = new Set([
+  'POST /support/tickets',
+  'POST /support/chats',
+  'POST /feedback',
+  // CODE-041 — only the caller's own read cursor moves; a messaging READ role opens threads too.
+  'POST /conversations/:id/read',
+]);
 
 describe('HTTP surface: every route makes an authorization decision', () => {
   it('found the whole controller surface', () => {
@@ -146,6 +156,7 @@ describe('HTTP surface: every route makes an authorization decision', () => {
     const unaudited = routes
       .filter((route) => ['POST', 'PUT', 'PATCH', 'DELETE'].includes(route.method))
       .filter((route) => route.perm && !route.audited && !SERVICE_AUDITED_ROUTES.has(route.route))
+      .filter((route) => !UNAUDITED_OWN_STATE_ROUTES.has(route.route))
       .map((route) => `${route.route} (${route.file}:${route.line})`);
     expect(unaudited).toEqual([]);
   });

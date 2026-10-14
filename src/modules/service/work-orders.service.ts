@@ -5,6 +5,7 @@ import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
 import { EventBusService } from '../../core/events/event-bus.service';
 import { VehiclesRepository } from '../vehicles/vehicles.repository';
+import { assertDefectLinkable } from './defect-rules';
 import { DefectsRepository } from './defects.repository';
 import { CreateWorkOrderDto, UpdateWorkOrderDto, WorkOrderListQueryDto } from './dto/service.dto';
 import { WorkOrdersRepository } from './work-orders.repository';
@@ -50,10 +51,17 @@ export class WorkOrdersService {
     // BE-019 — a soft-deleted unit is gone for the web; nothing new may be attached to it.
     if (!vehicle || vehicle.deletedAt) throw new AppException(ERROR_CODES.VEHICLE_NOT_FOUND, 'Vehicle not found.', 404, { vehicleId: dto.vehicleId });
 
-    const number = await this.repo.nextNumber();
-    // `Keep the unit out of service` is applied in the same transaction as the insert.
+    // QA CODE-032 — every defect is checked before anything is written (unknown id -> 404).
+    const defectIds = [...new Set(dto.defectIds ?? [])];
+    for (const defectId of defectIds) {
+      const defect = await this.defects.findById({ id: defectId });
+      if (!defect) throw new AppException(ERROR_CODES.DEFECT_NOT_FOUND, 'Defect not found.', 404, { defectId });
+      assertDefectLinkable(defect, { id: 'new', vehicleId: dto.vehicleId, status: 'OPEN' });
+    }
+
+    // QA CODE-033 — number, insert, defect links and the `Keep the unit out of service` hold are
+    // one transaction; a concurrent create that took the same number is retried by the repository.
     const { workOrder, vehicleStatus } = await this.repo.createSynced({
-      number,
       vehicle: { connect: { id: dto.vehicleId } },
       title: dto.title,
       description: dto.description ?? null,
@@ -67,13 +75,9 @@ export class WorkOrdersService {
       keepOutOfService: dto.keepOutOfService,
       notifyDriver: dto.notifyDriver,
       blockDispatchAssignment: dto.blockDispatchAssignment,
-    }, dto.vehicleId);
+    }, dto.vehicleId, defectIds);
 
-    if (dto.defectIds?.length) {
-      await Promise.all(dto.defectIds.map((defectId) => this.attachDefect(workOrder.id, defectId)));
-    }
-
-    await this.events.publish('work_order.created', { workOrderId: workOrder.id, vehicleId: dto.vehicleId, defectCount: dto.defectIds?.length ?? 0 });
+    await this.events.publish('work_order.created', { workOrderId: workOrder.id, vehicleId: dto.vehicleId, defectCount: defectIds.length });
     await this.publishVehicleStatus(dto.vehicleId, vehicleStatus);
     return workOrder;
   }
@@ -105,6 +109,7 @@ export class WorkOrdersService {
     this.assertOpen(workOrder);
     const defect = await this.defects.findById({ id: defectId });
     if (!defect) throw new AppException(ERROR_CODES.DEFECT_NOT_FOUND, 'Defect not found.', 404, { defectId });
+    assertDefectLinkable(defect, workOrder);
     await this.defects.update({ id: defectId }, { workOrder: { connect: { id } } });
     return workOrder;
   }

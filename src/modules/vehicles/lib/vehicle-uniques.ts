@@ -15,6 +15,23 @@ export function normalizeUniqueValue(value: string | null | undefined): string |
   return normalized === '' ? null : normalized;
 }
 
+/**
+ * License plates are compared without spaces or dashes (CODE-044): "ABC 123", "abc-123" and
+ * "ABC123" are one plate. Same `undefined` / `null` rules as `normalizeUniqueValue`. Mirrors the
+ * web `normalizePlate` and migration 20261014200000_vehicle_unit_plate_canonical.
+ */
+export function normalizePlate(value: string | null | undefined): string | null | undefined {
+  const normalized = normalizeUniqueValue(value);
+  if (normalized == null) return normalized;
+  const compact = normalized.replace(/[\s-]+/g, '');
+  return compact === '' ? null : compact;
+}
+
+/** The unit number the app treats as "the same unit": trimmed, upper-cased, leading `#` dropped. */
+export function canonicalUnitNumber(value: string): string {
+  return value.trim().replace(/^#+/, '').toUpperCase();
+}
+
 export interface VehicleUniqueInput {
   licensePlate?: string | null;
   plateState?: string | null;
@@ -32,7 +49,7 @@ export interface NormalizedVehicleUniques {
 
 export function normalizeVehicleUniques(dto: VehicleUniqueInput): NormalizedVehicleUniques {
   return {
-    licensePlate: normalizeUniqueValue(dto.licensePlate),
+    licensePlate: normalizePlate(dto.licensePlate),
     plateState: normalizeUniqueValue(dto.plateState),
     eldSerial: normalizeUniqueValue(dto.deviceId !== undefined ? dto.deviceId : dto.eldSerial),
   };

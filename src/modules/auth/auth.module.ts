@@ -11,6 +11,7 @@ import { DriverSessionRepository } from './repositories/driver-session.repositor
 import { SessionRepository } from './repositories/session.repository';
 import { UserAuthRepository } from './repositories/user-auth.repository';
 import { TokenService } from './token.service';
+import { PrincipalStateService } from './principal-state.service';
 import { PasswordResetCodeService } from './password-reset-code.service';
 import { PasswordResetCodeRepository } from './repositories/password-reset-code.repository';
 
@@ -32,6 +33,7 @@ import { PasswordResetCodeRepository } from './repositories/password-reset-code.
   providers: [
     AuthService,
     TokenService,
+    PrincipalStateService,
     { provide: TokenVerifier, useExisting: TokenService },
     UserAuthRepository,
     DriverAuthRepository,
@@ -41,6 +43,6 @@ import { PasswordResetCodeRepository } from './repositories/password-reset-code.
     PasswordResetCodeService,
     PasswordResetCodeRepository,
   ],
-  exports: [TokenService, AuthService, TokenVerifier],
+  exports: [TokenService, AuthService, TokenVerifier, PrincipalStateService],
 })
 export class AuthModule {}

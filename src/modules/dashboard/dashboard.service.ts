@@ -4,7 +4,7 @@ import { CarrierService } from '../carrier/carrier.service';
 import type { DriverDutyStatus, LiveFleetUnit } from '../live/live-fleet.mapper';
 import { LiveFleetService } from '../live/live-fleet.service';
 import { NotificationsService } from '../notifications/notifications.service';
-import { UnidentifiedService } from '../unidentified/unidentified.service';
+import { DashboardRepository } from './dashboard.repository';
 import { VehiclesService } from '../vehicles/vehicles.service';
 import { ActiveViolationsService } from '../violations/active-violations.service';
 
@@ -60,7 +60,7 @@ export class DashboardService {
   constructor(
     private readonly liveFleet: LiveFleetService,
     private readonly violations: ActiveViolationsService,
-    private readonly unidentified: UnidentifiedService,
+    private readonly repo: DashboardRepository,
     private readonly notifications: NotificationsService,
     private readonly carrier: CarrierService,
     private readonly vehicles: VehiclesService,
@@ -88,7 +88,8 @@ export class DashboardService {
       // active violations" for a violation filed two days earlier and still unresolved.
       // BUG-003 — read through `ActiveViolationsService`, the single web definition.
       can.hos ? this.violations.list({ status: 'OPEN', page: 1, limit: 25 }, now) : EMPTY_PAGE,
-      can.hos ? this.unidentified.list({ status: 'PENDING', page: 1, limit: 25 }) : EMPTY_PAGE,
+      // CODE-021 — count and total duration over ALL pending segments (it used to sum one 25-row page).
+      can.hos ? this.repo.pendingUnidentified() : { total: 0, totalDurationSec: 0, awaitingDriver: 0, awaitingDriverDurationSec: 0 },
       this.notifications.list(actor, { page: 1, limit: 1, unreadOnly: true }),
       this.carrier.get(),
       can.vehicles ? this.vehicles.list({ page: 1, limit: 1, status: 'ACTIVE' }) : EMPTY_PAGE,
@@ -115,10 +116,7 @@ export class DashboardService {
     return {
       liveFleet: { items: units, generatedAt: fleet.generatedAt, counts },
       violations: { items: violationsPage.items, total: violationsPage.total },
-      unidentified: {
-        total: unidentifiedPage.total,
-        totalDurationSec: (unidentifiedPage.items as Array<{ durationSec?: number | null }>).reduce((sum, s) => sum + (s.durationSec ?? 0), 0),
-      },
+      unidentified: unidentifiedPage,
       notifications: { unreadCount: unread.total },
       carrier: { id: carrierProfile.id, name: carrierProfile.name, timezone: carrierProfile.timezone },
       // UI-004 — inactive / outOfService: fleet-wide record-status counts (additive).

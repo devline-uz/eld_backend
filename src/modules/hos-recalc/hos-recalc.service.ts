@@ -127,8 +127,11 @@ export class HosRecalcService {
       }
     }
 
+    // CODE-069 — the header counts the day's OPEN violations: one a human RESOLVED stays filed
+    // (audit trail) but no longer flags the day, exactly as `POST /violations/:id/resolve` leaves it.
+    const resolvedKeys = new Set(existing.filter((row) => row.status === 'RESOLVED').map((row) => `${row.logDate}|${row.type}`));
     for (const day of days) {
-      const open = inScope.filter((violation) => violation.logDate === day).length;
+      const open = inScope.filter((violation) => violation.logDate === day && !resolvedKeys.has(`${day}|${violation.type}`)).length;
       await this.repo.updateDailyLogViolationFlags(driver.id, utcDate(day), open);
     }
 

@@ -34,8 +34,33 @@ export class UserAuthRepository {
     return this.prisma.user.update({ where: { id }, data: { lastActiveAt: new Date() } });
   }
 
+  /** A new password also lifts a CODE-082 lockout (the owner just proved control of the mailbox). */
   updatePasswordHash(id: string, passwordHash: string): Promise<User> {
-    return this.prisma.user.update({ where: { id }, data: { passwordHash } });
+    return this.prisma.user.update({ where: { id }, data: { passwordHash, failedLoginCount: 0, lockedUntil: null } });
+  }
+
+  /**
+   * CODE-082 — one more consecutive wrong password. At `threshold` the account is locked until
+   * `lockUntil` and the counter starts over, so the next lock needs another full run of failures.
+   * Returns whether this failure locked the account.
+   */
+  async recordFailedLogin(id: string, threshold: number, lockUntil: Date): Promise<boolean> {
+    const { failedLoginCount } = await this.prisma.user.update({
+      where: { id },
+      data: { failedLoginCount: { increment: 1 } },
+      select: { failedLoginCount: true },
+    });
+    if (failedLoginCount < threshold) return false;
+    await this.prisma.user.update({ where: { id }, data: { failedLoginCount: 0, lockedUntil: lockUntil } });
+    return true;
+  }
+
+  /** CODE-082 — a successful password login clears the failure streak (no write when already clean). */
+  async clearFailedLogins(id: string): Promise<void> {
+    await this.prisma.user.updateMany({
+      where: { id, OR: [{ failedLoginCount: { gt: 0 } }, { lockedUntil: { not: null } }] },
+      data: { failedLoginCount: 0, lockedUntil: null },
+    });
   }
 
   findByEmail(email: string): Promise<User | null> {

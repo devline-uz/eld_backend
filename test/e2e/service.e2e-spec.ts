@@ -131,8 +131,19 @@ describe('DVIR / Service (e2e, tz.md §5.10)', () => {
       expect(detail.body.data.defects).toHaveLength(1);
     });
 
-    it('records a mechanic sign-off', async () => {
+    it('QA CODE-035 — refuses a REPAIRED sign-off while a defect is still open', async () => {
       const { dvir } = await seedDvirWithCriticalDefect();
+      const res = await request(server())
+        .post(`/api/dvir/${dvir.id}/mechanic-signoff`)
+        .set(auth())
+        .send({ mechanicName: 'J. Alvarez', repairStatus: 'REPAIRED' });
+      expect(res.status).toBe(422);
+      expect(res.body.details.repairStatus).toBeDefined();
+    });
+
+    it('records a mechanic sign-off', async () => {
+      const { dvir, defect } = await seedDvirWithCriticalDefect();
+      await request(server()).patch(`/api/defects/${defect.id}/resolve`).set(auth()).send({ resolutionType: 'REPAIRED' }).expect(200);
       const res = await request(server())
         .post(`/api/dvir/${dvir.id}/mechanic-signoff`)
         .set(auth())

@@ -93,6 +93,11 @@ model User {
   roleId       String
   status       UserStatus   @default(INVITED)
   lastActiveAt DateTime?
+  /// CODE-082 — consecutive wrong passwords; reset on success / password reset.
+  failedLoginCount Int       @default(0)
+  /// CODE-082 — password login refused (423 ACCOUNT_LOCKED) until then; only revealed to a caller
+  /// who supplies the right password, so it is no account-enumeration oracle.
+  lockedUntil      DateTime?
   invitedById  String?
   invitedAt    DateTime?
   createdAt    DateTime     @default(now())
@@ -132,6 +137,8 @@ model User {
 model Role {
   id          String   @id @default(uuid())
   key         String   @unique
+  /// CODE-087 — unique ignoring case / surrounding spaces via the expression index
+  /// `Role_name_lower_key` (migration 20261014210000_user_lockout_role_name_unique; custom-indexes.ts).
   name        String
   description String?
   isSystem    Boolean  @default(false)
@@ -151,6 +158,9 @@ model Session {
   lastSeenAt  DateTime  @default(now())
   expiresAt   DateTime
   revokedAt   DateTime?
+  /// CODE-012/019 — set when a refresh rotated this row into a new one (not a sign-out): access
+  /// tokens naming this id stay valid while the rotated-to chain is live.
+  rotatedToId String?
   user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, revokedAt])

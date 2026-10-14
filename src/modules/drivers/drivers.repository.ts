@@ -34,6 +34,39 @@ export interface DriverListPage {
   total: number;
 }
 
+type TextSortField = 'username' | 'firstName' | 'lastName' | 'cdlNumber' | 'homeTerminalName';
+const TEXT_SORT_FIELDS: ReadonlySet<string> = new Set<TextSortField>(['username', 'firstName', 'lastName', 'cdlNumber', 'homeTerminalName']);
+const TEXT_SORT_SELECT = { username: true, firstName: true, lastName: true, cdlNumber: true, homeTerminalName: true } as const;
+type RosterSortKey = { id: string } & Record<TextSortField, string | null>;
+
+const nameCollator = new Intl.Collator('en', { sensitivity: 'base', numeric: true });
+
+/**
+ * LIVE-023 — case-insensitive, number-aware roster order (`test2` before `test10`). A name sort
+ * breaks ties on the other name part, then username, then id, so pages never shuffle between
+ * requests; empty values sort last in either direction.
+ */
+export function sortRosterKeys<T extends RosterSortKey>(keys: T[], field: TextSortField, direction: 'asc' | 'desc'): T[] {
+  const tieBreak: TextSortField[] =
+    field === 'lastName' ? ['firstName', 'username'] : field === 'firstName' ? ['lastName', 'username'] : ['lastName', 'firstName', 'username'];
+  const sign = direction === 'desc' ? -1 : 1;
+  const compareField = (a: T, b: T, f: TextSortField): number => {
+    const left = (a[f] ?? '').trim();
+    const right = (b[f] ?? '').trim();
+    if (!left || !right) return left === right ? 0 : left ? -1 : 1;
+    return nameCollator.compare(left, right);
+  };
+  return [...keys].sort((a, b) => {
+    const primary = compareField(a, b, field);
+    if (primary !== 0) return (a[field] ?? '').trim() && (b[field] ?? '').trim() ? primary * sign : primary;
+    for (const f of tieBreak) {
+      const c = compareField(a, b, f);
+      if (c !== 0) return c;
+    }
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
+}
+
 @Injectable()
 export class DriversRepository extends BaseRepository<
   Driver,
@@ -116,12 +149,36 @@ export class DriversRepository extends BaseRepository<
   }
 
   /** BE-013 — unfinished trips (draft → in progress) that still point at this driver. */
-  findOpenTrips(driverId: string): Promise<Array<{ id: string; number: string; status: string }>> {
-    return this.prisma.trip.findMany({
+  findOpenTrips(
+    driverId: string,
+    db: Prisma.TransactionClient = this.prisma,
+  ): Promise<Array<{ id: string; number: string; status: string }>> {
+    return db.trip.findMany({
       where: { driverId, status: { in: ['DRAFT', 'PLANNED', 'ASSIGNED', 'IN_PROGRESS'] } },
       select: { id: true, number: true, status: true },
       orderBy: { plannedStartAt: 'asc' },
       take: 20,
+    });
+  }
+
+  /**
+   * CODE-062 — `DELETE /drivers/:id` under the same per-driver advisory lock trip writes take
+   * (`TripsRepository.withDriverScheduleLock`, key `trip-driver:<id>`): a trip being created for
+   * this driver either commits first (and the re-check below sees it → caller answers 409) or
+   * waits until the driver is gone. Returns the open trips instead of deleting when there are any.
+   */
+  softDeleteUnlessOnTrip(
+    id: string,
+  ): Promise<{ deleted: Driver; openTrips?: never } | { deleted?: never; openTrips: Array<{ id: string; number: string; status: string }> }> {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`, `trip-driver:${id}`);
+      const openTrips = await this.findOpenTrips(id, tx);
+      if (openTrips.length > 0) return { openTrips };
+      const deleted = await tx.driver.update({
+        where: { id },
+        data: { status: 'TERMINATED', deletedAt: new Date(), assignedVehicle: { disconnect: true } },
+      });
+      return { deleted };
     });
   }
 
@@ -191,13 +248,25 @@ export class DriversRepository extends BaseRepository<
       }),
     };
     const scoped = this.scopeWhere(where);
+    const include = { assignedVehicle: { select: { id: true, unitNumber: true } } } as const;
+    const [field, direction] = Object.entries(orderBy)[0] ?? [];
+    if (field && TEXT_SORT_FIELDS.has(field)) {
+      // LIVE-023 — the database sorts text by byte ("Young" < "co-driver test"), so a name sort
+      // runs on the matching ids in code with a case-insensitive collator, then loads one page.
+      const keys = await this.prisma.driver.findMany({ where: scoped, select: { id: true, ...TEXT_SORT_SELECT } });
+      const ordered = sortRosterKeys(keys, field as TextSortField, direction === 'desc' ? 'desc' : 'asc');
+      const pageIds = ordered.slice((page - 1) * limit, page * limit).map((k) => k.id);
+      const rows = await this.prisma.driver.findMany({ where: { id: { in: pageIds } }, include });
+      const byId = new Map(rows.map((r) => [r.id, r]));
+      return { items: pageIds.map((id) => byId.get(id)).filter((r): r is DriverWithUnit => r !== undefined), total: keys.length };
+    }
     const [items, total] = await Promise.all([
       this.prisma.driver.findMany({
         where: scoped,
         orderBy,
         skip: (page - 1) * limit,
         take: limit,
-        include: { assignedVehicle: { select: { id: true, unitNumber: true } } },
+        include,
       }),
       this.prisma.driver.count({ where: scoped }),
     ]);
@@ -290,6 +359,15 @@ export class DriversRepository extends BaseRepository<
   async updateIfState(id: string, expect: Prisma.DriverWhereInput, data: Prisma.DriverUpdateManyMutationInput): Promise<boolean> {
     const res = await this.prisma.driver.updateMany({ where: { id, deletedAt: null, ...expect }, data });
     return res.count > 0;
+  }
+
+  /** Driver disable — ends every open co-driver pairing the driver is part of (either side). */
+  async endActivePairings(driverId: string, endedById: string | undefined): Promise<number> {
+    const result = await this.prisma.coDriverPairing.updateMany({
+      where: { endedAt: null, OR: [{ primaryDriverId: driverId }, { coDriverId: driverId }] },
+      data: { endedAt: new Date(), ...(endedById && { endedById }) },
+    });
+    return result.count;
   }
 
   /** B-094 — revokes every live `DriverSession` (refresh token) of one driver. */

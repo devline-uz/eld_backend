@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { MAX_LIST_PAGE } from '../../../common/dto/list-query.dto';
+import { QueryBoolean } from '../../../common/dto/query-bool';
 
 export const DefectStatusEnum = z.enum(['OPEN', 'IN_PROGRESS', 'REPAIRED', 'DEFERRED']);
 export const DefectSeverityEnum = z.enum(['MINOR', 'MAJOR', 'CRITICAL']);
@@ -27,10 +28,19 @@ export type DvirListQueryDto = z.infer<typeof DvirListQueryDto>;
 
 /** §20 B-47 — `GET /dvir/compliance`: "expected vs submitted pre-trip DVIRs" for the active
  * fleet over a date range (W-14 "Missing pre-trip" / "Not submitted" rows, compliance % chip). */
-export const DvirComplianceQueryDto = z.object({
-  from: z.string().date(),
-  to: z.string().date(),
-});
+/** CODE-074 — the longest compliance window, in days (inclusive); refused, not silently cut. */
+export const MAX_DVIR_COMPLIANCE_DAYS = 366;
+
+export const DvirComplianceQueryDto = z
+  .object({
+    from: z.string().date(),
+    to: z.string().date(),
+  })
+  .refine((v) => v.from <= v.to, { message: '`from` must not be after `to`', path: ['to'] })
+  .refine(
+    (v) => (Date.parse(`${v.to}T00:00:00Z`) - Date.parse(`${v.from}T00:00:00Z`)) / 86_400_000 < MAX_DVIR_COMPLIANCE_DAYS,
+    { message: `The range may span at most ${MAX_DVIR_COMPLIANCE_DAYS} days`, path: ['to'] },
+  );
 export type DvirComplianceQueryDto = z.infer<typeof DvirComplianceQueryDto>;
 
 /** TZ §396.13 — mechanic reviews defects found on a DVIR and signs off; the next driver's
@@ -56,7 +66,7 @@ export const DefectListQueryDto = z.object({
   vehicleId: z.string().uuid().optional(),
   status: DefectStatusEnum.optional(),
   severity: DefectSeverityEnum.optional(),
-  outOfService: z.coerce.boolean().optional(),
+  outOfService: QueryBoolean.optional(),
   /** §20 B-40. */
   assigneeId: z.string().uuid().optional(),
 });
@@ -76,6 +86,12 @@ export const ResolveDefectDto = z.object({
   completedAt: z.string().datetime({ offset: true }).optional(),
   laborHours: z.number().min(0).max(999).optional(),
   partsCostUsd: z.number().min(0).max(1_000_000).optional(),
+  /**
+   * CODE-077 — the work order the repair is recorded on, set in the SAME write as the
+   * resolution (`null` detaches). The web used to link first and resolve second, so a failed
+   * resolve left the link behind. Omit to keep the current link.
+   */
+  workOrderId: z.string().uuid().nullable().optional(),
 });
 export type ResolveDefectDto = z.infer<typeof ResolveDefectDto>;
 
@@ -126,7 +142,8 @@ export const UpdateWorkOrderDto = z.object({
   odometerMi: z.number().int().min(0).max(9_999_999).nullable().optional(),
   dueAt: z.string().datetime({ offset: true }).nullable().optional(),
   /** §20 B-42. */
-  estimatedLaborHours: z.number().min(0).max(999).optional(),
+  /** CODE-077 — `null` clears the estimate (it used to be impossible to empty). */
+  estimatedLaborHours: z.number().min(0).max(999).nullable().optional(),
   keepOutOfService: z.boolean().optional(),
   notifyDriver: z.boolean().optional(),
   blockDispatchAssignment: z.boolean().optional(),
@@ -184,8 +201,10 @@ export const UpdateMaintenanceScheduleDto = z.object({
   reviewNote: z.string().trim().max(500).nullable().optional(),
   intervalMi: z.number().int().min(1).max(2_000_000).nullable().optional(),
   intervalDays: z.number().int().min(1).max(3660).nullable().optional(),
-  lastServiceMi: z.number().int().min(0).max(MAX_SERVICE_MI).optional(),
-  lastServiceAt: PastServiceAt.optional(),
+  /** CODE-077 — `null` clears the recorded last service (the interval then counts from the
+   * schedule's own baseline, QA CODE-037). */
+  lastServiceMi: z.number().int().min(0).max(MAX_SERVICE_MI).nullable().optional(),
+  lastServiceAt: PastServiceAt.nullable().optional(),
   enabled: z.boolean().optional(),
 });
 export type UpdateMaintenanceScheduleDto = z.infer<typeof UpdateMaintenanceScheduleDto>;
@@ -195,8 +214,8 @@ export const MaintenanceScheduleListQueryDto = z.object({
   page: z.coerce.number().int().min(1).max(MAX_LIST_PAGE).default(1),
   limit: z.coerce.number().int().min(1).max(200).default(25),
   vehicleId: z.string().uuid().optional(),
-  enabled: z.coerce.boolean().optional(),
-  dueOnly: z.coerce.boolean().optional(),
+  enabled: QueryBoolean.optional(),
+  dueOnly: QueryBoolean.optional(),
 });
 export type MaintenanceScheduleListQueryDto = z.infer<typeof MaintenanceScheduleListQueryDto>;
 

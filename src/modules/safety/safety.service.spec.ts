@@ -13,7 +13,7 @@ describe('SafetyService (B-43 driver-level coaching, B-44/D-141 scorecard)', () 
 
   describe('coach', () => {
     it('coaches the given eventId directly', async () => {
-      repo.findById.mockResolvedValue({ id: 'sfe_1' } as never);
+      repo.findById.mockResolvedValue({ id: 'sfe_1', status: 'NEW' } as never);
       repo.update.mockResolvedValue({ id: 'sfe_1', status: 'COACHED' } as never);
 
       await service.coach({ eventId: 'sfe_1', note: 'Slow down' }, 'usr_1');
@@ -24,7 +24,7 @@ describe('SafetyService (B-43 driver-level coaching, B-44/D-141 scorecard)', () 
 
     it('B-43 — driverId resolves to that driver\'s most recent open event', async () => {
       repo.findLatestOpenForDriver.mockResolvedValue({ id: 'sfe_2' } as never);
-      repo.findById.mockResolvedValue({ id: 'sfe_2' } as never);
+      repo.findById.mockResolvedValue({ id: 'sfe_2', status: 'REVIEWED' } as never);
       repo.update.mockResolvedValue({ id: 'sfe_2', status: 'COACHED' } as never);
 
       await service.coach({ driverId: 'drv_1' }, 'usr_1');
@@ -37,6 +37,25 @@ describe('SafetyService (B-43 driver-level coaching, B-44/D-141 scorecard)', () 
       repo.findLatestOpenForDriver.mockResolvedValue(null);
       await expect(service.coach({ driverId: 'drv_1' }, 'usr_1')).rejects.toBeInstanceOf(AppException);
       expect(repo.findById).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('CODE-072 — status transitions', () => {
+    it('refuses to coach an event that was already coached or dismissed', async () => {
+      repo.findById.mockResolvedValue({ id: 'sfe_1', status: 'DISMISSED' } as never);
+      await expect(service.coach({ eventId: 'sfe_1' }, 'usr_1')).rejects.toMatchObject({ code: 'CONFLICT' });
+      expect(repo.update).not.toHaveBeenCalled();
+    });
+
+    it('lets PATCH review or dismiss an open event', async () => {
+      repo.findById.mockResolvedValue({ id: 'sfe_1', status: 'NEW' } as never);
+      await service.updateEvent('sfe_1', { status: 'REVIEWED' });
+      expect(repo.update).toHaveBeenCalledWith({ id: 'sfe_1' }, { status: 'REVIEWED' });
+    });
+
+    it('never re-labels a COACHED event', async () => {
+      repo.findById.mockResolvedValue({ id: 'sfe_1', status: 'COACHED' } as never);
+      await expect(service.updateEvent('sfe_1', { status: 'DISMISSED', coachingNote: 'x' })).rejects.toMatchObject({ code: 'CONFLICT' });
     });
   });
 
@@ -117,5 +136,26 @@ describe('SafetyService (B-43 driver-level coaching, B-44/D-141 scorecard)', () 
       expect(result.periodEnd).toBe('2026-10-10');
       expect(result.fleet.score).toBe(95);
     });
+  });
+});
+
+describe('SafetyService.summary (CODE-040)', () => {
+  it('aggregates the rolling 30 days and the 30 days before from server counts', async () => {
+    const countsInWindow = jest
+      .fn()
+      .mockResolvedValueOnce({
+        byType: new Map([['HARSH_BRAKING', 600], ['HARSH_TURN', 10], ['SPEEDING', 220]]),
+        byStatus: new Map([['NEW', 700], ['COACHED', 30], ['DISMISSED', 100]]),
+      })
+      .mockResolvedValueOnce({ byType: new Map([['SPEEDING', 5]]), byStatus: new Map([['NEW', 5]]) });
+    const service = new SafetyService({ countsInWindow } as unknown as SafetyRepository);
+    const now = new Date('2026-10-14T12:00:00.000Z');
+
+    const result = await service.summary(now);
+
+    expect(result.current).toEqual({ total: 830, harsh: 610, speeding: 220, seatbelt: 0, coached: 30, pendingCoaching: 700 });
+    expect(result.previous).toEqual({ total: 5, harsh: 0, speeding: 5, seatbelt: 0, coached: 0, pendingCoaching: 5 });
+    expect(countsInWindow).toHaveBeenNthCalledWith(1, new Date('2026-09-14T12:00:00.000Z'), now);
+    expect(countsInWindow).toHaveBeenNthCalledWith(2, new Date('2026-08-15T12:00:00.000Z'), new Date('2026-09-14T12:00:00.000Z'));
   });
 });

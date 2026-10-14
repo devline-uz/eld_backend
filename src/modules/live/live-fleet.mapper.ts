@@ -179,6 +179,13 @@ export function resolveDutyStatus(input: LiveFleetInput, telemetryFresh: boolean
     }
     return DUTY_BY_HOS[hos.currentStatus];
   }
+  // CODE-022 — a driver is assigned but their HOS state is unavailable (engine failure, invalid
+  // home-terminal timezone): describe the truck from fresh telemetry instead of claiming OFF_DUTY
+  // for a moving unit. `driverDutyStatus` stays null, so duty counts show it as unknown.
+  if (driver && telemetryFresh && telemetry) {
+    if ((telemetry.speedMph ?? 0) > 0) return 'DRIVING';
+    if (telemetry.engineOn === true) return 'IDLE';
+  }
   // Nobody is signed in to this truck: the only thing worth saying is whether its ELD is alive.
   if (device && isEldOffline(device, now)) return 'ELD_OFFLINE';
   return device ? 'OFF_DUTY' : 'INACTIVE';
@@ -230,7 +237,8 @@ export function toLiveFleetUnit(input: LiveFleetInput): LiveFleetUnit {
     lat: position.lat,
     lon: position.lon,
     locationLabel,
-    lastSeenAt: lastSeen ? lastSeen.toISOString() : null,
+    // CODE-052 — reads up to FUTURE_TOLERANCE_MS ahead (device clock skew); never show a future time.
+    lastSeenAt: lastSeen ? (lastSeen.getTime() > now.getTime() ? now : lastSeen).toISOString() : null,
     driveRemainingSec: driver && hos ? hos.driveRemainingSec : null,
     shiftEndsAt: driver && hos?.shiftEndsAt ? hos.shiftEndsAt.toISOString() : null,
     eldSerial: device?.serial ?? null,

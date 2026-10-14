@@ -3,7 +3,17 @@ import { z } from 'zod';
 /** §395 Appendix A caps every annotation/comment at 60 characters; the floor of 4 is §9.3. */
 export const annotationSchema = z.string().trim().min(4).max(60);
 
-const dayKeySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD');
+/** CODE-068 — a real calendar day: `2026-02-31` no longer rolls over into March 3. */
+export const dayKeySchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD')
+  .refine((value) => {
+    const parsed = Date.parse(`${value}T00:00:00Z`);
+    return !Number.isNaN(parsed) && new Date(parsed).toISOString().slice(0, 10) === value;
+  }, 'Not a calendar date');
+
+/** CODE-067 — the documented cap of one range query (`GET /logs/:driverId/range`). */
+export const MAX_LOG_RANGE_DAYS = 62;
 const isoDateTime = z.coerce.date();
 
 export const DutyStatusEnum = z.enum(['OFF', 'SB', 'D', 'ON']);
@@ -19,7 +29,12 @@ export type LogDateQueryDto = z.infer<typeof LogDateQueryDto>;
 
 export const LogRangeQueryDto = z
   .object({ from: dayKeySchema, to: dayKeySchema })
-  .refine((value) => value.from <= value.to, { message: '`from` must not be after `to`' });
+  .refine((value) => value.from <= value.to, { message: '`from` must not be after `to`' })
+  .refine(
+    (value) =>
+      (Date.parse(`${value.to}T00:00:00Z`) - Date.parse(`${value.from}T00:00:00Z`)) / 86_400_000 < MAX_LOG_RANGE_DAYS,
+    { message: `The range may span at most ${MAX_LOG_RANGE_DAYS} days`, path: ['to'] },
+  );
 export type LogRangeQueryDto = z.infer<typeof LogRangeQueryDto>;
 
 export const LocationDto = z.object({
@@ -120,7 +135,7 @@ export type ResolveEditRequestDto = z.infer<typeof ResolveEditRequestDto>;
 export const CertifyDto = z.object({
   dates: z.array(dayKeySchema).min(1).max(31),
   signatureImageId: z.string().max(200).optional(),
-  /** Back office only, and only with `hosCertifyOnBehalf = FULL` (§9.2). */
+  /** Ignored: CODE-029 — only the driver certifies their own log (driver token). */
   driverId: z.string().uuid().optional(),
   /**
    * MR-5 — offline-queue idempotency key. A replay with the same `clientId` returns the FIRST

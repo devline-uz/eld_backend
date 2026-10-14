@@ -57,4 +57,10 @@ export class DefectsRepository extends BaseRepository<
   findByWorkOrder(workOrderId: string): Promise<Defect[]> {
     return this.prisma.defect.findMany({ where: { workOrderId } });
   }
+
+  /** CODE-076 — an assignee must be a real, active back-office user. */
+  async activeUserExists(id: string): Promise<boolean> {
+    const user = await this.prisma.user.findFirst({ where: { id, status: 'ACTIVE' }, select: { id: true } });
+    return Boolean(user);
+  }
 }

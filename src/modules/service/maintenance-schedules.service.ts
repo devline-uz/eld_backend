@@ -10,7 +10,7 @@ import {
   MaintenanceScheduleListQueryDto,
   UpdateMaintenanceScheduleDto,
 } from './dto/service.dto';
-import { computeDue, DueResult } from './maintenance-due';
+import { computeDue, DueResult, scheduleBaseline } from './maintenance-due';
 import { MaintenanceSchedulesRepository } from './maintenance-schedules.repository';
 
 export interface ScheduleWithDue extends MaintenanceSchedule {
@@ -30,7 +30,8 @@ export class MaintenanceSchedulesService {
 
   async list(query: MaintenanceScheduleListQueryDto): Promise<OffsetPage<ScheduleWithDue>> {
     if (query.dueOnly) {
-      const all = await this.repo.listEnabledWithVehicle();
+      // CODE-071 — `dueOnly` honours `enabled` (default: the enabled schedules).
+      const all = await this.repo.listEnabledWithVehicle(query.enabled ?? true);
       const now = new Date();
       const due = all
         .filter((s) => (!query.vehicleId || s.vehicleId === query.vehicleId) && (!query.status || s.status === query.status))
@@ -68,13 +69,18 @@ export class MaintenanceSchedulesService {
     if (!vehicle || vehicle.deletedAt) throw new AppException(ERROR_CODES.VEHICLE_NOT_FOUND, 'Vehicle not found.', 404, { vehicleId: dto.vehicleId });
 
     const lastServiceAt = dto.lastServiceAt ? new Date(dto.lastServiceAt) : null;
+    assertServiceOdometer(dto.lastServiceMi, vehicle.odometerMi, null, 'lastServiceMi');
+    const now = new Date();
+    // QA CODE-037 — without a recorded service the interval counts from today's odometer / date.
     const due = computeDue({
       intervalMi: dto.intervalMi ?? null,
       intervalDays: dto.intervalDays ?? null,
       lastServiceMi: dto.lastServiceMi ?? null,
       lastServiceAt,
       currentOdometerMi: vehicle.odometerMi,
-      now: new Date(),
+      now,
+      baselineMi: vehicle.odometerMi > 0 ? vehicle.odometerMi : null,
+      baselineAt: now,
     });
 
     return this.repo.create({
@@ -106,8 +112,29 @@ export class MaintenanceSchedulesService {
 
     const intervalMi = dto.intervalMi !== undefined ? dto.intervalMi : schedule.intervalMi;
     const intervalDays = dto.intervalDays !== undefined ? dto.intervalDays : schedule.intervalDays;
-    const lastServiceMi = dto.lastServiceMi ?? (approving ? (vehicle?.odometerMi ?? schedule.lastServiceMi) : schedule.lastServiceMi);
-    const lastServiceAt = dto.lastServiceAt ? new Date(dto.lastServiceAt) : approving ? new Date() : schedule.lastServiceAt;
+    // CODE-071 — clearing one interval is fine; clearing both leaves a schedule that is never due.
+    if (intervalMi === null && intervalDays === null) {
+      throw new AppException(ERROR_CODES.VALIDATION_FAILED, 'At least one of intervalMi/intervalDays is required.', 422, {
+        intervalMi: 'Keep a mileage or a day interval.',
+        intervalDays: 'Keep a mileage or a day interval.',
+      });
+    }
+    assertServiceOdometer(dto.lastServiceMi ?? undefined, vehicle?.odometerMi ?? 0, null, 'lastServiceMi');
+    // CODE-077 — `null` clears; `undefined` keeps (or, approving, stamps "serviced now").
+    const lastServiceMi =
+      dto.lastServiceMi !== undefined
+        ? dto.lastServiceMi
+        : approving
+          ? (vehicle?.odometerMi ?? schedule.lastServiceMi)
+          : schedule.lastServiceMi;
+    const lastServiceAt =
+      dto.lastServiceAt !== undefined
+        ? dto.lastServiceAt
+          ? new Date(dto.lastServiceAt)
+          : null
+        : approving
+          ? new Date()
+          : schedule.lastServiceAt;
 
     const due = computeDue({
       intervalMi,
@@ -116,6 +143,7 @@ export class MaintenanceSchedulesService {
       lastServiceAt,
       currentOdometerMi: vehicle?.odometerMi ?? 0,
       now: new Date(),
+      ...scheduleBaseline(schedule),
     });
 
     const data: Prisma.MaintenanceScheduleUpdateInput = {
@@ -143,7 +171,16 @@ export class MaintenanceSchedulesService {
   /** Marks the schedule serviced now — resets the interval clock. */
   async complete(id: string, dto: CompleteMaintenanceDto): Promise<MaintenanceSchedule> {
     const schedule = await this.getOrThrow(id);
+    // CODE-071 — a withdrawn task cannot be serviced; reopen it first.
+    if (schedule.status === 'CANCELLED') {
+      throw new AppException(ERROR_CODES.CONFLICT, 'This schedule is cancelled. Reopen it before marking it serviced.', 409, {
+        status: schedule.status,
+      });
+    }
     const vehicle = await this.vehicles.findById({ id: schedule.vehicleId });
+    // CODE-071 / LIVE-028 — the service odometer can neither go back past the last service nor
+    // run ahead of what the unit has driven.
+    assertServiceOdometer(dto.serviceOdometerMi, vehicle?.odometerMi ?? 0, schedule.lastServiceMi, 'serviceOdometerMi');
     const lastServiceAt = dto.serviceAt ? new Date(dto.serviceAt) : new Date();
     const lastServiceMi = dto.serviceOdometerMi ?? vehicle?.odometerMi ?? schedule.lastServiceMi ?? 0;
 
@@ -181,7 +218,40 @@ export class MaintenanceSchedulesService {
       lastServiceAt: schedule.lastServiceAt,
       currentOdometerMi,
       now,
+      ...scheduleBaseline(schedule),
     });
     return { ...schedule, due };
+  }
+}
+
+/** Odometer readings are whole miles; a fix may lag the vehicle odometer by a short trip. */
+const ODOMETER_TOLERANCE_MI = 50;
+
+/**
+ * CODE-071 / LIVE-028 — a recorded service odometer must be plausible: never ahead of the unit's
+ * current odometer (when one is known) and, on completion, never behind the previous service.
+ */
+export function assertServiceOdometer(
+  value: number | undefined,
+  currentOdometerMi: number,
+  previousServiceMi: number | null,
+  field: 'lastServiceMi' | 'serviceOdometerMi',
+): void {
+  if (value === undefined) return;
+  if (currentOdometerMi > 0 && value > currentOdometerMi + ODOMETER_TOLERANCE_MI) {
+    throw new AppException(
+      ERROR_CODES.VALIDATION_FAILED,
+      `The service odometer (${value} mi) is ahead of the unit's odometer (${currentOdometerMi} mi).`,
+      422,
+      { [field]: `Must not exceed the unit's odometer (${currentOdometerMi} mi).` },
+    );
+  }
+  if (previousServiceMi !== null && value < previousServiceMi) {
+    throw new AppException(
+      ERROR_CODES.VALIDATION_FAILED,
+      `The service odometer (${value} mi) is behind the previous service (${previousServiceMi} mi).`,
+      422,
+      { [field]: `Must not be below the previous service (${previousServiceMi} mi).` },
+    );
   }
 }

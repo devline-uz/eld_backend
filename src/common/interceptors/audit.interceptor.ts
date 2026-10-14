@@ -57,7 +57,7 @@ export class AuditInterceptor implements NestInterceptor {
       switchMap((before) =>
         next.handle().pipe(
           switchMap((result) => {
-            const objectId = routeId ?? resultId(result, options.object) ?? '';
+            const objectId = routeId ?? resultField(result, options.resultIdField) ?? resultId(result, options.object) ?? '';
             const afterPromise =
               options.action === 'DELETE' ? Promise.resolve(null) : this.resolveAfter(options.object, objectId, result);
             return from(afterPromise).pipe(
@@ -121,6 +121,12 @@ function extractEntity(result: unknown, objectType: string): Record<string, unkn
   const nested = record[nestedKey];
   if (nested && typeof nested === 'object') return nested as Record<string, unknown>;
   return null;
+}
+
+function resultField(result: unknown, field: string | undefined): string | undefined {
+  if (!field || !result || typeof result !== 'object') return undefined;
+  const value = (result as Record<string, unknown>)[field];
+  return typeof value === 'string' || typeof value === 'number' ? String(value) : undefined;
 }
 
 function resultId(result: unknown, objectType: string): string | undefined {

@@ -2,8 +2,8 @@ import { DateTime } from 'luxon';
 import { distanceMi } from '../../../common/units';
 
 /** TZ §11.5 (`GET/POST /geofences`) + §12.5 `trip.status_changed`-style event stream.
- * CIRCLE geofences only — `polygon` geofences exist in the schema for Figma's draw-tool but
- * point-in-polygon crossing detection is a v2 follow-up (documented in decisions.md D-0xx). */
+ * CODE-025 — CIRCLE and ADDRESS fences (ADDRESS is geocoded into the same center + radius) use
+ * the radius; POLYGON fences carry `polygon` and use a point-in-polygon test instead. */
 export interface CircleGeofence {
   id: string;
   centerLat: number;
@@ -13,6 +13,8 @@ export interface CircleGeofence {
   alertOnExit: boolean;
   /** §20 B-15 — when set, ENTER/EXIT only alert during "after hours"; see `isAfterHours`. */
   afterHoursOnly?: boolean;
+  /** CODE-025 — POLYGON fence vertices; when set, the radius fields are ignored. */
+  polygon?: Point[] | null;
 }
 
 export interface Point {
@@ -44,7 +46,20 @@ export interface GeofenceTransition {
 
 /** Inclusive boundary: exactly-on-the-radius counts as inside (matches `<=`, not `<`). */
 export function isInsideGeofence(point: Point, fence: CircleGeofence): boolean {
+  if (fence.polygon && fence.polygon.length >= 3) return isInsidePolygon(point, fence.polygon);
   return distanceMi(point, { lat: fence.centerLat, lon: fence.centerLon }) <= fence.radiusMi;
+}
+
+/** Even-odd ray casting on lat/lon (fences are small enough that planar is accurate). */
+export function isInsidePolygon(point: Point, polygon: Point[]): boolean {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const a = polygon[i];
+    const b = polygon[j];
+    const crosses = a.lat > point.lat !== b.lat > point.lat;
+    if (crosses && point.lon < ((b.lon - a.lon) * (point.lat - a.lat)) / (b.lat - a.lat) + a.lon) inside = !inside;
+  }
+  return inside;
 }
 
 /**

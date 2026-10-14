@@ -195,6 +195,15 @@ describe('HosRecalcService', () => {
     expect(repo.violations.every((v) => v.status === 'RESOLVED')).toBe(true);
   });
 
+  it('CODE-069: a manually resolved violation no longer flags its day header', async () => {
+    repo.events = OVER_LIMIT_DAY;
+    await service.recalculate({ driverId: 'driver-1', fromDate: '2025-01-14' }, NOW);
+    repo.violations.forEach((v) => { v.status = 'RESOLVED'; });
+    repo.dailyFlagUpdates = [];
+    await service.recalculate({ driverId: 'driver-1', fromDate: '2025-01-14' }, NOW);
+    expect(repo.dailyFlagUpdates.find((u) => u.logDate === '2025-01-14')?.count).toBe(0);
+  });
+
   it('refreshes the magnitude of a resolved violation', async () => {
     repo.events = OVER_LIMIT_DAY;
     await service.recalculate({ driverId: 'driver-1', fromDate: '2025-01-14' }, NOW);

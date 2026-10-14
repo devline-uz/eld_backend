@@ -61,6 +61,46 @@ export class SessionRepository {
     });
   }
 
+  /**
+   * CODE-012 — is the session an access token names still live? A refresh rotates the row into a
+   * new one (`rotatedToId`) without ending the sign-in, so the chain is followed to its head; an
+   * explicit revoke/logout/expiry of the head ends every token issued along it.
+   */
+  async isLineageLive(id: string, userId: string, maxHops = 10): Promise<boolean> {
+    let nextId: string | null = id;
+    for (let hop = 0; nextId && hop <= maxHops; hop += 1) {
+      const row: Pick<Session, 'userId' | 'revokedAt' | 'expiresAt' | 'rotatedToId'> | null =
+        await this.prisma.session.findUnique({
+          where: { id: nextId },
+          select: { userId: true, revokedAt: true, expiresAt: true, rotatedToId: true },
+        });
+      if (!row || row.userId !== userId) return false;
+      if (!row.revokedAt) return row.expiresAt > new Date();
+      nextId = row.rotatedToId;
+    }
+    return false;
+  }
+
+  /**
+   * CODE-019 — refresh rotation as one atomic step: the new session is created and the old one is
+   * marked rotated ONLY if it is still unrevoked. `null` = another request rotated/revoked it first
+   * (nothing is written).
+   */
+  async rotate(oldId: string, input: CreateSessionInput): Promise<Session | null> {
+    return this.prisma.$transaction(async (tx) => {
+      const next = await tx.session.create({ data: input });
+      const { count } = await tx.session.updateMany({
+        where: { id: oldId, revokedAt: null },
+        data: { revokedAt: new Date(), rotatedToId: next.id },
+      });
+      if (count === 0) {
+        await tx.session.delete({ where: { id: next.id } });
+        return null;
+      }
+      return next;
+    });
+  }
+
   revoke(id: string): Promise<Session> {
     return this.prisma.session.update({ where: { id }, data: { revokedAt: new Date() } });
   }

@@ -32,6 +32,15 @@ export class DriverSessionRepository {
     });
   }
 
+  /** At least one unrevoked, unexpired app session — a driver access token is honoured only then. */
+  async hasLiveSession(driverId: string): Promise<boolean> {
+    const live = await this.prisma.driverSession.findFirst({
+      where: { driverId, revokedAt: null, expiresAt: { gt: new Date() } },
+      select: { id: true },
+    });
+    return live !== null;
+  }
+
   revoke(id: string): Promise<DriverSession> {
     return this.prisma.driverSession.update({ where: { id }, data: { revokedAt: new Date() } });
   }

@@ -101,6 +101,8 @@ export class VehiclesRepository extends BaseRepository<
           { make: containsInsensitive(filter.q) },
           { model: containsInsensitive(filter.q) },
           { licensePlate: containsInsensitive(filter.q) },
+          // LIVE-022 — the ELD SERIAL column shown in the list is searchable too.
+          { device: { serial: containsInsensitive(filter.q) } },
         ],
       }),
     };
@@ -129,6 +131,29 @@ export class VehiclesRepository extends BaseRepository<
       select: { id: true, number: true, status: true },
       orderBy: { plannedStartAt: 'asc' },
       take: 20,
+    });
+  }
+
+  /**
+   * CODE-062 — soft delete under the unit's trip-schedule advisory lock (the same key
+   * `TripsRepository.withUnitScheduleLock` takes), re-checking open trips inside it, so a trip
+   * created concurrently either lands first (and blocks the delete with its number) or sees the
+   * unit deleted. Returns the open trips instead of deleting when there are any.
+   */
+  softDeleteUnlessBooked(
+    id: string,
+  ): Promise<{ deleted: Vehicle; openTrips: [] } | { deleted: null; openTrips: Array<{ id: string; number: string; status: string }> }> {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`, `trip-unit:${id}`);
+      const openTrips = await tx.trip.findMany({
+        where: { vehicleId: id, status: { in: ['DRAFT', 'PLANNED', 'ASSIGNED', 'IN_PROGRESS'] } },
+        select: { id: true, number: true, status: true },
+        orderBy: { plannedStartAt: 'asc' },
+        take: 20,
+      });
+      if (openTrips.length > 0) return { deleted: null, openTrips };
+      const deleted = await tx.vehicle.update({ where: { id }, data: { status: 'INACTIVE', deletedAt: new Date() } });
+      return { deleted, openTrips: [] as [] };
     });
   }
 
@@ -175,15 +200,6 @@ export class VehiclesRepository extends BaseRepository<
       take: limit,
       include: { driver: { select: { firstName: true, lastName: true } } },
     });
-  }
-
-  /**
-   * §20 B-69 `pairDevices` import option — queried directly against `Device` (not via
-   * `DevicesModule`, which already depends one-directionally on `VehiclesModule`; the reverse
-   * import would be a cycle). Mirrors `findOpenCriticalDefectIds`.
-   */
-  findDeviceBySerial(serial: string) {
-    return this.prisma.device.findUnique({ where: { serial } });
   }
 
   /**
@@ -258,13 +274,6 @@ export class VehiclesRepository extends BaseRepository<
     return this.prisma.device.updateMany({
       where: { vehicleId },
       data: { vehicleId: null, status: 'UNASSIGNED', pairedAt: null },
-    });
-  }
-
-  pairDevice(deviceId: string, vehicleId: string) {
-    return this.prisma.device.update({
-      where: { id: deviceId },
-      data: { vehicleId, status: 'ASSIGNED', pairedAt: new Date() },
     });
   }
 

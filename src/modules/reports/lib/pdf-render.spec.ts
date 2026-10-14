@@ -1,4 +1,4 @@
-import { escapeHtml, renderPdf, renderTemplate } from './pdf-render';
+import { closeSharedBrowser, escapeHtml, renderPdf, renderTemplate } from './pdf-render';
 
 /** B-098 — PDF/HTML templates render user-typed text (DVIR notes, defect descriptions, driver
  * and location names) — it must come out as literal text, never markup or template syntax. */
@@ -37,6 +37,9 @@ describe('pdf-render templating', () => {
  * usable Chrome is on disk at all (CI images without a browser cache) rather than failing.
  */
 describe('renderPdf (real headless Chrome launch)', () => {
+  // CODE-089 — the shared Chrome must not outlive the suite (it was the Jest open handle).
+  afterAll(() => closeSharedBrowser());
+
   it('produces real PDF bytes from an actual template', async () => {
     const pdf = await renderPdf('dvir-report', {
       carrier: { name: 'Universal Logistics Inc.' },

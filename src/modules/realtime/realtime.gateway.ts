@@ -12,6 +12,7 @@ import type { Server, Socket } from 'socket.io';
 import { TokenVerifier } from '../../common/guards/token-verifier.port';
 import type { ContextUser } from '../../core/context/request-context';
 import { RealtimePubSubService } from '../../core/events/realtime-pubsub.service';
+import { AUTH_REVOKED_EVENT } from '../auth/principal-state.service';
 import { RealtimeRoomAuthorizer } from './room-authorizer';
 
 interface AuthedSocket extends Socket {
@@ -58,6 +59,14 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
 
   onModuleInit(): void {
     this.unsubscribe = this.realtimePubSub.onRelayed((payload) => {
+      if (payload.event === AUTH_REVOKED_EVENT) {
+        // CODE-012 — a socket is authorized once, at connect. When a user is disabled/deleted, a
+        // session revoked or a role changed, their sockets are told and dropped; a reconnect is
+        // re-verified against the live user/session state (and its rooms re-authorized).
+        this.server?.to(payload.room).emit(payload.event, payload.payload);
+        this.server?.in(payload.room).disconnectSockets(true);
+        return;
+      }
       this.server?.to(payload.room).emit(payload.event, payload.payload);
     });
   }

@@ -49,11 +49,13 @@ export class MaintenanceSchedulesRepository extends BaseRepository<
     return { items, total };
   }
 
-  /** Enabled schedules joined to their vehicle's current odometer, for due/overdue detection
-   * (BullMQ `maintenance-due` job and the `dueOnly` list filter). */
-  listEnabledWithVehicle() {
+  /** Schedules joined to their vehicle's current odometer, for due/overdue detection (BullMQ
+   * `maintenance-due` job and the `dueOnly` list filter). CODE-071 — only live work is due: a
+   * CANCELLED schedule and a schedule on a soft-deleted unit never alert. `enabled` defaults to
+   * the enabled schedules; the list filter may ask for the disabled ones instead. */
+  listEnabledWithVehicle(enabled = true) {
     return this.prisma.maintenanceSchedule.findMany({
-      where: { enabled: true },
+      where: { enabled, status: { not: 'CANCELLED' }, vehicle: { deletedAt: null } },
       include: { vehicle: { select: { id: true, unitNumber: true, odometerMi: true } } },
     });
   }

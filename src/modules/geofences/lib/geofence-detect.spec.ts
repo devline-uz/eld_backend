@@ -1,4 +1,4 @@
-import { detectGeofenceTransitions, isAfterHours, isDwellExceeded, isInsideGeofence } from './geofence-detect';
+import { detectGeofenceTransitions, isAfterHours, isDwellExceeded, isInsideGeofence, isInsidePolygon } from './geofence-detect';
 
 const fence = {
   id: 'gf_1',
@@ -119,5 +119,26 @@ describe('isDwellExceeded', () => {
   });
   it('is true past the threshold', () => {
     expect(isDwellExceeded(enteredAt, new Date('2026-09-11T01:00:00.000Z'), 30)).toBe(true);
+  });
+});
+
+describe('CODE-025 — polygon fences', () => {
+  const square = [
+    { lat: 0, lon: 0 },
+    { lat: 0, lon: 1 },
+    { lat: 1, lon: 1 },
+    { lat: 1, lon: 0 },
+  ];
+  const fence = { id: 'g_poly', centerLat: 0, centerLon: 0, radiusMi: 0, alertOnEnter: true, alertOnExit: true, polygon: square };
+
+  it('uses point-in-polygon instead of the radius', () => {
+    expect(isInsidePolygon({ lat: 0.5, lon: 0.5 }, square)).toBe(true);
+    expect(isInsidePolygon({ lat: 1.5, lon: 0.5 }, square)).toBe(false);
+    expect(isInsideGeofence({ lat: 0.5, lon: 0.5 }, fence)).toBe(true);
+  });
+
+  it('reports ENTER when a unit drives into a polygon fence', () => {
+    const points = [{ lat: 2, lon: 0.5 }, { lat: 0.5, lon: 0.5 }];
+    expect(detectGeofenceTransitions(points, fence, false)).toEqual([{ geofenceId: 'g_poly', kind: 'ENTER' }]);
   });
 });

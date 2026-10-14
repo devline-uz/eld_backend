@@ -36,9 +36,11 @@ const HELD_ROLES: Record<string, { id: string; key: string; name: string; permis
 };
 
 describe('UsersService', () => {
-  let users: jest.Mocked<Pick<UsersRepository, 'listWithRoles' | 'findByIdWithRole' | 'findByEmail' | 'create' | 'update' | 'delete' | 'countActiveAdmins' | 'countActiveSuperAdmins'>>;
+  let users: jest.Mocked<Pick<UsersRepository, 'listWithRoles' | 'findByIdWithRole' | 'findByEmail' | 'create' | 'update' | 'delete' | 'countActiveAdmins' | 'countActiveSuperAdmins' | 'countDeleteBlockers'>>;
   let roles: jest.Mocked<Pick<RolesRepository, 'findById' | 'findRoleOfUser'>>;
-  let auth: jest.Mocked<Pick<AuthService, 'issueResetToken'>>;
+  let auth: jest.Mocked<Pick<AuthService, 'issueResetToken' | 'revokeAllUserSessions'>>;
+  let principals: { invalidateUser: jest.Mock };
+  let events: { publish: jest.Mock };
   let emailChange: jest.Mocked<
     Pick<UserEmailChangeService, 'assertAvailable' | 'assertRequestable' | 'pendingInput' | 'notifyRequested' | 'resend' | 'cancelPending'>
   >;
@@ -58,6 +60,7 @@ describe('UsersService', () => {
       delete: jest.fn(),
       countActiveAdmins: jest.fn().mockResolvedValue(2),
       countActiveSuperAdmins: jest.fn().mockResolvedValue(2),
+      countDeleteBlockers: jest.fn().mockResolvedValue({ reports: 0, apiKeys: 0 }),
     };
     roles = {
       findById: jest.fn(),
@@ -65,7 +68,10 @@ describe('UsersService', () => {
     };
     auth = {
       issueResetToken: jest.fn().mockReturnValue('invite-token'),
+      revokeAllUserSessions: jest.fn().mockResolvedValue(1),
     };
+    principals = { invalidateUser: jest.fn().mockResolvedValue(undefined) };
+    events = { publish: jest.fn().mockResolvedValue(undefined) };
     emailChange = {
       assertAvailable: jest.fn().mockResolvedValue(undefined),
       assertRequestable: jest.fn().mockResolvedValue(undefined),
@@ -96,6 +102,8 @@ describe('UsersService', () => {
       mail,
       config as unknown as AppConfigService,
       emailChange as unknown as UserEmailChangeService,
+      principals as never,
+      events as never,
     );
   });
 
@@ -117,6 +125,15 @@ describe('UsersService', () => {
       const result = await service.get('usr_1');
       expect(result.email).toBe('a@b.com');
       expect(result).not.toHaveProperty('passwordHash');
+    });
+
+    it('CODE-087 — never returns the linked Google account id or lockout state, only googleLinked', async () => {
+      users.findByIdWithRole.mockResolvedValue(makeUser({ googleUid: 'g-123', failedLoginCount: 3, lockedUntil: null }) as never);
+      const result = await service.get('usr_1');
+      expect(result).not.toHaveProperty('googleUid');
+      expect(result).not.toHaveProperty('failedLoginCount');
+      expect(result).not.toHaveProperty('lockedUntil');
+      expect(result.googleLinked).toBe(true);
     });
   });
 
@@ -198,6 +215,7 @@ describe('UsersService', () => {
           mail,
           cfg as unknown as AppConfigService,
           emailChangeReal,
+          principals as never,
         );
         roles.findById.mockResolvedValue({ id: 'role_1', key: 'VIEWER', name: 'Viewer' } as never);
       });
@@ -321,6 +339,74 @@ describe('UsersService', () => {
   });
 
   describe('update', () => {
+    it('CODE-012 — disabling a user revokes every session and drops live access at once', async () => {
+      users.findByIdWithRole.mockResolvedValue(makeUser({ role: { id: 'role_v', key: 'VIEWER', name: 'Viewer' } }) as never);
+      users.update.mockResolvedValue({} as never);
+      await service.update('usr_1', { status: 'DISABLED' } as never, SA);
+      expect(auth.revokeAllUserSessions).toHaveBeenCalledWith('usr_1');
+      expect(principals.invalidateUser).toHaveBeenCalledWith('usr_1');
+    });
+
+    it('CODE-012 — a role change re-authorizes without signing the user out', async () => {
+      users.findByIdWithRole.mockResolvedValue(makeUser({ role: { id: 'role_v', key: 'VIEWER', name: 'Viewer' } }) as never);
+      roles.findById.mockResolvedValue({ id: 'role_d', key: 'DISPATCHER', permissions: {} } as never);
+      users.update.mockResolvedValue({} as never);
+      await service.update('usr_1', { roleId: 'role_d' }, SA);
+      expect(principals.invalidateUser).toHaveBeenCalledWith('usr_1');
+      expect(auth.revokeAllUserSessions).not.toHaveBeenCalled();
+    });
+
+    it('CODE-083 — a role change writes its own ROLE_CHANGE audit row with old and new role', async () => {
+      users.findByIdWithRole.mockResolvedValue(makeUser({ role: { id: 'role_v', key: 'VIEWER', name: 'Viewer' } }) as never);
+      roles.findById.mockResolvedValue({ id: 'role_d', key: 'DISPATCHER', permissions: {} } as never);
+      users.update.mockResolvedValue({} as never);
+      await service.update('usr_1', { roleId: 'role_d' }, SA);
+      expect(events.publish).toHaveBeenCalledWith(
+        'audit.record',
+        expect.objectContaining({
+          action: 'ROLE_CHANGE',
+          objectType: 'User',
+          objectId: 'usr_1',
+          actorId: 'sa_1',
+          before: { roleId: 'role_v', roleKey: 'VIEWER' },
+          after: { roleId: 'role_d', roleKey: 'DISPATCHER' },
+        }),
+      );
+    });
+
+    it('CODE-083 — re-saving the same role writes no ROLE_CHANGE row', async () => {
+      users.findByIdWithRole.mockResolvedValue(makeUser({ role: { id: 'role_v', key: 'VIEWER', name: 'Viewer' } }) as never);
+      roles.findById.mockResolvedValue({ id: 'role_v', key: 'VIEWER', permissions: {} } as never);
+      users.update.mockResolvedValue({} as never);
+      await service.update('usr_1', { roleId: 'role_v' }, SA);
+      expect(events.publish).not.toHaveBeenCalled();
+    });
+
+    it('CODE-087 — an unaccepted invite cannot be set ACTIVE by PATCH (409), DISABLED is fine', async () => {
+      users.findByIdWithRole.mockResolvedValue(makeUser({ status: 'INVITED', role: { id: 'role_v', key: 'VIEWER', name: 'Viewer' } }) as never);
+      users.update.mockResolvedValue({} as never);
+      await expect(service.update('usr_1', { status: 'ACTIVE' } as never, SA)).rejects.toMatchObject({ status: 409 });
+      expect(users.update).not.toHaveBeenCalled();
+      await expect(service.update('usr_1', { status: 'DISABLED' } as never, SA)).resolves.toBeDefined();
+    });
+
+    it('CODE-087 — re-enabling a disabled invite that was never accepted is refused too; a real account re-enables', async () => {
+      const role = { id: 'role_v', key: 'VIEWER', name: 'Viewer' };
+      users.update.mockResolvedValue({} as never);
+      users.findByIdWithRole.mockResolvedValue(makeUser({ status: 'DISABLED', passwordHash: null, googleUid: null, lastActiveAt: null, role }) as never);
+      await expect(service.update('usr_1', { status: 'ACTIVE' } as never, SA)).rejects.toMatchObject({ status: 409 });
+      users.findByIdWithRole.mockResolvedValue(makeUser({ status: 'DISABLED', passwordHash: null, googleUid: 'g-1', lastActiveAt: null, role }) as never);
+      await expect(service.update('usr_1', { status: 'ACTIVE' } as never, SA)).resolves.toBeDefined();
+    });
+
+    it('a profile-only edit touches no session', async () => {
+      users.findByIdWithRole.mockResolvedValue(makeUser() as never);
+      users.update.mockResolvedValue({} as never);
+      await service.update('usr_1', { firstName: 'Jane' }, SA);
+      expect(principals.invalidateUser).not.toHaveBeenCalled();
+      expect(auth.revokeAllUserSessions).not.toHaveBeenCalled();
+    });
+
     it('throws when user missing', async () => {
       users.findByIdWithRole.mockResolvedValue(null);
       await expect(service.update('missing', {}, SA)).rejects.toThrow(AppException);
@@ -429,11 +515,21 @@ describe('UsersService', () => {
       await expect(service.remove('missing', SA)).rejects.toThrow(AppException);
     });
 
-    it('deletes when found', async () => {
+    it('deletes when found, and drops the user\'s live access (CODE-012)', async () => {
       users.findByIdWithRole.mockResolvedValue(makeUser() as never);
       users.delete.mockResolvedValue({} as never);
       await service.remove('usr_1', SA);
       expect(users.delete).toHaveBeenCalledWith({ id: 'usr_1' });
+      expect(principals.invalidateUser).toHaveBeenCalledWith('usr_1');
+    });
+
+    it('CODE-014 — 409 (not a 500) for the author of reports / API keys, nothing deleted', async () => {
+      users.findByIdWithRole.mockResolvedValue(makeUser() as never);
+      users.countDeleteBlockers.mockResolvedValue({ reports: 3, apiKeys: 1 });
+      const err = await service.remove('usr_1', SA).catch((e: unknown) => e);
+      expect(err).toMatchObject({ code: 'CONFLICT', status: 409, details: { reasons: { reports: 3, apiKeys: 1 } } });
+      expect((err as Error).message).toContain('Disable the user instead');
+      expect(users.delete).not.toHaveBeenCalled();
     });
   });
 
@@ -599,15 +695,6 @@ describe('UsersService', () => {
     expect(result.phone).toBe('555-1212');
   });
 
-  describe('isRoleChange', () => {
-    it('is true when roleId is present', () => {
-      expect(service.isRoleChange({ roleId: 'role_2' })).toBe(true);
-    });
-
-    it('is false when roleId is absent', () => {
-      expect(service.isRoleChange({})).toBe(false);
-    });
-  });
 
   describe('avatar (B-51)', () => {
     function fakePng(width: number, height: number): Buffer {

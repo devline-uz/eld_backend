@@ -37,14 +37,27 @@ export class ViolationsRepository {
 
   /**
    * Resolves only a row that is still OPEN, atomically — two concurrent resolves cannot both
-   * win. Touches HosViolation only; no EldEvent / DailyLog column is ever written (§23).
+   * win. No EldEvent is ever written (§23). CODE-069 — in the same transaction the day's
+   * `DailyLog` violation flags are recounted from the OPEN rows left, so the RODS header (the
+   * certification card, the roster, the activity report) stops flagging a resolved day.
    */
   async resolveIfOpen(id: string, data: { resolvedAt: Date; resolvedById: string; resolutionNote: string }): Promise<boolean> {
-    const result = await this.prisma.hosViolation.updateMany({
-      where: { id, status: 'OPEN' },
-      data: { status: 'RESOLVED', ...data },
+    return this.prisma.$transaction(async (tx) => {
+      const result = await tx.hosViolation.updateMany({
+        where: { id, status: 'OPEN' },
+        data: { status: 'RESOLVED', ...data },
+      });
+      if (result.count !== 1) return false;
+      const row = await tx.hosViolation.findUnique({ where: { id }, select: { driverId: true, logDate: true } });
+      if (row) {
+        const open = await tx.hosViolation.count({ where: { driverId: row.driverId, logDate: row.logDate, status: 'OPEN' } });
+        await tx.dailyLog.updateMany({
+          where: { driverId: row.driverId, logDate: row.logDate },
+          data: { hasViolation: open > 0, violationCount: open },
+        });
+      }
+      return true;
     });
-    return result.count === 1;
   }
 
   /** The active record at or before the violation: which unit and where (display only). */

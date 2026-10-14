@@ -39,6 +39,22 @@ describe('detectHarshEvents — braking / acceleration', () => {
   });
 });
 
+describe('detectHarshEvents — one manoeuvre, one event (CODE-039)', () => {
+  const at = (sec: number) => new Date(Date.UTC(2026, 9, 14, 12, 0, sec));
+  const sample = (sec: number, speedMph: number) => ({ time: at(sec), speedMph, headingDeg: 90, latitude: 40, longitude: -83 });
+
+  it('60 -> 20 mph at 1 Hz is a single HARSH_BRAKING at its first step', () => {
+    const events = detectHarshEvents([sample(0, 60), sample(1, 50), sample(2, 40), sample(3, 30), sample(4, 20)]);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: 'HARSH_BRAKING', occurredAt: at(1), severity: 3 });
+  });
+
+  it('two brakings far apart stay two events', () => {
+    const events = detectHarshEvents([sample(0, 60), sample(1, 50), sample(2, 50), sample(30, 50), sample(31, 40)]);
+    expect(events.map((e) => e.type)).toEqual(['HARSH_BRAKING', 'HARSH_BRAKING']);
+  });
+});
+
 describe('detectHarshEvents — turns', () => {
   it('flags a sharp turn above the min speed', () => {
     const samples = [sample('2026-09-11T00:00:00.000Z', 20, 0), sample('2026-09-11T00:00:01.000Z', 20, 50)];

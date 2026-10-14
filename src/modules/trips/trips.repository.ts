@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { Driver, Prisma, Trip, Vehicle } from '@prisma/client';
+import type { Driver, Prisma, Trailer, Trip, Vehicle } from '@prisma/client';
 import { BaseRepository, ModelDelegate } from '../../core/prisma/base.repository';
 import { PrismaService } from '../../core/prisma/prisma.service';
 import { containsInsensitive } from '../../common/text/insensitive';
@@ -9,6 +9,9 @@ export interface TripListFilter {
   driverId?: string;
   q?: string;
 }
+
+/** CODE-060 — `GET /trips/unassigned-loads` returns at most this many loads (soonest first). */
+export const UNASSIGNED_LOADS_LIMIT = 500;
 
 /** §20 B-36 — minimal driver/vehicle name join, reused by `list`, `unassignedLoads` and
  * `getWithStops`. */
@@ -64,18 +67,24 @@ export class TripsRepository extends BaseRepository<
   }
 
   /** Any trailer row, live or soft-deleted — the service decides (a deleted one is not assignable). */
-  findTrailer(id: string): Promise<{ id: string; deletedAt: Date | null } | null> {
-    return this.prisma.trailer.findUnique({ where: { id }, select: { id: true, deletedAt: true } });
+  findTrailer(id: string): Promise<{ id: string; status: Trailer['status']; deletedAt: Date | null } | null> {
+    return this.prisma.trailer.findUnique({ where: { id }, select: { id: true, status: true, deletedAt: true } });
   }
 
   /** BE-001 — the driver a trip write names (live or soft-deleted); the service decides. */
-  findDriverForTrip(id: string): Promise<{ id: string; status: Driver['status']; deletedAt: Date | null } | null> {
-    return this.prisma.driver.findUnique({ where: { id }, select: { id: true, status: true, deletedAt: true } });
+  findDriverForTrip(
+    id: string,
+    db: Prisma.TransactionClient = this.prisma,
+  ): Promise<{ id: string; status: Driver['status']; deletedAt: Date | null } | null> {
+    return db.driver.findUnique({ where: { id }, select: { id: true, status: true, deletedAt: true } });
   }
 
   /** BE-001 — the unit a trip write names (live or soft-deleted); the service decides. */
-  findVehicleForTrip(id: string): Promise<{ id: string; status: Vehicle['status']; deletedAt: Date | null } | null> {
-    return this.prisma.vehicle.findUnique({ where: { id }, select: { id: true, status: true, deletedAt: true } });
+  findVehicleForTrip(
+    id: string,
+    db: Prisma.TransactionClient = this.prisma,
+  ): Promise<{ id: string; status: Vehicle['status']; deletedAt: Date | null } | null> {
+    return db.vehicle.findUnique({ where: { id }, select: { id: true, status: true, deletedAt: true } });
   }
 
   async list(filter: TripListFilter, page: number, limit: number, orderBy: Record<string, 'asc' | 'desc'>) {
@@ -103,6 +112,8 @@ export class TripsRepository extends BaseRepository<
     return this.prisma.trip.findMany({
       where: { status: 'PLANNED', driverId: null },
       orderBy: { plannedStartAt: 'asc' },
+      // CODE-060 — bounded like every other list (it was the whole table); soonest loads first.
+      take: UNASSIGNED_LOADS_LIMIT,
       include: { stops: { orderBy: { sequence: 'asc' } }, ...NAME_JOIN },
     });
   }
@@ -264,14 +275,15 @@ export class TripsRepository extends BaseRepository<
     });
   }
 
-  /** Drivers currently ACTIVE with no trip in an unfinished state — used by auto-assign. */
+  /**
+   * Auto-assign candidates: live ACTIVE drivers. CODE-055 — a driver with an ASSIGNED / IN_PROGRESS
+   * trip used to be excluded outright (any future trip blocked them); `assign` now decides per
+   * load with the schedule-overlap check, so only the time window matters.
+   */
   availableDriverIds(): Promise<string[]> {
     return this.prisma.driver
       .findMany({
-        where: {
-          status: 'ACTIVE',
-          trips: { none: { status: { in: ['ASSIGNED', 'IN_PROGRESS'] } } },
-        },
+        where: { status: 'ACTIVE', deletedAt: null },
         select: { id: true },
         orderBy: { id: 'asc' },
       })
