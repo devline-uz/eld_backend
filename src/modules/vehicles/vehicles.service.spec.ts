@@ -71,6 +71,8 @@ describe('VehiclesService', () => {
   let mail: jest.Mocked<TransactionalMailPort>;
   let push: jest.Mocked<Pick<PushService, 'sendToDriver'>>;
   let events: { publish: jest.Mock<Promise<void>, [string, { room: string; event: string; payload: unknown }]> };
+  let audit: { insert: jest.Mock };
+  let loginRecords: { logout: jest.Mock };
   let service: VehiclesService;
 
   beforeEach(() => {
@@ -99,6 +101,7 @@ describe('VehiclesService', () => {
       releaseDevice: jest.fn().mockResolvedValue({ count: 0 }),
       findOpenTrips: jest.fn().mockResolvedValue([]),
     };
+    (vehiclesRepo as unknown as Record<string, unknown>).moveUnitToDriver = jest.fn().mockResolvedValue({ endedPartnerIds: [] });
     driversRepo = {
       findById: jest.fn(),
       update: jest.fn(),
@@ -110,6 +113,8 @@ describe('VehiclesService', () => {
     mail = { send: jest.fn().mockResolvedValue({ delivered: false, reference: 'NO_MAIL_TRANSPORT' }) };
     push = { sendToDriver: jest.fn().mockResolvedValue(undefined) };
     events = { publish: jest.fn<Promise<void>, [string, { room: string; event: string; payload: unknown }]>().mockResolvedValue(undefined) };
+    audit = { insert: jest.fn().mockResolvedValue({}) };
+    loginRecords = { logout: jest.fn().mockResolvedValue(1) };
     service = new VehiclesService(
       vehiclesRepo as unknown as VehiclesRepository,
       driversRepo as unknown as DriversRepository,
@@ -119,6 +124,8 @@ describe('VehiclesService', () => {
       push as unknown as PushService,
       mail,
       events as never,
+      audit as never,
+      loginRecords as never,
     );
   });
 
@@ -194,6 +201,47 @@ describe('VehiclesService', () => {
       vehiclesRepo.findById.mockResolvedValue(makeVehicle({ status: 'INACTIVE' }) as never);
       await expect(service.assignDriver('veh_1', { driverId: 'drv_1', notify: true })).rejects.toMatchObject({ code: 'CONFLICT', status: 409 });
       expect(driversRepo.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('assignDriver — occupied unit is moved (D-153)', () => {
+    const move = () => (vehiclesRepo as unknown as { moveUnitToDriver: jest.Mock }).moveUnitToDriver;
+
+    it('auto-unassigns the previous holder: one move transaction, unassign realtime, in-app + FCM, logout record, audit', async () => {
+      vehiclesRepo.findById.mockResolvedValue(makeVehicle({ unitNumber: '103' }) as never);
+      driversRepo.findById.mockResolvedValue({ id: 'drv_2', status: 'ACTIVE', deletedAt: null, assignedVehicleId: null } as never);
+      driversRepo.findOne.mockResolvedValue({ id: 'drv_1' } as never);
+      notifications.create.mockResolvedValue({ id: 'ntf_9', objectType: 'Vehicle', objectId: 'veh_1', category: 'assignment' } as never);
+
+      await service.assignDriver('veh_1', { driverId: 'drv_2', notify: false });
+
+      expect(move()).toHaveBeenCalledWith(expect.objectContaining({ driverId: 'drv_2', vehicleId: 'veh_1', holderId: 'drv_1', previousVehicleId: null }));
+      expect(driversRepo.update).not.toHaveBeenCalled();
+      const sent = events.publish.mock.calls.map((c) => [c[1].room, c[1].event]);
+      expect(sent).toEqual([
+        ['driver:drv_1', 'vehicle.unassigned'],
+        ['driver:drv_1', 'bootstrap.changed'],
+        ['driver:drv_1', 'notification.new'],
+        ['driver:drv_2', 'vehicle.assigned'],
+        ['driver:drv_2', 'bootstrap.changed'],
+      ]);
+      expect(push.sendToDriver).toHaveBeenCalledWith('drv_1', expect.objectContaining({ title: 'Unit unassigned' }), expect.anything());
+      expect(loginRecords.logout).toHaveBeenCalledWith('drv_1', 'ADMIN_REASSIGN', { onlyVehicleId: 'veh_1' });
+      expect(audit.insert).toHaveBeenCalledWith(expect.objectContaining({ action: 'UNASSIGN_DRIVER', objectType: 'Driver', objectId: 'drv_1' }));
+    });
+
+    it('releases the unit the new driver already held (one unit per driver) and refreshes ended pairing partners', async () => {
+      vehiclesRepo.findById.mockResolvedValue(makeVehicle() as never);
+      driversRepo.findById.mockResolvedValue({ id: 'drv_2', status: 'ACTIVE', deletedAt: null, assignedVehicleId: 'veh_old' } as never);
+      move().mockResolvedValue({ endedPartnerIds: ['drv_9'] });
+
+      await service.assignDriver('veh_1', { driverId: 'drv_2', notify: false });
+
+      expect(move()).toHaveBeenCalledWith(expect.objectContaining({ holderId: null, previousVehicleId: 'veh_old' }));
+      const sent = events.publish.mock.calls.map((c) => [c[1].room, c[1].event]);
+      expect(sent).toContainEqual(['driver:drv_2', 'vehicle.unassigned']);
+      expect(sent).toContainEqual(['driver:drv_9', 'bootstrap.changed']);
+      expect(audit.insert).toHaveBeenCalledWith(expect.objectContaining({ objectId: 'drv_2', before: { assignedVehicleId: 'veh_old' } }));
     });
   });
 

@@ -251,6 +251,40 @@ export class VehiclesRepository extends BaseRepository<
     });
   }
 
+  /**
+   * D-153 — admin assignment that MOVES a unit: one transaction clears the unit's current holder
+   * (`holderId`, may be null), ends the active co-driver pairings on the unit(s) given up
+   * (D-110: a pairing on a unit its primary no longer holds would dangle) and sets
+   * `Driver.assignedVehicleId` on the new driver (the unique index never trips mid-way).
+   * Returns the partner ids of the pairings that were ended, for the bootstrap refresh.
+   */
+  async moveUnitToDriver(input: {
+    driverId: string;
+    vehicleId: string;
+    holderId: string | null;
+    previousVehicleId: string | null;
+    endedById: string | null;
+    now: Date;
+  }): Promise<{ endedPartnerIds: string[] }> {
+    return this.prisma.$transaction(async (tx) => {
+      const endedPartnerIds: string[] = [];
+      const give = async (primaryId: string, unitId: string) => {
+        const open = await tx.coDriverPairing.findMany({ where: { primaryDriverId: primaryId, vehicleId: unitId, endedAt: null } });
+        for (const p of open) {
+          await tx.coDriverPairing.update({ where: { id: p.id }, data: { endedAt: input.now, endedById: input.endedById } });
+          endedPartnerIds.push(p.coDriverId);
+        }
+      };
+      if (input.holderId) {
+        await tx.driver.update({ where: { id: input.holderId }, data: { assignedVehicleId: null } });
+        await give(input.holderId, input.vehicleId);
+      }
+      if (input.previousVehicleId) await give(input.driverId, input.previousVehicleId);
+      await tx.driver.update({ where: { id: input.driverId }, data: { assignedVehicleId: input.vehicleId } });
+      return { endedPartnerIds };
+    });
+  }
+
   /** Soft delete frees the unit's ELD device for another unit. */
   releaseDevice(vehicleId: string) {
     return this.prisma.device.updateMany({

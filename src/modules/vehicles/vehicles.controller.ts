@@ -194,7 +194,7 @@ export class VehiclesController {
   // B-13 — a dispatcher (vehicles:READ, trips:FULL) may still assign a driver to a unit.
   @PermAny(['vehicles', 'FULL'], ['trips', 'FULL'])
   @Audit({ object: 'Vehicle', action: 'ASSIGN_DRIVER' })
-  @ApiOperation({ summary: 'Assigns a driver to this unit. Blocked while the unit is OUT_OF_SERVICE. Requires vehicles:FULL or trips:FULL (B-13).' })
+  @ApiOperation({ summary: 'Assigns a driver to this unit. An occupied unit is MOVED to the new driver (previous holder auto-unassigned, notified via realtime + in-app + FCM, audited, D-153); a driver already on another unit gives it up. Blocked while the unit is OUT_OF_SERVICE. Requires vehicles:FULL or trips:FULL (B-13).' })
   @ApiCreatedResponse({ schema: { example: { id: 'veh_1', unitNumber: '101', assignedDriverId: 'drv_1' } } })
   @ApiStandardErrors({
     errors: [
@@ -205,7 +205,7 @@ export class VehiclesController {
       {
         ...apiError.conflict(ERROR_CODES.VEHICLE_OUT_OF_SERVICE, 'Unit is OUT_OF_SERVICE — assign a driver only after the critical defect is closed.'),
         description:
-          'One of: VEHICLE_OUT_OF_SERVICE — Unit is OUT_OF_SERVICE — assign a driver only after the critical defect is closed; CONFLICT (details.status) — "Vehicle is inactive and cannot be assigned a driver."; CONFLICT — "Driver is inactive|terminated and cannot be assigned a unit."; CONFLICT — "Vehicle is already assigned to another driver."',
+          'One of: VEHICLE_OUT_OF_SERVICE — Unit is OUT_OF_SERVICE — assign a driver only after the critical defect is closed; CONFLICT (details.status) — "Vehicle is inactive and cannot be assigned a driver."; CONFLICT — "Driver is inactive|terminated and cannot be assigned a unit."; CONFLICT — "Vehicle is already assigned to another driver." (only on a concurrent-write race; an occupied unit is otherwise moved)',
       },
     ],
   })
