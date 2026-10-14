@@ -51,6 +51,33 @@ export const envSchema = z.object({
   JWT_DRIVER_REFRESH_TTL: z.string().default('90d'),
   /** Short-lived token for the `/auth/password/reset` flow. */
   JWT_PASSWORD_RESET_TTL: z.string().default('30m'),
+  /** Driver email change — how long the confirm link mailed to the NEW address stays valid. */
+  DRIVER_EMAIL_CHANGE_TTL: z.string().default('24h'),
+  /** Driver email change — hours after a CONFIRMED change during which the old address's
+   * "this wasn't me" link can still revert it, and no password-reset code is mailed to the
+   * new address (self-service forgot falls back to the admin in-app notice; carrier reset
+   * returns the code to the dispatcher instead of mailing it). Minimum 1: the hold cannot be
+   * turned off — with 0 an attacker could clear the email and add their own at once, and the
+   * old address's revert link would be useless. The cancel link lives confirm TTL + hold. */
+  DRIVER_EMAIL_CHANGE_HOLD_HOURS: z.coerce
+    .number()
+    .int()
+    .min(1, 'must be at least 1 hour — the post-change hold cannot be disabled (0 is not allowed)')
+    .max(720)
+    .default(48),
+  /** Web-user email change (`PATCH /users/:id { email }`) — how long the confirm link mailed to
+   * the NEW address stays valid (was `JWT_PASSWORD_RESET_TTL`, 30 min, before the pending state). */
+  USER_EMAIL_CHANGE_TTL: z.string().default('24h'),
+  /** Web-user email change — hours after a CONFIRMED change during which the old address's
+   * "this wasn't me" link can still revert it, no further change can be requested, and the web
+   * "Forgot password?" mails no reset code to the new address (the org admins get an in-app
+   * notice instead). Minimum 1, same reasoning as `DRIVER_EMAIL_CHANGE_HOLD_HOURS`. */
+  USER_EMAIL_CHANGE_HOLD_HOURS: z.coerce
+    .number()
+    .int()
+    .min(1, 'must be at least 1 hour — the post-change hold cannot be disabled (0 is not allowed)')
+    .max(720)
+    .default(48),
   FIREBASE_PROJECT_ID: z.string().optional(),
   /** Path to the service-account JSON — never committed (TZ §6.5). */
   FIREBASE_CREDENTIALS_FILE: z.string().optional(),

@@ -36,9 +36,9 @@ import { WorkersModule } from './workers/workers.module';
     QueueModule,
     StorageModule,
     FirebaseModule,
-    MailModule,
     EventsModule,
-    // Scheduled reports are emailed to their recipients from report.processor (TZ §15).
+    // Real SMTP (`TRANSACTIONAL_MAIL`): scheduled reports (report.processor, TZ §15) and
+    // EMAIL alerts (alert.processor, TZ §14).
     MailModule,
     HealthModule,
     WorkersModule,

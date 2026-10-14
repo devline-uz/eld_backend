@@ -1,12 +1,28 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
 import { EventBusService } from '../../core/events/event-bus.service';
 import type { ContextUser } from '../../core/context/request-context';
+import { TRANSACTIONAL_MAIL, TransactionalMailPort } from '../../core/mail/mail.port';
 import { WebhooksService } from '../webhooks/webhooks.service';
 import { CreateAlertRuleDto, UpdateAlertRuleDto } from './dto/notifications.dto';
+import { NotificationChannelsService } from './notification-channels.service';
 import { AlertRulesRepository, NotificationsRepository } from './notifications.repository';
+
+export interface AlertRuleTestChannelResult {
+  channel: 'IN_APP' | 'EMAIL' | 'WEBHOOK';
+  /** SENT = delivered now; QUEUED = handed to the webhook queue; FAILED / SUPPRESSED carry `reason`. */
+  status: 'SENT' | 'QUEUED' | 'FAILED' | 'SUPPRESSED';
+  /** e.g. NO_EMAIL_ADDRESS, NO_MAIL_TRANSPORT, SMTP_SEND_FAILED, NO_WEBHOOK_CONFIGURED, CHANNEL_DISABLED. */
+  reason?: string;
+}
+
+export interface AlertRuleTestResult {
+  /** At least one channel actually sent or queued the test alert. */
+  triggered: boolean;
+  channels: AlertRuleTestChannelResult[];
+}
 
 /**
  * TZ §14 — "SMS — v1 yo'q": the enum value stays (migration-free v2 add) but the API
@@ -30,6 +46,9 @@ export class AlertRulesService {
     private readonly notifications: NotificationsRepository,
     private readonly events: EventBusService,
     private readonly webhooks: WebhooksService,
+    private readonly orgChannels: NotificationChannelsService,
+    /** Real SMTP (`@Global()` `MailModule`, imported by `app.module.ts`). Never throws. */
+    @Inject(TRANSACTIONAL_MAIL) private readonly mail: TransactionalMailPort,
   ) {}
 
   list() {
@@ -71,16 +90,21 @@ export class AlertRulesService {
    * every channel the rule actually has configured (never through channels the rule doesn't
    * select), the same way `AlertProcessor.send` would for a real event — minus the
    * throttle/cooldown/quiet-hours policy, since a deliberate manual test must always land.
-   * A disabled rule triggers nothing (`{ triggered: false }`): the point of the button is to
-   * preview what a *live* rule would do.
+   * The org-level Email/Webhook switches (TZ §20 B-87) still apply, exactly as live.
+   * A disabled rule triggers nothing (`{ triggered: false, channels: [] }`): the point of the
+   * button is to preview what a *live* rule would do.
+   *
+   * `triggered` is true only when at least one channel actually sent (or queued) something;
+   * `channels` reports each channel's truthful outcome (an EMAIL with no SMTP transport or no
+   * address on the actor's account is `FAILED`, never silently "sent").
    */
-  async testRule(id: string, actor: ContextUser): Promise<{ triggered: boolean }> {
+  async testRule(id: string, actor: ContextUser): Promise<AlertRuleTestResult> {
     const rule = await this.get(id);
-    if (!rule.enabled) return { triggered: false };
+    if (!rule.enabled) return { triggered: false, channels: [] };
 
     const title = `Test: ${rule.name}`;
     const body = `This is a test notification for the "${rule.name}" alert rule.`;
-    let triggered = false;
+    const channels: AlertRuleTestChannelResult[] = [];
 
     for (const channel of rule.channels) {
       if (channel === 'SMS') continue; // never persisted, never sent — same as live delivery.
@@ -97,16 +121,50 @@ export class AlertRulesService {
           event: 'notification.new',
           payload: { notification },
         });
-        triggered = true;
+        channels.push({ channel, status: 'SENT' });
       } else if (channel === 'EMAIL') {
-        // No SMTP transport configured yet (same gap as AlertProcessor/TransfersModule).
-        this.logger.log({ ruleId: rule.id, actor: actor.id }, 'EMAIL test alert (no SMTP transport configured yet)');
-        triggered = true;
+        channels.push(await this.sendTestEmail(rule, actor, body));
       } else if (channel === 'WEBHOOK') {
-        await this.webhooks.notify('alert.test', { ruleId: rule.id, ruleName: rule.name, title, body });
-        triggered = true;
+        if (!(await this.isOrgChannelEnabled('WEBHOOK'))) {
+          channels.push({ channel, status: 'SUPPRESSED', reason: 'CHANNEL_DISABLED' });
+          continue;
+        }
+        const delivery = await this.webhooks.notify('alert.test', { ruleId: rule.id, ruleName: rule.name, title, body });
+        channels.push(delivery ? { channel, status: 'QUEUED' } : { channel, status: 'FAILED', reason: 'NO_WEBHOOK_CONFIGURED' });
       }
     }
-    return { triggered };
+    return { triggered: channels.some((c) => c.status === 'SENT' || c.status === 'QUEUED'), channels };
+  }
+
+  /**
+   * EMAIL test — real SMTP via `TRANSACTIONAL_MAIL`, same subject/body layout as
+   * `AlertProcessor.sendEmail`, prefixed `[TEST]`, addressed to the acting user/driver.
+   */
+  private async sendTestEmail(
+    rule: { id: string; name: string; severity: string },
+    actor: ContextUser,
+    body: string,
+  ): Promise<AlertRuleTestChannelResult> {
+    if (!(await this.isOrgChannelEnabled('EMAIL'))) {
+      return { channel: 'EMAIL', status: 'SUPPRESSED', reason: 'CHANNEL_DISABLED' };
+    }
+    const to = actor.type === 'api-key' ? null : await this.notifications.findLiveEmail(actor.type, actor.id);
+    if (!to) return { channel: 'EMAIL', status: 'FAILED', reason: 'NO_EMAIL_ADDRESS' };
+    const result = await this.mail.send({
+      to,
+      subject: `[TEST] OneBook ELD ${rule.severity.toLowerCase()} alert: ${rule.name}`.slice(0, 200),
+      text: [body, '', `Severity: ${rule.severity}`, `Rule: ${rule.name}`].join('\n'),
+    });
+    if (!result.delivered) {
+      this.logger.warn({ ruleId: rule.id, actor: actor.id, reason: result.reference }, 'EMAIL test alert was not delivered');
+      return { channel: 'EMAIL', status: 'FAILED', reason: result.reference };
+    }
+    return { channel: 'EMAIL', status: 'SENT' };
+  }
+
+  /** TZ §20 B-87 — same org-level gate `AlertProcessor.isOrgChannelEnabled` applies live. */
+  private async isOrgChannelEnabled(channel: 'EMAIL' | 'WEBHOOK'): Promise<boolean> {
+    const org = await this.orgChannels.get();
+    return channel === 'EMAIL' ? org.email.enabled : org.webhook.enabled;
   }
 }

@@ -1,4 +1,4 @@
-import { Inject, Injectable, Optional } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { DateTime } from 'luxon';
 import type { Prisma, Vehicle } from '@prisma/client';
 import { AppException } from '../../common/errors/app.exception';
@@ -11,7 +11,7 @@ import { PushService } from '../../core/firebase/push.service';
 import { EventBusService } from '../../core/events/event-bus.service';
 import { publishNotificationNew, publishVehicleAssigned, publishVehicleUnassigned } from './vehicle-assignment-events';
 import { NotificationsRepository } from '../notifications/notifications.repository';
-import { MAIL_PORT, MailPort } from '../transfers/mail.port';
+import { TRANSACTIONAL_MAIL, TransactionalMailPort } from '../../core/mail/mail.port';
 import { UsersRepository } from '../users/users.repository';
 import { buildVehicleHistories, HistoryPoint, VehicleHistoriesResponse } from './lib/vehicle-histories';
 import {
@@ -120,6 +120,8 @@ export interface BulkStatusResult {
  */
 @Injectable()
 export class VehiclesService {
+  private readonly logger = new Logger(VehiclesService.name);
+
   constructor(
     private readonly vehicles: VehiclesRepository,
     private readonly drivers: DriversRepository,
@@ -127,7 +129,8 @@ export class VehiclesService {
     private readonly carrier: CarrierRepository,
     private readonly users: UsersRepository,
     private readonly push: PushService,
-    @Inject(MAIL_PORT) private readonly mail: MailPort,
+    /** Real SMTP (`MailModule`, `@Global()`) — not the eRODS logging-only `MAIL_PORT`. */
+    @Inject(TRANSACTIONAL_MAIL) private readonly mail: TransactionalMailPort,
     @Optional() private readonly events?: EventBusService,
   ) {}
 
@@ -613,14 +616,17 @@ export class VehiclesService {
   private async emailImportSummary(actorUserId: string, summary: ImportSummary): Promise<void> {
     const user = await this.users.findById({ id: actorUserId });
     if (!user?.email) return;
-    // Reuses the same `MAIL_PORT`-backed transport as reports/eRODS (TZ §10.4) — Phase 1's
-    // default provider logs and does not deliver; see `mail.port.ts`.
-    await this.mail.send({
+    // Real SMTP (`TRANSACTIONAL_MAIL`). The transport never throws — an undelivered summary
+    // (no SMTP_HOST in dev/CI, or an SMTP rejection) is logged and must not fail an import
+    // whose rows were already written.
+    const result = await this.mail.send({
       to: user.email,
       subject: 'Vehicle import summary',
       text: `Imported ${summary.imported}, updated ${summary.updated}, skipped ${summary.skipped ?? 0}, failed ${summary.failed.length}.`,
-      attachments: [],
     });
+    if (!result.delivered) {
+      this.logger.warn({ actorUserId, reference: result.reference }, 'Vehicle import summary email was not delivered');
+    }
   }
 
   private toCreateInput(dto: CreateVehicleDto): Prisma.VehicleCreateInput {

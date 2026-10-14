@@ -89,8 +89,22 @@ export class AlertRulesController {
   // throttled per principal and audited so it cannot be used as a spam/amplification pump.
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Audit({ object: 'AlertRule', action: 'TEST' })
-  @ApiOperation({ summary: "Sends a test notification through the rule's own channels to the caller. A disabled rule triggers nothing." })
-  @ApiOkResponse({ schema: { example: { triggered: true } } })
+  @ApiOperation({ summary: "Sends a test notification through the rule's own channels to the caller (EMAIL goes to the caller's own address). A disabled rule triggers nothing." })
+  @ApiOkResponse({
+    description:
+      '`triggered` = at least one channel sent/queued. `channels[]` is the per-channel outcome: ' +
+      'status SENT | QUEUED | FAILED | SUPPRESSED, with `reason` (NO_EMAIL_ADDRESS, NO_MAIL_TRANSPORT, ' +
+      'SMTP_SEND_FAILED, NO_WEBHOOK_CONFIGURED, CHANNEL_DISABLED) when not delivered.',
+    schema: {
+      example: {
+        triggered: true,
+        channels: [
+          { channel: 'IN_APP', status: 'SENT' },
+          { channel: 'EMAIL', status: 'FAILED', reason: 'NO_MAIL_TRANSPORT' },
+        ],
+      },
+    },
+  })
   @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.NOT_FOUND, 'Alert rule not found.')] })
   test(@Param('id') id: string, @CurrentUser() actor: ContextUser) {
     return this.alertRules.testRule(id, actor);

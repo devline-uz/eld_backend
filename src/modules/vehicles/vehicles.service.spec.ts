@@ -3,7 +3,7 @@ import type { PushService } from '../../core/firebase/push.service';
 import type { CarrierRepository } from '../carrier/carrier.repository';
 import { DriversRepository } from '../drivers/drivers.repository';
 import type { NotificationsRepository } from '../notifications/notifications.repository';
-import type { MailPort } from '../transfers/mail.port';
+import type { TransactionalMailPort } from '../../core/mail/mail.port';
 import type { UsersRepository } from '../users/users.repository';
 import { EldSerialTakenError, VehiclesRepository } from './vehicles.repository';
 import { VehiclesService } from './vehicles.service';
@@ -68,7 +68,7 @@ describe('VehiclesService', () => {
   let notifications: jest.Mocked<Pick<NotificationsRepository, 'create'>>;
   let carrier: jest.Mocked<Pick<CarrierRepository, 'get'>>;
   let users: jest.Mocked<Pick<UsersRepository, 'findById'>>;
-  let mail: jest.Mocked<MailPort>;
+  let mail: jest.Mocked<TransactionalMailPort>;
   let push: jest.Mocked<Pick<PushService, 'sendToDriver'>>;
   let events: { publish: jest.Mock<Promise<void>, [string, { room: string; event: string; payload: unknown }]> };
   let service: VehiclesService;
@@ -107,7 +107,7 @@ describe('VehiclesService', () => {
     notifications = { create: jest.fn().mockResolvedValue({ id: 'ntf_0' }) };
     carrier = { get: jest.fn().mockResolvedValue({ timezone: 'America/New_York' }) };
     users = { findById: jest.fn() };
-    mail = { send: jest.fn().mockResolvedValue({ delivered: false, reference: 'not-configured' }) };
+    mail = { send: jest.fn().mockResolvedValue({ delivered: false, reference: 'NO_MAIL_TRANSPORT' }) };
     push = { sendToDriver: jest.fn().mockResolvedValue(undefined) };
     events = { publish: jest.fn<Promise<void>, [string, { room: string; event: string; payload: unknown }]>().mockResolvedValue(undefined) };
     service = new VehiclesService(
@@ -920,6 +920,41 @@ describe('VehiclesService', () => {
       );
 
       expect(mail.send).toHaveBeenCalledTimes(1);
+      expect(mail.send).toHaveBeenCalledWith({
+        to: 'dispatch@example.com',
+        subject: 'Vehicle import summary',
+        text: 'Imported 1, updated 0, skipped 0, failed 0.',
+      });
+    });
+
+    it('B-69 emailSummary — an undelivered summary (SMTP failure) never fails the import', async () => {
+      vehiclesRepo.findByUnitNumber.mockResolvedValue(null);
+      vehiclesRepo.findByVin.mockResolvedValue(null);
+      vehiclesRepo.create.mockResolvedValue(makeVehicle() as never);
+      users.findById.mockResolvedValue({ email: 'dispatch@example.com' } as never);
+      mail.send.mockResolvedValue({ delivered: false, reference: 'SMTP_SEND_FAILED' });
+
+      const summary = await service.importMany(
+        { vehicles: [{ unitNumber: '#101', vin: 'VIN-A', fuelType: 'DIESEL', sleeperBerth: false, odometerMi: 0 }], options: { duplicateStrategy: 'UPDATE_BY_VIN', pairDevices: false, emailSummary: true } },
+        'usr_1',
+      );
+
+      expect(summary).toEqual({ imported: 1, updated: 0, skipped: 0, failed: [] });
+      expect(mail.send).toHaveBeenCalledTimes(1);
+    });
+
+    it('B-69 emailSummary sends nothing when the caller has no email', async () => {
+      vehiclesRepo.findByUnitNumber.mockResolvedValue(null);
+      vehiclesRepo.findByVin.mockResolvedValue(null);
+      vehiclesRepo.create.mockResolvedValue(makeVehicle() as never);
+      users.findById.mockResolvedValue(null);
+
+      await service.importMany(
+        { vehicles: [{ unitNumber: '#101', vin: 'VIN-A', fuelType: 'DIESEL', sleeperBerth: false, odometerMi: 0 }], options: { duplicateStrategy: 'UPDATE_BY_VIN', pairDevices: false, emailSummary: true } },
+        'usr_1',
+      );
+
+      expect(mail.send).not.toHaveBeenCalled();
     });
   });
 
