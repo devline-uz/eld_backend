@@ -94,6 +94,7 @@ export const FIGMA_UNMAPPED_ROUTES: Record<string, string> = {
   'GET /health/ready': 'Readiness probe — infrastructure endpoint, no UI.',
   'GET /health/deep': 'Deep dependency probe — infrastructure endpoint, no UI.',
   'GET /metrics': 'Prometheus scrape endpoint — infrastructure, no UI.',
+  'POST /api/client-errors': 'D-158 — admin web / driver app client error intake; background reporting, no UI.',
   // App→server sync, no designed screen (the mobile/tablet Figma exports are missing).
   'POST /api/ingest/events': 'Driver app → server §395 event upload (TZ §7.1). Background sync, no screen of its own.',
   'POST /api/ingest/telemetry': 'Driver app → server Virtual Dashboard points (TZ §7.5). Background sync, no screen.',

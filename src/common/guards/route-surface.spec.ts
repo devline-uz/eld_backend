@@ -47,6 +47,9 @@ const PUBLIC_ROUTES = new Set([
   // static config only, no tenant data, throttled 60/min.
   'GET /mobile/app-config',
   'GET /mobile/legal/:kind',
+  // D-158 — client error intake must work before login (and with an expired token); stores nothing,
+  // only forwards scrubbed text to the ops error bot; 32 KB body cap, throttled 30/min/IP.
+  'POST /client-errors',
   'GET /health/live',
   'GET /health/ready',
   'GET /health/deep',

@@ -35,6 +35,8 @@ export function configureApp(app: INestApplication): AppConfigService {
   // Web panel — `POST /vehicles/import` takes up to 2,000 rows (~1 KB worst case each), which can
   // exceed 1 MB; a verified back-office USER token gets a 4 MB parser on this one route only.
   app.use(`/${config.get('API_PREFIX')}/vehicles/import`, panelUserLargeJson(resolveTokenVerifier(app), '4mb'));
+  // D-158 — public client error intake: capped at 32 KB (oversize -> 413 PAYLOAD_TOO_LARGE).
+  app.use(`/${config.get('API_PREFIX')}/client-errors`, json({ limit: '32kb' }));
   app.use(json({ limit: '1mb' }));
   app.enableCors({
     origin: config.corsOrigins,

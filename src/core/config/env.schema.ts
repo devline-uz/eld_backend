@@ -210,6 +210,10 @@ const baseEnvSchema = z.object({
   /** TZ §22.5 — separate Sentry projects for dev and prod; defaults to NODE_ENV when unset. */
   SENTRY_ENVIRONMENT: z.string().optional(),
   METRICS_ENABLED: bool('true'),
+  /** D-158 — local Telegram error bot that `POST /client-errors` forwards to (fire-and-forget). */
+  ERROR_REPORT_URL: z.string().url().default('http://127.0.0.1:8790/report'),
+  /** D-158 — sent as `X-Report-Secret`. Unset/empty = client error reports are accepted and dropped. */
+  ERROR_REPORT_SECRET: z.string().optional(),
   /** Worker container has no HTTP stack of its own (§3.3) — this is its own health/metrics
    * listener, separate from the API's PORT, so both containers can be probed independently. */
   WORKER_HEALTH_PORT: z.coerce.number().int().positive().default(3002),

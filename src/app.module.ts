@@ -60,6 +60,7 @@ import { ReportsModule } from './modules/reports/reports.module';
 import { LiveFleetModule } from './modules/live/live-fleet.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { AttachmentsModule } from './modules/attachments/attachments.module';
+import { ClientErrorsModule } from './modules/client-errors/client-errors.module';
 
 /**
  * Module tree per TZ §3.4. Feature modules are added by their owning phase.
@@ -148,6 +149,8 @@ import { AttachmentsModule } from './modules/attachments/attachments.module';
     // the report scheduler (`ReportSchedule` cron rows) and S3-backed download. Owned by
     // eld-reports-jobs.
     ReportsModule,
+    // D-158 — public `POST /client-errors` intake (admin web + driver app) -> local error bot.
+    ClientErrorsModule,
     // TZ §6.5 — two buckets, both defined in `common/throttler/throttler.options.ts`:
     // `default` = 600/min/IP (`AuthController` narrows the login family to 5/min/IP,
     // `IngestController` widens itself to 400/s for the §19 targets) and `ingest` =
