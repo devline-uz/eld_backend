@@ -87,9 +87,9 @@ export class AuthController {
   // of opaque refresh tokens (TZ §6.5).
   @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Post('refresh')
-  @ApiOperation({ summary: 'Rotates a refresh token (TZ §6.5 — rotated on every use).' })
+  @ApiOperation({ summary: 'Rotates a refresh token (TZ §6.5 — rotated on every use).', description: 'MG-32 — replaying a just-rotated token within REFRESH_REUSE_GRACE_SECONDS (default 60) returns the SAME successor pair (201). Later replay of a rotated token = 401 REFRESH_TOKEN_REUSED and only that token family is revoked; other devices stay signed in. A token revoked by logout/admin/password reset = 401 TOKEN_INVALID.' })
   @ApiEnvelopeResponse(TokenPairResponse, { status: 201, example: { accessToken: 'eyJ...', refreshToken: 'a1b2...', tokenType: 'Bearer' } })
-  @ApiStandardErrors({ public: true, errors: [{ status: 401, code: ERROR_CODES.REFRESH_TOKEN_REUSED, message: 'This refresh token was already rotated — the whole session family is revoked (TZ §6.5).' }, apiError.rateLimited('Refresh is limited to 30 requests per minute per IP.')] })
+  @ApiStandardErrors({ public: true, errors: [{ status: 401, code: ERROR_CODES.REFRESH_TOKEN_REUSED, message: 'This refresh token was already rotated (outside the grace window) — its session family is revoked; other sessions are untouched (TZ §6.5, MG-32).' }, apiError.rateLimited('Refresh is limited to 30 requests per minute per IP.')] })
   refresh(@Body(zodBody(RefreshTokenDto)) dto: RefreshTokenDto, @Req() req: Request) {
     return this.auth.refresh(dto.refreshToken, dto.subjectType, AuthService.meta(req));
   }

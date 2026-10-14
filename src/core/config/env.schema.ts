@@ -51,6 +51,9 @@ export const envSchema = z.object({
   /** Driver (mobile) tokens — TZ §6.1: access 24h / refresh 90 days. */
   JWT_DRIVER_ACCESS_TTL: z.string().default('24h'),
   JWT_DRIVER_REFRESH_TTL: z.string().default('90d'),
+  /** MG-32 — seconds during which a just-rotated refresh token replayed (lost response, double
+   * tap) is answered with the SAME successor pair instead of counting as reuse. 0 disables. */
+  REFRESH_REUSE_GRACE_SECONDS: z.coerce.number().int().min(0).max(300).default(60),
   /** Short-lived token for the `/auth/password/reset` flow. */
   JWT_PASSWORD_RESET_TTL: z.string().default('30m'),
   /** Driver email change — how long the confirm link mailed to the NEW address stays valid. */

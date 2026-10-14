@@ -118,7 +118,7 @@ describe('Auth / Roles / Users / Audit / API keys (e2e)', () => {
       expect(res.body.data.refreshToken).toEqual(expect.any(String));
     });
 
-    it('rotates the refresh token on use, and rejects reuse of the old one (REFRESH_TOKEN_REUSED)', async () => {
+    it('rotates the refresh token on use; an immediate replay inside the grace window returns the SAME pair (MG-32); reuse after the window is unit-tested', async () => {
       const login = await request(server()).post('/api/auth/login/driver').send({ username: 'johnsmith', password: 'Onebook2026' });
       const first = login.body.data.refreshToken as string;
 
@@ -128,11 +128,12 @@ describe('Auth / Roles / Users / Audit / API keys (e2e)', () => {
       expect(rotated.status).toBe(201);
       expect(rotated.body.data.refreshToken).not.toBe(first);
 
-      const reused = await request(server())
+      const replay = await request(server())
         .post('/api/auth/refresh')
         .send({ refreshToken: first, subjectType: 'driver' });
-      expect(reused.status).toBe(401);
-      expect(reused.body.code).toBe('REFRESH_TOKEN_REUSED');
+      expect(replay.status).toBe(201);
+      expect(replay.body.data.refreshToken).toBe(rotated.body.data.refreshToken);
+      expect(replay.body.data.accessToken).toBe(rotated.body.data.accessToken);
     });
 
     it('a driver token cannot be used against a back-office endpoint requiring `users` permission', async () => {
