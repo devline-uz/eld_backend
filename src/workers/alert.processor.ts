@@ -57,7 +57,7 @@ export class AlertProcessor extends WorkerHost {
   async process(job: Job<Record<string, unknown>>): Promise<void> {
     const eventName = job.name;
     const payload = job.data ?? {};
-    const matchingRules = await this.rules.findByEvent(eventName);
+    const matchingRules = await this.rules.findByEvent(eventName, payload);
     if (!matchingRules.length) return;
 
     for (const rule of matchingRules) {
@@ -119,6 +119,12 @@ export class AlertProcessor extends WorkerHost {
     const channels = (carrier?.notificationChannels ?? {}) as OrgNotificationChannels;
     const entry = channel === 'EMAIL' ? channels.email : channels.webhook;
     return entry?.enabled !== false;
+  }
+
+  private async orgWebhookUrl(): Promise<string | undefined> {
+    const carrier = await this.prisma.carrier.findFirst({ select: { notificationChannels: true } });
+    const url = ((carrier?.notificationChannels ?? {}) as OrgNotificationChannels).webhook?.url;
+    return typeof url === 'string' && url.trim().length > 0 ? url.trim() : undefined;
   }
 
   private async deliverToRecipient(
@@ -242,7 +248,10 @@ export class AlertProcessor extends WorkerHost {
       return;
     }
     if (channel === 'WEBHOOK') {
-      await this.webhooks.notify('alert', { recipient, ...payload });
+      // CODE-084 — the org-level webhook URL from Settings › Notifications used to be stored but
+      // never read; when set it is the alert endpoint, otherwise the `webhook` integration's URL.
+      const url = await this.orgWebhookUrl();
+      await this.webhooks.notify('alert', { recipient, ...payload }, url ? { url } : {});
       return;
     }
   }

@@ -1,5 +1,5 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
-import { Inject, Logger } from '@nestjs/common';
+import { Inject, Logger, type OnApplicationShutdown } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import type { Job } from 'bullmq';
 import { DateTime } from 'luxon';
@@ -8,6 +8,7 @@ import { QUEUES } from '../core/queue/queue.constants';
 import { STORAGE_PORT, StoragePort } from '../core/storage/storage.port';
 import { EventBusService } from '../core/events/event-bus.service';
 import { ActivityReportGenerator } from '../modules/reports/generators/activity-report.generator';
+import { closeSharedBrowser } from '../modules/reports/lib/pdf-render';
 import { DvirReportGenerator } from '../modules/reports/generators/dvir-report.generator';
 import { FmcsaPackGenerator } from '../modules/reports/generators/fmcsa-pack.generator';
 import { IdleFuelReportGenerator } from '../modules/reports/generators/idle-fuel-report.generator';
@@ -32,7 +33,7 @@ import { ScheduledReportMailer } from '../modules/reports/scheduled-report-maile
  * enqueues.
  */
 @Processor(QUEUES.REPORT, { concurrency: 2 })
-export class ReportProcessor extends WorkerHost {
+export class ReportProcessor extends WorkerHost implements OnApplicationShutdown {
   private readonly logger = new Logger(ReportProcessor.name);
 
   constructor(
@@ -48,6 +49,11 @@ export class ReportProcessor extends WorkerHost {
     private readonly scheduledMailer: ScheduledReportMailer,
   ) {
     super();
+  }
+
+  /** CODE-089 — the shared PDF Chrome must not keep a stopping worker alive. */
+  async onApplicationShutdown(): Promise<void> {
+    await closeSharedBrowser();
   }
 
   async process(job: Job<ReportJobData>): Promise<void> {

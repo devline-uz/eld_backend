@@ -31,6 +31,8 @@ function makeUser(overrides: Partial<User> = {}): User {
     roleId: 'role_1',
     status: 'ACTIVE',
     lastActiveAt: null,
+    failedLoginCount: 0,
+    lockedUntil: null,
     invitedById: null,
     invitedAt: null,
     createdAt: new Date('2026-01-01T00:00:00Z'),

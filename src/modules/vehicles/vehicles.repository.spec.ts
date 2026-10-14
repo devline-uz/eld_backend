@@ -56,7 +56,11 @@ describe('VehiclesRepository', () => {
     expect(where.status).toBe('ACTIVE');
     expect(where.deletedAt).toBeNull();
     expect(where.OR).toEqual(
-      expect.arrayContaining([{ unitNumber: { contains: 'ford', mode: 'insensitive' } }]),
+      expect.arrayContaining([
+        { unitNumber: { contains: 'ford', mode: 'insensitive' } },
+        // LIVE-022 — the ELD serial shown in the list is searchable.
+        { device: { serial: { contains: 'ford', mode: 'insensitive' } } },
+      ]),
     );
     expect(result).toEqual({ items: [{ id: 'v1' }], total: 1 });
   });

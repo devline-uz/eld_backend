@@ -53,6 +53,37 @@ describe('MaintenanceSchedulesService (TZ §5.10)', () => {
     expect(repo.create).toHaveBeenCalledWith(expect.objectContaining({ nextDueMi: 1015000 }));
   });
 
+  it('QA CODE-037 — without a last service, create counts from the current odometer and today', async () => {
+    vehicles.findById.mockResolvedValue({ id: 'veh_1', odometerMi: 120000 } as never);
+    repo.create.mockImplementation((data) => Promise.resolve({ id: 'ms_1', ...data } as never));
+    const before = Date.now();
+
+    await service.create({ vehicleId: 'veh_1', name: 'PM-A', intervalMi: 25000, intervalDays: 90, enabled: true });
+
+    const data = repo.create.mock.calls[0][0] as { nextDueMi: number; nextDueAt: Date; lastServiceMi: null };
+    expect(data.lastServiceMi).toBeNull();
+    expect(data.nextDueMi).toBe(145000);
+    expect(data.nextDueAt.getTime()).toBeGreaterThanOrEqual(before + 89 * 24 * 3600_000);
+  });
+
+  it('QA CODE-037 — a stored schedule with no service is reported from its creation baseline, not 0 mi / 1970', async () => {
+    repo.findById.mockResolvedValue({
+      id: 'ms_1',
+      vehicleId: 'veh_1',
+      intervalMi: 25000,
+      intervalDays: null,
+      lastServiceMi: null,
+      lastServiceAt: null,
+      nextDueMi: 145000,
+      nextDueAt: null,
+    } as never);
+    vehicles.findById.mockResolvedValue({ id: 'veh_1', odometerMi: 130000 } as never);
+
+    const result = await service.get('ms_1');
+
+    expect(result.due).toMatchObject({ state: 'OK', nextDueMi: 145000, milesRemaining: 15000 });
+  });
+
   it('complete() resets lastServiceMi/nextDueMi from the current odometer', async () => {
     const schedule = makeSchedule();
     repo.findById.mockResolvedValue(schedule as never);
@@ -72,6 +103,58 @@ describe('MaintenanceSchedulesService (TZ §5.10)', () => {
     repo.update.mockImplementation((_where, data) => Promise.resolve({ ...schedule, ...data } as never));
     await service.complete('ms_1', {});
     expect(repo.update).toHaveBeenCalledWith({ id: 'ms_1' }, expect.objectContaining({ status: 'COMPLETED' }));
+  });
+
+  describe('CODE-071 — schedule rules', () => {
+    it('refuses to clear both intervals on update', async () => {
+      repo.findById.mockResolvedValue(makeSchedule({ intervalDays: null }) as never);
+      vehicles.findById.mockResolvedValue({ id: 'veh_1', odometerMi: 1000000 } as never);
+      await expect(service.update('ms_1', { intervalMi: null })).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+      expect(repo.update).not.toHaveBeenCalled();
+    });
+
+    it('allows clearing one interval while the other stays', async () => {
+      const schedule = makeSchedule({ intervalDays: 90 });
+      repo.findById.mockResolvedValue(schedule as never);
+      vehicles.findById.mockResolvedValue({ id: 'veh_1', odometerMi: 1000000 } as never);
+      repo.update.mockImplementation((_where, data) => Promise.resolve({ ...schedule, ...data } as never));
+      await service.update('ms_1', { intervalMi: null });
+      expect(repo.update).toHaveBeenCalledWith({ id: 'ms_1' }, expect.objectContaining({ intervalMi: null, intervalDays: 90 }));
+    });
+
+    it('refuses to complete a CANCELLED schedule (409)', async () => {
+      repo.findById.mockResolvedValue(makeSchedule({ status: 'CANCELLED' }) as never);
+      vehicles.findById.mockResolvedValue({ id: 'veh_1', odometerMi: 1015200 } as never);
+      await expect(service.complete('ms_1', {})).rejects.toMatchObject({ code: 'CONFLICT' });
+    });
+
+    it('refuses a service odometer behind the previous service', async () => {
+      repo.findById.mockResolvedValue(makeSchedule() as never);
+      vehicles.findById.mockResolvedValue({ id: 'veh_1', odometerMi: 1015200 } as never);
+      await expect(service.complete('ms_1', { serviceOdometerMi: 500 })).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+    });
+
+    it('refuses a service odometer ahead of the unit odometer (LIVE-028)', async () => {
+      vehicles.findById.mockResolvedValue({ id: 'veh_1', odometerMi: 50733 } as never);
+      await expect(
+        service.create({ vehicleId: 'veh_1', name: 'Brakes', intervalMi: 12000, lastServiceMi: 900000, enabled: true }),
+      ).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+    });
+
+    it('CODE-077 — null clears the recorded last service', async () => {
+      const schedule = makeSchedule({ lastServiceAt: new Date('2026-01-01T00:00:00Z') });
+      repo.findById.mockResolvedValue(schedule as never);
+      vehicles.findById.mockResolvedValue({ id: 'veh_1', odometerMi: 1000000 } as never);
+      repo.update.mockImplementation((_where, data) => Promise.resolve({ ...schedule, ...data } as never));
+      await service.update('ms_1', { lastServiceMi: null, lastServiceAt: null });
+      expect(repo.update).toHaveBeenCalledWith({ id: 'ms_1' }, expect.objectContaining({ lastServiceMi: null, lastServiceAt: null }));
+    });
+
+    it('dueOnly honours enabled=false', async () => {
+      repo.listEnabledWithVehicle.mockResolvedValue([]);
+      await service.list({ dueOnly: true, enabled: false, page: 1, limit: 25 });
+      expect(repo.listEnabledWithVehicle).toHaveBeenCalledWith(false);
+    });
   });
 
   describe('update() — review of a driver submission (M-40)', () => {

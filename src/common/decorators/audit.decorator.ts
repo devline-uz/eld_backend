@@ -9,6 +9,9 @@ export interface AuditOptions {
   action: string;
   /** Route param that holds the object id; defaults to 'id'. */
   idParam?: string;
+  /** Top-level field of the handler's result that holds the new object's id when there is no
+   * route id and the result is not the entity itself (e.g. `{ reportId, status }`). */
+  resultIdField?: string;
 }
 
 /** TZ §18 — `@Audit({ object: 'Driver', action: 'UPDATE' })`. */

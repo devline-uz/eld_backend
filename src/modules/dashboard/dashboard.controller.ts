@@ -19,7 +19,8 @@ import { DashboardService } from './dashboard.service';
  *   // onDuty / driverDuty: assigned drivers by their HOS status (same definition as the Drivers list);
  *   // offline: units whose paired ELD has been silent > 30 min (connectivity ELD_OFFLINE).
  *   violations: { items: Violation[], total: number },   // status=OPEN (any day), same shape as GET /violations
- *   unidentified: { total: number, totalDurationSec: number }, // status=PENDING
+ *   unidentified: { total: number, totalDurationSec: number,      // status=PENDING
+ *                   awaitingDriver: number, awaitingDriverDurationSec: number }, // PENDING_CONFIRMATION
  *   notifications: { unreadCount: number },               // caller's own inbox
  *   carrier: { id: string, name: string, timezone: string | null },
  *   vehicles: { active: number, total: number, inactive: number, outOfService: number },
@@ -46,7 +47,7 @@ export class DashboardController {
       example: {
         liveFleet: { items: [{ vehicleId: 'veh_1', unitNumber: '101', dutyStatus: 'DRIVING', driverDutyStatus: 'DRIVING', recordStatus: 'ACTIVE', connectivity: 'ONLINE', isStale: false, staleSince: null }], generatedAt: '2026-09-16T15:39:10.000Z', counts: { total: 42, onDuty: 30, moving: 18, idle: 5, offline: 2, driverDuty: { assigned: 36, DRIVING: 18, ON_DUTY: 10, SLEEPER: 2, OFF_DUTY: 6, UNKNOWN: 0 } } },
         violations: { items: [{ id: 'vio_1', type: 'DRIVING_11', driverName: 'John Smith', unitNumber: '101' }], total: 3 },
-        unidentified: { total: 2, totalDurationSec: 3600 },
+        unidentified: { total: 2, totalDurationSec: 3600, awaitingDriver: 1, awaitingDriverDurationSec: 900 },
         notifications: { unreadCount: 4 },
         carrier: { id: 'carrier', name: 'Universal Logistics Inc.', timezone: 'America/New_York' },
         vehicles: { active: 40, total: 45, inactive: 3, outOfService: 2 },

@@ -1,4 +1,7 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
+import { AUDIT_EVENT, type AuditEventPayload } from '../../common/interceptors/audit.interceptor';
+import { RequestContext } from '../../core/context/request-context';
+import { EventBusService } from '../../core/events/event-bus.service';
 import type { Prisma } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
 import { AppException } from '../../common/errors/app.exception';
@@ -8,6 +11,7 @@ import { TRANSACTIONAL_MAIL, TransactionalMailPort } from '../../core/mail/mail.
 import { STORAGE_PORT, StoragePort } from '../../core/storage/storage.port';
 import { AttachmentsService } from '../attachments/attachments.service';
 import { AuthService, INVITE_TTL_MS } from '../auth/auth.service';
+import { PrincipalStateService } from '../auth/principal-state.service';
 import {
   assertWithinCeiling,
   CeilingActor,
@@ -46,12 +50,15 @@ function assertSuperAdmin(actor: Actor | undefined): void {
 
 export type { UserEmailVerificationView } from './user-email-change.service';
 
-export type UserView = Omit<UserWithRole, 'passwordHash'> & { avatarUrl?: string | null };
+/** Fields that never leave this module: the password hash (TZ §6.5), the Google account id the
+ * user is bound to and the lockout bookkeeping (CODE-087 / CODE-082) — the UI only needs to know
+ * whether a Google account is linked. */
+type HiddenUserField = 'passwordHash' | 'googleUid' | 'failedLoginCount' | 'lockedUntil';
+export type UserView = Omit<UserWithRole, HiddenUserField> & { googleLinked: boolean; avatarUrl?: string | null };
 
-/** Never let a password hash leave this module (TZ §6.5). */
-function toView(user: UserWithRole): Omit<UserWithRole, 'passwordHash'> {
-  const { passwordHash: _p, ...view } = user;
-  return view;
+function toView(user: UserWithRole): Omit<UserView, 'avatarUrl'> {
+  const { passwordHash: _p, googleUid, failedLoginCount: _f, lockedUntil: _l, ...view } = user;
+  return { ...view, googleLinked: Boolean(googleUid) };
 }
 
 /** B-51 accepts PNG/JPG; a generous 5 MB cap keeps a "photo" upload from becoming a DoS vector. */
@@ -86,6 +93,8 @@ export class UsersService {
     @Inject(TRANSACTIONAL_MAIL) private readonly mail: TransactionalMailPort,
     private readonly config: AppConfigService,
     private readonly emailChange: UserEmailChangeService,
+    private readonly principals: PrincipalStateService,
+    @Optional() private readonly events?: EventBusService,
   ) {}
 
   /** W-18 Users table — trimmed payload (TZ perf plan item 2): no `passwordHash`, no
@@ -196,9 +205,10 @@ export class UsersService {
   }
 
   /**
-   * `@Audit` on the controller picks `ROLE_CHANGE` vs `UPDATE` — this method just applies
-   * the diff; role-immutability (ADMIN `isSystem`) is a *role* rule (`RolesService`), not a
-   * *user* rule. CODE-002: a non-SUPER_ADMIN may only assign a role within their own levels.
+   * `@Audit` on the controller records the field diff as `UPDATE`; a role change additionally
+   * gets its own `ROLE_CHANGE` row from here (CODE-083). Role-immutability (ADMIN `isSystem`) is a
+   * *role* rule (`RolesService`), not a *user* rule. CODE-002: a non-SUPER_ADMIN may only assign a
+   * role within their own levels.
    */
   /**
    * B-84 — `email` is never written here: a changed address (trim + lower-case, compared
@@ -232,6 +242,13 @@ export class UsersService {
         assertWithinCeiling(levelsOf(nextRole.permissions), ceiling, 'You cannot assign a role with permissions above your own');
       }
     }
+    // CODE-087 — an invite is accepted only by its owner's first Google sign-in (`AuthService.loginGoogle`);
+    // flipping it to ACTIVE here would create a usable account nobody ever claimed. That includes an
+    // invite that was disabled and is now "enabled" again: never signed in, no password, no Google link.
+    const neverAccepted = !current.passwordHash && !current.googleUid && !current.lastActiveAt;
+    if (dto.status === 'ACTIVE' && current.status !== 'ACTIVE' && (current.status === 'INVITED' || neverAccepted)) {
+      throw AppException.conflict('This invitation has not been accepted yet. The user becomes active on their first sign-in.');
+    }
     // Never leave the system without an active SUPER_ADMIN (nor without any active administrator):
     // the server enforces it so a stale tab or a direct call can't lock every user out of Settings.
     const losesStatus = dto.status !== undefined && dto.status !== 'ACTIVE';
@@ -260,6 +277,16 @@ export class UsersService {
         ...(newEmail ? this.emailChange.pendingInput(newEmail, actor.id, new Date()) : {}),
       },
     );
+    // CODE-012 — access must end/shrink now, not when the 15-minute access token expires.
+    const statusChanged = dto.status !== undefined && dto.status !== current.status;
+    const roleChanged = dto.roleId !== undefined && dto.roleId !== current.role.id;
+    if (statusChanged && dto.status !== 'ACTIVE') await this.auth.revokeAllUserSessions(id);
+    if (statusChanged || roleChanged) await this.principals.invalidateUser(id);
+    // CODE-083 — a role change is a privilege change: its own audit row (the route's generic
+    // `UPDATE` row still records the field diff), naming the old and new role.
+    if (roleChanged && nextRole) {
+      this.auditRoleChange(id, actor, { roleId: current.role.id, roleKey: current.role.key }, { roleId: dto.roleId, roleKey: nextRoleKey });
+    }
     const emailVerification = newEmail ? await this.emailChange.notifyRequested(updated, current) : undefined;
     const view = await this.get(id);
     return emailVerification ? { ...view, emailVerification } : view;
@@ -311,7 +338,21 @@ export class UsersService {
       this.assertCanManage(current, ceiling);
     }
     await this.assertNotLastAdmin(current, null, true);
+    // CODE-014 — reports and API keys keep their author (FK RESTRICT); deleting would 500. The
+    // history must stay attributable, so the answer is 409 with the way out: disable the user.
+    const blockers = await this.users.countDeleteBlockers(id);
+    if (blockers.reports > 0 || blockers.apiKeys > 0) {
+      const parts = [
+        blockers.reports > 0 && `${blockers.reports} report(s)`,
+        blockers.apiKeys > 0 && `${blockers.apiKeys} API key(s)`,
+      ].filter(Boolean);
+      throw AppException.conflict(
+        `This user is the author of ${parts.join(' and ')} and cannot be deleted. Disable the user instead.`,
+        { reasons: blockers },
+      );
+    }
     await this.users.delete({ id });
+    await this.principals.invalidateUser(id);
   }
 
   async updateMyProfile(id: string, dto: UpdateMyProfileDto): Promise<UserView> {
@@ -319,8 +360,26 @@ export class UsersService {
     return this.get(id);
   }
 
-  isRoleChange(dto: UpdateUserDto): boolean {
-    return dto.roleId !== undefined;
+  private auditRoleChange(
+    userId: string,
+    actor: Actor,
+    before: { roleId: string; roleKey: string },
+    after: { roleId: string | undefined; roleKey: string },
+  ): void {
+    const rc = RequestContext.get();
+    const payload: AuditEventPayload = {
+      actorId: actor.id,
+      actorType: rc?.user?.type ?? 'user',
+      action: 'ROLE_CHANGE',
+      objectType: 'User',
+      objectId: userId,
+      before,
+      after,
+      ip: rc?.ip,
+      userAgent: rc?.userAgent,
+      traceId: rc?.traceId,
+    };
+    void this.events?.publish(AUDIT_EVENT, payload);
   }
 
   // ---------------------------------------------------------------------

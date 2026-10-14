@@ -51,26 +51,41 @@ describe('WorkOrdersService (TZ §5.10 — defect resolution workflow tied to a 
       expect(repo.createSynced).not.toHaveBeenCalled();
     });
 
-    it('assigns a sequential number and attaches given defects', async () => {
+    it('QA CODE-033 — numbers and attaches the given defects inside the repository transaction', async () => {
       vehicles.findById.mockResolvedValue({ id: 'veh_1' } as never);
-      repo.nextNumber.mockResolvedValue('WO-0002');
       const created = makeWorkOrder({ id: 'wo_2', number: 'WO-0002' });
       repo.createSynced.mockResolvedValue({ workOrder: created, vehicleStatus: null } as never);
-      repo.findById.mockResolvedValue(created as never); // attachDefect -> getOrThrow
-      defects.findById.mockResolvedValue({ id: 'def_1' } as never);
+      defects.findById.mockResolvedValue({ id: 'def_1', vehicleId: 'veh_1', status: 'OPEN' } as never);
 
       await service.create(
-        { vehicleId: 'veh_1', title: 'Brake service', priority: 'NORMAL', defectIds: ['def_1'], keepOutOfService: false, notifyDriver: true, blockDispatchAssignment: false },
+        { vehicleId: 'veh_1', title: 'Brake service', priority: 'NORMAL', defectIds: ['def_1', 'def_1'], keepOutOfService: false, notifyDriver: true, blockDispatchAssignment: false },
         'user_1',
       );
 
-      expect(repo.createSynced).toHaveBeenCalledWith(expect.objectContaining({ number: 'WO-0002', title: 'Brake service' }), 'veh_1');
-      expect(defects.update).toHaveBeenCalledWith({ id: 'def_1' }, { workOrder: { connect: { id: 'wo_2' } } });
+      expect(repo.createSynced).toHaveBeenCalledWith(expect.objectContaining({ title: 'Brake service' }), 'veh_1', ['def_1']);
+      expect(repo.createSynced.mock.calls[0][0]).not.toHaveProperty('number');
+      expect(defects.update).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['an unknown defect', null, 404],
+      ['a defect of another unit', { id: 'def_1', vehicleId: 'veh_2', status: 'OPEN' }, 422],
+      ['a REPAIRED defect', { id: 'def_1', vehicleId: 'veh_1', status: 'REPAIRED' }, 409],
+    ])('QA CODE-032 — refuses %s before writing anything', async (_label, defect, status) => {
+      vehicles.findById.mockResolvedValue({ id: 'veh_1' } as never);
+      defects.findById.mockResolvedValue(defect as never);
+
+      await expect(
+        service.create(
+          { vehicleId: 'veh_1', title: 'Brake service', priority: 'NORMAL', defectIds: ['def_1'], keepOutOfService: false, notifyDriver: true, blockDispatchAssignment: false },
+          'user_1',
+        ),
+      ).rejects.toMatchObject({ status });
+      expect(repo.createSynced).not.toHaveBeenCalled();
     });
 
     it('B-42 — persists estimatedLaborHours/keepOutOfService/notifyDriver/blockDispatchAssignment', async () => {
       vehicles.findById.mockResolvedValue({ id: 'veh_1' } as never);
-      repo.nextNumber.mockResolvedValue('WO-0003');
       repo.createSynced.mockResolvedValue({ workOrder: makeWorkOrder({ id: 'wo_3', number: 'WO-0003' }), vehicleStatus: 'OUT_OF_SERVICE' } as never);
 
       await service.create(
@@ -89,6 +104,7 @@ describe('WorkOrdersService (TZ §5.10 — defect resolution workflow tied to a 
       expect(repo.createSynced).toHaveBeenCalledWith(
         expect.objectContaining({ estimatedLaborHours: 3.5, keepOutOfService: true, notifyDriver: false, blockDispatchAssignment: true }),
         'veh_1',
+        [],
       );
       // The hold changed the unit's status → the change is announced.
       expect(events.publish).toHaveBeenCalledWith('vehicle.status_changed', { vehicleId: 'veh_1', status: 'OUT_OF_SERVICE', source: 'work_order' });
@@ -151,4 +167,21 @@ describe('WorkOrdersService (TZ §5.10 — defect resolution workflow tied to a 
       expect(events.publish).not.toHaveBeenCalledWith('vehicle.status_changed', expect.anything());
     });
   });
+
+  describe('attachDefect (QA CODE-032)', () => {
+    it('refuses a defect from another unit', async () => {
+      repo.findById.mockResolvedValue(makeWorkOrder() as never);
+      defects.findById.mockResolvedValue({ id: 'def_1', vehicleId: 'veh_2', status: 'OPEN' } as never);
+      await expect(service.attachDefect('wo_1', 'def_1')).rejects.toMatchObject({ status: 422 });
+      expect(defects.update).not.toHaveBeenCalled();
+    });
+
+    it('attaches an open defect of the same unit', async () => {
+      repo.findById.mockResolvedValue(makeWorkOrder() as never);
+      defects.findById.mockResolvedValue({ id: 'def_1', vehicleId: 'veh_1', status: 'OPEN' } as never);
+      await service.attachDefect('wo_1', 'def_1');
+      expect(defects.update).toHaveBeenCalledWith({ id: 'def_1' }, { workOrder: { connect: { id: 'wo_1' } } });
+    });
+  });
 });
+

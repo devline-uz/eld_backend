@@ -34,4 +34,13 @@ describe('AlertRulesRepository.findByEvent (TZ §20 B-86 — mutedUntil)', () =>
     const result = await repo.findByEvent('alert.x');
     expect(result.map((r) => r.id)).toEqual(['alr_1']);
   });
+
+  it('LIVE-027: a rule built in the web editor (`safety.harsh`) fires on the worker job `alert.harsh_event`', async () => {
+    const { repo } = buildRepo([
+      { id: 'web_rule', enabled: true, conditions: [{ event: 'safety.harsh' }] },
+      { id: 'other', enabled: true, conditions: [{ event: 'geofence.exit' }] },
+    ]);
+    const result = await repo.findByEvent('alert.harsh_event', {});
+    expect(result.map((r) => r.id)).toEqual(['web_rule']);
+  });
 });

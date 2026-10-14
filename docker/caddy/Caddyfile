@@ -14,11 +14,13 @@ api.onebook-eld.example.com {
 		header_up X-Forwarded-Proto {scheme}
 	}
 
-	# Prometheus scrape + health endpoints pass through untouched — Caddy
-	# does not need auth on these, the app enforces it where required.
-	handle /metrics {
-		reverse_proxy localhost:3000
-	}
+	# CODE-082 — /metrics and /health/deep are operator data. Prometheus scrapes the API
+	# directly on the docker network (docker/prometheus/prometheus.yml), never through this
+	# public host, so they are not published here at all. The app refuses them too
+	# (InternalProbeGuard: private/loopback caller or METRICS_TOKEN). /health/live and
+	# /health/ready stay reachable for external uptime checks.
+	@internal_probes path /metrics /health/deep
+	respond @internal_probes 404
 
 	log {
 		output file /var/log/caddy/onebook-api-prod.log
@@ -29,6 +31,9 @@ api.onebook-eld.example.com {
 # --- Development API (watch mode) -------------------------------------
 api-dev.onebook-eld.example.com {
 	encode gzip
+
+	@internal_probes path /metrics /health/deep
+	respond @internal_probes 404
 
 	reverse_proxy /* localhost:3001 {
 		header_up X-Forwarded-Proto {scheme}

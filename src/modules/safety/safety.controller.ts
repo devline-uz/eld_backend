@@ -29,6 +29,27 @@ export class SafetyController {
     return this.safety.listEvents(query);
   }
 
+  @Get('summary')
+  @Perm('safety', 'READ')
+  @ApiOperation({
+    summary:
+      'CODE-040 — Safety page KPIs: event counts over the rolling 30 days (`current`) and the 30 days before (`previous`): total, harsh (braking+accel+turn), speeding, seatbelt, coached, pendingCoaching (status NEW).',
+  })
+  @ApiOkResponse({
+    schema: {
+      example: {
+        from: '2026-09-14T12:00:00.000Z',
+        to: '2026-10-14T12:00:00.000Z',
+        current: { total: 742, harsh: 512, speeding: 220, seatbelt: 10, coached: 31, pendingCoaching: 640 },
+        previous: { total: 690, harsh: 480, speeding: 200, seatbelt: 10, coached: 25, pendingCoaching: 0 },
+      },
+    },
+  })
+  @ApiStandardErrors()
+  summary() {
+    return this.safety.summary();
+  }
+
   @Patch('events/:id')
   @Perm('safety', 'FULL')
   @Audit({ object: 'SafetyEvent', action: 'UPDATE' })

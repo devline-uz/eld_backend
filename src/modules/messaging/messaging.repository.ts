@@ -139,10 +139,12 @@ export class MessagingRepository {
 
   /** BE-010 — which of `ids` are live (not soft-deleted) drivers. Web `POST /conversations` /
    * `/messages/broadcast` only; the mobile chat never calls it. */
+  /** Recipients a staff member may start a thread with / message: live AND ACTIVE drivers. An
+   * INACTIVE / TERMINATED driver keeps their history but cannot be messaged (no app access). */
   async findLiveDriverIds(ids: string[]): Promise<Set<string>> {
     if (ids.length === 0) return new Set();
     const rows = await this.prisma.driver.findMany({
-      where: { id: { in: ids }, deletedAt: null },
+      where: { id: { in: ids }, deletedAt: null, status: 'ACTIVE' },
       select: { id: true },
     });
     return new Set(rows.map((r) => r.id));
@@ -159,10 +161,10 @@ export class MessagingRepository {
   }
 
   /** BE-012 — the existing 1:1 DIRECT conversation between exactly `a` and `b`, if any (web). */
-  findDirectBetween(a: Participant, b: Participant) {
+  findDirectBetween(a: Participant, b: Participant, db: Pick<Prisma.TransactionClient, 'conversation'> = this.prisma) {
     const whereOf = (p: Participant) =>
       p.userId ? { userId: p.userId } : { driverId: p.driverId };
-    return this.prisma.conversation.findFirst({
+    return db.conversation.findFirst({
       where: {
         type: 'DIRECT',
         AND: [
@@ -195,14 +197,25 @@ export class MessagingRepository {
     data: Prisma.ConversationCreateInput,
     participants: Participant[],
   ): Promise<Conversation> {
-    return this.prisma.conversation.create({
-      data: {
-        ...data,
-        participants: {
-          create: participants.map((p) => ({ userId: p.userId, driverId: p.driverId })),
+    const create = (db: Pick<Prisma.TransactionClient, 'conversation'>) =>
+      db.conversation.create({
+        data: {
+          ...data,
+          participants: {
+            create: participants.map((p) => ({ userId: p.userId, driverId: p.driverId })),
+          },
         },
-      },
-      include: { participants: true },
+        include: { participants: true },
+      });
+    if (data.type !== 'DIRECT' || participants.length !== 2) return create(this.prisma);
+    // LIVE-026 — two quick "New message" clicks (or two tabs) both missed `findDirectBetween`
+    // and created two 1:1 threads with the same driver. The pair is serialised with an advisory
+    // lock and re-checked inside the transaction, so the loser gets the winner's thread.
+    const [a, b] = participants;
+    const key = `dm:${[participantKey(a), participantKey(b)].sort().join('|')}`;
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`, key);
+      return (await this.findDirectBetween(a, b, tx)) ?? create(tx);
     });
   }
 
@@ -288,4 +301,8 @@ export class MessagingRepository {
     ]);
     return message;
   }
+}
+
+function participantKey(p: Participant): string {
+  return p.userId ? `u:${p.userId}` : `d:${p.driverId ?? ''}`;
 }

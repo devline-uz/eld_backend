@@ -1,9 +1,10 @@
-import { Controller, Get, Header, HttpCode, Res } from '@nestjs/common';
+import { Controller, Get, Header, HttpCode, Res, UseGuards } from '@nestjs/common';
 import { ApiExcludeEndpoint, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { ApiErrorResponse, ERROR_CODES } from '../../common/errors';
 import type { Response } from 'express';
 import { Public } from '../../common/decorators/public.decorator';
 import { DeepHealth, HealthService } from './health.service';
+import { InternalProbeGuard } from './internal-probe.guard';
 import { MetricsService } from './metrics.service';
 
 /** TZ §22.5. Controllers hold no logic — every call delegates to a service. */
@@ -37,8 +38,12 @@ export class HealthController {
   }
 
   @Public()
+  @UseGuards(InternalProbeGuard)
   @Get('health/deep')
-  @ApiOperation({ summary: 'Deep probe — database, Redis and object storage checked in parallel.' })
+  @ApiOperation({
+    summary: 'Deep probe — database, Redis and object storage checked in parallel.',
+    description: 'CODE-082 — internal only: a private/loopback caller or `Authorization: Bearer <METRICS_TOKEN>`; anyone else gets 404.',
+  })
   @ApiOkResponse({
     description: 'Database, Redis and object storage checked in parallel.',
     schema: {
@@ -54,6 +59,7 @@ export class HealthController {
   }
 
   @Public()
+  @UseGuards(InternalProbeGuard)
   @Get('metrics')
   @HttpCode(200)
   @Header('Cache-Control', 'no-store')

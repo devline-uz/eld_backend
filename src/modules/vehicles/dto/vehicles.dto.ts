@@ -23,13 +23,33 @@ export const VinField = z
 /** BE-008 — `Vehicle.odometerMi` is INT4; 10 million miles is far past any real dash reading. */
 export const MAX_ODOMETER_MI = 10_000_000;
 
+/** The latest model year a unit can carry: next calendar year (UTC). */
+export const maxModelYear = (now: Date = new Date()): number => now.getUTCFullYear() + 1;
+
+const OptionalText = (max: number) =>
+  z
+    .string()
+    .trim()
+    .max(max)
+    .transform((value) => (value === '' ? null : value))
+    .nullable()
+    .optional();
+
 export const CreateVehicleDto = z.object({
   /** BE-015 — trimmed; whitespace-only is rejected. */
   unitNumber: z.string().trim().min(1).max(40),
   vin: VinField,
-  make: z.string().max(60).optional(),
-  model: z.string().max(60).optional(),
-  year: z.number().int().min(1900).max(2100).optional(),
+  /** CODE-045 — optional (FMCSA does not require them); trimmed, `''` / `null` = none (clears on update). */
+  make: OptionalText(60),
+  model: OptionalText(60),
+  /** CODE-045 — model years run one ahead of the calendar (a 2027 truck is sold in 2026). */
+  year: z
+    .number()
+    .int()
+    .min(1900)
+    .refine((value) => value <= maxModelYear(), { message: 'Year cannot be later than next model year.' })
+    .nullable()
+    .optional(),
   /** Unique together with `plateState` among live units (trim/case-insensitive); `null`/`''` = no plate. */
   licensePlate: z.string().max(20).nullable().optional(),
   /** BE-017 — a US state / Canadian province code (upper-cased); `null`/`''` = none. */

@@ -41,6 +41,11 @@ export class CoDriverPairingsService {
       throw new AppException(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.', 404);
     }
     if (!vehicle || vehicle.deletedAt) throw new AppException(ERROR_CODES.VEHICLE_NOT_FOUND, 'Vehicle not found.', 404);
+    // Driver disable — an INACTIVE / TERMINATED driver has no app access and cannot drive.
+    const inactive = [primary, coDriver].find((d) => d.status !== 'ACTIVE');
+    if (inactive) {
+      throw AppException.conflict(`${inactive.firstName} ${inactive.lastName} is not active and cannot be paired.`);
+    }
 
     const existing = await this.pairings.findActiveForCoDriver(dto.coDriverId, dto.vehicleId);
     if (existing) throw AppException.conflict('This co-driver already has an active pairing on this unit.');

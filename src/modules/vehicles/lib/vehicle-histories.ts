@@ -46,6 +46,8 @@ export interface RouteSegment {
 
 export interface VehicleHistoriesResponse {
   date: string;
+  /** IANA zone the day boundaries were computed in (set by the service, not the builder). */
+  timezone?: string;
   distanceMi: number;
   driveSegments: number;
   driveTimeSec: number;

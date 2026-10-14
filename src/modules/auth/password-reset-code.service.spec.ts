@@ -77,14 +77,15 @@ describe('PasswordResetCodeService (web "Forgot password?")', () => {
   });
 
   describe('requestCode', () => {
-    it('B-84 hold — mails no code to an address changed inside USER_EMAIL_CHANGE_HOLD_HOURS; admins are notified (409)', async () => {
+    it('B-84 hold — mails no code to an address changed inside USER_EMAIL_CHANGE_HOLD_HOURS; admins are notified (CODE-081: same 200 as a send)', async () => {
       env.USER_EMAIL_CHANGE_HOLD_HOURS = 48;
       codes.notifyAdminsOfHeldReset = jest.fn().mockResolvedValue(2);
       users.findByEmailWithRole.mockResolvedValue({ ...activeUser, emailChangedAt: new Date(Date.now() - 3_600_000) });
-      await expect(service.requestCode('sarah.chen@example.com')).rejects.toMatchObject({
-        code: 'EMAIL_CHANGE_ON_HOLD',
-        status: 409,
-        details: { holdUntil: expect.any(String) as string },
+      await expect(service.requestCode('sarah.chen@example.com')).resolves.toEqual({
+        success: true,
+        email: activeUser.email,
+        expiresInSec: 900,
+        resendAfterSec: 60,
       });
       expect(mail.send).not.toHaveBeenCalled();
       expect(codes.create).not.toHaveBeenCalled();
@@ -116,20 +117,24 @@ describe('PasswordResetCodeService (web "Forgot password?")', () => {
       expect(events.publish).toHaveBeenCalledWith(AUDIT_EVENT, expect.objectContaining({ action: 'PASSWORD_RESET_CODE_SENT', objectId: 'u1' }));
     });
 
-    it('404s with a field error when no user has that email', async () => {
+    it('CODE-081: an unknown email gets the very same 200 as a real send, and nothing is mailed or stored', async () => {
       users.findByEmailWithRole.mockResolvedValue(null);
-      const err = await caught(service.requestCode('nobody@example.com'));
-      expect(err.getStatus()).toBe(404);
-      expect(err.code).toBe(ERROR_CODES.NOT_FOUND);
-      expect(err.details).toEqual({ email: 'No account found with this email.' });
+      await expect(service.requestCode(' Nobody@Example.com ')).resolves.toEqual({
+        success: true,
+        email: 'nobody@example.com',
+        expiresInSec: 900,
+        resendAfterSec: 60,
+      });
       expect(mail.send).not.toHaveBeenCalled();
+      expect(codes.create).not.toHaveBeenCalled();
+      expect(events.publish).not.toHaveBeenCalled();
     });
 
-    it.each(['INVITED', 'DISABLED'])('treats a %s user as not found', async (status) => {
+    it.each(['INVITED', 'DISABLED'])('CODE-081: a %s user gets the generic 200 and no code', async (status) => {
       users.findByEmailWithRole.mockResolvedValue({ ...activeUser, status });
-      const err = await caught(service.requestCode('sarah.chen@example.com'));
-      expect(err.getStatus()).toBe(404);
+      await expect(service.requestCode('sarah.chen@example.com')).resolves.toMatchObject({ success: true });
       expect(codes.create).not.toHaveBeenCalled();
+      expect(mail.send).not.toHaveBeenCalled();
     });
 
     it('refuses with 403 PASSWORD_LOGIN_DISABLED under AUTH_MODE=production, before touching the DB', async () => {
@@ -140,13 +145,12 @@ describe('PasswordResetCodeService (web "Forgot password?")', () => {
       expect(users.findByEmailWithRole).not.toHaveBeenCalled();
     });
 
-    it('enforces the resend cooldown with 429 + retryAfterSec', async () => {
+    it('CODE-081: inside the resend cooldown the live code is kept and nothing is mailed, with the generic 200', async () => {
       codes.findLatestActive.mockResolvedValue(liveCode({ createdAt: new Date(Date.now() - 20_000) }));
-      const err = await caught(service.requestCode('sarah.chen@example.com'));
-      expect(err.getStatus()).toBe(429);
-      expect(err.code).toBe(ERROR_CODES.RATE_LIMITED);
-      expect((err.details as { retryAfterSec: number }).retryAfterSec).toBeGreaterThan(30);
+      await expect(service.requestCode('sarah.chen@example.com')).resolves.toMatchObject({ success: true, resendAfterSec: 60 });
       expect(mail.send).not.toHaveBeenCalled();
+      expect(codes.invalidateAllForUser).not.toHaveBeenCalled();
+      expect(codes.create).not.toHaveBeenCalled();
     });
 
     it('allows a resend once the cooldown has passed and retires the old code', async () => {
@@ -281,9 +285,8 @@ describe('PasswordResetCodeService (web "Forgot password?")', () => {
       expect(codes.create).toHaveBeenCalledWith(expect.objectContaining({ userId }));
     });
 
-    it('requestCode: a wildcard look-alike is "not found", not another account', async () => {
-      const err = await caught(service.requestCode('s_rah.chen@example.com'));
-      expect(err).toBeInstanceOf(AppException);
+    it('requestCode: a wildcard look-alike reaches no other account', async () => {
+      await expect(service.requestCode('s_rah.chen@example.com')).resolves.toMatchObject({ success: true });
       expect(codes.create).not.toHaveBeenCalled();
     });
 

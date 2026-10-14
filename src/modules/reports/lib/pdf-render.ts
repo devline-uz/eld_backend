@@ -94,6 +94,19 @@ async function getBrowser() {
   return sharedBrowserPromise;
 }
 
+/** CODE-089 — closes the shared Chrome. The worker calls it on shutdown and the spec in
+ * `afterAll`; without it the browser process kept Jest (and a stopping worker) alive. */
+export async function closeSharedBrowser(): Promise<void> {
+  const pending = sharedBrowserPromise;
+  sharedBrowserPromise = null;
+  if (!pending) return;
+  try {
+    await (await pending).close();
+  } catch {
+    // launch failed or Chrome already gone — nothing left to close
+  }
+}
+
 /** Renders `reports/templates/{name}.html` with `data` and returns the PDF bytes. */
 export async function renderPdf(name: string, data: Record<string, unknown>): Promise<Buffer> {
   const templatePath = join(__dirname, '..', 'templates', `${name}.html`);

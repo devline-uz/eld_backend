@@ -1,4 +1,5 @@
 import { BadRequestException, ForbiddenException, HttpStatus } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { AllExceptionsFilter } from './all-exceptions.filter';
 import { AppException } from '../errors/app.exception';
 import { ERROR_CODES } from '../errors/codes';
@@ -135,5 +136,30 @@ describe('AllExceptionsFilter', () => {
     const { host, res } = makeHost();
     filter.catch(null, host as never);
     expect(res.status).toHaveBeenCalledWith(500);
+  });
+
+  describe('CODE-014 — Prisma constraint errors', () => {
+    const known = (code: string, meta?: Record<string, unknown>) =>
+      new Prisma.PrismaClientKnownRequestError('db says no', { code, clientVersion: 'test', meta });
+
+    it.each([
+      ['P2002', 409, ERROR_CODES.CONFLICT],
+      ['P2003', 409, ERROR_CODES.CONFLICT],
+      ['P2025', 404, ERROR_CODES.NOT_FOUND],
+    ])('%s -> %i %s (never a bare 500)', (code, status, errorCode) => {
+      const { host, res } = makeHost('/api/users/u1');
+      filter.catch(known(code, code === 'P2002' ? { target: ['email'] } : undefined), host as never);
+      expect(res.status).toHaveBeenCalledWith(status);
+      expect(envelopeOf(res)).toMatchObject({ statusCode: status, code: errorCode });
+      if (code === 'P2002') expect(envelopeOf(res).details).toEqual({ target: ['email'] });
+      // The raw driver message (table/constraint names) is not echoed to the client.
+      expect(envelopeOf(res).message).not.toContain('db says no');
+    });
+
+    it('an unmapped Prisma code is still a 500', () => {
+      const { host, res } = makeHost();
+      filter.catch(known('P2034'), host as never);
+      expect(res.status).toHaveBeenCalledWith(500);
+    });
   });
 });

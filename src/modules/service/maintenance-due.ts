@@ -10,6 +10,11 @@ export interface DueCheckInput {
   lastServiceAt: Date | null;
   currentOdometerMi: number;
   now: Date;
+  /** QA CODE-037 — where the interval counts from when no service was ever recorded: the odometer
+   * and time the schedule was created. `null`/absent = unknown, and that interval is not evaluated
+   * (it used to count from 0 mi / 1970, so a new schedule was thousands of days overdue at once). */
+  baselineMi?: number | null;
+  baselineAt?: Date | null;
 }
 
 export type DueState = 'OK' | 'DUE_SOON' | 'OVERDUE';
@@ -28,11 +33,10 @@ export const DUE_SOON_MILES = 500;
 export const DUE_SOON_DAYS = 7;
 
 export function computeDue(input: DueCheckInput): DueResult {
-  const nextDueMi = input.intervalMi != null ? (input.lastServiceMi ?? 0) + input.intervalMi : null;
-  const nextDueAt =
-    input.intervalDays != null
-      ? addDays(input.lastServiceAt ?? new Date(0), input.intervalDays)
-      : null;
+  const fromMi = input.lastServiceMi ?? input.baselineMi ?? null;
+  const fromAt = input.lastServiceAt ?? input.baselineAt ?? null;
+  const nextDueMi = input.intervalMi != null && fromMi != null ? fromMi + input.intervalMi : null;
+  const nextDueAt = input.intervalDays != null && fromAt != null ? addDays(fromAt, input.intervalDays) : null;
 
   const milesRemaining = nextDueMi != null ? nextDueMi - input.currentOdometerMi : null;
   const daysRemaining = nextDueAt != null ? diffDays(nextDueAt, input.now) : null;
@@ -49,6 +53,30 @@ export function computeDue(input: DueCheckInput): DueResult {
     nextDueAt,
     milesRemaining,
     daysRemaining,
+  };
+}
+
+/** Before this, a stored `nextDue*` was computed from 0 mi / 1970 — not a real baseline. */
+const LEGACY_EPOCH_CUTOFF_MS = Date.UTC(2000, 0, 1);
+
+/**
+ * QA CODE-037 — the baseline a stored schedule counts from while it has no recorded service.
+ * `create` folds the odometer and date at creation into `nextDueMi` / `nextDueAt` (= baseline +
+ * interval), so the baseline is recovered by subtracting the interval. A row saved by the old code
+ * (counted from 0 mi / 1970) yields a non-positive mileage or pre-2000 date — treated as unknown,
+ * so that interval is not evaluated instead of raising a nightly "overdue by 20,000 days" alert.
+ */
+export function scheduleBaseline(schedule: {
+  intervalMi: number | null;
+  intervalDays: number | null;
+  nextDueMi: number | null;
+  nextDueAt: Date | null;
+}): { baselineMi: number | null; baselineAt: Date | null } {
+  const mi = schedule.intervalMi != null && schedule.nextDueMi != null ? schedule.nextDueMi - schedule.intervalMi : null;
+  const at = schedule.intervalDays != null && schedule.nextDueAt != null ? addDays(schedule.nextDueAt, -schedule.intervalDays) : null;
+  return {
+    baselineMi: mi != null && mi > 0 ? mi : null,
+    baselineAt: at != null && at.getTime() >= LEGACY_EPOCH_CUTOFF_MS ? at : null,
   };
 }
 

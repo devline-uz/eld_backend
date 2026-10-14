@@ -141,11 +141,11 @@ export class UnidentifiedController {
   @Perm('hosEdit', 'FULL')
   @ApiOperation({
     summary:
-      'Assigns the segment to a driver: status ASSIGNED, assignedById/At set, recordOrigin stays 1, AuditLog entry UNIDENTIFIED_ASSIGNED. With requireDriverConfirmation = true (B-83) nothing is attributed yet: status PENDING_CONFIRMATION, the driver is asked in the app (AuditLog UNIDENTIFIED_CONFIRMATION_REQUESTED) and the records move to their log only when they confirm.',
+      'CODE-029 — proposes the segment to a driver; nothing is attributed yet. Status PENDING_CONFIRMATION, the driver is asked in the app (AuditLog UNIDENTIFIED_CONFIRMATION_REQUESTED) and the records move to their log only when they confirm (POST /unidentified/:id/confirm, AuditLog UNIDENTIFIED_ASSIGNED). requireDriverConfirmation is optional and may only be true.',
   })
   @ApiEnvelopeResponse(UnidentifiedSegmentResponse, {
     status: 201,
-    description: 'The segment after the assignment. A carrier assignment keeps recordOrigin 1 (TZ §23) and is audited as UNIDENTIFIED_ASSIGNED.',
+    description: 'The segment after the request: status PENDING_CONFIRMATION, assignedDriverId = the driver asked to confirm.',
     example: SEGMENT_EXAMPLE,
   })
   @ApiStandardErrors({

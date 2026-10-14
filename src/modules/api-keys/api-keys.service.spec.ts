@@ -83,6 +83,15 @@ describe('ApiKeysService', () => {
       // The response view never carries `keyHash`.
       expect(apiKey).not.toHaveProperty('keyHash');
     });
+
+    it.each(['api-key', 'driver'] as const)('CODE-079 — a %s principal cannot mint keys (403, not a User-FK 500)', async (type) => {
+      const repo = makeRepo();
+      const service = new ApiKeysService(repo, makeRoles());
+      await expect(
+        service.create({ name: 'child', scopes: ['reports:read'] }, { id: 'key_1', type, permissions: { reports: 'FULL' } } as never),
+      ).rejects.toMatchObject({ code: 'USER_CONTEXT_REQUIRED', status: 403 });
+      expect(repo.create).not.toHaveBeenCalled();
+    });
   });
 
   describe('verify', () => {

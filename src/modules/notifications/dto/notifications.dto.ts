@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { QueryBoolean } from '../../../common/dto/query-bool';
+import { outboundUrlProblem } from '../../../common/net/outbound-url';
 
 /** TZ §14 — `SMS` stays in the enum for a migration-free v2 add, but the API rejects it now. */
 export const AlertChannelEnum = z.enum(['IN_APP', 'EMAIL', 'SMS', 'WEBHOOK']);
@@ -53,7 +55,7 @@ export const NotificationCategoryEnum = z.enum(['VIOLATIONS', 'MAINTENANCE']);
 export const NotificationListQueryDto = z.object({
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(200).default(25),
-  unreadOnly: z.coerce.boolean().default(false),
+  unreadOnly: QueryBoolean.default(false),
   category: NotificationCategoryEnum.optional(),
 });
 export type NotificationListQueryDto = z.infer<typeof NotificationListQueryDto>;
@@ -61,6 +63,23 @@ export type NotificationListQueryDto = z.infer<typeof NotificationListQueryDto>;
 /** §20 B-87 — `GET/PATCH /notification-channels` (org-level, `Carrier.notificationChannels`). */
 export const NotificationChannelsDto = z.object({
   email: z.object({ enabled: z.boolean() }).optional(),
-  webhook: z.object({ enabled: z.boolean(), url: z.string().url().optional() }).optional(),
+  // CODE-084 — the org webhook URL is now actually delivered to (alert.processor), so it gets
+  // the same public-https / no-private-address rule as integration webhooks (CODE-018).
+  webhook: z
+    .object({
+      enabled: z.boolean(),
+      url: z
+        .string()
+        .trim()
+        .max(2048)
+        .superRefine((value, ctx) => {
+          const problem = outboundUrlProblem(value);
+          if (problem) ctx.addIssue({ code: z.ZodIssueCode.custom, message: `Webhook URL ${problem}` });
+        })
+        // `null` clears it, so alerts fall back to the Settings › Integrations webhook.
+        .nullable()
+        .optional(),
+    })
+    .optional(),
 });
 export type NotificationChannelsDto = z.infer<typeof NotificationChannelsDto>;

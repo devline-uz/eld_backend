@@ -2,6 +2,7 @@ import { Test } from '@nestjs/testing';
 import { AppConfigService } from '../../core/config/config.service';
 import { parseEnv } from '../../core/config/env.schema';
 import { AppException } from '../../common/errors/app.exception';
+import { PrincipalStateService } from './principal-state.service';
 import { TokenService } from './token.service';
 
 /** TZ §6.3 — token contents. */
@@ -110,5 +111,59 @@ describe('TokenService', () => {
     expect(() => tokens.verifyDriverEmailChangeToken(cancel)).toThrow(AppException);
     expect(() => tokens.verifyDriverEmailChangeCancelToken(confirm)).toThrow(AppException);
     expect(() => tokens.verifyDriverEmailVerifyToken(confirm)).toThrow(AppException);
+  });
+
+  describe('CODE-012 — live user/session state', () => {
+    async function withPrincipals(live: unknown, driverLive = true) {
+      const env = parseEnv({
+        ...process.env,
+        DATABASE_URL: 'postgres://u:p@localhost:5432/db',
+        REDIS_URL: 'redis://localhost:6379',
+        JWT_SECRET: 'unit-test-secret-at-least-32-characters-long',
+      });
+      const principals = { resolveUser: jest.fn().mockResolvedValue(live), resolveDriver: jest.fn().mockResolvedValue(driverLive) };
+      const moduleRef = await Test.createTestingModule({
+        providers: [
+          TokenService,
+          { provide: AppConfigService, useValue: new AppConfigService(env) },
+          { provide: PrincipalStateService, useValue: principals },
+        ],
+      }).compile();
+      return { svc: moduleRef.get(TokenService), principals };
+    }
+
+    it('takes role + permissions from the live state, not from the token', async () => {
+      const { svc, principals } = await withPrincipals({ roleKey: 'VIEWER', permissions: { vehicles: 'READ' } });
+      const token = svc.signUserAccessToken({ id: 'usr_1', roleKey: 'ADMIN', permissions: { vehicles: 'FULL' } as never, sessionId: 's1' });
+      await expect(svc.verifyAccessToken(token)).resolves.toEqual({
+        id: 'usr_1',
+        type: 'user',
+        role: 'VIEWER',
+        permissions: { vehicles: 'READ' },
+        sessionId: 's1',
+      });
+      expect(principals.resolveUser).toHaveBeenCalledWith('usr_1', 's1');
+    });
+
+    it('refuses a still-unexpired token of a disabled user / revoked session (401)', async () => {
+      const { svc } = await withPrincipals(null);
+      const token = svc.signUserAccessToken({ id: 'usr_1', roleKey: 'ADMIN', permissions: {} as never, sessionId: 's1' });
+      await expect(svc.verifyAccessToken(token)).rejects.toMatchObject({ code: 'TOKEN_INVALID', status: 401 });
+    });
+
+    it('a live driver token passes the driver check, never the user one', async () => {
+      const { svc, principals } = await withPrincipals(null);
+      await expect(svc.verifyAccessToken(svc.signDriverAccessToken({ id: 'drv_1' }))).resolves.toMatchObject({ type: 'driver' });
+      expect(principals.resolveDriver).toHaveBeenCalledWith('drv_1');
+      expect(principals.resolveUser).not.toHaveBeenCalled();
+    });
+
+    it('refuses a disabled driver token with DRIVER_DISABLED (401)', async () => {
+      const { svc } = await withPrincipals(null, false);
+      await expect(svc.verifyAccessToken(svc.signDriverAccessToken({ id: 'drv_1' }))).rejects.toMatchObject({
+        code: 'DRIVER_DISABLED',
+        status: 401,
+      });
+    });
   });
 });

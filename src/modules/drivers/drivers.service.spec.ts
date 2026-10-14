@@ -79,12 +79,14 @@ describe('DriversService', () => {
       | 'createDocument'
       | 'deleteDocument'
       | 'revokeAllSessions'
+      | 'endActivePairings'
       | 'findLiveIdByPhoneKey'
       | 'findLiveIdByCdlKey'
       | 'findVehicleForAssignment'
       | 'createWithVehicle'
       | 'fleetManagerExists'
       | 'findOpenTrips'
+      | 'softDeleteUnlessOnTrip'
       | 'findLiveIdByPendingEmail'
       | 'updateIfState'
     >
@@ -141,15 +143,25 @@ describe('DriversService', () => {
       createDocument: jest.fn(),
       deleteDocument: jest.fn(),
       revokeAllSessions: jest.fn().mockResolvedValue(0),
+      endActivePairings: jest.fn().mockResolvedValue(0),
       findLiveIdByPhoneKey: jest.fn().mockResolvedValue(null),
       findLiveIdByCdlKey: jest.fn().mockResolvedValue(null),
       findVehicleForAssignment: jest.fn().mockResolvedValue(null),
       createWithVehicle: jest.fn(),
       fleetManagerExists: jest.fn().mockResolvedValue(true),
       findOpenTrips: jest.fn().mockResolvedValue([]),
+      // The real method runs both steps in one locked transaction (CODE-062); the mock replays them
+      // through the same spies so each test can steer the open-trip check and see the write.
+      softDeleteUnlessOnTrip: jest.fn(),
       findLiveIdByPendingEmail: jest.fn().mockResolvedValue(null),
       updateIfState: jest.fn().mockResolvedValue(true),
     };
+    repo.softDeleteUnlessOnTrip.mockImplementation(async (id: string) => {
+      const openTrips = await repo.findOpenTrips(id);
+      if (openTrips.length > 0) return { openTrips };
+      const deleted = await repo.update({ id }, { status: 'TERMINATED', deletedAt: new Date(), assignedVehicle: { disconnect: true } });
+      return { deleted };
+    });
     repo.findByEmail.mockResolvedValue(null);
     tokens = {
       signDriverEmailVerifyToken: jest.fn(),
@@ -348,6 +360,94 @@ describe('DriversService', () => {
     expect(repo.update).not.toHaveBeenCalled();
   });
 
+  it('CODE-011 — PATCH status INACTIVE/TERMINATED with open trips is a 409 and writes nothing', async () => {
+    repo.findById.mockResolvedValue(makeDriver({ status: 'ACTIVE' }) as never);
+    repo.findOpenTrips.mockResolvedValue([{ id: 'trp_1', number: 'TRP-1', status: 'ASSIGNED' }]);
+    await expect(service.update('drv_1', { status: 'TERMINATED' })).rejects.toMatchObject({ status: 409 });
+    await expect(service.update('drv_1', { status: 'INACTIVE' })).rejects.toMatchObject({ status: 409 });
+    expect(repo.update).not.toHaveBeenCalled();
+  });
+
+  it('CODE-011 — PATCH status INACTIVE without open trips frees the assigned unit', async () => {
+    repo.findById.mockResolvedValue(makeDriver({ status: 'ACTIVE', assignedVehicleId: 'veh_1' }) as never);
+    repo.update.mockResolvedValue(makeDriver({ status: 'INACTIVE', assignedVehicleId: null }) as never);
+    await service.update('drv_1', { status: 'INACTIVE' });
+    expect(repo.update).toHaveBeenCalledWith(
+      { id: 'drv_1' },
+      expect.objectContaining({ status: 'INACTIVE', assignedVehicle: { disconnect: true } }),
+    );
+  });
+
+  describe('driver disable — app access ends at once', () => {
+    let principals: { invalidateDriver: jest.Mock };
+    let busEvents: { publish: jest.Mock };
+    let svc: DriversService;
+    beforeEach(() => {
+      principals = { invalidateDriver: jest.fn().mockResolvedValue(undefined) };
+      busEvents = { publish: jest.fn().mockResolvedValue(undefined) };
+      svc = new DriversService(
+        repo as unknown as DriversRepository,
+        tokens as unknown as TokenService,
+        config,
+        mail,
+        storage as unknown as StoragePort,
+        attachments as unknown as AttachmentsService,
+        emailChange,
+        undefined,
+        busEvents as never,
+        principals as never,
+      );
+    });
+
+    it.each(['INACTIVE', 'TERMINATED'] as const)('PATCH %s revokes sessions, ends pairings, evicts and audits', async (status) => {
+      repo.findById.mockResolvedValue(makeDriver({ status: 'ACTIVE', assignedVehicleId: null }) as never);
+      repo.update.mockResolvedValue(makeDriver({ status }) as never);
+      repo.revokeAllSessions.mockResolvedValue(2);
+      repo.endActivePairings.mockResolvedValue(1);
+      await svc.update('drv_1', { status });
+      expect(repo.endActivePairings).toHaveBeenCalledWith('drv_1', undefined);
+      expect(repo.revokeAllSessions).toHaveBeenCalledWith('drv_1');
+      expect(principals.invalidateDriver).toHaveBeenCalledWith('drv_1');
+      expect(busEvents.publish).toHaveBeenCalledWith(
+        'audit.record',
+        expect.objectContaining({ action: 'APP_ACCESS_REVOKED', objectId: 'drv_1', after: { sessionsRevoked: 2, pairingsEnded: 1 } }),
+      );
+    });
+
+    it('a PATCH that keeps the driver ACTIVE leaves the app sessions alone', async () => {
+      repo.findById.mockResolvedValue(makeDriver({ status: 'ACTIVE' }) as never);
+      repo.update.mockResolvedValue(makeDriver() as never);
+      await svc.update('drv_1', { firstName: 'Jo' });
+      expect(repo.revokeAllSessions).not.toHaveBeenCalled();
+      expect(principals.invalidateDriver).not.toHaveBeenCalled();
+    });
+
+    it('remove() cuts app access too', async () => {
+      repo.findById.mockResolvedValue(makeDriver() as never);
+      repo.update.mockResolvedValue(makeDriver({ status: 'TERMINATED' }) as never);
+      await svc.remove('drv_1');
+      expect(repo.revokeAllSessions).toHaveBeenCalledWith('drv_1');
+      expect(principals.invalidateDriver).toHaveBeenCalledWith('drv_1');
+    });
+
+    it('an import UPDATE to TERMINATED follows PATCH: open trips block it, otherwise unit freed and access cut', async () => {
+      repo.findByUsername.mockResolvedValue(makeDriver({ status: 'ACTIVE', assignedVehicleId: 'veh_1' }) as never);
+      repo.findOpenTrips.mockResolvedValueOnce([{ id: 't1', number: 'TR-1' }] as never);
+      const blocked = await svc.importMany({ drivers: [{ ...baseDto, username: 'jsmith', status: 'TERMINATED' }] as never });
+      expect(blocked.failed).toHaveLength(1);
+      expect(repo.update).not.toHaveBeenCalled();
+
+      repo.update.mockResolvedValue(makeDriver({ status: 'TERMINATED' }) as never);
+      const done = await svc.importMany({ drivers: [{ ...baseDto, username: 'jsmith', status: 'TERMINATED' }] as never });
+      expect(done.updated).toBe(1);
+      expect(repo.update).toHaveBeenCalledWith(
+        { id: 'drv_1' },
+        expect.objectContaining({ status: 'TERMINATED', assignedVehicle: { disconnect: true } }),
+      );
+      expect(principals.invalidateDriver).toHaveBeenCalledWith('drv_1');
+    });
+  });
+
   it('rejects an unknown driver id on update', async () => {
     repo.findById.mockResolvedValue(null);
 
@@ -498,6 +598,12 @@ describe('DriversService', () => {
       repo.findVehicleForAssignment.mockResolvedValue(vehicle({ driver: { id: 'drv_2', deletedAt: null } }) as never);
       await expect(service.create({ ...baseDto, assignedVehicleId: 'veh_1' })).rejects.toMatchObject(TAKEN.assignedVehicleId);
       expect(repo.create).not.toHaveBeenCalled();
+      expect(repo.createWithVehicle).not.toHaveBeenCalled();
+    });
+
+    it('CODE-043 — rejects an INACTIVE unit like assign-driver does', async () => {
+      repo.findVehicleForAssignment.mockResolvedValue(vehicle({ status: 'INACTIVE' }) as never);
+      await expect(service.create({ ...baseDto, assignedVehicleId: 'veh_1' })).rejects.toMatchObject({ status: 409 });
       expect(repo.createWithVehicle).not.toHaveBeenCalled();
     });
 

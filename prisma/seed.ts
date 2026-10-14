@@ -67,7 +67,8 @@ const ANCHOR = computeAnchor();
 type PermissionLevel = 'NONE' | 'READ' | 'FULL';
 // B-95 — `dataTransfer` is an additive 23rd key split from `reportsTransfer`
 // (src/common/decorators/permission.types.ts); ADMIN's `Object.fromEntries` below gives it
-// FULL automatically, the other three roles are listed explicitly.
+// FULL automatically (except the retired `hosCertifyOnBehalf`, CODE-029: always NONE), the other
+// three roles are listed explicitly.
 const PERMISSION_KEYS = [
   'dashboard', 'liveFleet', 'vehicles', 'drivers', 'hos', 'hosEdit',
   'hosCertifyOnBehalf', 'dvir', 'maintenance', 'safety', 'trips',
@@ -77,11 +78,11 @@ const PERMISSION_KEYS = [
 ] as const;
 
 const ROLE_MATRIX: Record<string, Record<(typeof PERMISSION_KEYS)[number], PermissionLevel>> = {
-  SUPER_ADMIN: Object.fromEntries(PERMISSION_KEYS.map((k) => [k, 'FULL'])) as Record<
+  SUPER_ADMIN: Object.fromEntries(PERMISSION_KEYS.map((k) => [k, k === 'hosCertifyOnBehalf' ? 'NONE' : 'FULL'])) as Record<
     (typeof PERMISSION_KEYS)[number],
     PermissionLevel
   >,
-  ADMIN: Object.fromEntries(PERMISSION_KEYS.map((k) => [k, 'FULL'])) as Record<
+  ADMIN: Object.fromEntries(PERMISSION_KEYS.map((k) => [k, k === 'hosCertifyOnBehalf' ? 'NONE' : 'FULL'])) as Record<
     (typeof PERMISSION_KEYS)[number],
     PermissionLevel
   >,

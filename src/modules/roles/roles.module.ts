@@ -1,10 +1,13 @@
 import { Module, OnModuleInit } from '@nestjs/common';
 import { AuditSnapshotRegistry } from '../../common/audit/audit-snapshot.registry';
+import { AuthModule } from '../auth/auth.module';
 import { RolesController } from './roles.controller';
 import { RolesRepository } from './roles.repository';
 import { RolesService } from './roles.service';
 
 @Module({
+  // CODE-012 — a permission edit drops the cached access state + sockets of the role's holders.
+  imports: [AuthModule],
   controllers: [RolesController],
   providers: [RolesService, RolesRepository],
   exports: [RolesService, RolesRepository],

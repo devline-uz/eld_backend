@@ -29,6 +29,8 @@ describe('AuthService', () => {
   let loginRecords: MockRepo;
   let resetCodes: MockRepo;
   let graceStore: MockRepo & { windowSeconds: number };
+  let principals: MockRepo;
+  let events: MockRepo;
 
   const activeUser = {
     id: 'u1',
@@ -48,6 +50,8 @@ describe('AuthService', () => {
       activateInvited: jest.fn(),
       touchLastActive: jest.fn(),
       updatePasswordHash: jest.fn(),
+      recordFailedLogin: jest.fn().mockResolvedValue(false),
+      clearFailedLogins: jest.fn().mockResolvedValue(undefined),
     };
     drivers = {
       findByUsername: jest.fn(),
@@ -108,6 +112,8 @@ describe('AuthService', () => {
       notifyAdminsOfResetRequest: jest.fn().mockResolvedValue(2),
     };
     graceStore = { windowSeconds: 60, put: jest.fn().mockResolvedValue(undefined), get: jest.fn() } as never;
+    events = { publish: jest.fn().mockResolvedValue(undefined) };
+    principals = { invalidateUser: jest.fn().mockResolvedValue(undefined), invalidateDriver: jest.fn().mockResolvedValue(undefined) };
     service = new AuthService(
       users as never,
       drivers as never,
@@ -122,6 +128,8 @@ describe('AuthService', () => {
       loginRecords as never,
       resetCodes as never,
       graceStore as never,
+      principals as never,
+      events as never,
     );
   });
 
@@ -168,6 +176,42 @@ describe('AuthService', () => {
       expect(result).toEqual({ accessToken: 'access', refreshToken: 'opaque-refresh', tokenType: 'Bearer' });
       expect(users.touchLastActive).toHaveBeenCalledWith('u1');
       expect(tokens.refreshTtlMs).toHaveBeenCalledWith('user');
+      expect(users.clearFailedLogins).toHaveBeenCalledWith('u1');
+      expect(events.publish).toHaveBeenCalledWith('audit.record', expect.objectContaining({ action: 'LOGIN', objectId: 'u1', actorId: 'u1', ip: '1.1.1.1' }));
+    });
+
+    describe('CODE-082 lockout', () => {
+      it('counts a wrong password toward the lock and audits the lock when it trips', async () => {
+        users.findByEmailWithRole.mockResolvedValue(activeUser);
+        (passwordUtil.verifyPassword as jest.Mock).mockResolvedValue(false);
+        users.recordFailedLogin.mockResolvedValue(true);
+        await expect(service.loginUser('a@b.com', 'wrong', {})).rejects.toMatchObject({ code: 'INVALID_CREDENTIALS', status: 401 });
+        expect(users.recordFailedLogin).toHaveBeenCalledWith('u1', 10, expect.any(Date));
+        expect(events.publish).toHaveBeenCalledWith('audit.record', expect.objectContaining({ action: 'LOGIN_LOCKED', objectId: 'u1' }));
+      });
+
+      it('a wrong password on a locked account is still a plain 401 (no enumeration) and does not extend the lock', async () => {
+        users.findByEmailWithRole.mockResolvedValue({ ...activeUser, lockedUntil: new Date(Date.now() + 60_000) });
+        (passwordUtil.verifyPassword as jest.Mock).mockResolvedValue(false);
+        await expect(service.loginUser('a@b.com', 'wrong', {})).rejects.toMatchObject({ code: 'INVALID_CREDENTIALS', status: 401 });
+        expect(users.recordFailedLogin).not.toHaveBeenCalled();
+      });
+
+      it('the right password on a locked account gets 423 ACCOUNT_LOCKED with retryAfterSec, no tokens', async () => {
+        users.findByEmailWithRole.mockResolvedValue({ ...activeUser, lockedUntil: new Date(Date.now() + 90_000) });
+        await expect(service.loginUser('a@b.com', 'pw', {})).rejects.toMatchObject({
+          code: 'ACCOUNT_LOCKED',
+          status: 423,
+          details: { retryAfterSec: expect.any(Number) as number },
+        });
+        expect(sessions.create).not.toHaveBeenCalled();
+      });
+
+      it('an expired lock no longer blocks', async () => {
+        users.findByEmailWithRole.mockResolvedValue({ ...activeUser, lockedUntil: new Date(Date.now() - 1_000) });
+        sessions.create.mockResolvedValue({});
+        await expect(service.loginUser('a@b.com', 'pw', {})).resolves.toBeDefined();
+      });
     });
   });
 
@@ -306,6 +350,34 @@ describe('AuthService', () => {
       await expect(service.loginGoogle('tok', {})).rejects.toThrow(AppException);
     });
 
+    it('CODE-082: refuses a Google identity other than the one linked to the user, and audits it', async () => {
+      config.get.mockReturnValue(undefined);
+      firebase.verifyIdToken.mockResolvedValue({
+        firebase: { sign_in_provider: 'google.com' },
+        email_verified: true,
+        email: 'a@b.com',
+        uid: 'guid-other',
+      });
+      users.findByEmailWithRole.mockResolvedValue({ ...activeUser, googleUid: 'guid-1' });
+      await expect(service.loginGoogle('tok', {})).rejects.toMatchObject({ status: 401 });
+      expect(sessions.create).not.toHaveBeenCalled();
+      expect(users.setGoogleUid).not.toHaveBeenCalled();
+      expect(events.publish).toHaveBeenCalledWith('audit.record', expect.objectContaining({ action: 'LOGIN_REJECTED_GOOGLE_MISMATCH' }));
+    });
+
+    it('CODE-082: the linked Google identity signs in', async () => {
+      config.get.mockReturnValue(undefined);
+      firebase.verifyIdToken.mockResolvedValue({
+        firebase: { sign_in_provider: 'google.com' },
+        email_verified: true,
+        email: 'a@b.com',
+        uid: 'guid-1',
+      });
+      users.findByEmailWithRole.mockResolvedValue({ ...activeUser, googleUid: 'guid-1' });
+      sessions.create.mockResolvedValue({});
+      await expect(service.loginGoogle('tok', {})).resolves.toMatchObject({ accessToken: 'access' });
+    });
+
     it('activates an INVITED user on first sign-in within the invite window', async () => {
       firebase.verifyIdToken.mockResolvedValue({
         firebase: { sign_in_provider: 'google.com' },
@@ -358,7 +430,7 @@ describe('AuthService', () => {
         firebase: { sign_in_provider: 'google.com' },
         email_verified: true,
         email: 'a@b.com',
-        uid: 'guid-1',
+        uid: 'already',
       });
       users.findByEmailWithRole.mockResolvedValue({ ...activeUser, googleUid: 'already' });
       sessions.create.mockResolvedValue({});
@@ -406,8 +478,23 @@ describe('AuthService', () => {
       repo().findByRefreshHash.mockResolvedValue(live());
       users.findByIdWithRole.mockResolvedValue(null);
       drivers.findById.mockResolvedValue({ status: 'INACTIVE' });
-      await expect(service.refresh('rt', subject, {})).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+      // Driver cut-off: an inactive driver gets DRIVER_DISABLED and loses every app session.
+      await expect(service.refresh('rt', subject, {})).rejects.toMatchObject({ code: subject === 'user' ? 'UNAUTHORIZED' : 'DRIVER_DISABLED', status: 401 });
+      if (subject === 'driver') {
+        expect(driverSessions.revokeAllForDriver).toHaveBeenCalledWith('d1');
+        expect(principals.invalidateDriver).toHaveBeenCalledWith('d1');
+      }
     });
+
+    if (subject === 'driver') {
+      it('refuses a deleted driver with DRIVER_DISABLED and revokes their sessions', async () => {
+        repo().findByRefreshHash.mockResolvedValue(live());
+        drivers.findById.mockResolvedValue({ id: 'd1', status: 'ACTIVE', deletedAt: new Date() });
+        await expect(service.refresh('rt', subject, {})).rejects.toMatchObject({ code: 'DRIVER_DISABLED' });
+        expect(driverSessions.revokeAllForDriver).toHaveBeenCalledWith('d1');
+        expect(repo().rotate).not.toHaveBeenCalled();
+      });
+    }
 
     it('rotates inside the same family, returns the pair and parks it in the grace store', async () => {
       repo().findByRefreshHash.mockResolvedValue(live());
@@ -439,6 +526,9 @@ describe('AuthService', () => {
       repo().findByRefreshHash.mockResolvedValue(live({ revokedAt: new Date(), rotatedAt: new Date(Date.now() - 61_000) }));
       await expect(service.refresh('rt', subject, {})).rejects.toMatchObject({ code: 'REFRESH_TOKEN_REUSED', status: 401 });
       expect(repo().revokeFamily).toHaveBeenCalledWith('fam1');
+      // CODE-012 — the subject's cached live access is evicted on every replica.
+      if (subject === 'user') expect(principals.invalidateUser).toHaveBeenCalledWith('u1');
+      else expect(principals.invalidateDriver).toHaveBeenCalledWith('d1');
       expect(sessions.revokeAllForUser).not.toHaveBeenCalled();
       expect(driverSessions.revokeAllForDriver).not.toHaveBeenCalled();
       expect(graceStore.get).not.toHaveBeenCalled();
@@ -505,29 +595,44 @@ describe('AuthService', () => {
   });
 
   describe('logout', () => {
-    it('revokes an active user session', async () => {
-      sessions.findByRefreshHash.mockResolvedValue({ id: 's1', revokedAt: null });
+    it('revokes the caller\'s own active user session and audits it (CODE-079, CODE-083)', async () => {
+      sessions.findByRefreshHash.mockResolvedValue({ id: 's1', userId: 'u1', revokedAt: null });
       sessions.revoke.mockResolvedValue({});
-      await service.logout('user', 'rt');
+      await service.logout('user', 'rt', 'u1', { ip: '1.2.3.4' });
       expect(sessions.revoke).toHaveBeenCalledWith('s1');
+      expect(events.publish).toHaveBeenCalledWith('audit.record', expect.objectContaining({ action: 'LOGOUT', objectType: 'User', objectId: 'u1', ip: '1.2.3.4' }));
+    });
+
+    it('CODE-079: ignores another user\'s refresh token (no revoke, no audit)', async () => {
+      sessions.findByRefreshHash.mockResolvedValue({ id: 's1', userId: 'someone-else', revokedAt: null });
+      await service.logout('user', 'rt', 'u1');
+      expect(sessions.revoke).not.toHaveBeenCalled();
+      expect(principals.invalidateUser).not.toHaveBeenCalled();
+      expect(events.publish).not.toHaveBeenCalled();
     });
 
     it('no-ops when user session already revoked or missing', async () => {
       sessions.findByRefreshHash.mockResolvedValue(null);
-      await service.logout('user', 'rt');
+      await service.logout('user', 'rt', 'u1');
       expect(sessions.revoke).not.toHaveBeenCalled();
     });
 
-    it('revokes an active driver session', async () => {
-      driverSessions.findByRefreshHash.mockResolvedValue({ id: 's1', revokedAt: null });
+    it('revokes the caller\'s own active driver session', async () => {
+      driverSessions.findByRefreshHash.mockResolvedValue({ id: 's1', driverId: 'd1', revokedAt: null });
       driverSessions.revoke.mockResolvedValue({});
-      await service.logout('driver', 'rt');
+      await service.logout('driver', 'rt', 'd1');
       expect(driverSessions.revoke).toHaveBeenCalledWith('s1');
     });
 
+    it('CODE-079: a driver cannot revoke another driver\'s session', async () => {
+      driverSessions.findByRefreshHash.mockResolvedValue({ id: 's1', driverId: 'd9', revokedAt: null });
+      await service.logout('driver', 'rt', 'd1');
+      expect(driverSessions.revoke).not.toHaveBeenCalled();
+    });
+
     it('no-ops when driver session already revoked', async () => {
-      driverSessions.findByRefreshHash.mockResolvedValue({ id: 's1', revokedAt: new Date() });
-      await service.logout('driver', 'rt');
+      driverSessions.findByRefreshHash.mockResolvedValue({ id: 's1', driverId: 'd1', revokedAt: new Date() });
+      await service.logout('driver', 'rt', 'd1');
       expect(driverSessions.revoke).not.toHaveBeenCalled();
     });
 
@@ -542,9 +647,6 @@ describe('AuthService', () => {
       driverSessions.findByRefreshHash.mockResolvedValue({ id: 's1', driverId: 'd9', revokedAt: null });
       await service.logout('driver', 'rt', 'd1');
       expect(loginRecords.logout).toHaveBeenCalledWith('d1', 'AUTH_LOGOUT');
-      loginRecords.logout.mockClear();
-      await service.logout('driver', 'rt');
-      expect(loginRecords.logout).toHaveBeenCalledWith('d9', 'AUTH_LOGOUT');
       loginRecords.logout.mockClear();
       sessions.findByRefreshHash.mockResolvedValue(null);
       await service.logout('user', 'rt', 'u1');
@@ -579,6 +681,7 @@ describe('AuthService', () => {
       sessions.revoke.mockResolvedValue({});
       await service.revokeUserSession('u1', 's1');
       expect(sessions.revoke).toHaveBeenCalledWith('s1');
+      expect(events.publish).toHaveBeenCalledWith('audit.record', expect.objectContaining({ action: 'SESSION_REVOKED', objectId: 'u1', after: { sessionId: 's1' } }));
     });
 
     it('revokeAllUserSessions delegates to the repository, keeping the current session (B-50 "Sign out everywhere")', async () => {
@@ -586,6 +689,13 @@ describe('AuthService', () => {
       const revoked = await service.revokeAllUserSessions('u1', 's1');
       expect(sessions.revokeAllForUserExcept).toHaveBeenCalledWith('u1', 's1');
       expect(revoked).toBe(3);
+      expect(events.publish).toHaveBeenCalledWith('audit.record', expect.objectContaining({ action: 'SESSIONS_REVOKED', after: { revoked: 3, keptSessionId: 's1' } }));
+    });
+
+    it('CODE-083: nothing revoked -> no audit row', async () => {
+      sessions.revokeAllForUserExcept.mockResolvedValue(0);
+      await service.revokeAllUserSessions('u1', 's1');
+      expect(events.publish).not.toHaveBeenCalled();
     });
   });
 

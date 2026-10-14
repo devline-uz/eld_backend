@@ -102,6 +102,38 @@ describe('MessagingService — §20 B-67 mark read', () => {
   });
 });
 
+describe('MessagingService — CODE-017 idempotent text send', () => {
+  it('a retry with the same clientId replays the stored message: no second row, no second push', async () => {
+    const { service, repo, events } = buildService(conversationWithParticipants);
+    repo.findMessageByClientId.mockResolvedValueOnce({ id: 'msg_1', conversationId: 'cnv_1', type: 'TEXT', senderUserId: 'usr_1', senderDriverId: null });
+    const out = await service.sendMessage('cnv_1', { body: 'hello', clientId: 'c1' }, actor);
+    expect(out).toMatchObject({ id: 'msg_1' });
+    expect(repo.createMessage).not.toHaveBeenCalled();
+    expect(events.publish).not.toHaveBeenCalled();
+  });
+
+  it('the same clientId from another sender / conversation is a 422, never their message', async () => {
+    const { service, repo } = buildService(conversationWithParticipants);
+    repo.findMessageByClientId.mockResolvedValueOnce({ id: 'msg_x', conversationId: 'cnv_9', type: 'TEXT', senderUserId: 'usr_1', senderDriverId: null });
+    await expect(service.sendMessage('cnv_1', { body: 'hello', clientId: 'c1' }, actor)).rejects.toMatchObject({ code: 'VALIDATION_FAILED', status: 422 });
+  });
+
+  it('two copies racing past the lookup: the unique violation is replayed, not a 500', async () => {
+    const { service, repo } = buildService(conversationWithParticipants);
+    repo.findMessageByClientId
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ id: 'msg_1', conversationId: 'cnv_1', type: 'TEXT', senderUserId: 'usr_1', senderDriverId: null });
+    repo.createMessage.mockRejectedValueOnce(Object.assign(new Error('Unique constraint failed'), { code: 'P2002' }));
+    await expect(service.sendMessage('cnv_1', { body: 'hello', clientId: 'c1' }, actor)).resolves.toMatchObject({ id: 'msg_1' });
+  });
+
+  it('other database errors still surface', async () => {
+    const { service, repo } = buildService(conversationWithParticipants);
+    repo.createMessage.mockRejectedValueOnce(new Error('db down'));
+    await expect(service.sendMessage('cnv_1', { body: 'hello', clientId: 'c1' }, actor)).rejects.toThrow('db down');
+  });
+});
+
 describe('MessagingService — realtime chat contract', () => {
   it('message.new goes to the conversation room AND every staff identity room in one push (no driver rooms)', async () => {
     const { service, events } = buildService(conversationWithParticipants);
@@ -499,5 +531,30 @@ describe('MessagingService — voice messages', () => {
     expect(options.contentType).toBe('audio/webm');
     expect(repo.createAudioMessage).toHaveBeenCalledWith('cnv_1', expect.objectContaining({ mimeType: 'audio/webm' }));
   });
+  });
+});
+
+describe('MessagingService — driver disable', () => {
+  const direct = { ...conversationWithParticipants, type: 'DIRECT' };
+
+  it('staff cannot message a DIRECT thread whose driver is no longer ACTIVE (409, nothing written)', async () => {
+    const { service, repo } = buildService(direct);
+    repo.findLiveDriverIds.mockResolvedValueOnce(new Set());
+    await expect(service.sendMessage('cnv_1', { body: 'hello', clientId: 'c1' }, actor)).rejects.toMatchObject({ status: 409 });
+    expect(repo.createMessage).not.toHaveBeenCalled();
+  });
+
+  it('an ACTIVE driver in the DIRECT thread is still reachable', async () => {
+    const { service, repo } = buildService(direct);
+    await expect(service.sendMessage('cnv_1', { body: 'hello', clientId: 'c1' }, actor)).resolves.toBeDefined();
+    expect(repo.findLiveDriverIds).toHaveBeenCalledWith(['drv_1']);
+  });
+
+  it('a new conversation with an inactive driver is refused (422)', async () => {
+    const { service, repo } = buildService();
+    repo.findLiveDriverIds.mockResolvedValueOnce(new Set());
+    await expect(service.createConversation({ type: 'DIRECT', driverIds: ['drv_9'], userIds: [] } as never, actor)).rejects.toMatchObject({
+      status: 422,
+    });
   });
 });

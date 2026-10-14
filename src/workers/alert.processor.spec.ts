@@ -126,7 +126,17 @@ describe('AlertProcessor', () => {
     const rule = { ...baseRule, channels: ['WEBHOOK'] };
     const { processor, webhooks } = buildProcessor({ rulesFound: [rule] });
     await processor.process({ name: 'alert.odometer_anomaly', data: { driverId: 'drv_1' } } as never);
-    expect(webhooks.notify).toHaveBeenCalledWith('alert', expect.objectContaining({ driverId: 'drv_1' }));
+    expect(webhooks.notify).toHaveBeenCalledWith('alert', expect.objectContaining({ driverId: 'drv_1' }), {});
+  });
+
+  it('CODE-084: sends WEBHOOK alerts to the org webhook URL from Settings › Notifications', async () => {
+    const rule = { ...baseRule, channels: ['WEBHOOK'] };
+    const { processor, webhooks } = buildProcessor({
+      rulesFound: [rule],
+      notificationChannels: { webhook: { enabled: true, url: 'https://alerts.example.com/hook' } },
+    });
+    await processor.process({ name: 'alert.odometer_anomaly', data: { driverId: 'drv_1' } } as never);
+    expect(webhooks.notify).toHaveBeenCalledWith('alert', expect.anything(), { url: 'https://alerts.example.com/hook' });
   });
 
   it('MB-13 — derives kind + objectType/objectId from the event name and includes kind in the FCM data payload', async () => {

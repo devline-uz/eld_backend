@@ -12,9 +12,11 @@ import { STORAGE_PORT, StoragePort } from '../../core/storage/storage.port';
 import { AttachmentsService } from '../attachments/attachments.service';
 import { CarrierRepository } from '../carrier/carrier.repository';
 import { hashPassword } from '../auth/lib/password.util';
+import { PrincipalStateService } from '../auth/principal-state.service';
 import { TokenService } from '../auth/token.service';
 import { TRANSACTIONAL_MAIL, TransactionalMailPort } from '../../core/mail/mail.port';
-import type { ContextUser } from '../../core/context/request-context';
+import { AUDIT_EVENT, type AuditEventPayload } from '../../common/interceptors/audit.interceptor';
+import { RequestContext, type ContextUser } from '../../core/context/request-context';
 import { DriverEmailChangeService, EmailVerificationView } from './driver-email-change.service';
 import {
   CreateDriverDocumentDto,
@@ -127,6 +129,8 @@ export class DriversService {
     /** UI-005 — read-only: the carrier's default `hosRuleset` for a driver created without one. */
     @Optional() private readonly carrier?: CarrierRepository,
     @Optional() private readonly events?: EventBusService,
+    /** Driver disable — evicts the cached driver state on every replica and drops the sockets. */
+    @Optional() private readonly principals?: PrincipalStateService,
   ) {}
 
   /**
@@ -209,6 +213,11 @@ export class DriversService {
       const message = 'Vehicle is out of service and cannot be assigned a driver.';
       throw new AppException(ERROR_CODES.VEHICLE_OUT_OF_SERVICE, message, 409, { assignedVehicleId: message });
     }
+    // CODE-043 — same rule as `POST /vehicles/:id/assign-driver`: only an ACTIVE unit takes a driver.
+    if (vehicle.status !== 'ACTIVE') {
+      const message = 'Vehicle is inactive and cannot be assigned a driver.';
+      throw AppException.conflict(message, { assignedVehicleId: message });
+    }
     if (vehicle.driver && !vehicle.driver.deletedAt) throw driverConflict('assignedVehicleId');
   }
 
@@ -261,22 +270,81 @@ export class DriversService {
     const clearing = email === null && currentEmail !== null;
     await this.assertUniquesAvailable({ ...data, email: newEmail }, id);
     await this.assertFleetManagerExists(dto.fleetManagerId);
+    // CODE-011 — leaving ACTIVE frees the unit, but never while trips still point at the driver.
+    const leaving = await this.assertCanLeaveService(current, dto.status);
+    const release = leaving && current.assignedVehicleId !== null;
+    const updateInput = {
+      ...this.toUpdateInput(data),
+      ...(release && { assignedVehicle: { disconnect: true } }),
+    } satisfies Prisma.DriverUpdateInput;
+    const announceRelease = async (): Promise<void> => {
+      if (release) await publishVehicleUnassigned(this.events, { driverId: id, vehicleId: current.assignedVehicleId as string });
+      // Driver disable — INACTIVE / TERMINATED ends every app session and live token at once.
+      if (leaving) await this.cutOffAppAccess(id);
+    };
     if (clearing) {
       // Removing the address is as sensitive as changing it: same hold check and re-auth.
       await this.emailChange.assertRequestable(current, actor, { currentPassword, reauthIdToken });
-      const input = { ...this.toUpdateInput(data), ...this.emailChange.clearInput(current, new Date()) };
+      const input = { ...updateInput, ...this.emailChange.clearInput(current, new Date()) };
       const updated = await this.conflictOnDuplicate(this.drivers.update({ id }, input));
       await this.emailChange.notifyCleared(updated, current);
+      await announceRelease();
       return toView(updated);
     }
     if (newEmail === undefined) {
-      return toView(await this.conflictOnDuplicate(this.drivers.update({ id }, this.toUpdateInput(data))));
+      const updated = await this.conflictOnDuplicate(this.drivers.update({ id }, updateInput));
+      await announceRelease();
+      return toView(updated);
     }
     await this.emailChange.assertRequestable(current, actor, { currentPassword, reauthIdToken });
-    const input = { ...this.toUpdateInput(data), ...this.emailChange.pendingInput(newEmail, (actor as ContextUser).id, new Date()) };
+    const input = { ...updateInput, ...this.emailChange.pendingInput(newEmail, (actor as ContextUser).id, new Date()) };
     const updated = await this.conflictOnDuplicate(this.drivers.update({ id }, input));
+    await announceRelease();
     const emailVerification = await this.emailChange.notifyRequested(updated, current);
     return { ...toView(updated), emailVerification };
+  }
+
+  /**
+   * CODE-011 — an ACTIVE driver set INACTIVE / TERMINATED by PATCH gets the same open-trip 409 as
+   * `remove()`; returns true when the change takes the driver out of service (caller frees the unit).
+   * TERMINATED by PATCH keeps the row visible (`deletedAt` stays null) under the Terminated filter.
+   */
+  private async assertCanLeaveService(current: { id: string; status: string }, nextStatus: UpdateDriverDto['status']): Promise<boolean> {
+    if (nextStatus === undefined || nextStatus === 'ACTIVE' || nextStatus === current.status) return false;
+    const openTrips = await this.drivers.findOpenTrips(current.id);
+    if (openTrips.length > 0) {
+      const numbers = openTrips.map((t) => t.number).join(', ');
+      throw AppException.conflict(
+        `This driver still has open trips (${numbers}). Reassign or cancel them before changing their status.`,
+        { openTrips },
+      );
+    }
+    return true;
+  }
+
+  /** Driver disable — end open co-driver pairings, revoke every driver-app session (refresh tokens), evict the cached driver
+   * state on every API replica and drop the driver's sockets, so the 24 h access token stops now. */
+  private async cutOffAppAccess(driverId: string): Promise<void> {
+    const actor = RequestContext.user;
+    const pairingsEnded = await this.drivers.endActivePairings(driverId, actor?.type === 'user' ? actor.id : undefined);
+    const sessionsRevoked = await this.drivers.revokeAllSessions(driverId);
+    await this.principals?.invalidateDriver(driverId);
+    // The status change itself is audited by the route (`@Audit` UPDATE / DELETE / IMPORT); this
+    // row records the side effects the diff cannot show.
+    const rc = RequestContext.get();
+    const payload: AuditEventPayload = {
+      actorId: actor?.id,
+      actorType: actor?.type,
+      action: 'APP_ACCESS_REVOKED',
+      objectType: 'Driver',
+      objectId: driverId,
+      before: null,
+      after: { sessionsRevoked, pairingsEnded },
+      ip: rc?.ip,
+      userAgent: rc?.userAgent,
+      traceId: rc?.traceId,
+    };
+    await this.events?.publish(AUDIT_EVENT, payload);
   }
 
   /** Soft-delete only — see bugs.md B-009 (hard `DELETE` breaks on the `EldEvent` FK's
@@ -287,17 +355,16 @@ export class DriversService {
   async remove(id: string): Promise<DriverView> {
     const before = await this.getRaw(id);
     // BE-013 — never leave a live trip pointing at a deleted driver: the dispatcher reassigns or
-    // cancels those trips first (least destructive; nothing is silently unassigned).
-    const openTrips = await this.drivers.findOpenTrips(id);
-    if (openTrips.length > 0) {
+    // cancels those trips first (least destructive; nothing is silently unassigned). CODE-062 — the
+    // check and the delete run under the trip writers' per-driver lock, so a concurrent trip
+    // create cannot slip in between them.
+    const { deleted: updated, openTrips } = await this.drivers.softDeleteUnlessOnTrip(id);
+    if (openTrips) {
       const numbers = openTrips.map((t) => t.number).join(', ');
       throw AppException.conflict(`This driver still has open trips (${numbers}). Reassign or cancel them first.`, { openTrips });
     }
-    const updated = await this.drivers.update(
-      { id },
-      { status: 'TERMINATED', deletedAt: new Date(), assignedVehicle: { disconnect: true } },
-    );
     if (before.assignedVehicleId) await publishVehicleUnassigned(this.events, { driverId: id, vehicleId: before.assignedVehicleId });
+    await this.cutOffAppAccess(id);
     return toView(updated);
   }
 
@@ -344,7 +411,19 @@ export class DriversService {
           const { email: _importEmail, ...data } = normalized;
           await this.assertUniquesAvailable(data, existing.id);
           await this.assertFleetManagerExists(updateRow.fleetManagerId);
-          await this.conflictOnDuplicate(this.drivers.update({ id: existing.id }, this.toUpdateInput(data)));
+          // CODE-011 / driver disable — an import that takes the driver out of service follows PATCH.
+          const leaving = await this.assertCanLeaveService(existing, data.status);
+          const release = leaving && existing.assignedVehicleId !== null;
+          await this.conflictOnDuplicate(
+            this.drivers.update(
+              { id: existing.id },
+              { ...this.toUpdateInput(data), ...(release && { assignedVehicle: { disconnect: true } }) },
+            ),
+          );
+          if (release) {
+            await publishVehicleUnassigned(this.events, { driverId: existing.id, vehicleId: existing.assignedVehicleId as string });
+          }
+          if (leaving) await this.cutOffAppAccess(existing.id);
           summary.updated += 1;
         } else {
           const data = this.normalizeCreate(row);
@@ -398,6 +477,7 @@ export class DriversService {
     // B-094 — a carrier reset is typically "lost/stolen phone": the old refresh tokens must
     // stop working too, not just the old password (same as AuthService.resetPassword for users).
     await this.drivers.revokeAllSessions(id);
+    await this.principals?.invalidateDriver(id);
     // Driver email change hold — a just-changed address is not trusted with a password yet: the
     // code goes to the dispatcher (the same path as a driver without an email), never to the mail.
     if (driver.email && this.emailChange.isInHold(driver)) {

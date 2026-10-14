@@ -36,7 +36,7 @@ export class ReportsController {
 
   @Post('generate')
   @Perm('reports', 'FULL')
-  @Audit({ object: 'Report', action: 'CREATE' })
+  @Audit({ object: 'Report', action: 'CREATE', resultIdField: 'reportId' })
   @ApiOperation({ summary: 'Queues a report job. Never generates synchronously — poll GET /reports/:id or listen for report.ready.' })
   @ApiStandardErrors({
     errors: [
@@ -56,8 +56,8 @@ export class ReportsController {
   @ApiOperation({ summary: 'Lists report jobs (own carrier), newest first.' })
   @ApiOkResponse({ schema: { example: { items: [{ id: 'rpt_1', type: 'IFTA', status: 'READY', requestedAt: '2026-09-11T06:00:00.000Z' }], page: 1, limit: 25, total: 1, totalPages: 1 } } })
   @ApiStandardErrors()
-  list(@Query(zodBody(ReportListQueryDto)) query: ReportListQueryDto) {
-    return this.reports.list(query);
+  list(@Query(zodBody(ReportListQueryDto)) query: ReportListQueryDto, @CurrentUser() actor: ContextUser) {
+    return this.reports.list(query, actor);
   }
 
   @Get('schedules')
@@ -114,6 +114,8 @@ export class ReportsController {
   @Get('ifta')
   @FigmaScreen('web/reports-ifta')
   @Perm('reports', 'READ')
+  // CODE-016 — READ-gated, but it creates a Report job: audited like POST /reports/generate.
+  @Audit({ object: 'Report', action: 'CREATE', resultIdField: 'reportId' })
   @ApiOperation({ summary: 'Shortcut: queues an IFTA report for a quarter (TZ §11.6 `/reports/ifta?quarter=`). `?format=PDF` (B-96) queues the PDF instead of the CSV — still READ, no FULL required.' })
   @ApiQuery({ name: 'format', required: false, enum: ['CSV', 'PDF'] })
   @ApiQuery({ name: 'quarter', required: true, example: '2026-Q3' })
@@ -180,6 +182,8 @@ export class ReportsController {
 
   @Get('activity')
   @Perm('reports', 'READ')
+  // CODE-016 — READ-gated, but it creates a Report job: audited like POST /reports/generate.
+  @Audit({ object: 'Report', action: 'CREATE', resultIdField: 'reportId' })
   @ApiOperation({ summary: 'Shortcut: queues an activity report for a date range. `?format=PDF` (B-96) queues the PDF instead of the CSV — still READ, no FULL required.' })
   @ApiQuery({ name: 'format', required: false, enum: ['CSV', 'PDF'] })
   @ApiStandardErrors({ errors: [apiError.validation('from/to must be YYYY-MM-DD.')] })
@@ -239,6 +243,8 @@ export class ReportsController {
 
   @Get('dvir')
   @Perm('reports', 'READ')
+  // CODE-016 — READ-gated, but it creates a Report job: audited like POST /reports/generate.
+  @Audit({ object: 'Report', action: 'CREATE', resultIdField: 'reportId' })
   @ApiOperation({ summary: 'Shortcut: queues a DVIR report for a date range. `?format=PDF` (B-96) queues the PDF instead of the CSV — still READ, no FULL required.' })
   @ApiQuery({ name: 'format', required: false, enum: ['CSV', 'PDF'] })
   @ApiStandardErrors({ errors: [apiError.validation('from/to must be YYYY-MM-DD.')] })
@@ -253,6 +259,8 @@ export class ReportsController {
   @Get('fmcsa-pack')
   @FigmaScreen('web/reports-fmcsa-audit-pack')
   @Perm('reportsTransfer', 'READ')
+  // CODE-016 — READ-gated, but it creates a Report job: audited like POST /reports/generate.
+  @Audit({ object: 'Report', action: 'CREATE', resultIdField: 'reportId' })
   @ApiOperation({ summary: 'Shortcut: queues an FMCSA compliance package (Appendix A output files per driver + PDF cover) for a date range.' })
   @ApiStandardErrors({ errors: [apiError.validation('from/to must be YYYY-MM-DD.')] })
   @HttpCode(202)
@@ -267,8 +275,8 @@ export class ReportsController {
   @ApiOperation({ summary: 'Report job status and, once READY, a fresh 7-day presigned download URL (TZ §15/§17).' })
   @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.REPORT_NOT_FOUND, 'Report not found.')] })
   @ApiOkResponse({ schema: { example: { id: 'rpt_1', type: 'IFTA', status: 'READY', rowCount: 12, completedAt: '2026-09-11T06:01:00.000Z' } } })
-  get(@Param('id') id: string) {
-    return this.reports.get(id);
+  get(@Param('id') id: string, @CurrentUser() actor: ContextUser) {
+    return this.reports.get(id, actor);
   }
 
   @Get(':id/download')
@@ -281,8 +289,8 @@ export class ReportsController {
     ],
   })
   @ApiOkResponse({ schema: { example: { downloadUrl: 'https://minio.local/reports/rpt_1.csv?X-Amz-Signature=...', expiresAt: '2026-09-18T06:01:00.000Z', fileName: 'rpt_1.csv' } } })
-  download(@Param('id') id: string) {
-    return this.reports.download(id);
+  download(@Param('id') id: string, @CurrentUser() actor: ContextUser) {
+    return this.reports.download(id, actor);
   }
 
   @Get(':id/file')
@@ -304,8 +312,12 @@ export class ReportsController {
       { status: 409, code: ERROR_CODES.REPORT_NOT_READY, message: 'Report is not ready for download yet.' },
     ],
   })
-  async file(@Param('id') id: string, @Res({ passthrough: true }) res: Response): Promise<Buffer> {
-    const { fileName, contentType, body } = await this.reports.file(id);
+  async file(
+    @Param('id') id: string,
+    @Res({ passthrough: true }) res: Response,
+    @CurrentUser() actor: ContextUser,
+  ): Promise<Buffer> {
+    const { fileName, contentType, body } = await this.reports.file(id, actor);
     res.setHeader('Content-Type', contentType);
     res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
     res.setHeader('Cache-Control', 'no-store');

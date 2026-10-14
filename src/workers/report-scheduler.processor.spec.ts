@@ -2,7 +2,10 @@ import { ReportSchedulerProcessor } from './report-scheduler.processor';
 
 describe('ReportSchedulerProcessor.runTick (TZ §15 — report scheduler runs without a manual trigger)', () => {
   function build() {
-    const prisma = { report: { create: jest.fn(async (args: { data: object }) => ({ id: 'rpt_1', ...args.data })) } };
+    const prisma = {
+      report: { create: jest.fn(async (args: { data: object }) => ({ id: 'rpt_1', ...args.data })) },
+      user: { findUnique: jest.fn(async (args: { where: { id: string } }) => ({ id: args.where.id })) },
+    };
     const schedulesRepo = {
       dueSchedules: jest.fn(async () => [
         {
@@ -69,5 +72,22 @@ describe('ReportSchedulerProcessor.runTick (TZ §15 — report scheduler runs wi
     const result = await processor.runTick(new Date());
     expect(result).toEqual({ due: 2, enqueued: 1 });
     expect(queue.add).toHaveBeenCalledTimes(1);
+  });
+
+  it('CODE-080: disables a schedule whose owner was deleted instead of failing every minute', async () => {
+    const { processor, prisma, schedulesRepo, queue } = build();
+    prisma.user.findUnique.mockResolvedValueOnce(null as never);
+    const result = await processor.runTick(new Date('2026-09-14T06:00:00.000Z'));
+    expect(result).toEqual({ due: 1, enqueued: 0 });
+    expect(prisma.report.create).not.toHaveBeenCalled();
+    expect(queue.add).not.toHaveBeenCalled();
+    expect(schedulesRepo.update).toHaveBeenCalledWith({ id: 'sch_1' }, { enabled: false, nextRunAt: null });
+  });
+
+  it('CODE-080: a failed run still advances nextRunAt to the next cron slot', async () => {
+    const { processor, prisma, schedulesRepo } = build();
+    prisma.report.create.mockRejectedValueOnce(new Error('boom'));
+    await processor.runTick(new Date('2026-09-14T06:00:00.000Z'));
+    expect(schedulesRepo.update).toHaveBeenCalledWith({ id: 'sch_1' }, { nextRunAt: new Date('2026-09-21T06:00:00.000Z') });
   });
 });

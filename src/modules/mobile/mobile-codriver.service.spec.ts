@@ -19,6 +19,7 @@ function build() {
   const auth = {
     loginDriver: jest.fn(),
     resolveDriverSessionFamily: jest.fn().mockResolvedValue(null),
+    evictDriverAccess: jest.fn().mockResolvedValue(undefined),
     stashSwitchPair: jest.fn().mockResolvedValue(undefined),
     recallSwitchPair: jest.fn().mockResolvedValue(null),
   };

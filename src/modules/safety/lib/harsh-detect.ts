@@ -15,6 +15,9 @@ export const HARSH_SPEED_DELTA_MPH = 8;
 export const HARSH_MAX_WINDOW_SEC = 2;
 export const HARSH_TURN_DELTA_DEG = 45;
 export const HARSH_TURN_MIN_SPEED_MPH = 15;
+/** CODE-039 — a qualifying step within this many seconds of the previous one of the same type
+ * continues that manoeuvre (60 → 20 mph over 4 s at 1 Hz is ONE harsh braking, not four). */
+export const HARSH_EPISODE_GAP_SEC = 5;
 
 export interface TelemetrySample {
   time: Date;
@@ -47,9 +50,32 @@ function headingDelta(a: number, b: number): number {
   return diff > 180 ? 360 - diff : diff;
 }
 
-/** Runs the three detectors across an ORDERED sample sequence for a single vehicle. */
+/** Runs the three detectors across an ORDERED sample sequence for a single vehicle. Consecutive
+ * qualifying steps of one type form one episode (CODE-039): one event at the episode's first
+ * step, with the highest severity seen during it. */
 export function detectHarshEvents(samples: TelemetrySample[]): DetectedHarshEvent[] {
   const events: DetectedHarshEvent[] = [];
+  const lastStepAt = new Map<HarshEventType, { at: number; event: DetectedHarshEvent }>();
+  const record = (type: HarshEventType, cur: TelemetrySample, severity: number) => {
+    const open = lastStepAt.get(type);
+    const at = cur.time.getTime();
+    if (open && at - open.at <= HARSH_EPISODE_GAP_SEC * 1000) {
+      open.event.severity = Math.max(open.event.severity, severity);
+      open.at = at;
+      return;
+    }
+    const event: DetectedHarshEvent = {
+      type,
+      occurredAt: cur.time,
+      speedMph: cur.speedMph,
+      latitude: cur.latitude,
+      longitude: cur.longitude,
+      severity,
+    };
+    events.push(event);
+    lastStepAt.set(type, { at, event });
+  };
+
   for (let i = 1; i < samples.length; i++) {
     const prev = samples[i - 1];
     const cur = samples[i];
@@ -59,23 +85,9 @@ export function detectHarshEvents(samples: TelemetrySample[]): DetectedHarshEven
     if (prev.speedMph !== null && cur.speedMph !== null) {
       const delta = cur.speedMph - prev.speedMph;
       if (-delta >= HARSH_SPEED_DELTA_MPH) {
-        events.push({
-          type: 'HARSH_BRAKING',
-          occurredAt: cur.time,
-          speedMph: cur.speedMph,
-          latitude: cur.latitude,
-          longitude: cur.longitude,
-          severity: severityFromDelta(-delta, HARSH_SPEED_DELTA_MPH),
-        });
+        record('HARSH_BRAKING', cur, severityFromDelta(-delta, HARSH_SPEED_DELTA_MPH));
       } else if (delta >= HARSH_SPEED_DELTA_MPH) {
-        events.push({
-          type: 'HARSH_ACCEL',
-          occurredAt: cur.time,
-          speedMph: cur.speedMph,
-          latitude: cur.latitude,
-          longitude: cur.longitude,
-          severity: severityFromDelta(delta, HARSH_SPEED_DELTA_MPH),
-        });
+        record('HARSH_ACCEL', cur, severityFromDelta(delta, HARSH_SPEED_DELTA_MPH));
       }
     }
 
@@ -86,16 +98,7 @@ export function detectHarshEvents(samples: TelemetrySample[]): DetectedHarshEven
       cur.speedMph >= HARSH_TURN_MIN_SPEED_MPH
     ) {
       const delta = headingDelta(prev.headingDeg, cur.headingDeg);
-      if (delta >= HARSH_TURN_DELTA_DEG) {
-        events.push({
-          type: 'HARSH_TURN',
-          occurredAt: cur.time,
-          speedMph: cur.speedMph,
-          latitude: cur.latitude,
-          longitude: cur.longitude,
-          severity: severityFromDelta(delta, HARSH_TURN_DELTA_DEG),
-        });
-      }
+      if (delta >= HARSH_TURN_DELTA_DEG) record('HARSH_TURN', cur, severityFromDelta(delta, HARSH_TURN_DELTA_DEG));
     }
   }
   return events;

@@ -129,6 +129,7 @@ export class SafetyDetectProcessor extends WorkerHost {
         alertOnEnter: fence.alertOnEnter,
         alertOnExit: fence.alertOnExit,
         afterHoursOnly: fence.afterHoursOnly,
+        polygon: fence.type === 'POLYGON' ? toPolygon(fence.polygon) : null,
       };
       const priorPoint = await this.prisma.telemetryPoint.findFirst({
         where: { vehicleId, time: { lt: earliest }, latitude: { not: null }, longitude: { not: null } },
@@ -209,4 +210,13 @@ export class SafetyDetectProcessor extends WorkerHost {
 
 function distanceInside(point: Point, fence: CircleGeofence): boolean {
   return isInsideGeofence(point, fence);
+}
+
+/** CODE-025 — the stored `Geofence.polygon` JSON (`[{lat, lon}, ...]`), or null when malformed. */
+function toPolygon(raw: unknown): Point[] | null {
+  if (!Array.isArray(raw)) return null;
+  const points = raw
+    .map((p) => (p && typeof p === 'object' ? { lat: Number((p as Point).lat), lon: Number((p as Point).lon) } : null))
+    .filter((p): p is Point => !!p && Number.isFinite(p.lat) && Number.isFinite(p.lon));
+  return points.length >= 3 ? points : null;
 }

@@ -11,7 +11,7 @@ function buildService(trip: Record<string, unknown> | null = { id: 'trp_1', stat
     list: jest.fn(async () => ({ items: [], total: 0 })),
     findDriverForTrip: jest.fn(async (id: string): Promise<{ id: string; status: string; deletedAt: Date | null } | null> => ({ id, status: 'ACTIVE', deletedAt: null })),
     findVehicleForTrip: jest.fn(async (id: string): Promise<{ id: string; status: string; deletedAt: Date | null } | null> => ({ id, status: 'ACTIVE', deletedAt: null })),
-    findTrailer: jest.fn(async (id: string): Promise<{ id: string; deletedAt: Date | null } | null> => ({ id, deletedAt: null })),
+    findTrailer: jest.fn(async (id: string): Promise<{ id: string; status: string; deletedAt: Date | null } | null> => ({ id, status: 'ACTIVE', deletedAt: null })),
     findUnitScheduleCandidates: jest.fn(async (..._args: unknown[]): Promise<Array<Record<string, unknown>>> => []),
     withUnitScheduleLock: jest.fn(async (_vehicleId: string, work: (db: unknown) => Promise<unknown>, outer?: unknown) => work(outer ?? 'tx')),
     findDriverScheduleCandidates: jest.fn(async (..._args: unknown[]): Promise<Array<Record<string, unknown>>> => []),
@@ -83,10 +83,34 @@ describe('TripsService — lifecycle transitions', () => {
     expect(data.startedAt).toBeInstanceOf(Date);
   });
 
+  it('LIVE-012 — Start trip is a 409 while the driver is still on another IN_PROGRESS trip', async () => {
+    const { service, repo } = buildService({
+      id: 'trp_1', number: 'TRP-1', status: 'ASSIGNED', driverId: 'drv_1', vehicleId: 'veh_1', trailerId: null, etaAt: null, startedAt: null,
+      plannedStartAt: new Date('2026-10-14T08:00:00Z'), plannedEndAt: new Date('2026-10-14T18:00:00Z'),
+    });
+    repo.findDriverScheduleCandidates.mockResolvedValueOnce([
+      { id: 'trp_old', number: 'TRP-OLD', status: 'IN_PROGRESS', plannedStartAt: new Date('2026-10-06T08:00:00Z'), plannedEndAt: new Date('2026-10-06T16:00:00Z'), startedAt: new Date('2026-10-06T08:00:00Z'), completedAt: null, driver: { firstName: 'Tom', lastName: 'A' } },
+    ]);
+    await expect(service.update('trp_1', { status: 'IN_PROGRESS' })).rejects.toMatchObject({ code: 'TRIP_SCHEDULE_CONFLICT', status: 409 });
+    expect(repo.update).not.toHaveBeenCalled();
+  });
+
+  it('LIVE-033 — Start trip is a 409 when the unit has gone out of service', async () => {
+    const { service, repo } = buildService({
+      id: 'trp_1', status: 'ASSIGNED', driverId: 'drv_1', vehicleId: 'veh_1', trailerId: null, etaAt: null, startedAt: null,
+      plannedStartAt: new Date('2026-10-14T08:00:00Z'), plannedEndAt: null,
+    });
+    repo.findVehicleForTrip.mockResolvedValueOnce({ id: 'veh_1', status: 'OUT_OF_SERVICE', deletedAt: null });
+    await expect(service.update('trp_1', { status: 'IN_PROGRESS' })).rejects.toMatchObject({ code: 'VEHICLE_OUT_OF_SERVICE', status: 409 });
+    expect(repo.update).not.toHaveBeenCalled();
+  });
+
   it('publishes trip.status_changed only when the status actually changes', async () => {
     const { service, events } = buildService({ id: 'trp_1', status: 'PLANNED', etaAt: null });
     await service.update('trp_1', { notes: 'no status change' });
-    expect(events.publish).not.toHaveBeenCalled();
+    // CODE-056 — an edit without a status move tells other boards with `trip.updated` instead.
+    expect(events.publish).toHaveBeenCalledTimes(1);
+    expect(events.publish).toHaveBeenCalledWith('realtime.push', { room: 'fleet', event: 'trip.updated', payload: { tripId: 'trp_1' } });
   });
 });
 
@@ -97,14 +121,14 @@ describe('TripsService — assign', () => {
   });
 
   it('assigns a PLANNED trip and raises alert.trip_assigned', async () => {
-    const { service, alertQueue } = buildService({ id: 'trp_1', status: 'PLANNED', etaAt: null, plannedStartAt: new Date('2026-10-10T10:00:00Z') });
+    const { service, alertQueue } = buildService({ id: 'trp_1', status: 'PLANNED', etaAt: null, plannedStartAt: new Date('2026-10-10T10:00:00Z'), plannedEndAt: new Date('2026-10-10T18:00:00Z') });
     const result = await service.assign('trp_1', { driverId: 'drv_1', notify: true });
     expect(result.status).toBe('ASSIGNED');
     expect(alertQueue.add).toHaveBeenCalledWith('alert.trip_assigned', { tripId: 'trp_1', driverId: 'drv_1' });
   });
 
   it('§20 B-74 — notify: false assigns without raising the driver-app notification', async () => {
-    const { service, alertQueue } = buildService({ id: 'trp_1', status: 'PLANNED', etaAt: null, plannedStartAt: new Date('2026-10-10T10:00:00Z') });
+    const { service, alertQueue } = buildService({ id: 'trp_1', status: 'PLANNED', etaAt: null, plannedStartAt: new Date('2026-10-10T10:00:00Z'), plannedEndAt: new Date('2026-10-10T18:00:00Z') });
     const result = await service.assign('trp_1', { driverId: 'drv_1', notify: false });
     expect(result.status).toBe('ASSIGNED');
     expect(alertQueue.add).not.toHaveBeenCalled();
@@ -145,18 +169,31 @@ describe('TripsService — trailer must be live (soft-deleted trailers)', () => 
 
   it('create stores a live trailerId', async () => {
     const { service, repo } = buildService();
-    await service.create({ number: 'TRP-11', trailerId: TRL, plannedStartAt: new Date('2026-10-10T10:00:00Z'), draft: false }, 'usr_1');
+    await service.create({ number: 'TRP-11', trailerId: TRL, plannedStartAt: new Date('2026-10-10T10:00:00Z'), plannedEndAt: new Date('2026-10-10T18:00:00Z'), draft: false }, 'usr_1');
     expect(repo.findTrailer).toHaveBeenCalledWith(TRL);
     expect((repo.createWithStops.mock.calls[0][0] as Record<string, unknown>).trailerId).toBe(TRL);
   });
 
   it('create rejects a soft-deleted trailerId with 422 TRAILER_NOT_FOUND and writes nothing', async () => {
     const { service, repo } = buildService();
-    repo.findTrailer.mockResolvedValueOnce({ id: TRL, deletedAt: new Date('2026-10-01T00:00:00Z') });
+    repo.findTrailer.mockResolvedValueOnce({ id: TRL, status: 'ACTIVE', deletedAt: new Date('2026-10-01T00:00:00Z') });
     await expect(service.create({ number: 'TRP-12', trailerId: TRL, draft: false }, 'usr_1')).rejects.toMatchObject({
       code: 'TRAILER_NOT_FOUND',
       status: 422,
       details: { trailerId: 'This trailer has been deleted and cannot be assigned.' },
+    });
+    expect(repo.createWithStops).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['OUT_OF_SERVICE', /out of service/],
+    ['INACTIVE', /inactive/],
+  ])('CODE-049 — create rejects a %s trailer with 409 and writes nothing', async (status, text) => {
+    const { service, repo } = buildService();
+    repo.findTrailer.mockResolvedValueOnce({ id: TRL, status, deletedAt: null });
+    await expect(service.create({ number: 'TRP-14', trailerId: TRL, draft: false }, 'usr_1')).rejects.toMatchObject({
+      status: 409,
+      details: { trailerId: expect.stringMatching(text) as unknown },
     });
     expect(repo.createWithStops).not.toHaveBeenCalled();
   });
@@ -170,13 +207,13 @@ describe('TripsService — trailer must be live (soft-deleted trailers)', () => 
 
   it('assign rejects a soft-deleted trailerId', async () => {
     const { service, repo } = buildService({ id: 'trp_1', status: 'PLANNED', etaAt: null, trailerId: null });
-    repo.findTrailer.mockResolvedValueOnce({ id: TRL, deletedAt: new Date() });
+    repo.findTrailer.mockResolvedValueOnce({ id: TRL, status: 'ACTIVE', deletedAt: new Date() });
     await expect(service.assign('trp_1', { driverId: 'drv_1', trailerId: TRL, notify: false })).rejects.toMatchObject({ code: 'TRAILER_NOT_FOUND', status: 422 });
     expect(repo.update).not.toHaveBeenCalled();
   });
 
   it("assign re-sending the trip's current (since-deleted) trailer is not re-validated", async () => {
-    const { service, repo } = buildService({ id: 'trp_1', status: 'ASSIGNED', etaAt: null, trailerId: TRL, plannedStartAt: new Date('2026-10-10T10:00:00Z') });
+    const { service, repo } = buildService({ id: 'trp_1', status: 'ASSIGNED', etaAt: null, trailerId: TRL, plannedStartAt: new Date('2026-10-10T10:00:00Z'), plannedEndAt: new Date('2026-10-10T18:00:00Z') });
     await service.assign('trp_1', { driverId: 'drv_2', trailerId: TRL, notify: false });
     expect(repo.findTrailer).not.toHaveBeenCalled();
     expect(repo.update).toHaveBeenCalled();
@@ -247,12 +284,63 @@ describe('TripsService — unit schedule overlap (web panel)', () => {
     ).rejects.toMatchObject({ code: 'TRIP_SCHEDULE_CONFLICT', message: 'Unit 101 is already assigned to another trip (TRP-500) from 2026-10-10 10:00 UTC onward (no planned end).' });
   });
 
-  it('create without a planned end occupies the unit open-ended, so a later trip blocks it', async () => {
+  it('CODE-058 create with a unit but no planned end -> 422 details.plannedEndAt (it would hold the unit for ever)', async () => {
     const { service, repo } = buildService();
-    repo.findUnitScheduleCandidates.mockResolvedValueOnce([other({ plannedStartAt: at(40), plannedEndAt: at(44) })]);
     await expect(
       service.create({ number: 'TRP-6', vehicleId: VEH, plannedStartAt: at(12), draft: false }, 'usr_1'),
-    ).rejects.toMatchObject({ code: 'TRIP_SCHEDULE_CONFLICT' });
+    ).rejects.toMatchObject({ status: 422, details: { plannedEndAt: expect.any(String) as string } });
+    expect(repo.createWithStops).not.toHaveBeenCalled();
+  });
+
+  it('CODE-062 a unit deleted after the pre-check is re-read under the schedule lock -> 422, nothing written', async () => {
+    const { service, repo } = buildService();
+    repo.findVehicleForTrip
+      .mockResolvedValueOnce({ id: VEH, status: 'ACTIVE', deletedAt: null })
+      .mockResolvedValueOnce({ id: VEH, status: 'INACTIVE', deletedAt: new Date('2026-10-10T00:00:00Z') });
+    await expect(
+      service.create({ number: 'TRP-62', vehicleId: VEH, plannedStartAt: at(12), plannedEndAt: at(16), draft: false }, 'usr_1'),
+    ).rejects.toMatchObject({ status: 422, code: 'VEHICLE_NOT_FOUND' });
+    expect(repo.createWithStops).not.toHaveBeenCalled();
+  });
+
+  it('CODE-062 (driver) a driver deleted after the pre-check is re-read under the driver lock -> 422, nothing written', async () => {
+    const DRV = '11111111-1111-4111-8111-111111111111';
+    const { service, repo } = buildService();
+    repo.findDriverForTrip
+      .mockResolvedValueOnce({ id: DRV, status: 'ACTIVE', deletedAt: null })
+      .mockResolvedValueOnce({ id: DRV, status: 'TERMINATED', deletedAt: new Date('2026-10-10T00:00:00Z') });
+    await expect(
+      service.create({ number: 'TRP-62D', driverId: DRV, plannedStartAt: at(12), plannedEndAt: at(16), draft: false }, 'usr_1'),
+    ).rejects.toMatchObject({ status: 422, code: 'DRIVER_NOT_FOUND' });
+    expect(repo.withDriverScheduleLock).toHaveBeenCalled();
+    expect(repo.createWithStops).not.toHaveBeenCalled();
+  });
+
+  it('CODE-062 (driver) assign: a driver deactivated after the pre-check -> 409 details.driverId, nothing written', async () => {
+    const DRV = '11111111-1111-4111-8111-111111111111';
+    const { service, repo } = buildService({ id: 'trp_1', status: 'PLANNED', driverId: null, vehicleId: null, trailerId: null, plannedStartAt: at(12), plannedEndAt: at(16), etaAt: null });
+    repo.findDriverForTrip
+      .mockResolvedValueOnce({ id: DRV, status: 'ACTIVE', deletedAt: null })
+      .mockResolvedValueOnce({ id: DRV, status: 'INACTIVE', deletedAt: null });
+    await expect(service.assign('trp_1', { driverId: DRV, notify: false })).rejects.toMatchObject({
+      status: 409,
+      details: { driverId: expect.stringContaining('inactive') as string },
+    });
+    expect(repo.update).not.toHaveBeenCalled();
+  });
+
+  it('CODE-058 a draft with a unit may still be saved without a planned end', async () => {
+    const { service, repo } = buildService();
+    await service.create({ number: 'TRP-6D', vehicleId: VEH, plannedStartAt: at(12), draft: true }, 'usr_1');
+    expect(repo.createWithStops).toHaveBeenCalled();
+  });
+
+  it('CODE-058 assign on a trip with no planned end -> 422 details.plannedEndAt', async () => {
+    const { service } = buildService({ id: 'trp_1', status: 'PLANNED', driverId: null, vehicleId: null, trailerId: null, plannedStartAt: at(12), plannedEndAt: null, etaAt: null });
+    await expect(service.assign('trp_1', { driverId: '11111111-1111-4111-8111-111111111111', notify: false })).rejects.toMatchObject({
+      status: 422,
+      details: { plannedEndAt: expect.any(String) as string },
+    });
   });
 
   it('a DELIVERED trip blocks only its actual range', async () => {
@@ -648,10 +736,38 @@ describe('TripsService — driver and trailer overlap (TRIP_SCHEDULE_CONFLICT)',
 
   it('auto-assign skips a load whose driver is already booked and keeps going', async () => {
     const { service, repo } = buildService({ id: 'trp_1', status: 'PLANNED', driverId: null, vehicleId: null, trailerId: null, plannedStartAt: at(12), plannedEndAt: at(16), etaAt: null });
-    repo.unassignedLoads.mockResolvedValueOnce([{ id: 'trp_a', plannedStartAt: at(12) }, { id: 'trp_b', plannedStartAt: at(12) }] as never);
+    repo.unassignedLoads.mockResolvedValueOnce([{ id: 'trp_a', plannedStartAt: at(12), plannedEndAt: at(16) }, { id: 'trp_b', plannedStartAt: at(12), plannedEndAt: at(16) }] as never);
     repo.availableDriverIds.mockResolvedValueOnce([DRV] as never);
     repo.findDriverScheduleCandidates.mockResolvedValueOnce([other()]);
-    await expect(service.autoAssign()).resolves.toEqual({ assigned: [{ tripId: 'trp_b', driverId: DRV }], skipped: 1 });
+    await expect(service.autoAssign()).resolves.toEqual({ assigned: [{ tripId: 'trp_b', driverId: DRV }], skipped: 1, noSchedule: 0, failed: [] });
+  });
+
+  it('CODE-055 a booked driver is tried for the next load instead of being dropped, and the next driver is tried for this one', async () => {
+    const { service, repo } = buildService({ id: 'trp_1', status: 'PLANNED', driverId: null, vehicleId: null, trailerId: null, plannedStartAt: at(12), plannedEndAt: at(16), etaAt: null });
+    repo.unassignedLoads.mockResolvedValueOnce([{ id: 'trp_a', plannedStartAt: at(12), plannedEndAt: at(16) }] as never);
+    repo.availableDriverIds.mockResolvedValueOnce(['drv_busy', 'drv_free'] as never);
+    // drv_busy holds an overlapping trip -> TRIP_SCHEDULE_CONFLICT; drv_free fits.
+    repo.findDriverScheduleCandidates.mockResolvedValueOnce([other()]);
+    await expect(service.autoAssign()).resolves.toEqual({ assigned: [{ tripId: 'trp_a', driverId: 'drv_free' }], skipped: 0, noSchedule: 0, failed: [] });
+  });
+
+  it('CODE-055 a load-level error is reported for that load and the run continues (no 500 half-way)', async () => {
+    // The load was started meanwhile (stale unassigned-loads read): a load-level 409, not a driver one.
+    const { service, repo } = buildService({ id: 'trp_a', status: 'IN_PROGRESS', driverId: null, vehicleId: null, trailerId: null, plannedStartAt: at(12), plannedEndAt: at(16), etaAt: null });
+    repo.unassignedLoads.mockResolvedValueOnce([{ id: 'trp_a', number: 'TR-1', plannedStartAt: at(12), plannedEndAt: at(16) }] as never);
+    repo.availableDriverIds.mockResolvedValueOnce([DRV, 'drv_2'] as never);
+    const result = await service.autoAssign();
+    expect(result.assigned).toEqual([]);
+    expect(result.failed).toEqual([{ tripId: 'trp_a', number: 'TR-1', reason: expect.stringContaining('planned or assigned') as string }]);
+    expect(result.skipped).toBe(0);
+  });
+});
+
+describe('TripsService — realtime notices (CODE-056)', () => {
+  it('create publishes trip.created for other boards', async () => {
+    const { service, events } = buildService();
+    await service.create({ number: 'TRP-NEW', draft: true }, 'usr_1');
+    expect(events.publish).toHaveBeenCalledWith('realtime.push', { room: 'fleet', event: 'trip.created', payload: { tripId: 'trp_new' } });
   });
 });
 
@@ -799,9 +915,10 @@ describe('TripsService — driver / unit validation (BE-001)', () => {
   });
 
   it('assign maps P2025 to 404 when the trip itself vanished', async () => {
-    const { service, repo } = buildService({ id: 'trp_1', status: 'PLANNED', driverId: null, plannedStartAt: start, etaAt: null });
+    const end = new Date(start.getTime() + 8 * 3600_000);
+    const { service, repo } = buildService({ id: 'trp_1', status: 'PLANNED', driverId: null, plannedStartAt: start, plannedEndAt: end, etaAt: null });
     repo.withDriverScheduleLock.mockRejectedValueOnce(Object.assign(new Error('gone'), { code: 'P2025' }));
-    repo.findById.mockResolvedValueOnce({ id: 'trp_1', status: 'PLANNED', driverId: null, plannedStartAt: start, etaAt: null }).mockResolvedValueOnce(null);
+    repo.findById.mockResolvedValueOnce({ id: 'trp_1', status: 'PLANNED', driverId: null, plannedStartAt: start, plannedEndAt: end, etaAt: null }).mockResolvedValueOnce(null);
     await expect(service.assign('trp_1', { driverId: DRV, notify: false })).rejects.toMatchObject({ code: 'NOT_FOUND', status: 404 });
   });
 });
@@ -837,7 +954,7 @@ describe('TripsService — planned start required for resources (BE-005)', () =>
     await expect(service.assign('trp_1', { driverId: DRV, notify: false })).rejects.toMatchObject({ status: 422 });
     repo.unassignedLoads.mockResolvedValueOnce([{ id: 'trp_1', plannedStartAt: null }] as never);
     repo.availableDriverIds.mockResolvedValueOnce([DRV] as never);
-    await expect(service.autoAssign()).resolves.toEqual({ assigned: [], skipped: 1 });
+    await expect(service.autoAssign()).resolves.toEqual({ assigned: [], skipped: 1, noSchedule: 1, failed: [] });
   });
 });
 
@@ -1039,7 +1156,7 @@ describe('TripsService — status-guarded writes (CODE-024)', () => {
   it('update writes only while the trip still has the status it was checked in', async () => {
     const { service, repo } = buildService({ id: 'trp_1', status: 'ASSIGNED', driverId: 'drv_1', startedAt: null, etaAt: null });
     await service.update('trp_1', { status: 'IN_PROGRESS' });
-    expect(repo.update).toHaveBeenCalledWith({ id: 'trp_1', status: 'ASSIGNED' }, expect.anything());
+    expect(repo.update.mock.calls[0][0]).toEqual({ id: 'trp_1', status: 'ASSIGNED' });
   });
 
   it('update -> 409 when the status moved between the check and the write (e.g. cancelled meanwhile)', async () => {
@@ -1055,7 +1172,7 @@ describe('TripsService — status-guarded writes (CODE-024)', () => {
   it('assign -> 409 when the driver started the trip meanwhile (never overwrites IN_PROGRESS)', async () => {
     const start = new Date('2026-10-10T08:00:00Z');
     const DRV = '11111111-1111-4111-8111-111111111111';
-    const trip = { id: 'trp_1', status: 'ASSIGNED', driverId: 'drv_old', vehicleId: null, trailerId: null, plannedStartAt: start, plannedEndAt: null, etaAt: null };
+    const trip = { id: 'trp_1', status: 'ASSIGNED', driverId: 'drv_old', vehicleId: null, trailerId: null, plannedStartAt: start, plannedEndAt: new Date('2026-10-10T16:00:00Z'), etaAt: null };
     const { service, repo } = buildService(trip);
     repo.withDriverScheduleLock.mockRejectedValueOnce(gone());
     repo.findById.mockResolvedValueOnce(trip).mockResolvedValueOnce({ ...trip, status: 'IN_PROGRESS' });

@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { Geofence, Prisma } from '@prisma/client';
+import { Prisma, type Geofence } from '@prisma/client';
 import { BaseRepository, ModelDelegate } from '../../core/prisma/base.repository';
 import { PrismaService } from '../../core/prisma/prisma.service';
 
@@ -42,14 +42,22 @@ export class GeofencesRepository extends BaseRepository<
     return (await this.prisma.vehicleGroup.count({ where: { id } })) > 0;
   }
 
-  /** Enabled CIRCLE fences worth detecting against — an alert flag, or a dwell threshold
-   * (§20 B-15), on. */
+  /** Enabled fences worth detecting against — an alert flag, or a dwell threshold (§20 B-15), on.
+   * CODE-025 — ADDRESS fences (geocoded center + radius) and POLYGON fences count too; they used
+   * to be offered alert toggles in the UI but never fired. */
   activeCircleFences(): Promise<Geofence[]> {
     return this.prisma.geofence.findMany({
       where: {
         enabled: true,
-        type: 'CIRCLE',
-        OR: [{ alertOnEnter: true }, { alertOnExit: true }, { dwellMinutes: { not: null } }],
+        AND: [
+          { OR: [{ alertOnEnter: true }, { alertOnExit: true }, { dwellMinutes: { not: null } }] },
+          {
+            OR: [
+              { type: { in: ['CIRCLE', 'ADDRESS'] }, centerLat: { not: null }, centerLon: { not: null }, radiusMi: { not: null } },
+              { type: 'POLYGON', polygon: { not: Prisma.AnyNull } },
+            ],
+          },
+        ],
       },
     });
   }

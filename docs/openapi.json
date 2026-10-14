@@ -1640,7 +1640,7 @@
     },
     "/api/auth/password/reset-code": {
       "post": {
-        "description": "Back-office `User` accounts only (drivers use `/auth/driver/password/*`). Unknown, INVITED or DISABLED email → 404 (the product shows \"No account found with this email\"). The code is stored as an HMAC, expires in 15 minutes, allows 5 wrong guesses and replaces any earlier code. Calling again within 60 s → 429 with `details.retryAfterSec`. Refused with 403 PASSWORD_LOGIN_DISABLED when AUTH_MODE=production, exactly like `POST /auth/login`. Inside the `USER_EMAIL_CHANGE_HOLD_HOURS` hold after an email change no code is mailed: 409 EMAIL_CHANGE_ON_HOLD (`details.holdUntil`) and the org administrators get an in-app notice.",
+        "description": "Back-office `User` accounts only (drivers use `/auth/driver/password/*`). CODE-081 — always the same 200 body, so the endpoint never reveals whether an account exists: an unknown, INVITED or DISABLED email gets no code; a repeat within 60 s keeps the live code and mails nothing; inside the `USER_EMAIL_CHANGE_HOLD_HOURS` hold after an email change no code is mailed and the org administrators get an in-app notice instead. The code is stored as an HMAC, expires in 15 minutes, allows 5 wrong guesses and replaces any earlier code. Refused with 403 PASSWORD_LOGIN_DISABLED when AUTH_MODE=production, exactly like `POST /auth/login`.",
         "operationId": "AuthController_requestPasswordResetCode",
         "parameters": [],
         "requestBody": {
@@ -1655,7 +1655,7 @@
         },
         "responses": {
           "200": {
-            "description": "Code emailed. `code` is present only with DEV_ECHO_SECRETS=true outside production.",
+            "description": "Same body whether or not a code was mailed (CODE-081). `code` is present only with DEV_ECHO_SECRETS=true outside production, and only when one was actually issued.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1739,100 +1739,6 @@
               }
             }
           },
-          "404": {
-            "description": "NOT_FOUND — No account found with this email.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "statusCode",
-                    "code",
-                    "message",
-                    "traceId",
-                    "timestamp"
-                  ],
-                  "properties": {
-                    "statusCode": {
-                      "type": "number"
-                    },
-                    "code": {
-                      "type": "string",
-                      "description": "Stable code from common/errors/codes.ts (append-only)."
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "type": "object",
-                      "additionalProperties": true
-                    },
-                    "traceId": {
-                      "type": "string"
-                    },
-                    "timestamp": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  },
-                  "example": {
-                    "statusCode": 404,
-                    "code": "NOT_FOUND",
-                    "message": "No account found with this email.",
-                    "traceId": "01J8X3QK9Z0000000000000000",
-                    "timestamp": "2026-09-11T15:41:00.000Z"
-                  }
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "EMAIL_CHANGE_ON_HOLD — The email on this account was changed recently, so a reset code cannot be emailed yet. Your administrator has been notified.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "statusCode",
-                    "code",
-                    "message",
-                    "traceId",
-                    "timestamp"
-                  ],
-                  "properties": {
-                    "statusCode": {
-                      "type": "number"
-                    },
-                    "code": {
-                      "type": "string",
-                      "description": "Stable code from common/errors/codes.ts (append-only)."
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "type": "object",
-                      "additionalProperties": true
-                    },
-                    "traceId": {
-                      "type": "string"
-                    },
-                    "timestamp": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  },
-                  "example": {
-                    "statusCode": 409,
-                    "code": "EMAIL_CHANGE_ON_HOLD",
-                    "message": "The email on this account was changed recently, so a reset code cannot be emailed yet. Your administrator has been notified.",
-                    "traceId": "01J8X3QK9Z0000000000000000",
-                    "timestamp": "2026-09-11T15:41:00.000Z"
-                  }
-                }
-              }
-            }
-          },
           "422": {
             "description": "VALIDATION_FAILED — Request validation failed.",
             "content": {
@@ -1890,7 +1796,7 @@
             }
           },
           "429": {
-            "description": "RATE_LIMITED — 5 requests per minute per IP, and one code per account per 60 s (`details.retryAfterSec`).",
+            "description": "RATE_LIMITED — 5 requests per minute per IP.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1928,7 +1834,7 @@
                   "example": {
                     "statusCode": 429,
                     "code": "RATE_LIMITED",
-                    "message": "5 requests per minute per IP, and one code per account per 60 s (`details.retryAfterSec`).",
+                    "message": "5 requests per minute per IP.",
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
                   }
@@ -63856,6 +63762,209 @@
           }
         ],
         "summary": "Fleet safety score and per-driver ranking (\"Driver scorecard\", below-70 flagged). D-141: returns the latest nightly-computed rolling 30-day period (or the one starting on `periodStart` / ending on `periodEnd`, YYYY-MM-DD). Drivers under `minMiles` have `score: null`, `rank: null`. `fleet.score` is the mile-weighted mean of scored drivers; `fleet.trend` and per-row `trend` compare with the previous period of the same length.",
+        "tags": [
+          "safety"
+        ],
+        "x-figma-screens": [
+          {
+            "id": "web/safety",
+            "title": "Safety",
+            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.19"
+          }
+        ]
+      }
+    },
+    "/api/safety/summary": {
+      "get": {
+        "operationId": "SafetyController_summary",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "from": "2026-09-14T12:00:00.000Z",
+                    "to": "2026-10-14T12:00:00.000Z",
+                    "current": {
+                      "total": 742,
+                      "harsh": 512,
+                      "speeding": 220,
+                      "seatbelt": 10,
+                      "coached": 31,
+                      "pendingCoaching": 640
+                    },
+                    "previous": {
+                      "total": 690,
+                      "harsh": 480,
+                      "speeding": 200,
+                      "seatbelt": 10,
+                      "coached": 25,
+                      "pendingCoaching": 0
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHORIZED — Authentication required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 401,
+                    "code": "UNAUTHORIZED",
+                    "message": "Authentication required.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN — Insufficient permissions for this action.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 403,
+                    "code": "FORBIDDEN",
+                    "message": "Insufficient permissions for this action.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "VALIDATION_FAILED — Request validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 422,
+                    "code": "VALIDATION_FAILED",
+                    "message": "Request validation failed.",
+                    "details": {
+                      "issues": [
+                        {
+                          "path": "field",
+                          "code": "invalid_type",
+                          "message": "Required"
+                        }
+                      ]
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "CODE-040 — Safety page KPIs: event counts over the rolling 30 days (`current`) and the 30 days before (`previous`): total, harsh (braking+accel+turn), speeding, seatbelt, coached, pendingCoaching (status NEW).",
         "tags": [
           "safety"
         ],

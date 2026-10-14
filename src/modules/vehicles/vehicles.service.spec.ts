@@ -51,8 +51,6 @@ describe('VehiclesService', () => {
       | 'findOpenCriticalDefectIds'
       | 'findAuditRows'
       | 'findDvirRows'
-      | 'findDeviceBySerial'
-      | 'pairDevice'
       | 'findTelemetryRange'
       | 'findTelemetryRecent'
       | 'groupExists'
@@ -62,6 +60,7 @@ describe('VehiclesService', () => {
       | 'saveWithDevice'
       | 'releaseDevice'
       | 'findOpenTrips'
+      | 'softDeleteUnlessBooked'
       | 'countByStatus'
     >
   >;
@@ -90,8 +89,6 @@ describe('VehiclesService', () => {
       findOpenCriticalDefectIds: jest.fn().mockResolvedValue([]),
       findAuditRows: jest.fn().mockResolvedValue([]),
       findDvirRows: jest.fn().mockResolvedValue([]),
-      findDeviceBySerial: jest.fn(),
-      pairDevice: jest.fn(),
       groupExists: jest.fn().mockResolvedValue(true),
       findTelemetryRange: jest.fn().mockResolvedValue([]),
       findTelemetryRecent: jest.fn().mockResolvedValue([]),
@@ -101,6 +98,7 @@ describe('VehiclesService', () => {
       saveWithDevice: jest.fn(),
       releaseDevice: jest.fn().mockResolvedValue({ count: 0 }),
       findOpenTrips: jest.fn().mockResolvedValue([]),
+      softDeleteUnlessBooked: jest.fn(async (id: string) => ({ deleted: makeVehicle({ id, status: 'INACTIVE', deletedAt: new Date() }), openTrips: [] })) as never,
     };
     (vehiclesRepo as unknown as Record<string, unknown>).moveUnitToDriver = jest.fn().mockResolvedValue({ endedPartnerIds: [] });
     driversRepo = {
@@ -257,6 +255,42 @@ describe('VehiclesService', () => {
       });
       expect(vehiclesRepo.update).not.toHaveBeenCalled();
       expect(driversRepo.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('status change — open trips (CODE-011)', () => {
+    const open = [{ id: 'trp_1', number: 'TRP-1', status: 'ASSIGNED' }];
+
+    it('PATCH to INACTIVE with open trips is a 409 and writes nothing', async () => {
+      vehiclesRepo.findById.mockResolvedValue(makeVehicle({ status: 'ACTIVE' }) as never);
+      vehiclesRepo.findOpenTrips.mockResolvedValue(open);
+      await expect(service.update('veh_1', { status: 'INACTIVE' })).rejects.toMatchObject({ status: 409, details: { openTrips: open } });
+      expect(vehiclesRepo.update).not.toHaveBeenCalled();
+    });
+
+    it('PATCH to OUT_OF_SERVICE without open trips unassigns the driver', async () => {
+      vehiclesRepo.findById.mockResolvedValue(makeVehicle({ status: 'ACTIVE' }) as never);
+      vehiclesRepo.update.mockResolvedValue(makeVehicle({ status: 'OUT_OF_SERVICE' }) as never);
+      driversRepo.findOne.mockResolvedValue({ id: 'drv_1' } as never);
+      await service.update('veh_1', { status: 'OUT_OF_SERVICE' });
+      expect(driversRepo.update).toHaveBeenCalledWith({ id: 'drv_1' }, { assignedVehicle: { disconnect: true } });
+    });
+
+    it('PATCH back to ACTIVE never checks trips', async () => {
+      vehiclesRepo.findById.mockResolvedValue(makeVehicle({ status: 'INACTIVE' }) as never);
+      vehiclesRepo.findOpenTrips.mockResolvedValue(open);
+      vehiclesRepo.update.mockResolvedValue(makeVehicle({ status: 'ACTIVE' }) as never);
+      await service.update('veh_1', { status: 'ACTIVE' });
+      expect(vehiclesRepo.findOpenTrips).not.toHaveBeenCalled();
+    });
+
+    it('bulk-status fails the row that still has open trips', async () => {
+      vehiclesRepo.findById.mockResolvedValue(makeVehicle({ id: 'veh_1', status: 'ACTIVE' }) as never);
+      vehiclesRepo.findOpenTrips.mockResolvedValue(open);
+      const result = await service.bulkUpdateStatus({ ids: ['veh_1'], status: 'INACTIVE' });
+      expect(result.updated).toEqual([]);
+      expect(result.failed[0].error).toMatch(/open trips \(TRP-1\)/);
+      expect(vehiclesRepo.update).not.toHaveBeenCalled();
     });
   });
 
@@ -951,18 +985,53 @@ describe('VehiclesService', () => {
       expect(vehiclesRepo.update).not.toHaveBeenCalled();
     });
 
-    it('B-69 pairDevices pairs a row deviceSerial to the created unit', async () => {
+    it('B-69 pairDevices pairs a row deviceSerial to the created unit in the same write', async () => {
       vehiclesRepo.findByUnitNumber.mockResolvedValue(null);
       vehiclesRepo.findByVin.mockResolvedValue(null);
-      vehiclesRepo.create.mockResolvedValue(makeVehicle() as never);
-      vehiclesRepo.findDeviceBySerial.mockResolvedValue({ id: 'dev_1', vehicleId: null } as never);
+      vehiclesRepo.saveWithDevice.mockResolvedValue(makeVehicle() as never);
+      vehiclesRepo.findDeviceForPairing.mockResolvedValue({ id: 'dev_1', vehicleId: null, vehicle: null } as never);
+
+      const summary = await service.importMany({
+        vehicles: [{ unitNumber: '#101', vin: 'VIN-A', fuelType: 'DIESEL', sleeperBerth: false, odometerMi: 0, deviceSerial: ' pt30_a1 ' }],
+        options: { duplicateStrategy: 'UPDATE_BY_VIN', pairDevices: true, emailSummary: false },
+      });
+
+      expect(vehiclesRepo.findDeviceForPairing).toHaveBeenCalledWith('PT30_A1');
+      expect(vehiclesRepo.saveWithDevice).toHaveBeenCalledWith({ create: expect.any(Object) as unknown }, 'dev_1');
+      expect(vehiclesRepo.create).not.toHaveBeenCalled();
+      expect(summary).toEqual({ imported: 1, updated: 0, skipped: 0, failed: [] });
+    });
+
+    it('CODE-042 a device left on a soft-deleted unit counts as free', async () => {
+      vehiclesRepo.findByUnitNumber.mockResolvedValue(null);
+      vehiclesRepo.findByVin.mockResolvedValue(null);
+      vehiclesRepo.saveWithDevice.mockResolvedValue(makeVehicle() as never);
+      vehiclesRepo.findDeviceForPairing.mockResolvedValue({ id: 'dev_1', vehicleId: 'veh_old', vehicle: { id: 'veh_old', deletedAt: new Date() } } as never);
 
       await service.importMany({
         vehicles: [{ unitNumber: '#101', vin: 'VIN-A', fuelType: 'DIESEL', sleeperBerth: false, odometerMi: 0, deviceSerial: 'PT30_A1' }],
         options: { duplicateStrategy: 'UPDATE_BY_VIN', pairDevices: true, emailSummary: false },
       });
 
-      expect(vehiclesRepo.pairDevice).toHaveBeenCalledWith('dev_1', 'veh_1');
+      expect(vehiclesRepo.saveWithDevice).toHaveBeenCalledWith({ create: expect.any(Object) as unknown }, 'dev_1');
+    });
+
+    it('CODE-042 an unpairable serial writes the row once and reports a warning, not a failure', async () => {
+      vehiclesRepo.findByUnitNumber.mockResolvedValue(null);
+      vehiclesRepo.findByVin.mockResolvedValue(null);
+      vehiclesRepo.create.mockResolvedValue(makeVehicle() as never);
+      vehiclesRepo.findDeviceForPairing.mockResolvedValue({ id: 'dev_1', vehicleId: 'veh_other', vehicle: { id: 'veh_other', deletedAt: null } } as never);
+
+      const summary = await service.importMany({
+        vehicles: [{ unitNumber: '#101', vin: 'VIN-A', fuelType: 'DIESEL', sleeperBerth: false, odometerMi: 0, deviceSerial: 'PT30_A1' }],
+        options: { duplicateStrategy: 'UPDATE_BY_VIN', pairDevices: true, emailSummary: false },
+      });
+
+      expect(vehiclesRepo.create).toHaveBeenCalledTimes(1);
+      expect(vehiclesRepo.saveWithDevice).not.toHaveBeenCalled();
+      expect(summary.imported).toBe(1);
+      expect(summary.failed).toEqual([]);
+      expect(summary.warnings).toEqual([{ index: 0, error: expect.stringContaining('already assigned') as string }]);
     });
 
     it('B-69 emailSummary emails the calling user when true', async () => {
@@ -1030,15 +1099,23 @@ describe('VehiclesService', () => {
     it('flips status to INACTIVE instead of calling repo.delete', async () => {
       vehiclesRepo.findById.mockResolvedValue(makeVehicle() as never);
       driversRepo.findOne.mockResolvedValue(null);
-      vehiclesRepo.update.mockResolvedValue(makeVehicle({ status: 'INACTIVE' }) as never);
 
-      await service.remove('veh_1');
+      const removed = await service.remove('veh_1');
 
-      const [where, data] = vehiclesRepo.update.mock.calls[0];
-      expect(where).toEqual({ id: 'veh_1' });
-      expect(data).toMatchObject({ status: 'INACTIVE' });
-      expect(data.deletedAt).toBeInstanceOf(Date);
+      // CODE-062 — written by the locked soft delete (status INACTIVE + deletedAt), never a hard delete.
+      expect(vehiclesRepo.softDeleteUnlessBooked).toHaveBeenCalledWith('veh_1');
+      expect(removed).toMatchObject({ status: 'INACTIVE' });
       expect(vehiclesRepo.delete).not.toHaveBeenCalled();
+    });
+
+    it('CODE-062 a trip created after the pre-check still blocks the delete (re-checked under the unit lock)', async () => {
+      vehiclesRepo.findById.mockResolvedValue(makeVehicle() as never);
+      driversRepo.findOne.mockResolvedValue({ id: 'drv_1' } as never);
+      vehiclesRepo.softDeleteUnlessBooked.mockResolvedValueOnce({ deleted: null, openTrips: [{ id: 'trp_9', number: 'TR-9', status: 'PLANNED' }] });
+
+      await expect(service.remove('veh_1')).rejects.toMatchObject({ status: 409, message: expect.stringContaining('TR-9') as string });
+      expect(driversRepo.update).not.toHaveBeenCalled();
+      expect(vehiclesRepo.releaseDevice).not.toHaveBeenCalled();
     });
 
     it('unassigns the current driver before deactivating the unit', async () => {
