@@ -23,6 +23,7 @@
  *        digits: the first file of the day keeps the default `000000000`, the second gets
  *        `000000001`, so two files of one day never share a name.
  */
+import { dayDiff, dayKey } from '../hos/engine/timezone';
 
 export interface OutputFileNameInput {
   /** Driver's last name, raw (apostrophes / spaces / hyphens allowed). */
@@ -90,10 +91,12 @@ export function buildOutputFileName(input: OutputFileNameInput): string {
   );
 }
 
-/** Inclusive day count of a RODS range (pre-send RANGE_TOO_LARGE check, tz.md §10.3). */
-export function inclusiveDayCount(rangeStart: Date, rangeEnd: Date): number {
-  const MS_PER_DAY = 86_400_000;
-  const start = Date.UTC(rangeStart.getUTCFullYear(), rangeStart.getUTCMonth(), rangeStart.getUTCDate());
-  const end = Date.UTC(rangeEnd.getUTCFullYear(), rangeEnd.getUTCMonth(), rangeEnd.getUTCDate());
-  return Math.floor((end - start) / MS_PER_DAY) + 1;
+/**
+ * Inclusive day count of a RODS range (pre-send RANGE_TOO_LARGE check, tz.md §10.3), counted in
+ * calendar days of `timeZone`. The default `'UTC'` is only correct for day-key dates (UTC
+ * midnight of a home-terminal RODS day, see `resolveTransferRange`); for raw instants pass the
+ * driver's home-terminal timezone (B-172).
+ */
+export function inclusiveDayCount(rangeStart: Date, rangeEnd: Date, timeZone = 'UTC'): number {
+  return dayDiff(dayKey(timeZone, rangeEnd), dayKey(timeZone, rangeStart)) + 1;
 }

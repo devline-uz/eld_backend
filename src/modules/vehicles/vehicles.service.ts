@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { DateTime } from 'luxon';
-import type { Prisma, Vehicle } from '@prisma/client';
+import { EditorType, type Prisma, type Vehicle } from '@prisma/client';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
 import { OffsetPage, parseSort, toOffsetPage } from '../../common/dto/list-query.dto';
@@ -9,7 +9,10 @@ import { CarrierRepository } from '../carrier/carrier.repository';
 import { DriversRepository } from '../drivers/drivers.repository';
 import { PushService } from '../../core/firebase/push.service';
 import { EventBusService } from '../../core/events/event-bus.service';
-import { publishNotificationNew, publishVehicleAssigned, publishVehicleUnassigned } from './vehicle-assignment-events';
+import { publishBootstrapChanged, publishNotificationNew, publishVehicleAssigned, publishVehicleUnassigned } from './vehicle-assignment-events';
+import { AuditRepository } from '../audit/audit.repository';
+import { RodsLoginRecorder } from '../logs/rods-login-recorder';
+import { RequestContext } from '../../core/context/request-context';
 import { NotificationsRepository } from '../notifications/notifications.repository';
 import { TRANSACTIONAL_MAIL, TransactionalMailPort } from '../../core/mail/mail.port';
 import { UsersRepository } from '../users/users.repository';
@@ -132,6 +135,8 @@ export class VehiclesService {
     /** Real SMTP (`MailModule`, `@Global()`) — not the eRODS logging-only `MAIL_PORT`. */
     @Inject(TRANSACTIONAL_MAIL) private readonly mail: TransactionalMailPort,
     @Optional() private readonly events?: EventBusService,
+    @Optional() private readonly audit?: AuditRepository,
+    @Optional() private readonly loginRecords?: RodsLoginRecorder,
   ) {}
 
   /** UI-004 — the page plus `statusCounts`: fleet-wide ACTIVE / INACTIVE / OUT_OF_SERVICE (filters ignored). */
@@ -364,13 +369,37 @@ export class VehiclesService {
       });
     }
     if (driver.assignedVehicleId === vehicleId) return vehicle;
+    // D-153 — an occupied unit is MOVED to the new driver (not 409), and a driver holding another
+    // unit gives it up (one unit per driver). Plain assignment keeps the single-write fast path.
+    const holder = await this.drivers.findOne({ assignedVehicleId: vehicleId });
+    const displaced = holder && holder.id !== dto.driverId ? holder : null;
+    const previousVehicleId = driver.assignedVehicleId ?? null;
+    const actor = RequestContext.get()?.user;
+    let endedPartnerIds: string[] = [];
     try {
-      await this.drivers.update({ id: dto.driverId }, { assignedVehicle: { connect: { id: vehicleId } } });
+      if (displaced || previousVehicleId) {
+        ({ endedPartnerIds } = await this.vehicles.moveUnitToDriver({
+          driverId: dto.driverId,
+          vehicleId,
+          holderId: displaced?.id ?? null,
+          previousVehicleId,
+          endedById: actor?.id ?? null,
+          now: new Date(),
+        }));
+      } else {
+        await this.drivers.update({ id: dto.driverId }, { assignedVehicle: { connect: { id: vehicleId } } });
+      }
     } catch (err) {
       // BE-006 — only the unique index on `assignedVehicleId` means "taken"; anything else is real.
       if (isUniqueViolation(err)) throw AppException.conflict('Vehicle is already assigned to another driver.');
       throw err;
     }
+    if (displaced) await this.announceDisplaced(displaced.id, vehicle, dto.driverId, actor);
+    if (previousVehicleId) {
+      await publishVehicleUnassigned(this.events, { driverId: dto.driverId, vehicleId: previousVehicleId });
+      await this.writeReassignAudit(dto.driverId, previousVehicleId, 'Driver was given another unit by an admin; the previous unit was released (D-153).', actor);
+    }
+    for (const partnerId of endedPartnerIds) await publishBootstrapChanged(this.events, partnerId, 'vehicle_unassigned');
     await publishVehicleAssigned(this.events, { driverId: dto.driverId, vehicleId, unitNumber: vehicle.unitNumber });
     if (dto.notify) {
       const title = 'New unit assignment';
@@ -401,6 +430,73 @@ export class VehiclesService {
       );
     }
     return vehicle;
+  }
+
+  /** D-153 — tells the driver who lost the unit to an admin reassignment: realtime unassign, in-app
+   * inbox row, FCM, §395 logout record and an audit entry. Always sent (independent of `notify`). */
+  private async announceDisplaced(
+    driverId: string,
+    vehicle: Vehicle,
+    newDriverId: string,
+    actor: { id: string; type: string } | undefined,
+  ): Promise<void> {
+    await this.loginRecords?.logout(driverId, 'ADMIN_REASSIGN', { onlyVehicleId: vehicle.id });
+    await publishVehicleUnassigned(this.events, { driverId, vehicleId: vehicle.id });
+    await this.notifyUnassigned(driverId, vehicle);
+    await this.writeReassignAudit(driverId, vehicle.id, `Unit ${vehicle.unitNumber} was taken from this driver and assigned to driver ${newDriverId} (D-153).`, actor);
+  }
+
+  private async writeReassignAudit(
+    driverId: string,
+    vehicleId: string,
+    detail: string,
+    actor: { id: string; type: string } | undefined,
+  ): Promise<void> {
+    if (!this.audit) return;
+    try {
+      const ctx = RequestContext.get();
+      await this.audit.insert({
+        actorId: actor?.id ?? 'system',
+        actorType: actor?.type === 'driver' ? EditorType.DRIVER : actor?.type === 'user' ? EditorType.USER : EditorType.SYSTEM,
+        action: 'UNASSIGN_DRIVER',
+        objectType: 'Driver',
+        objectId: driverId,
+        before: { assignedVehicleId: vehicleId },
+        after: { assignedVehicleId: null },
+        detail,
+        ip: ctx?.ip,
+        userAgent: ctx?.userAgent,
+      });
+    } catch (err) {
+      this.logger.error({ err, driverId, vehicleId }, 'Failed to write the reassignment audit entry');
+    }
+  }
+
+  private async notifyUnassigned(driverId: string, vehicle: Vehicle): Promise<void> {
+    const title = 'Unit unassigned';
+    const body = `You've been unassigned from unit ${vehicle.unitNumber}.`;
+    const notification = await this.notifications.create({
+      driverId,
+      type: 'ASSIGNMENT',
+      title,
+      body,
+      objectType: 'Vehicle',
+      objectId: vehicle.id,
+      category: 'assignment',
+    });
+    await publishNotificationNew(this.events, driverId, notification);
+    await this.push.sendToDriver(
+      driverId,
+      { title, body },
+      {
+        type: 'ASSIGNMENT',
+        id: notification.id,
+        driverId,
+        objectType: notification.objectType,
+        objectId: notification.objectId,
+        category: notification.category,
+      },
+    );
   }
 
   /** Clears the unit's driver. `notify` (default true) tells the driver in-app + FCM, kind ASSIGNMENT. */

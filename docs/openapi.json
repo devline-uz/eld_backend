@@ -938,6 +938,7 @@
     },
     "/api/auth/refresh": {
       "post": {
+        "description": "MG-32 — replaying a just-rotated token within REFRESH_REUSE_GRACE_SECONDS (default 60) returns the SAME successor pair (201). Later replay of a rotated token = 401 REFRESH_TOKEN_REUSED and only that token family is revoked; other devices stay signed in. A token revoked by logout/admin/password reset = 401 TOKEN_INVALID.",
         "operationId": "AuthController_refresh",
         "parameters": [],
         "requestBody": {
@@ -989,7 +990,7 @@
             }
           },
           "401": {
-            "description": "REFRESH_TOKEN_REUSED — This refresh token was already rotated — the whole session family is revoked (TZ §6.5).",
+            "description": "REFRESH_TOKEN_REUSED — This refresh token was already rotated (outside the grace window) — its session family is revoked; other sessions are untouched (TZ §6.5, MG-32).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1027,7 +1028,7 @@
                   "example": {
                     "statusCode": 401,
                     "code": "REFRESH_TOKEN_REUSED",
-                    "message": "This refresh token was already rotated — the whole session family is revoked (TZ §6.5).",
+                    "message": "This refresh token was already rotated (outside the grace window) — its session family is revoked; other sessions are untouched (TZ §6.5, MG-32).",
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
                   }
@@ -19610,7 +19611,7 @@
             }
           },
           "409": {
-            "description": "One of: VEHICLE_OUT_OF_SERVICE — Unit is OUT_OF_SERVICE — assign a driver only after the critical defect is closed; CONFLICT (details.status) — \"Vehicle is inactive and cannot be assigned a driver.\"; CONFLICT — \"Driver is inactive|terminated and cannot be assigned a unit.\"; CONFLICT — \"Vehicle is already assigned to another driver.\"",
+            "description": "One of: VEHICLE_OUT_OF_SERVICE — Unit is OUT_OF_SERVICE — assign a driver only after the critical defect is closed; CONFLICT (details.status) — \"Vehicle is inactive and cannot be assigned a driver.\"; CONFLICT — \"Driver is inactive|terminated and cannot be assigned a unit.\"; CONFLICT — \"Vehicle is already assigned to another driver.\" (only on a concurrent-write race; an occupied unit is otherwise moved)",
             "content": {
               "application/json": {
                 "schema": {
@@ -19718,7 +19719,7 @@
             "bearer": []
           }
         ],
-        "summary": "Assigns a driver to this unit. Blocked while the unit is OUT_OF_SERVICE. Requires vehicles:FULL or trips:FULL (B-13).",
+        "summary": "Assigns a driver to this unit. An occupied unit is MOVED to the new driver (previous holder auto-unassigned, notified via realtime + in-app + FCM, audited, D-153); a driver already on another unit gives it up. Blocked while the unit is OUT_OF_SERVICE. Requires vehicles:FULL or trips:FULL (B-13).",
         "tags": [
           "vehicles"
         ],
@@ -29981,6 +29982,7 @@
     },
     "/api/mobile/co-driver/switch": {
       "post": {
+        "description": "D-155 — the CALLER's own session family (from the access token `sid`) is revoked atomically with the seat swap; their other devices stay signed in. The app must drop the old tokens and MUST NOT call /auth/logout with them (harmless if it does: 200 {success:true}, no further effect). Optional `clientId`: a replay (within REFRESH_REUSE_GRACE_SECONDS, same password) returns the first pair; later replay = 409 CONFLICT, sign in as the co-driver. A stale caller token (session already revoked) without a replaying clientId = 401 TOKEN_INVALID.",
         "operationId": "MobileCoDriverController_switch",
         "parameters": [],
         "requestBody": {
@@ -35396,7 +35398,7 @@
             "bearer": []
           }
         ],
-        "summary": "MB-9 — short-lived (15 min) presigned GET for an attachment the driver may read: a chat file only for participants of its conversation (or its uploader before it is sent).",
+        "summary": "MB-9 — short-lived (15 min) presigned GET for an attachment the driver may read: a chat file or a web-sent voice clip (MESSAGE_AUDIO) only for participants of its conversation (or its uploader before it is sent).",
         "tags": [
           "mobile"
         ]
@@ -41313,7 +41315,7 @@
         },
         "responses": {
           "200": {
-            "description": "Stored. Duplicates by `uuid` are counted, not re-inserted.",
+            "description": "Stored. Duplicates by `uuid` are counted, not re-inserted. `checksum` is optional: when omitted the server computes and stores it and adds ONE informational warning `CHECKSUM_MISSING` (`informational: true`, no diagnostic, still 200). Clock drift is NOT derived from `eventDateTime` (events arrive late) — see `deviceTime` on /ingest/device-status and /ingest/ble-state; `timeDriftSec` on stored events is null.",
             "content": {
               "application/json": {
                 "schema": {
@@ -41326,7 +41328,13 @@
                         1043
                       ]
                     },
-                    "warnings": [],
+                    "warnings": [
+                      {
+                        "code": "CHECKSUM_MISSING",
+                        "detail": "118 event(s) carried no checksum; server-computed checksum stored, no diagnostic.",
+                        "informational": true
+                      }
+                    ],
                     "malfunctions": [],
                     "diagnostics": [],
                     "unidentifiedSegmentIds": [],
@@ -41337,7 +41345,7 @@
             }
           },
           "202": {
-            "description": "ACCEPTED_WITH_WARNINGS — stored, but at least one event had a bad checksum, a drifted clock or an implausible odometer (§7.3 rules 4/5, §4.3).",
+            "description": "ACCEPTED_WITH_WARNINGS — stored, but at least one event had a SENT checksum that did not match (CHECKSUM_MISMATCH) or an implausible odometer (ODOMETER_ANOMALY) (§7.3 rule 4, §4.3). Diagnostic 3 is logged as ONE eventType 7 record per driver per batch, and not again while one is active (App. A 4.5.1.7).",
             "content": {
               "application/json": {
                 "schema": {
@@ -42092,6 +42100,7 @@
     },
     "/api/ingest/ble-state": {
       "post": {
+        "description": "Optional `deviceTime` (ISO-8601) = the PT30 clock read just before sending. |deviceTime − server UTC| > 600 s logs malfunction T once (7/1, not repeated while active); back within 600 s clears it (7/2). Omitted → no timing check. `clockDriftSec` echoes the measured drift.",
         "operationId": "IngestController_bleState",
         "parameters": [],
         "requestBody": {
@@ -42107,7 +42116,8 @@
                     "deviceSerial": "PT30_A86E",
                     "state": "CONNECTED",
                     "at": "2026-10-10T12:00:00Z",
-                    "connectionType": "USB"
+                    "connectionType": "USB",
+                    "deviceTime": "2026-10-10T12:00:01Z"
                   }
                 }
               }
@@ -42123,7 +42133,8 @@
                   "example": {
                     "bleState": "CONNECTED",
                     "connectionType": "USB",
-                    "disconnectedAlert": false
+                    "disconnectedAlert": false,
+                    "clockDriftSec": 1
                   }
                 }
               }
@@ -42300,7 +42311,7 @@
     },
     "/api/ingest/device-status": {
       "post": {
-        "description": "`productName` `PT40*` -> model PT40, `PT30*` -> PT30. `reportedVin` differing from the paired unit VIN -> `vinMismatch: true` (never blocks; `alert.device_vin_mismatch` once per new VIN). `systemVars` are the PT SDK SetSystemVar targets.",
+        "description": "`productName` `PT40*` -> model PT40, `PT30*` -> PT30. `reportedVin` differing from the paired unit VIN -> `vinMismatch: true` (never blocks; `alert.device_vin_mismatch` once per new VIN). `systemVars` are the PT SDK SetSystemVar targets. Optional `deviceTime` (ISO-8601, PT30 clock read just before sending): |drift| > 600 s logs malfunction T once (7/1, `codes` gets `M:T`), back within 600 s clears it (7/2); omitted → no timing check. `clockDriftSec` = deviceTime − server UTC (null without deviceTime).",
         "operationId": "IngestController_deviceStatus",
         "parameters": [],
         "requestBody": {
@@ -42325,7 +42336,8 @@
                     "busType": "J1939",
                     "appPlatform": "ANDROID",
                     "recordsLost": false,
-                    "consecutiveTransferFailures": 0
+                    "consecutiveTransferFailures": 0,
+                    "deviceTime": "2026-10-13T15:04:05Z"
                   }
                 }
               }
@@ -42342,6 +42354,7 @@
                     "storedEventsCount": 12,
                     "backlogAlert": false,
                     "codes": [],
+                    "clockDriftSec": 2,
                     "model": "PT40",
                     "vinMismatch": false,
                     "systemVars": {
@@ -50730,6 +50743,7 @@
     },
     "/api/transfers": {
       "post": {
+        "description": "B-172 — the range is counted in home-terminal-timezone days, at most 8 (inclusive). `rangeStart`/`rangeEnd` may be `YYYY-MM-DD` (that home-terminal RODS day) or an ISO instant (mapped to the home-terminal day it falls on); the file covers the driver's home-terminal midnight-to-midnight days, DST-aware.",
         "operationId": "TransfersController_create",
         "parameters": [],
         "requestBody": {
@@ -50914,7 +50928,7 @@
             }
           },
           "422": {
-            "description": "TRANSFER_VALIDATION_FAILED — The generated output file failed Appendix A validation — nothing was sent.",
+            "description": "Unprocessable — one of: RANGE_TOO_LARGE (Requested range is 9 days; §395.24 / Appendix A allows at most 8. The range is counted in home-terminal-timezone days (midnight to midnight in the driver's homeTerminalTimezone), at most 8 inclusive); INVALID_TRANSFER_RECIPIENT (EMAIL transfer recipient must be an @fmcsa.dot.gov address (§10.4)); VALIDATION_FAILED (Request validation failed, e.g. EMAIL without recipient, outputFileComment over 60 chars, or an invalid date); OUTPUT_FILE_INVALID (The generated output file does not conform to §395 Appendix A and was not stored)",
             "content": {
               "application/json": {
                 "schema": {
@@ -50951,11 +50965,19 @@
                   },
                   "example": {
                     "statusCode": 422,
-                    "code": "TRANSFER_VALIDATION_FAILED",
-                    "message": "The generated output file failed Appendix A validation — nothing was sent.",
+                    "code": "RANGE_TOO_LARGE",
+                    "message": "Requested range is 9 days; §395.24 / Appendix A allows at most 8. The range is counted in home-terminal-timezone days (midnight to midnight in the driver's homeTerminalTimezone), at most 8 inclusive",
                     "details": {
-                      "uncertifiedLogs": 6,
-                      "unassignedSegments": 9
+                      "findings": [
+                        {
+                          "code": "RANGE_TOO_LARGE",
+                          "level": "error",
+                          "details": {
+                            "days": 9,
+                            "max": 8
+                          }
+                        }
+                      ]
                     },
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
@@ -51740,7 +51762,7 @@
     },
     "/api/mobile/transfers": {
       "post": {
-        "description": "The row is returned as it stands right after generation (`status = QUEUED`); the worker moves it to TEST_ONLY / SENT / ACCEPTED / REJECTED / FAILED and fills `referenceId` + `sentAt`. Poll `GET /mobile/transfers` for the receipt (S-10). MB-18 — an offline roadside-inspection transfer is queued by the app and replayed on reconnect: send a `clientId` (idempotent — a replay returns the FIRST result, no second file or send; a clientId used by another operation is 409) and optionally `requestedAt` (device time of the request, echoed back). 4xx is final; retry only on 5xx/network.",
+        "description": "The row is returned as it stands right after generation (`status = QUEUED`); the worker moves it to TEST_ONLY / SENT / ACCEPTED / REJECTED / FAILED and fills `referenceId` + `sentAt`. Poll `GET /mobile/transfers` for the receipt (S-10). MB-18 — an offline roadside-inspection transfer is queued by the app and replayed on reconnect: send a `clientId` (idempotent — a replay returns the FIRST result, no second file or send; a clientId used by another operation is 409) and optionally `requestedAt` (device time of the request, echoed back). 4xx is final; retry only on 5xx/network. RANGE (B-172): the range is counted in home-terminal-timezone days, at most 8 (inclusive). `rangeStart`/`rangeEnd` may be `YYYY-MM-DD` (taken as that home-terminal RODS day) or an ISO instant (mapped to the home-terminal day it falls on); the file covers home-terminal midnight of the first day to home-terminal midnight after the last day (DST-aware). The response `rangeStart`/`rangeEnd` are those home-terminal day keys at T00:00:00.000Z (date-only columns), not instants.",
         "operationId": "MobileTransfersController_create",
         "parameters": [],
         "requestBody": {
@@ -51950,7 +51972,7 @@
             }
           },
           "422": {
-            "description": "OUTPUT_FILE_INVALID — The generated output file does not conform to §395 Appendix A and was not stored.",
+            "description": "Unprocessable — one of: RANGE_TOO_LARGE (Requested range is 9 days; §395.24 / Appendix A allows at most 8. The range is counted in home-terminal-timezone days (midnight to midnight in the driver's homeTerminalTimezone), at most 8 inclusive); INVALID_TRANSFER_RECIPIENT (EMAIL transfer recipient must be an @fmcsa.dot.gov address (§10.4)); VALIDATION_FAILED (Request validation failed, e.g. requestedAt more than 5 minutes in the future, EMAIL without recipient, outputFileComment over 60 chars, or an invalid date); OUTPUT_FILE_INVALID (The generated output file does not conform to §395 Appendix A and was not stored)",
             "content": {
               "application/json": {
                 "schema": {
@@ -51987,8 +52009,20 @@
                   },
                   "example": {
                     "statusCode": 422,
-                    "code": "OUTPUT_FILE_INVALID",
-                    "message": "The generated output file does not conform to §395 Appendix A and was not stored.",
+                    "code": "RANGE_TOO_LARGE",
+                    "message": "Requested range is 9 days; §395.24 / Appendix A allows at most 8. The range is counted in home-terminal-timezone days (midnight to midnight in the driver's homeTerminalTimezone), at most 8 inclusive",
+                    "details": {
+                      "findings": [
+                        {
+                          "code": "RANGE_TOO_LARGE",
+                          "level": "error",
+                          "details": {
+                            "days": 9,
+                            "max": 8
+                          }
+                        }
+                      ]
+                    },
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
                   }
@@ -74667,12 +74701,12 @@
           "rangeStart": {
             "type": "string",
             "format": "date-time",
-            "description": "First RODS day at UTC midnight (a `@db.Date` column)."
+            "description": "First RODS day (home-terminal timezone day key) rendered at T00:00:00.000Z — a `@db.Date` column, not an instant (B-172)."
           },
           "rangeEnd": {
             "type": "string",
             "format": "date-time",
-            "description": "Last RODS day at UTC midnight (a `@db.Date` column)."
+            "description": "Last RODS day (home-terminal timezone day key) rendered at T00:00:00.000Z — a `@db.Date` column, not an instant (B-172)."
           },
           "warnings": {
             "description": "§10.3 pre-send warning codes (UNCERTIFIED_LOGS, UNRESOLVED_UNIDENTIFIED, ACTIVE_MALFUNCTION, ERODS_TEST_MODE).",
@@ -74767,12 +74801,12 @@
           "rangeStart": {
             "type": "string",
             "format": "date-time",
-            "description": "First RODS day at UTC midnight (a `@db.Date` column)."
+            "description": "First RODS day (home-terminal timezone day key) rendered at T00:00:00.000Z — a `@db.Date` column, not an instant (B-172)."
           },
           "rangeEnd": {
             "type": "string",
             "format": "date-time",
-            "description": "Last RODS day at UTC midnight (a `@db.Date` column)."
+            "description": "Last RODS day (home-terminal timezone day key) rendered at T00:00:00.000Z — a `@db.Date` column, not an instant (B-172)."
           }
         },
         "required": [
@@ -75414,6 +75448,11 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 200
+          },
+          "clientId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
           }
         },
         "required": [
@@ -76392,11 +76431,11 @@
           },
           "rangeStart": {
             "type": "string",
-            "format": "date-time"
+            "description": "RODS day `YYYY-MM-DD` (e.g. `2026-10-06`) or ISO date-time (e.g. `2026-10-06T06:00:00Z`). Days are counted in the driver's home-terminal timezone; at most 8 inclusive."
           },
           "rangeEnd": {
             "type": "string",
-            "format": "date-time"
+            "description": "RODS day `YYYY-MM-DD` (e.g. `2026-10-06`) or ISO date-time (e.g. `2026-10-06T06:00:00Z`). Days are counted in the driver's home-terminal timezone; at most 8 inclusive."
           },
           "outputFileComment": {
             "type": "string",
@@ -77696,6 +77735,10 @@
           },
           "connectionType": {
             "$ref": "#/components/schemas/ConnectionTypeEnum"
+          },
+          "deviceTime": {
+            "type": "string",
+            "format": "date-time"
           }
         },
         "required": [
@@ -77793,6 +77836,10 @@
             "minimum": 0,
             "maximum": 1000,
             "default": 0
+          },
+          "deviceTime": {
+            "type": "string",
+            "format": "date-time"
           }
         },
         "required": [
@@ -78200,11 +78247,11 @@
           },
           "rangeStart": {
             "type": "string",
-            "format": "date-time"
+            "description": "RODS day `YYYY-MM-DD` (e.g. `2026-10-06`) or ISO date-time (e.g. `2026-10-06T06:00:00Z`). Days are counted in the driver's home-terminal timezone; at most 8 inclusive."
           },
           "rangeEnd": {
             "type": "string",
-            "format": "date-time"
+            "description": "RODS day `YYYY-MM-DD` (e.g. `2026-10-06`) or ISO date-time (e.g. `2026-10-06T06:00:00Z`). Days are counted in the driver's home-terminal timezone; at most 8 inclusive."
           },
           "outputFileComment": {
             "type": "string",

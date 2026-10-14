@@ -1,5 +1,7 @@
 import { forwardRef, Module, OnModuleInit } from '@nestjs/common';
 import { AuditSnapshotRegistry } from '../../common/audit/audit-snapshot.registry';
+import { AuditModule } from '../audit/audit.module';
+import { RodsLoginModule } from '../logs/rods-login-recorder';
 import { CarrierModule } from '../carrier/carrier.module';
 import { DriversModule } from '../drivers/drivers.module';
 import { MobileModule } from '../mobile/mobile.module';
@@ -44,6 +46,8 @@ import { VehiclesService } from './vehicles.service';
     NotificationsModule,
     CarrierModule,
     UsersModule,
+    AuditModule,
+    RodsLoginModule,
     forwardRef(() => MobileModule),
   ],
   controllers: [VehiclesController, TrailersController, VehicleGroupsController],

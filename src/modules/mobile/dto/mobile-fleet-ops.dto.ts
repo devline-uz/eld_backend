@@ -37,6 +37,8 @@ export type ReleaseVehicleDto = z.infer<typeof ReleaseVehicleDto>;
 
 export const CoDriverSwitchDto = z.object({
   coDriverPassword: z.string().min(1).max(200),
+  /** D-155 — optional idempotency key; a replay inside the grace window returns the first token pair. */
+  clientId: z.string().trim().min(1).max(100).optional(),
 });
 export type CoDriverSwitchDto = z.infer<typeof CoDriverSwitchDto>;
 

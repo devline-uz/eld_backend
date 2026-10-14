@@ -65,8 +65,9 @@ const queue = { add: jest.fn(async () => ({})) };
 const service = new TransfersService(transfersRepo, auditRepo, fmcsa, storage, queue as never);
 
 const ACTOR = { id: '', type: 'user' as const, permissions: { reportsTransfer: 'FULL' as const } };
-const RANGE_START = new Date('2026-06-01T00:00:00Z');
-const RANGE_END = new Date('2026-06-08T00:00:00Z');
+// B-172 — day keys: the range is home-terminal (America/New_York) RODS days, the post-zod shape.
+const RANGE_START = '2026-06-01';
+const RANGE_END = '2026-06-08';
 
 let driverId: string;
 let vehicleId: string;
@@ -332,7 +333,7 @@ describe('eRODS output file from real RODS data (TEST mode)', () => {
         {
           driverId,
           method: 'WEB_SERVICES',
-          rangeStart: new Date('2026-05-31T00:00:00Z'),
+          rangeStart: '2026-05-31',
           rangeEnd: RANGE_END,
           outputFileComment: 'Too wide',
         } as never,

@@ -144,8 +144,16 @@ export class MobileFleetOpsRepository {
     newPrimaryDriverId: string;
     newCoDriverId: string;
     vehicleId: string;
+    /** D-155 — the outgoing driver's session family, revoked in the SAME transaction. */
+    revokeFamily?: { driverId: string; familyId: string };
   }): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
+      if (input.revokeFamily) {
+        await tx.driverSession.updateMany({
+          where: { driverId: input.revokeFamily.driverId, revokedAt: null, OR: [{ familyId: input.revokeFamily.familyId }, { id: input.revokeFamily.familyId }] },
+          data: { revokedAt: input.now },
+        });
+      }
       await tx.coDriverPairing.update({ where: { id: input.pairingId }, data: { endedAt: input.now, endedById: input.endedById } });
       await tx.coDriverPairing.create({
         data: {

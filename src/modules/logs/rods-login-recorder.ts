@@ -14,6 +14,7 @@ const LOGOUT_CODE = LOGIN_EVENT_CODE.LOGOUT;
 /** What made the server write the record — logged only (Appendix A has no field for it). */
 export type LoginTrigger =
   | 'AUTH_LOGIN'
+  | 'ADMIN_REASSIGN'
   | 'SELECT_VEHICLE'
   | 'CO_DRIVER_SWITCH'
   | 'AUTH_LOGOUT'

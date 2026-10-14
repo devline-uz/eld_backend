@@ -15,8 +15,8 @@ export class MobileTransferView {
   @ApiProperty(DT) createdAt!: string;
   @ApiProperty({ type: String }) fileName!: string;
   @ApiProperty({ type: String }) outputFileComment!: string;
-  @ApiProperty({ ...DT, description: 'First RODS day at UTC midnight (a `@db.Date` column).' }) rangeStart!: string;
-  @ApiProperty({ ...DT, description: 'Last RODS day at UTC midnight (a `@db.Date` column).' }) rangeEnd!: string;
+  @ApiProperty({ ...DT, description: 'First RODS day (home-terminal timezone day key) rendered at T00:00:00.000Z — a `@db.Date` column, not an instant (B-172).' }) rangeStart!: string;
+  @ApiProperty({ ...DT, description: 'Last RODS day (home-terminal timezone day key) rendered at T00:00:00.000Z — a `@db.Date` column, not an instant (B-172).' }) rangeEnd!: string;
 }
 
 export class MobileTransferCreatedResponse extends MobileTransferView {

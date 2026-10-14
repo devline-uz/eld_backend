@@ -28,6 +28,7 @@ describe('AuthService', () => {
   let mail: MockRepo;
   let loginRecords: MockRepo;
   let resetCodes: MockRepo;
+  let graceStore: MockRepo & { windowSeconds: number };
 
   const activeUser = {
     id: 'u1',
@@ -60,6 +61,8 @@ describe('AuthService', () => {
       findActiveById: jest.fn(),
       listActiveForUser: jest.fn(),
       revoke: jest.fn(),
+      rotate: jest.fn(),
+      revokeFamily: jest.fn(),
       revokeAllForUser: jest.fn(),
       revokeAllForUserExcept: jest.fn(),
     };
@@ -67,7 +70,11 @@ describe('AuthService', () => {
       create: jest.fn(),
       findByRefreshHash: jest.fn(),
       revoke: jest.fn(),
+      rotate: jest.fn(),
+      revokeFamily: jest.fn(),
       revokeAllForDriver: jest.fn(),
+      findById: jest.fn(),
+      countActiveInFamily: jest.fn(),
     };
     tokens = {
       signUserAccessToken: jest.fn().mockReturnValue('access'),
@@ -100,6 +107,7 @@ describe('AuthService', () => {
       recordFailure: jest.fn().mockResolvedValue(false),
       notifyAdminsOfResetRequest: jest.fn().mockResolvedValue(2),
     };
+    graceStore = { windowSeconds: 60, put: jest.fn().mockResolvedValue(undefined), get: jest.fn() } as never;
     service = new AuthService(
       users as never,
       drivers as never,
@@ -113,6 +121,7 @@ describe('AuthService', () => {
       mail as never,
       loginRecords as never,
       resetCodes as never,
+      graceStore as never,
     );
   });
 
@@ -179,6 +188,26 @@ describe('AuthService', () => {
       drivers.findByUsername.mockResolvedValue(driver);
       (passwordUtil.verifyPassword as jest.Mock).mockResolvedValue(false);
       await expect(service.loginDriver('john', 'bad', {})).rejects.toThrow(AppException);
+    });
+
+    it('D-155: the driver access token carries the new session id (sid)', async () => {
+      drivers.findByUsername.mockResolvedValue(driver);
+      driverSessions.create.mockResolvedValue({ id: 'ds1' });
+      await service.loginDriver('john', 'pw', {});
+      expect(tokens.signDriverAccessToken).toHaveBeenCalledWith({ id: 'd1', sessionId: 'ds1' });
+    });
+
+    it('D-155: resolveDriverSessionFamily maps sid -> family; foreign/unknown/absent sid -> null; revoked row in a live family is not revoked', async () => {
+      driverSessions.findById.mockResolvedValue({ id: 's2', driverId: 'd1', familyId: 'fam', revokedAt: new Date() });
+      driverSessions.countActiveInFamily.mockResolvedValue(1);
+      await expect(service.resolveDriverSessionFamily('d1', 's2')).resolves.toEqual({ familyId: 'fam', revoked: false });
+      driverSessions.countActiveInFamily.mockResolvedValue(0);
+      await expect(service.resolveDriverSessionFamily('d1', 's2')).resolves.toEqual({ familyId: 'fam', revoked: true });
+      driverSessions.findById.mockResolvedValue({ id: 's3', driverId: 'd1', familyId: null, revokedAt: null });
+      await expect(service.resolveDriverSessionFamily('d1', 's3')).resolves.toEqual({ familyId: 's3', revoked: false });
+      driverSessions.findById.mockResolvedValue({ id: 's4', driverId: 'other', familyId: 'f', revokedAt: null });
+      await expect(service.resolveDriverSessionFamily('d1', 's4')).resolves.toBeNull();
+      await expect(service.resolveDriverSessionFamily('d1', undefined)).resolves.toBeNull();
     });
 
     it('returns tokens plus driverId on success (MB-9)', async () => {
@@ -338,108 +367,140 @@ describe('AuthService', () => {
     });
   });
 
-  describe('refresh — user', () => {
-    it('throws TOKEN_INVALID when session not found', async () => {
-      sessions.findByRefreshHash.mockResolvedValue(null);
-      await expect(service.refresh('rt', 'user', {})).rejects.toThrow(AppException);
+  describe.each([
+    ['user'],
+    ['driver'],
+  ] as const)('refresh — %s (MG-32 family revoke + grace window)', (subject) => {
+    const repo = () => (subject === 'user' ? sessions : driverSessions);
+    const rows = () => ({ ...(subject === 'user' ? { userId: 'u1' } : { driverId: 'd1' }) });
+    const live = (over: object = {}) => ({
+      id: 's1',
+      ...rows(),
+      revokedAt: null,
+      rotatedAt: null,
+      familyId: 'fam1',
+      expiresAt: new Date(Date.now() + 100000),
+      userAgent: 'ua',
+      ip: '1.2.3.4',
+      deviceLabel: 'phone',
+      appVersion: '1.0',
+      ...over,
     });
+    const okSubject = () => {
+      users.findByIdWithRole.mockResolvedValue(activeUser);
+      drivers.findById.mockResolvedValue({ id: 'd1', status: 'ACTIVE' });
+    };
+    const accessName = subject === 'user' ? 'access' : 'daccess';
 
-    it('revokes all sessions and throws REFRESH_TOKEN_REUSED when session already revoked', async () => {
-      sessions.findByRefreshHash.mockResolvedValue({ id: 's1', userId: 'u1', revokedAt: new Date() });
-      sessions.revokeAllForUser.mockResolvedValue(undefined);
-      await expect(service.refresh('rt', 'user', {})).rejects.toThrow(AppException);
-      expect(sessions.revokeAllForUser).toHaveBeenCalledWith('u1');
+    it('throws TOKEN_INVALID when session not found', async () => {
+      repo().findByRefreshHash.mockResolvedValue(null);
+      await expect(service.refresh('rt', subject, {})).rejects.toMatchObject({ code: 'TOKEN_INVALID' });
     });
 
     it('throws TOKEN_EXPIRED when session expired', async () => {
-      sessions.findByRefreshHash.mockResolvedValue({
-        id: 's1',
-        userId: 'u1',
-        revokedAt: null,
-        expiresAt: new Date(Date.now() - 1000),
-      });
-      await expect(service.refresh('rt', 'user', {})).rejects.toThrow(AppException);
+      repo().findByRefreshHash.mockResolvedValue(live({ expiresAt: new Date(Date.now() - 1000) }));
+      await expect(service.refresh('rt', subject, {})).rejects.toMatchObject({ code: 'TOKEN_EXPIRED' });
     });
 
-    it('throws UNAUTHORIZED when user no longer exists/active', async () => {
-      sessions.findByRefreshHash.mockResolvedValue({
-        id: 's1',
-        userId: 'u1',
-        revokedAt: null,
-        expiresAt: new Date(Date.now() + 100000),
-      });
+    it('throws UNAUTHORIZED when subject no longer exists/active', async () => {
+      repo().findByRefreshHash.mockResolvedValue(live());
       users.findByIdWithRole.mockResolvedValue(null);
-      await expect(service.refresh('rt', 'user', {})).rejects.toThrow(AppException);
-    });
-
-    it('rotates and returns a new token pair', async () => {
-      sessions.findByRefreshHash.mockResolvedValue({
-        id: 's1',
-        userId: 'u1',
-        revokedAt: null,
-        expiresAt: new Date(Date.now() + 100000),
-        userAgent: 'old-ua',
-        ip: '9.9.9.9',
-        deviceLabel: 'phone',
-      });
-      users.findByIdWithRole.mockResolvedValue(activeUser);
-      sessions.revoke.mockResolvedValue({});
-      sessions.create.mockResolvedValue({});
-      const result = await service.refresh('rt', 'user', {});
-      expect(result.accessToken).toBe('access');
-      expect(sessions.revoke).toHaveBeenCalledWith('s1');
-    });
-  });
-
-  describe('refresh — driver', () => {
-    it('throws TOKEN_INVALID when session not found', async () => {
-      driverSessions.findByRefreshHash.mockResolvedValue(null);
-      await expect(service.refresh('rt', 'driver', {})).rejects.toThrow(AppException);
-    });
-
-    it('revokes all driver sessions and throws REFRESH_TOKEN_REUSED', async () => {
-      driverSessions.findByRefreshHash.mockResolvedValue({ id: 's1', driverId: 'd1', revokedAt: new Date() });
-      await expect(service.refresh('rt', 'driver', {})).rejects.toThrow(AppException);
-      expect(driverSessions.revokeAllForDriver).toHaveBeenCalledWith('d1');
-    });
-
-    it('throws TOKEN_EXPIRED when driver session expired', async () => {
-      driverSessions.findByRefreshHash.mockResolvedValue({
-        id: 's1',
-        driverId: 'd1',
-        revokedAt: null,
-        expiresAt: new Date(Date.now() - 1000),
-      });
-      await expect(service.refresh('rt', 'driver', {})).rejects.toThrow(AppException);
-    });
-
-    it('throws UNAUTHORIZED when driver no longer exists/active', async () => {
-      driverSessions.findByRefreshHash.mockResolvedValue({
-        id: 's1',
-        driverId: 'd1',
-        revokedAt: null,
-        expiresAt: new Date(Date.now() + 100000),
-      });
       drivers.findById.mockResolvedValue({ status: 'INACTIVE' });
-      await expect(service.refresh('rt', 'driver', {})).rejects.toThrow(AppException);
+      await expect(service.refresh('rt', subject, {})).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
     });
 
-    it('rotates and returns a new driver token pair', async () => {
-      driverSessions.findByRefreshHash.mockResolvedValue({
-        id: 's1',
-        driverId: 'd1',
-        revokedAt: null,
-        expiresAt: new Date(Date.now() + 100000),
-        userAgent: 'ua',
-        ip: '1.2.3.4',
-        deviceLabel: 'tablet',
-        appVersion: '1.0',
+    it('rotates inside the same family, returns the pair and parks it in the grace store', async () => {
+      repo().findByRefreshHash.mockResolvedValue(live());
+      okSubject();
+      repo().rotate.mockResolvedValue({ id: 's2' });
+      const result = await service.refresh('rt', subject, {});
+      expect(result).toEqual({ accessToken: accessName, refreshToken: 'opaque-refresh', tokenType: 'Bearer' });
+      expect(repo().rotate).toHaveBeenCalledWith('s1', expect.objectContaining({ familyId: 'fam1', refreshHash: sha256('opaque-refresh') }));
+      expect(graceStore.put).toHaveBeenCalledWith('rt', sha256('rt'), { accessToken: accessName, refreshToken: 'opaque-refresh' });
+    });
+
+    it('a legacy row without familyId starts its family at its own id', async () => {
+      repo().findByRefreshHash.mockResolvedValue(live({ familyId: null }));
+      okSubject();
+      repo().rotate.mockResolvedValue({ id: 's2' });
+      await service.refresh('rt', subject, {});
+      expect(repo().rotate).toHaveBeenCalledWith('s1', expect.objectContaining({ familyId: 's1' }));
+    });
+
+    it('replay of a token rotated 10 s ago returns the SAME pair, no revoke', async () => {
+      repo().findByRefreshHash.mockResolvedValue(live({ revokedAt: new Date(), rotatedAt: new Date(Date.now() - 10_000) }));
+      graceStore.get.mockResolvedValue({ accessToken: 'A2', refreshToken: 'R2' });
+      await expect(service.refresh('rt', subject, {})).resolves.toEqual({ accessToken: 'A2', refreshToken: 'R2', tokenType: 'Bearer' });
+      expect(repo().revokeFamily).not.toHaveBeenCalled();
+      expect(repo().rotate).not.toHaveBeenCalled();
+    });
+
+    it('reuse after the window revokes ONLY that family (never every session of the subject)', async () => {
+      repo().findByRefreshHash.mockResolvedValue(live({ revokedAt: new Date(), rotatedAt: new Date(Date.now() - 61_000) }));
+      await expect(service.refresh('rt', subject, {})).rejects.toMatchObject({ code: 'REFRESH_TOKEN_REUSED', status: 401 });
+      expect(repo().revokeFamily).toHaveBeenCalledWith('fam1');
+      expect(sessions.revokeAllForUser).not.toHaveBeenCalled();
+      expect(driverSessions.revokeAllForDriver).not.toHaveBeenCalled();
+      expect(graceStore.get).not.toHaveBeenCalled();
+    });
+
+    it('window 0 disables the grace: an immediate replay is reuse', async () => {
+      graceStore.windowSeconds = 0;
+      repo().findByRefreshHash.mockResolvedValue(live({ revokedAt: new Date(), rotatedAt: new Date() }));
+      await expect(service.refresh('rt', subject, {})).rejects.toMatchObject({ code: 'REFRESH_TOKEN_REUSED' });
+      expect(repo().revokeFamily).toHaveBeenCalledWith('fam1');
+    });
+
+    it('a token revoked by logout/admin/reset (not rotated) is TOKEN_INVALID and revokes nothing', async () => {
+      repo().findByRefreshHash.mockResolvedValue(live({ revokedAt: new Date(), rotatedAt: null }));
+      await expect(service.refresh('rt', subject, {})).rejects.toMatchObject({ code: 'TOKEN_INVALID' });
+      expect(repo().revokeFamily).not.toHaveBeenCalled();
+    });
+
+    it('legacy revoked row (no familyId) outside the window revokes nothing else', async () => {
+      repo().findByRefreshHash.mockResolvedValue(live({ familyId: null, revokedAt: new Date(), rotatedAt: new Date(Date.now() - 120_000) }));
+      await expect(service.refresh('rt', subject, {})).rejects.toMatchObject({ code: 'REFRESH_TOKEN_REUSED' });
+      expect(repo().revokeFamily).not.toHaveBeenCalled();
+    });
+
+    it('inside the window but pair unavailable: 401 REUSED without a family revoke', async () => {
+      jest.useFakeTimers({ advanceTimers: true });
+      try {
+        repo().findByRefreshHash.mockResolvedValue(live({ revokedAt: new Date(), rotatedAt: new Date() }));
+        graceStore.get.mockResolvedValue(null);
+        const p = service.refresh('rt', subject, {});
+        const assertion = expect(p).rejects.toMatchObject({ code: 'REFRESH_TOKEN_REUSED' });
+        await jest.advanceTimersByTimeAsync(3000);
+        await assertion;
+        expect(repo().revokeFamily).not.toHaveBeenCalled();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('two PARALLEL refreshes with the same token both succeed with the same pair; one rotation', async () => {
+      // Stateful fake: atomic claim like the DB transaction, pair parked like Redis.
+      const row = live();
+      const store = new Map<string, { accessToken: string; refreshToken: string }>();
+      repo().findByRefreshHash.mockImplementation(async () => ({ ...row }));
+      repo().rotate.mockImplementation(async () => {
+        await Promise.resolve();
+        if (row.revokedAt) return null;
+        row.revokedAt = new Date() as never;
+        row.rotatedAt = new Date() as never;
+        return { id: 's2' };
       });
-      drivers.findById.mockResolvedValue({ id: 'd1', status: 'ACTIVE' });
-      driverSessions.revoke.mockResolvedValue({});
-      driverSessions.create.mockResolvedValue({});
-      const result = await service.refresh('rt', 'driver', {});
-      expect(result.accessToken).toBe('daccess');
+      graceStore.put.mockImplementation(async (_t: string, h: string, pair: never) => {
+        await new Promise((r) => setTimeout(r, 20));
+        store.set(h, pair);
+      });
+      graceStore.get.mockImplementation(async (_t: string, h: string) => store.get(h) ?? null);
+      okSubject();
+      const [a, b] = await Promise.all([service.refresh('rt', subject, {}), service.refresh('rt', subject, {})]);
+      expect(a).toEqual(b);
+      expect(a.refreshToken).toBe('opaque-refresh');
+      expect(repo().rotate).toHaveBeenCalledTimes(2);
+      expect(repo().revokeFamily).not.toHaveBeenCalled();
     });
   });
 
@@ -468,6 +529,13 @@ describe('AuthService', () => {
       driverSessions.findByRefreshHash.mockResolvedValue({ id: 's1', revokedAt: new Date() });
       await service.logout('driver', 'rt');
       expect(driverSessions.revoke).not.toHaveBeenCalled();
+    });
+
+    it('D-155: logout with the old refresh token after a co-driver switch is a harmless 200 — nothing revoked twice, only the idempotent logout record call', async () => {
+      driverSessions.findByRefreshHash.mockResolvedValue({ id: 's1', driverId: 'd1', revokedAt: new Date() });
+      await expect(service.logout('driver', 'old-rt', 'd1')).resolves.toBeUndefined();
+      expect(driverSessions.revoke).not.toHaveBeenCalled();
+      expect(loginRecords.logout).toHaveBeenCalledWith('d1', 'AUTH_LOGOUT');
     });
 
     it('D-130: a driver logout writes the §395 logout record for the caller; a user logout never does', async () => {

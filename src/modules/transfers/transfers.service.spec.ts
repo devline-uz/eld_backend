@@ -141,8 +141,8 @@ const dto = (overrides: Partial<CreateTransferDto> = {}): CreateTransferDto =>
   ({
     driverId: '11111111-1111-1111-1111-111111111111',
     method: 'WEB_SERVICES',
-    rangeStart: new Date('2026-09-04T00:00:00Z'),
-    rangeEnd: new Date('2026-09-11T00:00:00Z'),
+    rangeStart: '2026-09-04',
+    rangeEnd: '2026-09-11',
     outputFileComment: 'Roadside inspection',
     ...overrides,
   });
@@ -269,7 +269,7 @@ describe('TransfersService.create (tz.md §10)', () => {
   it('does not put the range day count in the file name (not part of 4.8.2.2)', async () => {
     const h = harness();
     const view = await h.service.create(
-      dto({ rangeStart: new Date('2026-09-11T00:00:00Z'), rangeEnd: new Date('2026-09-11T00:00:00Z') }),
+      dto({ rangeStart: '2026-09-11', rangeEnd: '2026-09-11' }),
       ACTOR,
     );
     expect(view.transfer.fileName).toBe(FIRST_NAME);
@@ -278,10 +278,72 @@ describe('TransfersService.create (tz.md §10)', () => {
   it('rejects a range wider than 8 days with RANGE_TOO_LARGE and stores nothing', async () => {
     const h = harness();
     await expect(
-      h.service.create(dto({ rangeStart: new Date('2026-09-01T00:00:00Z') }), ACTOR),
+      h.service.create(dto({ rangeStart: '2026-09-01' }), ACTOR),
     ).rejects.toMatchObject({ code: 'RANGE_TOO_LARGE' });
     expect(h.storage.put).not.toHaveBeenCalled();
     expect(h.repo.createTransfer).not.toHaveBeenCalled();
+  });
+
+  describe('B-172 — the 8-day range is counted in home-terminal RODS days, not UTC days', () => {
+    const denver = (overrides: Record<string, unknown> = {}) =>
+      harness({ findDriver: jest.fn().mockResolvedValue({ ...(DRIVER as object), homeTerminalTimezone: 'America/Denver', ...overrides }) });
+
+    it('Denver Oct 6..13 given as instants (06:00Z .. next 05:59Z) is 8 days -> created, stored as local day keys', async () => {
+      const h = denver();
+      const view = await h.service.create(
+        dto({ rangeStart: new Date('2026-10-06T06:00:00Z'), rangeEnd: new Date('2026-10-14T05:59:00Z') }),
+        ACTOR,
+      );
+      expect(view.transfer).toBeDefined();
+      expect(h.repo.createTransfer).toHaveBeenCalledWith(
+        expect.objectContaining({ rangeStart: new Date('2026-10-06T00:00:00.000Z'), rangeEnd: new Date('2026-10-13T00:00:00.000Z') }),
+      );
+      // The file covers exactly Denver Oct 6 00:00 MDT .. Oct 14 00:00 MDT.
+      expect(h.repo.findEvents).toHaveBeenCalledWith('drv_1', new Date('2026-10-06T06:00:00.000Z'), new Date('2026-10-14T06:00:00.000Z'));
+      expect(h.repo.findDailyLogs).toHaveBeenCalledWith('drv_1', new Date('2026-10-06T00:00:00.000Z'), new Date('2026-10-13T00:00:00.000Z'));
+    });
+
+    it('Denver Oct 6..14 (9 local days) -> 422 RANGE_TOO_LARGE "9 days"', async () => {
+      const h = denver();
+      const err = await h.service
+        .create(dto({ rangeStart: new Date('2026-10-06T06:00:00Z'), rangeEnd: new Date('2026-10-14T06:00:00Z') }), ACTOR)
+        .catch((e: unknown) => e as AppException);
+      expect(err).toMatchObject({ code: 'RANGE_TOO_LARGE' });
+      expect((err as AppException).message).toContain('Requested range is 9 days');
+      expect(h.repo.createTransfer).not.toHaveBeenCalled();
+    });
+
+    it('day-key strings are taken as home-terminal days as-is (Denver 2026-10-06..2026-10-13 = 8)', async () => {
+      const h = denver();
+      await h.service.create(dto({ rangeStart: '2026-10-06', rangeEnd: '2026-10-13' }), ACTOR);
+      expect(h.repo.findEvents).toHaveBeenCalledWith('drv_1', new Date('2026-10-06T06:00:00.000Z'), new Date('2026-10-14T06:00:00.000Z'));
+    });
+
+    it('DST: Denver Oct 29..Nov 5 2026 (fall-back Nov 1, a 25 h day) is 8 days; bounds follow the offset change', async () => {
+      const h = denver();
+      await h.service.create(
+        dto({ rangeStart: new Date('2026-10-29T06:00:00Z'), rangeEnd: new Date('2026-11-06T06:59:00Z') }),
+        ACTOR,
+      );
+      expect(h.repo.findEvents).toHaveBeenCalledWith('drv_1', new Date('2026-10-29T06:00:00.000Z'), new Date('2026-11-06T07:00:00.000Z'));
+      expect(h.repo.createTransfer).toHaveBeenCalledWith(
+        expect.objectContaining({ rangeStart: new Date('2026-10-29T00:00:00.000Z'), rangeEnd: new Date('2026-11-05T00:00:00.000Z') }),
+      );
+      const h2 = denver();
+      await expect(
+        h2.service.create(dto({ rangeStart: new Date('2026-10-29T06:00:00Z'), rangeEnd: new Date('2026-11-06T07:00:00Z') }), ACTOR),
+      ).rejects.toMatchObject({ code: 'RANGE_TOO_LARGE' });
+    });
+
+    it('UTC home terminal is unchanged: 00:00Z .. 23:59Z of the 8th day -> created, 00:00Z of the 9th -> 422', async () => {
+      const h = denver({ homeTerminalTimezone: 'UTC' });
+      await h.service.create(dto({ rangeStart: new Date('2026-10-06T00:00:00Z'), rangeEnd: new Date('2026-10-13T23:59:00Z') }), ACTOR);
+      expect(h.repo.findEvents).toHaveBeenCalledWith('drv_1', new Date('2026-10-06T00:00:00.000Z'), new Date('2026-10-14T00:00:00.000Z'));
+      const h2 = denver({ homeTerminalTimezone: 'UTC' });
+      await expect(
+        h2.service.create(dto({ rangeStart: new Date('2026-10-06T00:00:00Z'), rangeEnd: new Date('2026-10-14T00:00:00Z') }), ACTOR),
+      ).rejects.toMatchObject({ code: 'RANGE_TOO_LARGE' });
+    });
   });
 
   it('rejects an unknown driver with DRIVER_NOT_FOUND', async () => {

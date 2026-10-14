@@ -9,11 +9,12 @@ import { AppConfigService } from '../../core/config/config.service';
 import { AttachmentsService } from '../attachments/attachments.service';
 import { CarrierRepository } from '../carrier/carrier.repository';
 import { hashPassword, verifyPassword } from './lib/password.util';
-import { randomInt, randomBytes, timingSafeEqual } from 'node:crypto';
+import { randomInt, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { randomOpaqueToken, sha256 } from './lib/hash.util';
 import { isInEmailChangeHold } from './lib/driver-email-hold';
 import { TRANSACTIONAL_MAIL, TransactionalMailPort } from '../../core/mail/mail.port';
 import { TokenService } from './token.service';
+import { RefreshGraceStore } from './refresh-grace.store';
 import { DriverAuthRepository } from './repositories/driver-auth.repository';
 import { DriverResetCodeRepository } from './repositories/driver-reset-code.repository';
 import { DriverSessionRepository } from './repositories/driver-session.repository';
@@ -40,6 +41,18 @@ export interface AccessTokenPair {
 }
 
 export type LoginResult = AccessTokenPair;
+
+/** Fields of `Session`/`DriverSession` the shared rotation logic reads. */
+interface RotatableSession {
+  id: string;
+  revokedAt: Date | null;
+  rotatedAt: Date | null;
+  familyId: string | null;
+  expiresAt: Date;
+  userAgent: string | null;
+  ip: string | null;
+  deviceLabel: string | null;
+}
 
 /**
  * MB-9 — `driverId` is additive on top of `AccessTokenPair` so the mobile app can name its
@@ -73,6 +86,7 @@ export class AuthService {
     @Inject(TRANSACTIONAL_MAIL) private readonly mail: TransactionalMailPort,
     private readonly loginRecords: RodsLoginRecorder,
     private readonly resetCodes: DriverResetCodeRepository,
+    private readonly graceStore: RefreshGraceStore,
   ) {}
 
   // ---------------------------------------------------------------------
@@ -114,15 +128,16 @@ export class AuthService {
     if (!ok) {
       throw new AppException(ERROR_CODES.INVALID_CREDENTIALS, 'Invalid username or password.', 401);
     }
-    const accessToken = this.tokens.signDriverAccessToken({ id: driver.id });
     const refreshToken = randomOpaqueToken();
-    await this.driverSessions.create({
+    const session = await this.driverSessions.create({
       driverId: driver.id,
       refreshHash: sha256(refreshToken),
       userAgent: meta.userAgent,
       ip: meta.ip,
+      familyId: randomUUID(),
       expiresAt: new Date(Date.now() + this.tokens.refreshTtlMs('driver')),
     });
+    const accessToken = this.tokens.signDriverAccessToken({ id: driver.id, sessionId: session.id });
     // D-130 — §395 Appendix A 4.5.1.5: authenticating on an already-assigned unit is an ELD
     // login (idempotent: no second record while one is open on that unit; never throws).
     if (driver.assignedVehicleId) {
@@ -199,6 +214,7 @@ export class AuthService {
       refreshHash: sha256(refreshToken),
       userAgent: meta.userAgent,
       ip: meta.ip,
+      familyId: randomUUID(),
       expiresAt: new Date(Date.now() + this.tokens.refreshTtlMs('user')),
     });
     const accessToken = this.tokens.signUserAccessToken({
@@ -218,72 +234,153 @@ export class AuthService {
     return subjectType === 'user' ? this.refreshUser(refreshToken, meta) : this.refreshDriver(refreshToken, meta);
   }
 
-  private async refreshUser(refreshToken: string, meta: RequestMeta): Promise<AccessTokenPair> {
+  /**
+   * MG-32 — shared rotation for both subjects.
+   *  - unknown hash -> 401 TOKEN_INVALID;
+   *  - revoked but NOT by rotation (logout / admin / password reset) -> 401 TOKEN_INVALID, nothing else touched;
+   *  - rotated within the grace window -> the SAME successor pair is returned (201), never an error;
+   *  - rotated longer ago -> reuse: only that token's FAMILY is revoked, 401 REFRESH_TOKEN_REUSED.
+   * Parallel callers race on an atomic claim in `rotate`; losers fall into the grace path.
+   */
+  private async rotateRefresh<S extends RotatableSession>(
+    refreshToken: string,
+    ops: {
+      find: (hash: string) => Promise<S | null>;
+      revokeFamily: (familyId: string) => Promise<unknown>;
+      /** Validates the subject and performs the atomic rotation; null = lost the race. */
+      rotate: (session: S, newHash: string, familyId: string) => Promise<{ accessToken: string } | null>;
+      subjectId: (session: S) => string;
+    },
+  ): Promise<AccessTokenPair> {
     const hash = sha256(refreshToken);
-    const session = await this.sessions.findByRefreshHash(hash);
+    const session = await ops.find(hash);
     if (!session) throw new AppException(ERROR_CODES.TOKEN_INVALID, 'Unknown refresh token.', 401);
+
     if (session.revokedAt) {
-      // Reuse of an already-rotated/revoked refresh token — treat as compromise (TZ §6.5).
-      await this.sessions.revokeAllForUser(session.userId);
-      this.logger.warn({ userId: session.userId }, 'Refresh token reuse detected — all sessions revoked');
-      throw new AppException(ERROR_CODES.REFRESH_TOKEN_REUSED, 'Refresh token was already used.', 401);
+      if (!session.rotatedAt) {
+        throw new AppException(ERROR_CODES.TOKEN_INVALID, 'Session was revoked — sign in again.', 401);
+      }
+      return this.replayOrReuse(refreshToken, hash, session, ops);
     }
     if (session.expiresAt < new Date()) {
       throw new AppException(ERROR_CODES.TOKEN_EXPIRED, 'Refresh token expired.', 401);
     }
-    const user = await this.users.findByIdWithRole(session.userId);
-    if (!user || user.status !== 'ACTIVE') {
-      throw new AppException(ERROR_CODES.UNAUTHORIZED, 'User no longer exists.', 401);
-    }
 
-    await this.sessions.revoke(session.id);
     const newRefreshToken = randomOpaqueToken();
-    const newSession = await this.sessions.create({
-      userId: user.id,
-      refreshHash: sha256(newRefreshToken),
-      userAgent: meta.userAgent ?? session.userAgent ?? undefined,
-      ip: meta.ip ?? session.ip ?? undefined,
-      deviceLabel: session.deviceLabel ?? undefined,
-      expiresAt: new Date(Date.now() + this.tokens.refreshTtlMs('user')),
-    });
-    const accessToken = this.tokens.signUserAccessToken({
-      id: user.id,
-      roleKey: user.role.key,
-      permissions: user.role.permissions as PermissionMatrix,
-      sessionId: newSession.id,
-    });
-    return { accessToken, refreshToken: newRefreshToken, tokenType: 'Bearer' };
+    const won = await ops.rotate(session, sha256(newRefreshToken), session.familyId ?? session.id);
+    if (!won) return this.replayOrReuse(refreshToken, hash, (await ops.find(hash)) ?? session, ops);
+    const pair: AccessTokenPair = { accessToken: won.accessToken, refreshToken: newRefreshToken, tokenType: 'Bearer' };
+    await this.graceStore.put(refreshToken, hash, { accessToken: pair.accessToken, refreshToken: pair.refreshToken });
+    return pair;
   }
 
-  private async refreshDriver(refreshToken: string, meta: RequestMeta): Promise<AccessTokenPair> {
-    const hash = sha256(refreshToken);
-    const session = await this.driverSessions.findByRefreshHash(hash);
-    if (!session) throw new AppException(ERROR_CODES.TOKEN_INVALID, 'Unknown refresh token.', 401);
-    if (session.revokedAt) {
-      await this.driverSessions.revokeAllForDriver(session.driverId);
+  private async replayOrReuse<S extends RotatableSession>(
+    refreshToken: string,
+    hash: string,
+    session: S,
+    ops: { revokeFamily: (familyId: string) => Promise<unknown>; subjectId: (s: S) => string },
+  ): Promise<AccessTokenPair> {
+    const windowMs = this.graceStore.windowSeconds * 1000;
+    const rotatedAt = session.rotatedAt?.getTime();
+    if (windowMs > 0 && rotatedAt !== undefined && Date.now() - rotatedAt <= windowMs) {
+      // The winner stores the pair right after its transaction commits; wait briefly for it.
+      for (let i = 0; i < 40; i++) {
+        const pair = await this.graceStore.get(refreshToken, hash);
+        if (pair) return { ...pair, tokenType: 'Bearer' };
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      // Inside the window but no stored pair (Redis down / winner died): never escalate to a
+      // family revoke on that evidence alone, but the pair cannot be reproduced either.
+      this.logger.warn({ subjectId: ops.subjectId(session) }, 'Refresh replay inside grace window but pair unavailable');
       throw new AppException(ERROR_CODES.REFRESH_TOKEN_REUSED, 'Refresh token was already used.', 401);
     }
-    if (session.expiresAt < new Date()) {
-      throw new AppException(ERROR_CODES.TOKEN_EXPIRED, 'Refresh token expired.', 401);
-    }
-    const driver = await this.drivers.findById(session.driverId);
-    if (!driver || driver.status !== 'ACTIVE') {
-      throw new AppException(ERROR_CODES.UNAUTHORIZED, 'Driver no longer exists.', 401);
-    }
+    if (session.familyId) await ops.revokeFamily(session.familyId);
+    this.logger.warn(
+      { subjectId: ops.subjectId(session), familyId: session.familyId ?? null },
+      'Refresh token reuse detected — token family revoked',
+    );
+    throw new AppException(ERROR_CODES.REFRESH_TOKEN_REUSED, 'Refresh token was already used.', 401);
+  }
 
-    await this.driverSessions.revoke(session.id);
-    const newRefreshToken = randomOpaqueToken();
-    await this.driverSessions.create({
-      driverId: driver.id,
-      refreshHash: sha256(newRefreshToken),
-      userAgent: meta.userAgent ?? session.userAgent ?? undefined,
-      ip: meta.ip ?? session.ip ?? undefined,
-      deviceLabel: session.deviceLabel ?? undefined,
-      appVersion: session.appVersion ?? undefined,
-      expiresAt: new Date(Date.now() + this.tokens.refreshTtlMs('driver')),
+  private refreshUser(refreshToken: string, meta: RequestMeta): Promise<AccessTokenPair> {
+    return this.rotateRefresh(refreshToken, {
+      find: (h) => this.sessions.findByRefreshHash(h),
+      revokeFamily: (f) => this.sessions.revokeFamily(f),
+      subjectId: (s) => s.userId,
+      rotate: async (session, newHash, familyId) => {
+        const user = await this.users.findByIdWithRole(session.userId);
+        if (!user || user.status !== 'ACTIVE') {
+          throw new AppException(ERROR_CODES.UNAUTHORIZED, 'User no longer exists.', 401);
+        }
+        const created = await this.sessions.rotate(session.id, {
+          userId: user.id,
+          refreshHash: newHash,
+          userAgent: meta.userAgent ?? session.userAgent ?? undefined,
+          ip: meta.ip ?? session.ip ?? undefined,
+          deviceLabel: session.deviceLabel ?? undefined,
+          familyId,
+          expiresAt: new Date(Date.now() + this.tokens.refreshTtlMs('user')),
+        });
+        if (!created) return null;
+        const accessToken = this.tokens.signUserAccessToken({
+          id: user.id,
+          roleKey: user.role.key,
+          permissions: user.role.permissions as PermissionMatrix,
+          sessionId: created.id,
+        });
+        return { accessToken };
+      },
     });
-    const accessToken = this.tokens.signDriverAccessToken({ id: driver.id });
-    return { accessToken, refreshToken: newRefreshToken, tokenType: 'Bearer' };
+  }
+
+  private refreshDriver(refreshToken: string, meta: RequestMeta): Promise<AccessTokenPair> {
+    return this.rotateRefresh(refreshToken, {
+      find: (h) => this.driverSessions.findByRefreshHash(h),
+      revokeFamily: (f) => this.driverSessions.revokeFamily(f),
+      subjectId: (s) => s.driverId,
+      rotate: async (session, newHash, familyId) => {
+        const driver = await this.drivers.findById(session.driverId);
+        if (!driver || driver.status !== 'ACTIVE') {
+          throw new AppException(ERROR_CODES.UNAUTHORIZED, 'Driver no longer exists.', 401);
+        }
+        const created = await this.driverSessions.rotate(session.id, {
+          driverId: driver.id,
+          refreshHash: newHash,
+          userAgent: meta.userAgent ?? session.userAgent ?? undefined,
+          ip: meta.ip ?? session.ip ?? undefined,
+          deviceLabel: session.deviceLabel ?? undefined,
+          appVersion: session.appVersion ?? undefined,
+          familyId,
+          expiresAt: new Date(Date.now() + this.tokens.refreshTtlMs('driver')),
+        });
+        if (!created) return null;
+        return { accessToken: this.tokens.signDriverAccessToken({ id: driver.id, sessionId: created.id }) };
+      },
+    });
+  }
+
+  /**
+   * D-155 — the co-driver switch hands the device to another driver: the OUTGOING driver's session
+   * family (resolved from the `sid` of the access token that made the call) must die with it.
+   * Returns the family key so the caller can revoke it inside its own transaction.
+   */
+  async resolveDriverSessionFamily(driverId: string, sessionId: string | undefined): Promise<{ familyId: string; revoked: boolean } | null> {
+    if (!sessionId) return null;
+    const s = await this.driverSessions.findById(sessionId);
+    if (!s || s.driverId !== driverId) return null;
+    const familyId = s.familyId ?? s.id;
+    const live = s.revokedAt === null || (await this.driverSessions.countActiveInFamily(driverId, familyId)) > 0;
+    return { familyId, revoked: !live };
+  }
+
+  /** D-155 — switch replay support: the co-driver pair is kept (encrypted, short TTL) under the clientId. */
+  stashSwitchPair(secret: string, key: string, pair: { accessToken: string; refreshToken: string }): Promise<void> {
+    return this.graceStore.put(secret, sha256(`co-driver-switch:${key}`), pair);
+  }
+
+  async recallSwitchPair(secret: string, key: string): Promise<AccessTokenPair | null> {
+    const pair = await this.graceStore.get(secret, sha256(`co-driver-switch:${key}`));
+    return pair ? { ...pair, tokenType: 'Bearer' } : null;
   }
 
   async logout(subjectType: 'user' | 'driver', refreshToken: string, subjectId?: string): Promise<void> {

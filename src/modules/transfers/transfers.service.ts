@@ -15,7 +15,7 @@ import { CreateTransferDto, TransferListQueryDto } from './dto/transfers.dto';
 import { buildOutputFileName, inclusiveDayCount } from './filename';
 import { FmcsaTransferService } from './fmcsa-transfer.service';
 import { buildOutputFile } from './output-file';
-import { PreSendFinding, runPreSendChecks } from './pre-send-checks';
+import { PreSendFinding, resolveTransferRange, runPreSendChecks } from './pre-send-checks';
 import { activeMalfunctionCodes, buildSnapshot, uncertifiedDayCount } from './snapshot';
 import { loadTripDetails } from './trip-details';
 import { TransfersRepository } from './transfers.repository';
@@ -66,12 +66,12 @@ export class TransfersService {
     const driver = await this.repo.findDriver(dto.driverId);
     const timezone = driver?.homeTerminalTimezone ?? carrier.timezone;
 
-    const rangeStart = dto.rangeStart;
-    const rangeEnd = dto.rangeEnd;
+    // B-172 — the range is RODS days of the home-terminal timezone (§395.2), not UTC days:
+    // bounds are mapped to local day keys, the file covers exactly those local days, and the
+    // stored `@db.Date` range is the local day keys.
+    const range = resolveTransferRange(timezone, dto.rangeStart, dto.rangeEnd);
+    const { rangeStart, rangeEnd, fromInstant, toInstant } = range;
     const dayCount = inclusiveDayCount(rangeStart, rangeEnd);
-
-    const fromInstant = dayStart(timezone, dayKey('UTC', rangeStart));
-    const toInstant = dayEnd(timezone, dayKey('UTC', rangeEnd));
 
     const [events, unidentifiedEvents, dailyLogs, pendingSegments] = driver
       ? await Promise.all([
@@ -113,7 +113,7 @@ export class TransfersService {
       loadCoDrivers(this.repo, driver.id, fromInstant, toInstant),
     ]);
 
-    const tripDetails = await loadTripDetails(this.repo, driver.id, timezone, dayKey('UTC', rangeStart), dayKey('UTC', rangeEnd), generatedAt);
+    const tripDetails = await loadTripDetails(this.repo, driver.id, timezone, range.startKey, range.endKey, generatedAt);
 
     const snapshot = buildSnapshot({
       driver,

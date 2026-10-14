@@ -151,9 +151,15 @@ model Session {
   lastSeenAt  DateTime  @default(now())
   expiresAt   DateTime
   revokedAt   DateTime?
+  /// MG-32 — rotation chain id: every refresh keeps the family, reuse revokes only this family.
+  /// NULL on pre-migration rows (a replay of one revokes nothing beyond itself).
+  familyId    String?
+  /// MG-32 — set when this row was revoked BY ROTATION (vs logout/admin/reset); drives the grace window.
+  rotatedAt   DateTime?
   user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, revokedAt])
+  @@index([familyId])
 }
 
 /// MB-17 — driver self-service reset code: 6 digits, hashed (salted SHA-256), 15 min TTL,
@@ -212,9 +218,14 @@ model DriverSession {
   lastSeenAt  DateTime  @default(now())
   expiresAt   DateTime
   revokedAt   DateTime?
+  /// MG-32 — see `Session.familyId`.
+  familyId    String?
+  /// MG-32 — see `Session.rotatedAt`.
+  rotatedAt   DateTime?
   driver      Driver    @relation(fields: [driverId], references: [id], onDelete: Cascade)
 
   @@index([driverId, revokedAt])
+  @@index([familyId])
 }
 
 // ---------------------------------------------------------------------------

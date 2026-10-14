@@ -8,6 +8,8 @@ export interface CreateSessionInput {
   userAgent?: string;
   ip?: string;
   deviceLabel?: string;
+  /** MG-32 — rotation chain; a fresh login starts a new one. */
+  familyId?: string;
   expiresAt: Date;
 }
 
@@ -59,6 +61,32 @@ export class SessionRepository {
       orderBy: { lastSeenAt: 'desc' },
       select: SAFE_SESSION_SELECT,
     });
+  }
+
+  /**
+   * MG-32 — atomic rotation: revokes `oldId` (marking it `rotatedAt`) and creates its successor
+   * in ONE transaction, but only for the caller that wins the `revokedAt IS NULL` claim. Returns
+   * `null` for a loser (a parallel refresh already rotated it) so the caller can take the grace path.
+   */
+  rotate(oldId: string, input: CreateSessionInput): Promise<Session | null> {
+    return this.prisma.$transaction(async (tx) => {
+      const now = new Date();
+      const claim = await tx.session.updateMany({
+        where: { id: oldId, revokedAt: null },
+        data: { revokedAt: now, rotatedAt: now },
+      });
+      if (claim.count !== 1) return null;
+      return tx.session.create({ data: input });
+    });
+  }
+
+  /** MG-32 — reuse detected: revoke only the rotation chain the replayed token belongs to. */
+  async revokeFamily(familyId: string): Promise<number> {
+    const r = await this.prisma.session.updateMany({
+      where: { familyId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+    return r.count;
   }
 
   revoke(id: string): Promise<Session> {

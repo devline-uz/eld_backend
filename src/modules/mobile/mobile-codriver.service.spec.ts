@@ -15,8 +15,13 @@ const META = { ip: '1.2.3.4', userAgent: 'test' };
 
 function build() {
   const repo = { endPairing: jest.fn(), createPairing: jest.fn(), switchSeats: jest.fn(), clearAssignedVehicle: jest.fn() };
-  const mobileRepo = { findActivePairing: jest.fn(), findDriver: jest.fn() };
-  const auth = { loginDriver: jest.fn() };
+  const mobileRepo = { findActivePairing: jest.fn(), findDriver: jest.fn(), findSyncedByClientId: jest.fn().mockResolvedValue(null), recordSyncedResult: jest.fn().mockResolvedValue({ status: 'ACCEPTED' }) };
+  const auth = {
+    loginDriver: jest.fn(),
+    resolveDriverSessionFamily: jest.fn().mockResolvedValue(null),
+    stashSwitchPair: jest.fn().mockResolvedValue(undefined),
+    recallSwitchPair: jest.fn().mockResolvedValue(null),
+  };
   const audit = { insert: jest.fn().mockResolvedValue(undefined) };
   const trips = { activeTripLists: jest.fn().mockResolvedValue(null) };
   const loginRecords = { login: jest.fn().mockResolvedValue(1), logout: jest.fn().mockResolvedValue(1) };
@@ -159,6 +164,84 @@ describe('MobileCoDriverService (MB-3)', () => {
     mobileRepo.findActivePairing.mockResolvedValue({ ...PAIRING, primaryDriverId: 'drv_2', coDriverId: 'drv_1' });
     await service.current('drv_1');
     expect(mobileRepo.findDriver).toHaveBeenLastCalledWith('drv_2');
+  });
+});
+
+describe('D-155 — switch revokes the outgoing driver session family', () => {
+  const PAIR = { accessToken: 'a2', refreshToken: 'r2', tokenType: 'Bearer' as const };
+  function ready() {
+    const b = build();
+    b.mobileRepo.findActivePairing.mockResolvedValue(PAIRING);
+    b.mobileRepo.findDriver.mockResolvedValue({ id: 'drv_2', username: 'jdoe' });
+    b.auth.loginDriver.mockResolvedValue(PAIR);
+    return b;
+  }
+
+  it('revokes only the caller session family, inside the seat-swap transaction, and writes the outgoing logout record once', async () => {
+    const { service, auth, repo, loginRecords } = ready();
+    auth.resolveDriverSessionFamily.mockResolvedValue({ familyId: 'fam_1', revoked: false });
+    await service.switch('drv_1', { coDriverPassword: 'x' }, ACTOR, META, 'sess_1');
+    expect(auth.resolveDriverSessionFamily).toHaveBeenCalledWith('drv_1', 'sess_1');
+    expect(repo.switchSeats).toHaveBeenCalledWith(expect.objectContaining({ revokeFamily: { driverId: 'drv_1', familyId: 'fam_1' } }));
+    expect(loginRecords.logout).toHaveBeenCalledTimes(1);
+    expect(loginRecords.logout).toHaveBeenCalledWith('drv_1', 'CO_DRIVER_SWITCH', { onlyVehicleId: 'veh_1' });
+  });
+
+  it('a legacy token without sid revokes nothing (no family known) and writes no logout', async () => {
+    const { service, repo, loginRecords } = ready();
+    await service.switch('drv_1', { coDriverPassword: 'x' }, ACTOR, META, undefined);
+    expect(repo.switchSeats).toHaveBeenCalledWith(expect.not.objectContaining({ revokeFamily: expect.anything() as unknown }));
+    expect(loginRecords.logout).not.toHaveBeenCalled();
+  });
+
+  it('a wrong co-driver password revokes nothing', async () => {
+    const { service, auth, repo, loginRecords } = ready();
+    auth.resolveDriverSessionFamily.mockResolvedValue({ familyId: 'fam_1', revoked: false });
+    auth.loginDriver.mockRejectedValue(new AppException(ERROR_CODES.INVALID_CREDENTIALS, 'bad', 401));
+    await expect(service.switch('drv_1', { coDriverPassword: 'x' }, ACTOR, META, 'sess_1')).rejects.toMatchObject({ code: 'CO_DRIVER_PASSWORD_INVALID', status: 422 });
+    expect(repo.switchSeats).not.toHaveBeenCalled();
+    expect(loginRecords.logout).not.toHaveBeenCalled();
+  });
+
+  it('a stale caller token (session already revoked, no clientId) is 401 TOKEN_INVALID and does not swap back', async () => {
+    const { service, auth, repo } = ready();
+    auth.resolveDriverSessionFamily.mockResolvedValue({ familyId: 'fam_1', revoked: true });
+    await expect(service.switch('drv_1', { coDriverPassword: 'x' }, ACTOR, META, 'sess_1')).rejects.toMatchObject({ code: 'TOKEN_INVALID', status: 401 });
+    expect(auth.loginDriver).not.toHaveBeenCalled();
+    expect(repo.switchSeats).not.toHaveBeenCalled();
+  });
+
+  it('with a clientId the first answer is stashed and the ledger row written; a replay returns it even though the session is now revoked', async () => {
+    const { service, auth, repo, mobileRepo } = ready();
+    auth.resolveDriverSessionFamily.mockResolvedValue({ familyId: 'fam_1', revoked: false });
+    await service.switch('drv_1', { coDriverPassword: 'x', clientId: 'c1' }, ACTOR, META, 'sess_1');
+    expect(auth.stashSwitchPair).toHaveBeenCalledWith('x', 'drv_1:c1', { accessToken: 'a2', refreshToken: 'r2' });
+    expect(mobileRepo.recordSyncedResult).toHaveBeenCalledWith('drv_1', 'c1', 'co_driver_switch', expect.any(Date), 'ACCEPTED', null, expect.anything());
+
+    mobileRepo.findSyncedByClientId.mockResolvedValue({ type: 'co_driver_switch' });
+    auth.recallSwitchPair.mockResolvedValue(PAIR);
+    repo.switchSeats.mockClear();
+    auth.loginDriver.mockClear();
+    auth.resolveDriverSessionFamily.mockResolvedValue({ familyId: 'fam_1', revoked: true });
+    await expect(service.switch('drv_1', { coDriverPassword: 'x', clientId: 'c1' }, ACTOR, META, 'sess_1')).resolves.toEqual(PAIR);
+    expect(repo.switchSeats).not.toHaveBeenCalled();
+    expect(auth.loginDriver).not.toHaveBeenCalled();
+  });
+
+  it('a replay after the grace window, or a clientId spent on another operation, is 409 CONFLICT', async () => {
+    const { service, auth, mobileRepo } = ready();
+    mobileRepo.findSyncedByClientId.mockResolvedValue({ type: 'co_driver_switch' });
+    auth.recallSwitchPair.mockResolvedValue(null);
+    await expect(service.switch('drv_1', { coDriverPassword: 'x', clientId: 'c1' }, ACTOR, META, 's')).rejects.toMatchObject({ status: 409 });
+    mobileRepo.findSyncedByClientId.mockResolvedValue({ type: 'dvir_submit' });
+    await expect(service.switch('drv_1', { coDriverPassword: 'x', clientId: 'c1' }, ACTOR, META, 's')).rejects.toMatchObject({ status: 409 });
+  });
+
+  it('leave() does not touch auth sessions (the driver stays signed in on the same device)', async () => {
+    const { service, auth, mobileRepo } = ready();
+    mobileRepo.findActivePairing.mockResolvedValue(PAIRING);
+    await service.leave('drv_1', ACTOR);
+    expect(auth.resolveDriverSessionFamily).not.toHaveBeenCalled();
   });
 });
 
