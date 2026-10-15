@@ -27,6 +27,17 @@ export const CertificationStatusQueryDto = z.object({ days: z.coerce.number().in
 export type CertificationStatusQueryDto = z.infer<typeof CertificationStatusQueryDto>;
 export type LogDateQueryDto = z.infer<typeof LogDateQueryDto>;
 
+/**
+ * D-163 — `GET /logs/:driverId/events`: `review=REPLACED_DEVICE` keeps only records a replaced
+ * device delivered late (needs fleet-manager review). With `date` it filters that RODS day; without
+ * `date` it lists the driver's flagged records across all days (newest last, capped).
+ */
+export const LogEventsQueryDto = z.object({
+  date: dayKeySchema.optional(),
+  review: z.enum(['REPLACED_DEVICE']).optional(),
+});
+export type LogEventsQueryDto = z.infer<typeof LogEventsQueryDto>;
+
 export const LogRangeQueryDto = z
   .object({ from: dayKeySchema, to: dayKeySchema })
   .refine((value) => value.from <= value.to, { message: '`from` must not be after `to`' })

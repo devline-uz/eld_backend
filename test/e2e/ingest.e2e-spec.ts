@@ -30,9 +30,11 @@ describe('Ingest (e2e, TZ §7)', () => {
     configureApp(app);
     await app.init();
 
-    // A seeded driver who is assigned to a unit that has a PT30 paired to it.
+    // A seeded driver who is assigned to a unit that has a PT30 paired to it. Deliberately NOT
+    // johnsmith (B-184): posting events for him makes seed.ts skip his 8-day timeline and breaks
+    // seed-shape.spec.ts depending on suite order.
     const drivers = await prisma.driver.findMany({
-      where: { assignedVehicleId: { not: null }, status: 'ACTIVE' },
+      where: { assignedVehicleId: { not: null }, status: 'ACTIVE', username: { not: 'johnsmith' } },
       orderBy: { username: 'asc' },
     });
     const devices = await prisma.device.findMany({
@@ -198,7 +200,7 @@ describe('Ingest (e2e, TZ §7)', () => {
     expect(res.status).toBe(403);
   });
 
-  it('POST /ingest/telemetry stores imperial, coarsened points (§5.6, §4.2)', async () => {
+  it('POST /ingest/telemetry stores imperial points at full GPS precision (§5.6, D-149)', async () => {
     const time = new Date();
     const res = await request(server())
       .post('/api/ingest/telemetry')
@@ -226,7 +228,8 @@ describe('Ingest (e2e, TZ §7)', () => {
     });
     expect(point!.speedMph).toBe(65);
     expect(point!.coolantTempC).toBe(88);
-    expect(Number(point!.latitude)).not.toBe(39.961176);
+    // D-149: telemetry keeps the 6-decimal fix (RODS records stay 1-mile, PC 10-mile).
+    expect(Number(point!.latitude)).toBeCloseTo(39.961176, 6);
   });
 
   it('POST /ingest/ble-state records the state (§7.6)', async () => {

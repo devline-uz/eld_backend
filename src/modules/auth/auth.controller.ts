@@ -55,16 +55,16 @@ export class AuthController {
   @Post('login/driver')
   @ApiOperation({
     summary: 'Driver password login (TZ §6.1).',
-    description: 'D-130 — when the driver already has an assigned unit, the server writes the §395 Appendix A 4.5.1.5 login record (eventType 5, code 1) on it (idempotent).',
+    description: 'MD-195 — an optional `device {deviceId uuid, deviceLabel ≤64, platform, formFactor phone|tablet, appVersion}` makes this the account\'s only signed-in device: every session of another device is ended (REPLACED) and the response carries `replacedDevice`. Without `device` the legacy behaviour applies. D-130 — when the driver already has an assigned unit, the server writes the §395 Appendix A 4.5.1.5 login record (eventType 5, code 1) on it (idempotent).',
   })
   @ApiEnvelopeResponse(DriverLoginResponse, {
     status: 201,
     description: 'MB-9 — `driverId` is additive so the mobile app can name its per-driver offline DB file.',
     example: { accessToken: 'eyJ...', refreshToken: 'a1b2...', tokenType: 'Bearer', driverId: 'drv_1' },
   })
-  @ApiStandardErrors({ public: true, errors: [{ status: 401, code: ERROR_CODES.INVALID_CREDENTIALS, message: 'Username or password is incorrect.' }, apiError.rateLimited()] })
+  @ApiStandardErrors({ public: true, errors: [{ status: 401, code: ERROR_CODES.INVALID_CREDENTIALS, message: 'Username or password is incorrect.' }, { status: 409, code: ERROR_CODES.DRIVING_ON_OTHER_DEVICE, message: 'MD-195 — another device of this account reported motion in the last 2 minutes (`details: { byDeviceLabel, lastSeenAt }`). There is no force flag.' }, apiError.rateLimited()] })
   loginDriver(@Body(zodBody(DriverLoginDto)) dto: DriverLoginDto, @Req() req: Request) {
-    return this.auth.loginDriver(dto.username, dto.password, AuthService.meta(req));
+    return this.auth.loginDriver(dto.username, dto.password, AuthService.meta(req), dto.device);
   }
 
   @Public()
@@ -90,7 +90,7 @@ export class AuthController {
   @Post('refresh')
   @ApiOperation({ summary: 'Rotates a refresh token (TZ §6.5 — rotated on every use).', description: 'MG-32 — replaying a just-rotated token within REFRESH_REUSE_GRACE_SECONDS (default 60) returns the SAME successor pair (201). Later replay of a rotated token = 401 REFRESH_TOKEN_REUSED and only that token family is revoked; other devices stay signed in. A token revoked by logout/admin/password reset = 401 TOKEN_INVALID.' })
   @ApiEnvelopeResponse(TokenPairResponse, { status: 201, example: { accessToken: 'eyJ...', refreshToken: 'a1b2...', tokenType: 'Bearer' } })
-  @ApiStandardErrors({ public: true, errors: [{ status: 401, code: ERROR_CODES.REFRESH_TOKEN_REUSED, message: 'This refresh token was already rotated (outside the grace window) — its session family is revoked; other sessions are untouched (TZ §6.5, MG-32).' }, apiError.rateLimited('Refresh is limited to 30 requests per minute per IP.')] })
+  @ApiStandardErrors({ public: true, errors: [{ status: 401, code: ERROR_CODES.SESSION_REPLACED, message: 'MD-195 — a driver session ended by a login from another device (`details: { byDeviceLabel, at }`). Final: do not retry; never REFRESH_TOKEN_REUSED.' }, { status: 401, code: ERROR_CODES.REFRESH_TOKEN_REUSED, message: 'This refresh token was already rotated (outside the grace window) — its session family is revoked; other sessions are untouched (TZ §6.5, MG-32).' }, apiError.rateLimited('Refresh is limited to 30 requests per minute per IP.')] })
   refresh(@Body(zodBody(RefreshTokenDto)) dto: RefreshTokenDto, @Req() req: Request) {
     return this.auth.refresh(dto.refreshToken, dto.subjectType, AuthService.meta(req));
   }

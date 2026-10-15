@@ -495,8 +495,10 @@ async function main(): Promise<void> {
     const offAt = johnAnchor.plus({ hours: 1, minutes: 19 });
     if (offAt <= seedNow) push(offAt, 'OFF');
   }
+  // B-184 — only duty-status records (type 1) count: every login writes a §4.5.1.5 login record
+  // (type 5), which must not make the seed skip John's timeline.
   const johnHasRecords = await prisma.eldEvent.findFirst({
-    where: { driverId: johnSmithId, eventDateTime: { gte: johnTimeline[0].at.toJSDate() } },
+    where: { driverId: johnSmithId, eventType: 1, eventDateTime: { gte: johnTimeline[0].at.toJSDate() } },
     select: { id: true },
   });
   // Append-only records: a re-run inside the same window keeps the first run's log (as the HOS mock does).

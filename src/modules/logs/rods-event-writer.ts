@@ -27,6 +27,8 @@ export interface AppendContext {
   /** Personal Conveyance coarsens the stored position to 10 miles BEFORE the write (§23). */
   personalConveyance?: boolean;
   comment?: string | null;
+  /** D-163 — late record from a replaced device: labelled on every appended row. */
+  review?: { reviewReason: string; reviewDeviceLabel: string | null } | null;
 }
 
 /**
@@ -97,6 +99,8 @@ export class RodsEventWriter {
         editedById: ctx.editedById,
         editorType: ctx.editorType,
         editReason: ctx.editReason ?? null,
+        reviewReason: ctx.review?.reviewReason ?? null,
+        reviewDeviceLabel: ctx.review?.reviewDeviceLabel ?? null,
         checksum: computeChecksum(base),
       };
     });

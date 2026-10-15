@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { DeviceInfoDto } from '../../auth/dto/auth.dto';
 
 /**
  * Phase 6b (tasks.md "Mobile API gaps") — MB-2/MB-3/MB-5/MB-10/MB-14.
@@ -39,6 +40,8 @@ export const CoDriverSwitchDto = z.object({
   coDriverPassword: z.string().min(1).max(200),
   /** D-155 — optional idempotency key; a replay inside the grace window returns the first token pair. */
   clientId: z.string().trim().min(1).max(100).optional(),
+  /** MD-195 / D-161 — the device the co-driver takes over on; same schema as `POST /auth/login/driver`. */
+  device: DeviceInfoDto.optional(),
 });
 export type CoDriverSwitchDto = z.infer<typeof CoDriverSwitchDto>;
 

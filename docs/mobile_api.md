@@ -7,7 +7,7 @@ Faqat haydovchi ilovasi chaqiradigan endpointlar (`/api/mobile/*`, `/api/ingest/
 
 PT SDK 6.11.1 bo'yicha batafsil integratsiya yo'riqnomasi: `backend/docs/pt-sdk-6.11-mobile.md`.
 
-Jami: **72 ta endpoint**, 8 bo'lim.
+Jami: **74 ta endpoint**, 8 bo'lim.
 
 
 ## Umumiy qoidalar
@@ -44,11 +44,12 @@ Jami: **72 ta endpoint**, 8 bo'lim.
   - `POST /api/auth/driver/password/reset` — Emaildagi kod bilan haydovchi parolini tiklaydi; haydovchining barcha sessiyalari bekor qilinadi.
   - `GET /api/auth/me` — Joriy autentifikatsiyalangan subyekt (token claim'lari) + web topbar maydonlari.
 - [Biriktirmalar](#bolim-attachments) — 1 ta
-  - `GET /api/mobile/attachments/{id}/presign` — MB-9: chat ovoz/fayl uchun 15 daqiqalik presigned GET (faqat suhbat ishtirokchisi).
   - `GET /api/attachments/{id}/presign` — Bitta biriktirma (rasm/fayl) uchun 15 daqiqalik presigned GET URL; DVIR/defekt/tiket bo'yicha ruxsat tekshiril
-- [Mobil ilova (/mobile)](#bolim-mobile) — 51 ta
-  - `POST /api/mobile/transfers` — Haydovchi o'z RODS'i uchun eRODS transfer boshlaydi: Appendix A fayl yaratiladi, tekshiriladi, saqlanadi, yubo
-  - `GET /api/mobile/transfers` — Haydovchining oxirgi transferlari (S-10 / M-27 "Last transfer" kvitansiyalari).
+- [Bildirishnomalar](#bolim-notifications) — 3 ta
+  - `GET /api/notifications` ♻️ — Chaqiruvchining in-app bildirishnomalari, segment sonlari bilan. 🆕 yangi tur: `alert.device_vin_mismatch`.
+  - `POST /api/notifications/read-all` — Barcha o'qilmagan bildirishnomalarni o'qilgan qiladi.
+  - `POST /api/notifications/{id}/read` — Bitta bildirishnomani o'qilgan qiladi.
+- [Mobil ilova (/mobile)](#bolim-mobile) — 53 ta
   - `GET /api/mobile/app-config` — Ommaviy (auth'siz) ilova sozlamasi: min/oxirgi versiya, store va legal URL'lar, PT30 firmware. `appVersion` be
   - `GET /api/mobile/legal/{kind}` — Maxfiylik siyosati / foydalanish shartlari havolasi (`url`ni oching).
   - `GET /api/mobile/ping` — Tarmoq tezligi testi uchun `bytes` ta tasodifiy bayt (max 1 MiB). 30 so'rov/daqiqa. Konvertsiz.
@@ -82,26 +83,26 @@ Jami: **72 ta endpoint**, 8 bo'lim.
   - `GET /api/mobile/conversations/{id}/messages` — Suhbat tarixi, cursor pagination.
   - `POST /api/mobile/conversations/{id}/messages` — Suhbatga xabar yuboradi (realtime `message.new`). `clientId` bo'yicha idempotent.
   - `POST /api/mobile/conversations/{id}/read` — Suhbatni o'qilgan qiladi.
+  - `GET /api/mobile/attachments/{id}/presign` — MB-9 — short-lived (15 min) presigned GET for an attachment the driver may read: a chat file or a web-sent voi
   - `GET /api/mobile/maintenance` — Tanlangan unitning texnik xizmat vazifalari (eng kechikkani birinchi).
   - `GET /api/mobile/maintenance/{id}` — Bitta texnik xizmat vazifasi, yuborilgan invoice va tekshiruvchi izohi bilan.
   - `POST /api/mobile/maintenance/{id}/submit` — Texnik xizmat invoice'ini back-office tekshiruviga yuboradi.
   - `POST /api/mobile/device/mac` — Tanlangan unitga bog'langan ELD'ning ko'rilgan BLE MAC manzilini xabar qiladi (mos kelmasa alert).
   - `GET /api/mobile/device-config` 🆕 — 🆕 PT SDK 6.11: ulangan ELD uchun qurilmaga `SetSystemVar` bilan yoziladigan sozlamalar (`systemVars`) va `conf
+  - `POST /api/mobile/virtual-devices` — pt30_pt40/tz.md §9.3 — register a PT Emulator (Virtual ELD) and pair it to the driver's current unit (idempote
   - `POST /api/mobile/log-entries` — Haydovchining o'z log tuzatishi (recordOrigin = 2, darhol faol). 4–60 belgilik izoh majburiy, sertifikat bekor
   - `POST /api/mobile/certify` — Ilovadan RODS kunlarini sertifikatlaydi; offline navbatga qo'yiladi.
   - `GET /api/mobile/log-edit-requests` — Haydovchini kutayotgan carrier tahrir takliflari.
   - `GET /api/mobile/certification-status` — Oxirgi `days` kunning (default 8, max 14) sertifikatsiya holati.
   - `GET /api/mobile/logs` — Haydovchining o'z RODS kuni (grafik, yozuvlar, sertifikatsiya).
   - `GET /api/mobile/logs/{date}/export` — Haydovchining bitta RODS kunini yuklab beradi: `format=csv` ishlaydi, `pdf` → 501.
+  - `POST /api/mobile/transfers` — Haydovchi o'z RODS'i uchun eRODS transfer boshlaydi: Appendix A fayl yaratiladi, tekshiriladi, saqlanadi, yubo
+  - `GET /api/mobile/transfers` — Haydovchining oxirgi transferlari (S-10 / M-27 "Last transfer" kvitansiyalari).
   - `POST /api/mobile/hos-state` — Mobil engine hisoblagan HOS holatini qabul qiladi, saqlaydi va server bilan solishtiradi (drift).
   - `POST /api/mobile/feedback` — Haydovchi ilovasidan fikr-mulohaza yuboradi.
   - `POST /api/mobile/support/tickets` — Ilovadan support tiketi ochadi ("Send diagnostics to support" ham shu, category: diagnostics). Ixtiyoriy `cont
   - `GET /api/mobile/support/tickets` — Haydovchining o'z support tiketlari.
   - `GET /api/mobile/support/tickets/{id}` — Haydovchining bitta tiketi (boshqasiniki → 404).
-- [Bildirishnomalar](#bolim-notifications) — 3 ta
-  - `GET /api/notifications` ♻️ — Chaqiruvchining in-app bildirishnomalari, segment sonlari bilan. 🆕 yangi tur: `alert.device_vin_mismatch`.
-  - `POST /api/notifications/read-all` — Barcha o'qilmagan bildirishnomalarni o'qilgan qiladi.
-  - `POST /api/notifications/{id}/read` — Bitta bildirishnomani o'qilgan qiladi.
 - [RODS loglar](#bolim-logs) — 2 ta
   - `POST /api/logs/edit-requests/{id}/accept` — Haydovchi carrier tahririni qabul qiladi (§395.30): taklif faol yozuvga aylanadi, asl yozuv "Inactive — Change
   - `POST /api/logs/edit-requests/{id}/reject` — Haydovchi carrier tahririni rad etadi (§395.30): so'rov yopiladi, log o'zgarmaydi.
@@ -149,7 +150,7 @@ Jami: **72 ta endpoint**, 8 bo'lim.
 - **Auth:** Ochiq (token kerak emas)
 - **Ekran:** `{'id': 'web/sign-in', 'title': 'Sign in', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.3'}`
 - **operationId:** `AuthController_loginDriver` · original: _Driver password login (TZ §6.1)._
-- **Izoh (backend):** D-130 — when the driver already has an assigned unit, the server writes the §395 Appendix A 4.5.1.5 login record (eventType 5, code 1) on it (idempotent).
+- **Izoh (backend):** MD-195 — an optional `device {deviceId uuid, deviceLabel ≤64, platform, formFactor phone|tablet, appVersion}` makes this the account's only signed-in device: every session of another device is ended (REPLACED) and the response carries `replacedDevice`. Without `device` the legacy behaviour applies. D-130 — when the driver already has an assigned unit, the server writes the §395 Appendix A 4.5.1.5 login record (eventType 5, code 1) on it (idempotent).
 
 **Body** (`application/json`):
 
@@ -157,6 +158,12 @@ Jami: **72 ta endpoint**, 8 bo'lim.
 |---|---|---|---|---|
 | `username` | string | ha | ≥ 1 belgi |  |
 | `password` | string | ha | ≥ 1 belgi |  |
+| `device` | object | yo'q |  |  |
+| `device.deviceId` | string (uuid) | ha |  |  |
+| `device.deviceLabel` | string | ha | 1–64 belgi, pattern `^[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}]*$` |  |
+| `device.platform` | string | ha | 1–32 belgi, pattern `^[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}]*$` |  |
+| `device.formFactor` | `phone` \| `tablet` | ha |  |  |
+| `device.appVersion` | string | ha | 1–32 belgi, pattern `^[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}]*$` |  |
 
 **Javob `201`:** MB-9 — `driverId` is additive so the mobile app can name its per-driver offline DB file.
 
@@ -173,7 +180,7 @@ Jami: **72 ta endpoint**, 8 bo'lim.
 }
 ```
 
-**Xatolar:** `401` INVALID_CREDENTIALS — Username or password is incorrect. · `422` VALIDATION_FAILED — Request validation failed. · `429` RATE_LIMITED — Too many requests — try again later.
+**Xatolar:** `401` INVALID_CREDENTIALS — Username or password is incorrect. · `409` DRIVING_ON_OTHER_DEVICE — MD-195 — another device of this account reported motion in the last 2 minutes (`details: { byDeviceLabel, lastS… · `422` VALIDATION_FAILED — Request validation failed. · `429` RATE_LIMITED — Too many requests — try again later.
 
 ---
 
@@ -184,6 +191,7 @@ Jami: **72 ta endpoint**, 8 bo'lim.
 - **Auth:** Ochiq (token kerak emas)
 - **Ekran:** `{'id': 'web/sign-in', 'title': 'Sign in', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.3'}`
 - **operationId:** `AuthController_refresh` · original: _Rotates a refresh token (TZ §6.5 — rotated on every use)._
+- **Izoh (backend):** MG-32 — replaying a just-rotated token within REFRESH_REUSE_GRACE_SECONDS (default 60) returns the SAME successor pair (201). Later replay of a rotated token = 401 REFRESH_TOKEN_REUSED and only that token family is revoked; other devices stay signed in. A token revoked by logout/admin/password reset = 401 TOKEN_INVALID.
 
 **Body** (`application/json`):
 
@@ -206,7 +214,7 @@ Jami: **72 ta endpoint**, 8 bo'lim.
 }
 ```
 
-**Xatolar:** `401` REFRESH_TOKEN_REUSED — This refresh token was already rotated — the whole session family is revoked (TZ §6.5). · `422` VALIDATION_FAILED — Request validation failed. · `429` RATE_LIMITED — Refresh is limited to 30 requests per minute per IP.
+**Xatolar:** `401` REFRESH_TOKEN_REUSED — This refresh token was already rotated (outside the grace window) — its session family is revoked; other sessions … · `422` VALIDATION_FAILED — Request validation failed. · `429` RATE_LIMITED — Refresh is limited to 30 requests per minute per IP.
 
 ---
 
@@ -233,7 +241,7 @@ Jami: **72 ta endpoint**, 8 bo'lim.
 }
 ```
 
-**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `422` VALIDATION_FAILED — Request validation failed.
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — USER_CONTEXT_REQUIRED — an API key has no session to sign out of. · `422` VALIDATION_FAILED — Request validation failed.
 
 ---
 
@@ -269,7 +277,8 @@ Jami: **72 ta endpoint**, 8 bo'lim.
 
 - **Auth:** Ochiq (token kerak emas)
 - **Ekran:** `{'id': 'web/sign-in', 'title': 'Sign in', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.3'}`
-- **operationId:** `AuthController_forgotDriverPassword` · original: _MR-31 — driver requests a password-reset code by username or email. Always 200 (no user enumeration); the code is emailed when the driver has an email on file._
+- **operationId:** `AuthController_forgotDriverPassword` · original: _MR-31/MB-16/MB-17 — driver requests a password-reset code by username or email. Always 200 (no user enumeration)._
+- **Izoh (backend):** With an email on file a 6-digit numeric code is emailed: valid 15 minutes, invalidated after 5 wrong attempts, and a new request invalidates the previous code. Without an email the carrier ADMINs get an in-app notification ("driver X requested a password reset") and reset the password from the driver profile; the response is identical. Limited to 5 requests/min/IP.
 
 **Body** (`application/json`):
 
@@ -304,23 +313,10 @@ So'rov misoli:
 
 - **Auth:** Ochiq (token kerak emas)
 - **Ekran:** `{'id': 'web/sign-in', 'title': 'Sign in', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.3'}`
-- **operationId:** `AuthController_resetDriverPassword` · original: _MR-31 — completes a driver password reset with the emailed code; revokes all driver sessions._
+- **operationId:** `AuthController_resetDriverPassword` · original: _MR-31/MB-17 — completes a driver password reset with the emailed 6-digit code; revokes all driver sessions._
+- **Izoh (backend):** Send `{username|email, code, newPassword}`. The code is valid 15 minutes, single use, and is invalidated after 5 wrong attempts (request a new one via /auth/driver/password/forgot). The legacy `{token, newPassword}` form is still accepted. Every failure returns the same 401 TOKEN_INVALID.
 
 **Body** (`application/json`):
-
-| Maydon | Turi | Majburiy | Cheklov | Izoh |
-|---|---|---|---|---|
-| `token` | string | ha | ≥ 1 belgi |  |
-| `newPassword` | string | ha | ≥ 8 belgi |  |
-
-So'rov misoli:
-
-```json
-{
-  "token": "eyJ...",
-  "newPassword": "NewPassw0rd!"
-}
-```
 
 **Javob `200`:** 
 
@@ -394,73 +390,26 @@ So'rov misoli:
 
 ---
 
-<a id="bolim-mobile"></a>
+<a id="bolim-notifications"></a>
 
-## Mobil ilova (/mobile)
+## Bildirishnomalar
 
-### `POST /api/mobile/transfers`
+### `GET /api/notifications` ♻️ O'ZGARGAN
 
-**Nima qiladi:** Haydovchi o'z RODS'i uchun eRODS transfer boshlaydi: Appendix A fayl yaratiladi, tekshiriladi, saqlanadi, yuborish navbatga qo'yiladi. TEST rejimda yuborilmaydi.
+**Nima qiladi:** Chaqiruvchining in-app bildirishnomalari, segment sonlari bilan. 🆕 yangi tur: `alert.device_vin_mismatch`.
 
-- **Auth:** `Authorization: Bearer <driver access token>`
-- **operationId:** `MobileTransfersController_create` · original: _Driver-initiated eRODS transfer of the driver's own RODS: generates and validates the §395 Appendix A file, stores it, queues the send. TEST mode never sends to FMCSA (status TEST_ONLY)._
-- **Izoh (backend):** The row is returned as it stands right after generation (`status = QUEUED`); the worker moves it to TEST_ONLY / SENT / ACCEPTED / REJECTED / FAILED and fills `referenceId` + `sentAt`. Poll `GET /mobile/transfers` for the receipt (S-10).
-
-**Body** (`application/json`):
-
-| Maydon | Turi | Majburiy | Cheklov | Izoh |
-|---|---|---|---|---|
-| `method` | `WEB_SERVICES` \| `EMAIL` | ha |  |  |
-| `rangeStart` | string (date-time) | ha |  |  |
-| `rangeEnd` | string (date-time) | ha |  |  |
-| `outputFileComment` | string | yo'q | ≤ 60 belgi, default `""` |  |
-| `recipient` | string | yo'q | ≤ 254 belgi |  |
-
-**Javob `201`:** Created.
-
-```json
-{
-  "data": {
-    "id": "trf_1",
-    "method": "WEB_SERVICES",
-    "status": "QUEUED",
-    "erodsMode": "TEST",
-    "referenceId": null,
-    "sentAt": null,
-    "createdAt": "2026-09-10T15:44:02.000Z",
-    "fileName": "SMITH38018.csv",
-    "outputFileComment": "ROADSIDE INSPECTION 2026-09-10",
-    "rangeStart": "2026-09-03T00:00:00.000Z",
-    "rangeEnd": "2026-09-10T00:00:00.000Z",
-    "warnings": [
-      "ERODS_TEST_MODE"
-    ],
-    "counts": {
-      "header": 9,
-      "events": 42
-    }
-  },
-  "traceId": "01J8X3QK9Z0000000000000000",
-  "timestamp": "2026-10-08T15:41:00.000Z"
-}
-```
-
-**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Driver token required (DRIVER_CONTEXT_REQUIRED). · `404` DRIVER_NOT_FOUND — Driver not found. · `422` OUTPUT_FILE_INVALID — The generated output file does not conform to §395 Appendix A and was not stored.
-
----
-
-### `GET /api/mobile/transfers`
-
-**Nima qiladi:** Haydovchining oxirgi transferlari (S-10 / M-27 "Last transfer" kvitansiyalari).
-
-- **Auth:** `Authorization: Bearer <driver access token>`
-- **operationId:** `MobileTransfersController_list` · original: _The driver's own most recent transfers (receipts for S-10 / M-27 `Last transfer`)._
+- **Auth:** `Authorization: Bearer <access token>`
+- **operationId:** `NotificationsController_list` · original: _Lists the caller's own in-app notifications, with segment counts._
+- **Izoh (backend):** Every item carries `createdAt` (ISO-8601, newest first). `total`/`totalPages` describe the filtered list (honour `unreadOnly`/`category`). `counts` are TOTAL rows per segment (read + unread), ignoring `unreadOnly`/`category` — they are NOT unread counts. `unreadCount` is the number of unread notifications across all categories (badge number).
 
 **Parametrlar:**
 
 | Nomi | Joyi | Turi | Majburiy | Cheklov | Izoh |
 |---|---|---|---|---|---|
-| `limit` | query | integer | yo'q | 1–50, default `5` |  |
+| `category` | query | `VIOLATIONS` \| `MAINTENANCE` \| `CONNECTIVITY` | yo'q |  |  |
+| `unreadOnly` | query | boolean yoki `true` \| `false` \| `1` \| `0` | yo'q |  |  |
+| `limit` | query | integer | yo'q | 1–200, default `25` |  |
+| `page` | query | integer | yo'q | ≥ 1, default `1` |  |
 
 **Javob `200`:** OK.
 
@@ -469,30 +418,97 @@ So'rov misoli:
   "data": {
     "items": [
       {
-        "id": "trf_1",
-        "method": "WEB_SERVICES",
-        "status": "TEST_ONLY",
-        "erodsMode": "TEST",
-        "referenceId": "ERODS-TEST-26-0910-4821",
-        "sentAt": "2026-09-10T15:44:02.000Z",
-        "createdAt": "2026-09-10T15:44:00.000Z",
-        "fileName": "SMITH38018.csv",
-        "outputFileComment": "ROADSIDE INSPECTION 2026-09-10",
-        "rangeStart": "2026-09-03T00:00:00.000Z",
-        "rangeEnd": "2026-09-10T00:00:00.000Z"
+        "id": "ntf_1",
+        "userId": "usr_1",
+        "driverId": null,
+        "type": "hos_violation",
+        "kind": "VIOLATION",
+        "title": "HOS violation",
+        "body": "An HOS violation was detected.",
+        "objectType": "Driver",
+        "objectId": "drv_1",
+        "category": "VIOLATIONS",
+        "severity": "CRITICAL",
+        "readAt": null,
+        "createdAt": "2026-10-08T15:41:00.000Z"
       }
     ],
+    "page": 1,
+    "limit": 25,
     "total": 1,
-    "limit": 5
+    "totalPages": 1,
+    "counts": {
+      "all": 12,
+      "violations": 5,
+      "maintenance": 3
+    },
+    "unreadCount": 4
   },
   "traceId": "01J8X3QK9Z0000000000000000",
   "timestamp": "2026-10-08T15:41:00.000Z"
 }
 ```
 
-**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Driver token required (DRIVER_CONTEXT_REQUIRED). · `422` VALIDATION_FAILED — Request validation failed.
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `422` VALIDATION_FAILED — Request validation failed.
 
 ---
+
+### `POST /api/notifications/read-all`
+
+**Nima qiladi:** Barcha o'qilmagan bildirishnomalarni o'qilgan qiladi.
+
+- **Auth:** `Authorization: Bearer <access token>`
+- **operationId:** `NotificationsController_readAll` · original: _Marks every unread notification of the caller as read._
+
+**Javob `201`:** Created.
+
+```json
+{
+  "data": {
+    "updated": 3
+  },
+  "traceId": "01J8X3QK9Z0000000000000000",
+  "timestamp": "2026-10-08T15:41:00.000Z"
+}
+```
+
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `422` VALIDATION_FAILED — Request validation failed.
+
+---
+
+### `POST /api/notifications/{id}/read`
+
+**Nima qiladi:** Bitta bildirishnomani o'qilgan qiladi.
+
+- **Auth:** `Authorization: Bearer <access token>`
+- **operationId:** `NotificationsController_markRead` · original: _Marks one of the caller's own notifications as read._
+
+**Parametrlar:**
+
+| Nomi | Joyi | Turi | Majburiy | Cheklov | Izoh |
+|---|---|---|---|---|---|
+| `id` | path | string | ha |  |  |
+
+**Javob `201`:** Created.
+
+```json
+{
+  "data": {
+    "id": "ntf_1",
+    "readAt": "2026-09-24T15:41:00.000Z"
+  },
+  "traceId": "01J8X3QK9Z0000000000000000",
+  "timestamp": "2026-10-08T15:41:00.000Z"
+}
+```
+
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `404` NOT_FOUND — Notification not found. · `422` VALIDATION_FAILED — Request validation failed.
+
+---
+
+<a id="bolim-mobile"></a>
+
+## Mobil ilova (/mobile)
 
 ### `GET /api/mobile/app-config`
 
@@ -522,7 +538,10 @@ So'rov misoli:
     "minPt30Firmware": null,
     "recommendedPt30Firmware": null,
     "updateRequired": false,
-    "updateAvailable": true
+    "updateAvailable": true,
+    "virtualEld": {
+      "enabled": false
+    }
   },
   "traceId": "01J8X3QK9Z0000000000000000",
   "timestamp": "2026-10-08T15:41:00.000Z"
@@ -661,6 +680,8 @@ So'rov misoli:
 
 MR-25 shared tablet — optional `driverId` on a change: applied to that driver only for `duty_status` / `log_entry`, and only if the two drivers shared one unit at `occurredAt` (a co-driver pairing on it, or both logged in to it per their ELD login records, eventType 5); otherwise that change alone is rejected with `SYNC_DELEGATION_NOT_ALLOWED`. Delegated changes are audited (`SYNC_DELEGATED_CHANGE`); certification and DVIR are never delegated.
 
+Optional `backlog` example: `{ "days": 2.5, "bytes": 18432, "pendingCount": 12, "oldestPendingAt": "2026-09-11T08:00:00.000Z" }` — `days`/`bytes` drive `alert.sync_backlog`; `pendingCount` (unsent queue records + ELD events `/ingest/events` has not accepted) and `oldestPendingAt` are stored on the caller's session and shown to the next device that signs in.
+
 **Body** (`application/json`):
 
 | Maydon | Turi | Majburiy | Cheklov | Izoh |
@@ -671,6 +692,8 @@ MR-25 shared tablet — optional `driverId` on a change: applied to that driver 
 | `backlog` | object | yo'q |  |  |
 | `backlog.days` | number | ha | 0–3650 |  |
 | `backlog.bytes` | integer | ha | ≥ 0 |  |
+| `backlog.pendingCount` | integer | yo'q | 0–10000000 |  |
+| `backlog.oldestPendingAt` | string (date-time) | yo'q |  |  |
 
 **Javob `200`:** OK.
 
@@ -778,15 +801,16 @@ MR-13 — when `odometerMi` / `engineHours` are omitted, the unit’s last recor
 **Nima qiladi:** Imzo/rasm baytlarini storage'ga yuklaydi; /mobile/dvir yoki /mobile/certify da ishlatiladigan id qaytaradi.
 
 - **Auth:** `Authorization: Bearer <driver access token>`
-- **operationId:** `MobileDvirController_uploadSignature` · original: _Uploads captured signature/photo bytes to object storage; returns an id referenced by /mobile/dvir or /mobile/certify. purpose = DVIR_PHOTO also creates an Attachment row (attachmentId) to pass in defects[].photoAttachmentIds (MB-6). M-39: purpose = INVOICE accepts application/pdf (max 10 MiB, `%PDF-` header verified; PNG/JPEG 2 MB) and creates an Attachment (kind INVOICE) whose id is `invoiceAttachmentId` of POST /mobile/maintenance/:id/submit; the uploader reads it back with GET /attachments/:id/presign._
+- **operationId:** `MobileDvirController_uploadSignature` · original: _Uploads captured signature/photo bytes to object storage; returns an id referenced by /mobile/dvir or /mobile/certify. purpose = DVIR_PHOTO also creates an Attachment row (attachmentId) to pass in defects[].photoAttachmentIds (MB-6). MB-9: purpose = CHAT_AUDIO (audio/aac or audio/mp4; optional `durationSec`) or CHAT_FILE (png/jpeg/pdf) accepts up to 10 MB, verifies the type from magic bytes, creates a chat Attachment and returns `attachmentId` for POST /mobile/conversations/:id/messages `attachmentId`; read it back with GET /mobile/attachments/:id/presign. M-39: purpose = INVOICE accepts application/pdf (max 10 MiB, `%PDF-` header verified; PNG/JPEG 2 MB) and creates an Attachment (kind INVOICE) whose id is `invoiceAttachmentId` of POST /mobile/maintenance/:id/submit; the uploader reads it back with GET /attachments/:id/presign._
 
 **Body** (`application/json`):
 
 | Maydon | Turi | Majburiy | Cheklov | Izoh |
 |---|---|---|---|---|
-| `purpose` | `CERTIFICATION` \| `DVIR` \| `DVIR_PHOTO` \| `INVOICE` | ha |  |  |
+| `purpose` | `CERTIFICATION` \| `DVIR` \| `DVIR_PHOTO` \| `INVOICE` \| `CHAT_AUDIO` \| `CHAT_FILE` | ha |  |  |
 | `base64` | string | ha | ≥ 16 belgi |  |
-| `mimeType` | `image/png` \| `image/jpeg` \| `application/pdf` | yo'q | default `"image/png"` |  |
+| `mimeType` | `image/png` \| `image/jpeg` \| `application/pdf` \| `audio/aac` \| `audio/mp4` \| `audio/m4a` \| `audio/x-m4a` | yo'q | default `"image/png"` |  |
+| `durationSec` | integer | yo'q | 0–86400 |  |
 
 **Javob `201`:** `attachmentId` is the Attachment id for purpose DVIR_PHOTO and INVOICE (equal to `signatureImageId`), null for signatures.
 
@@ -805,9 +829,6 @@ MR-13 — when `odometerMi` / `engineHours` are omitted, the unit’s last recor
 ```
 
 **Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `422` VALIDATION_FAILED — The base64 payload decoded to zero bytes, application/pdf with a purpose other than INVOICE, or bytes without a %PDF-…
-
-
-**MB-9 (chat ovoz/fayl):** `purpose: "CHAT_AUDIO"` (`mimeType` `audio/aac` | `audio/mp4`/`audio/m4a`/`audio/x-m4a`, ixtiyoriy `durationSec` butun son) yoki `"CHAT_FILE"` (`image/png`, `image/jpeg`, `application/pdf`) — har biri <= 10 MB (decoded bayt; `FILE_TOO_LARGE` 413). Tur fayl bosh baytlaridan (magic bytes) tekshiriladi, e'lon qilingan `mimeType` mos kelmasa `UNSUPPORTED_FILE_TYPE` 422. Kalit: `chat/carrier/{driverId}/{uuid}.{ext}`. Javobdagi `attachmentId` ni `POST /mobile/conversations/{id}/messages` ga `attachmentId` sifatida bering (`body` bo'sh bo'lishi mumkin). Faqat yuklagan odam biriktira oladi, bitta fayl — bitta xabar.
 
 ---
 
@@ -1031,12 +1052,20 @@ MR-13 — when `odometerMi` / `engineHours` are omitted, the unit’s last recor
 
 - **Auth:** `Authorization: Bearer <driver access token>`
 - **operationId:** `MobileCoDriverController_switch` · original: _S-11/S-18/S-19 — hands the driver seat to the paired co-driver; returns the CO-DRIVER's own token pair._
+- **Izoh (backend):** D-155 — the CALLER's own session family (from the access token `sid`) is revoked atomically with the seat swap; their other devices stay signed in. The app must drop the old tokens and MUST NOT call /auth/logout with them (harmless if it does: 200 {success:true}, no further effect). Optional `clientId`: a replay (within REFRESH_REUSE_GRACE_SECONDS, same password) returns the first pair; later replay = 409 CONFLICT, sign in as the co-driver. A stale caller token (session already revoked) without a replaying clientId = 401 TOKEN_INVALID. MD-195 / D-161 — optional `device {deviceId uuid, deviceLabel ≤64, platform, formFactor phone|tablet, appVersion}` (same schema as POST /auth/login/driver) makes this the co-driver's only signed-in device: their sessions on other devices end as REPLACED and the response carries `replacedDevice`; 409 DRIVING_ON_OTHER_DEVICE if another device of the co-driver reported motion in the last 2 minutes. Without `device` the legacy behaviour applies.
 
 **Body** (`application/json`):
 
 | Maydon | Turi | Majburiy | Cheklov | Izoh |
 |---|---|---|---|---|
 | `coDriverPassword` | string | ha | 1–200 belgi |  |
+| `clientId` | string | yo'q | 1–100 belgi |  |
+| `device` | object | yo'q |  |  |
+| `device.deviceId` | string (uuid) | ha |  |  |
+| `device.deviceLabel` | string | ha | 1–64 belgi, pattern `^[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}]*$` |  |
+| `device.platform` | string | ha | 1–32 belgi, pattern `^[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}]*$` |  |
+| `device.formFactor` | `phone` \| `tablet` | ha |  |  |
+| `device.appVersion` | string | ha | 1–32 belgi, pattern `^[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}]*$` |  |
 
 **Javob `201`:** Created.
 
@@ -1045,14 +1074,16 @@ MR-13 — when `odometerMi` / `engineHours` are omitted, the unit’s last recor
   "data": {
     "accessToken": "eyJ...",
     "refreshToken": "a1b2...",
-    "tokenType": "Bearer"
+    "tokenType": "Bearer",
+    "driverId": "drv_2",
+    "replacedDevice": null
   },
   "traceId": "01J8X3QK9Z0000000000000000",
   "timestamp": "2026-10-08T15:41:00.000Z"
 }
 ```
 
-**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `404` NOT_FOUND — No active co-driver pairing for this driver. · `422` CO_DRIVER_PASSWORD_INVALID — The co-driver password is incorrect.
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `404` NOT_FOUND — No active co-driver pairing for this driver. · `409` DRIVING_ON_OTHER_DEVICE — MD-195 — only with `device`: another device of the co-driver reported motion in the last 2 minutes (`details: {… · `422` CO_DRIVER_PASSWORD_INVALID — The co-driver password is incorrect.
 
 ---
 
@@ -1263,7 +1294,12 @@ MR-13 — when `odometerMi` / `engineHours` are omitted, the unit’s last recor
       "defectCount": 1,
       "repairStatus": "PENDING",
       "trailerNumber": "X53-1188",
-      "odometerMi": 84213
+      "odometerMi": 84213,
+      "location": {
+        "lat": 41.75,
+        "lon": -87.98,
+        "name": "2mi ESE IL Darien"
+      }
     }
   ],
   "traceId": "01J8X3QK9Z0000000000000000",
@@ -1272,9 +1308,6 @@ MR-13 — when `odometerMi` / `engineHours` are omitted, the unit’s last recor
 ```
 
 **Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `422` VALIDATION_FAILED — Request validation failed.
-
-
-**MB-15:** har qatorda `location` — `{lat, lon, name}` yoki `null` (detail bilan bir xil shakl; `name` — Appendix A 7.29 matni yoki kiritilgan joy nomi).
 
 ---
 
@@ -1351,7 +1384,7 @@ MR-13 — when `odometerMi` / `engineHours` are omitted, the unit’s last recor
 **Nima qiladi:** M-11: DVIR PDF eksporti. Hozircha 501 qaytaradi (generator yo'q).
 
 - **Auth:** `Authorization: Bearer <driver access token>`
-- **operationId:** `MobileDvirHistoryController_pdf` · original: _M-11 — per-DVIR PDF export. Not implemented yet: no single-DVIR PDF generator exists (see MobileDvirHistoryService) — every call answers 501 today; the 200 below documents the contract once a generator lands._
+- **operationId:** `MobileDvirHistoryController_pdf` · original: _M-11 / MB-4 — the driver's own DVIR as a §396.11 PDF (inspection header, defects, §396.13 mechanic review, driver signature). Raw bytes, not enveloped. Another driver's DVIR id answers 404._
 
 **Parametrlar:**
 
@@ -1359,13 +1392,13 @@ MR-13 — when `odometerMi` / `engineHours` are omitted, the unit’s last recor
 |---|---|---|---|---|---|
 | `id` | path | string | ha |  |  |
 
-**Javob `200`:** Future state once a single-DVIR PDF generator exists — every call answers 501 today (see below).
+**Javob `200`:** Raw application/pdf bytes; `Content-Disposition: attachment; filename="dvir-<id>.pdf"`.
 
 ```json
 "%PDF-1.4 ..."
 ```
 
-**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `404` DVIR_NOT_FOUND — DVIR not found. · `422` VALIDATION_FAILED — Request validation failed. · `501` NOT_IMPLEMENTED — A single-DVIR PDF export is not implemented yet.
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `404` DVIR_NOT_FOUND — DVIR not found. · `422` VALIDATION_FAILED — Request validation failed.
 
 ---
 
@@ -1730,7 +1763,6 @@ So'rov misoli:
 - **Auth:** `Authorization: Bearer <driver access token>`
 - **operationId:** `MobileMessagingController_startConversation` · original: _MR-3 — starts (or reuses) a conversation with a contact from `GET /mobile/contacts` and sends the first message._
 - **Izoh (backend):** `contactId` is a staff user id, the active co-driver id, or `"support"`. An existing DIRECT conversation with that contact is reused. Idempotent on `clientId` (uuid, required): a replay returns the first response. The thread shows in the admin panel conversations list; a `conversation.new` realtime event goes to the staff contact's `user:{id}` room and `message.new` to `conversation:{id}`.
-- **Realtime (MB-8):** when staff opens a conversation with a driver (`POST /conversations`, `POST /messages/broadcast`) a `conversation.new` event `{conversationId,type,title}` goes to the driver's `driver:{id}` room. Reconnect catch-up: `GET /api/mobile/conversations/{id}/messages?after=<messageId|ISO>` (oldest first).
 
 **Body** (`application/json`):
 
@@ -1779,14 +1811,15 @@ So'rov misoli:
 **Nima qiladi:** Suhbat tarixi, cursor pagination.
 
 - **Auth:** `Authorization: Bearer <driver access token>`
-- **operationId:** `MobileMessagingController_listMessages` · original: _Cursor-paginated message history for a conversation the driver participates in._
+- **operationId:** `MobileMessagingController_listMessages` · original: _Cursor-paginated message history for a conversation the driver participates in (`before` = older page, `after` = catch-up)._
 
 **Parametrlar:**
 
 | Nomi | Joyi | Turi | Majburiy | Cheklov | Izoh |
 |---|---|---|---|---|---|
 | `id` | path | string | ha |  |  |
-| `before` | query | string (uuid) | yo'q |  |  |
+| `after` | query | string (uuid) yoki string (date-time) | yo'q |  | MB-8 reconnect catch-up: message id OR ISO-8601 instant; returns strictly newer messages, OLDEST first. Mutually exclusive with `before`. |
+| `before` | query | string (uuid) | yo'q |  | Message id; returns strictly older messages, newest first. |
 | `limit` | query | integer | yo'q | 1–200, default `50` |  |
 
 **Javob `200`:** OK.
@@ -1820,9 +1853,6 @@ So'rov misoli:
 
 **Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Not a participant of this conversation. · `404` NOT_FOUND — Conversation not found. · `422` VALIDATION_FAILED — Request validation failed.
 
-
-**MB-9:** har xabarda `type` (`TEXT|AUDIO|IMAGE|FILE`) va `attachment` (`{id,url,mimeType,sizeBytes,durationSec}` yoki `null`; `url` — 15 daqiqalik presigned GET, `S3_PUBLIC_ENDPOINT` hosti bilan) bor; `conversations` ro'yxatidagi `lastMessage` ham shunday. Yuborishda `body` bo'sh bo'lishi mumkin, agar `attachmentId` (CHAT_AUDIO/CHAT_FILE yuklash natijasi) berilgan bo'lsa. Muddati o'tgan URL: `GET /api/mobile/attachments/{id}/presign` → `{url, expiresAt}`; ishtirokchi bo'lmagan haydovchiga `404 ATTACHMENT_NOT_FOUND`.
-
 ---
 
 ### `POST /api/mobile/conversations/{id}/messages`
@@ -1842,7 +1872,7 @@ So'rov misoli:
 
 | Maydon | Turi | Majburiy | Cheklov | Izoh |
 |---|---|---|---|---|
-| `body` | string | ha | 1–2000 belgi |  |
+| `body` | string | yo'q | ≤ 2000 belgi, default `""` |  |
 | `attachmentId` | string | yo'q | ≤ 200 belgi |  |
 | `clientId` | string | yo'q | ≤ 100 belgi |  |
 
@@ -1872,14 +1902,11 @@ So'rov misoli:
 
 **Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Not a participant of this conversation. · `404` NOT_FOUND — Conversation not found. · `422` VALIDATION_FAILED — Request validation failed.
 
-
-**MB-9:** har xabarda `type` (`TEXT|AUDIO|IMAGE|FILE`) va `attachment` (`{id,url,mimeType,sizeBytes,durationSec}` yoki `null`; `url` — 15 daqiqalik presigned GET, `S3_PUBLIC_ENDPOINT` hosti bilan) bor; `conversations` ro'yxatidagi `lastMessage` ham shunday. Yuborishda `body` bo'sh bo'lishi mumkin, agar `attachmentId` (CHAT_AUDIO/CHAT_FILE yuklash natijasi) berilgan bo'lsa. Muddati o'tgan URL: `GET /api/mobile/attachments/{id}/presign` → `{url, expiresAt}`; ishtirokchi bo'lmagan haydovchiga `404 ATTACHMENT_NOT_FOUND`.
-
 ---
 
 ### `POST /api/mobile/conversations/{id}/read`
 
-**Nima qiladi:** Suhbatni o'qilgan qiladi. Realtime: `message.read {conversationId, readerType, readerId, lastReadMessageId, readAt}` (`conversation:{id}`, `driver:{id}`, `user:{id}` xonalariga). Typing: klient `typing {conversationId,isTyping}` yuboradi, boshqalar `typing {conversationId,userType,userId,isTyping}` oladi.
+**Nima qiladi:** Suhbatni o'qilgan qiladi.
 
 - **Auth:** `Authorization: Bearer <driver access token>`
 - **operationId:** `MobileMessagingController_markRead` · original: _Marks the conversation read: sets the driver's lastReadAt and readAt on the other side's messages._
@@ -1903,6 +1930,37 @@ So'rov misoli:
 ```
 
 **Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Not a participant of this conversation. · `404` NOT_FOUND — Conversation not found. · `422` VALIDATION_FAILED — Request validation failed.
+
+---
+
+### `GET /api/mobile/attachments/{id}/presign`
+
+**Nima qiladi:** MB-9 — short-lived (15 min) presigned GET for an attachment the driver may read: a chat file or a web-sent voice clip (MESSAGE_AUDIO) only for participants of its conversation (or its uploader before it is sent).
+
+- **Auth:** `Authorization: Bearer <driver access token>`
+- **operationId:** `MobileAttachmentsController_presign` · original: _MB-9 — short-lived (15 min) presigned GET for an attachment the driver may read: a chat file or a web-sent voice clip (MESSAGE_AUDIO) only for participants of its conversation (or its uploader before it is sent)._
+- **Izoh (backend):** Same 404 for an unknown id and for an attachment the driver may not see. Message lists already carry a presigned `attachment.url`; use this to refresh an expired one.
+
+**Parametrlar:**
+
+| Nomi | Joyi | Turi | Majburiy | Cheklov | Izoh |
+|---|---|---|---|---|---|
+| `id` | path | string | ha |  |  |
+
+**Javob `200`:** OK.
+
+```json
+{
+  "data": {
+    "url": "https://eldapi.stackyard.uz/onebook-eld/chat/carrier/drv_1/att.m4a?X-Amz-Signature=...",
+    "expiresAt": "2026-10-11T15:15:00.000Z"
+  },
+  "traceId": "01J8X3QK9Z0000000000000000",
+  "timestamp": "2026-10-08T15:41:00.000Z"
+}
+```
+
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `404` ATTACHMENT_NOT_FOUND — Attachment not found. · `422` VALIDATION_FAILED — Request validation failed.
 
 ---
 
@@ -2093,7 +2151,7 @@ So'rov misoli:
 }
 ```
 
-**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `404` DEVICE_NOT_FOUND — Device not found, or it is not the ELD bound to your selected vehicle. · `409` Field-level conflict — one of: DEVICE_MAC_MISMATCH (details.deviceId: "The device on record has a different BLE MAC (or the MAC is on ano… · `422` VALIDATION_FAILED — macAddress is not a BLE MAC address.
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` pt30_pt40/tz.md §9.3 — only for a virtual (`VPT…`) device while the carrier switch is off or env VIRTUAL_ELD_ALLOWED=false. · `404` DEVICE_NOT_FOUND — Device not found, or it is not the ELD bound to your selected vehicle. · `409` Field-level conflict — one of: DEVICE_MAC_MISMATCH (details.deviceId: "The device on record has a different BLE MAC (or the MAC is on ano… · `422` VALIDATION_FAILED — macAddress is not a BLE MAC address.
 
 ---
 
@@ -2136,7 +2194,72 @@ So'rov misoli:
 }
 ```
 
-**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Device is not paired with any unit, or the driver is not associated with its unit. · `404` UNKNOWN_DEVICE — Unknown device serial. · `422` VALIDATION_FAILED — serial is required.
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` pt30_pt40/tz.md §9.3 — only for a virtual (`VPT…`) device while the carrier switch is off or env VIRTUAL_ELD_ALLOWED=false. · `404` UNKNOWN_DEVICE — Unknown device serial. · `422` VALIDATION_FAILED — serial is required.
+
+---
+
+### `POST /api/mobile/virtual-devices`
+
+**Nima qiladi:** pt30_pt40/tz.md §9.3 — register a PT Emulator (Virtual ELD) and pair it to the driver's current unit (idempotent).
+
+- **Auth:** `Authorization: Bearer <driver access token>`
+- **operationId:** `MobileVirtualDeviceController_register` · original: _pt30_pt40/tz.md §9.3 — register a PT Emulator (Virtual ELD) and pair it to the driver's current unit (idempotent)._
+- **Izoh (backend):** Needs the carrier "Test PT30/40" switch on (else 403 `VIRTUAL_ELD_DISABLED`). `serial` must match `^VPT(30|40)_[A-Z0-9]{4,12}$` and agree with `model`. Creates the device (`isVirtual=true`) if missing, pairs it to `Driver.assignedVehicleId` (none -> 409 `NO_ACTIVE_VEHICLE`). The emulator moves with the phone: paired elsewhere -> re-paired here; another virtual device on this unit is released; a REAL ELD on this unit is never displaced (409 `DEVICE_ALREADY_PAIRED`). Repeating the call returns the same device unchanged. Afterwards the normal `/ingest/*` flow applies.
+
+**Body** (`application/json`):
+
+| Maydon | Turi | Majburiy | Cheklov | Izoh |
+|---|---|---|---|---|
+| `serial` | string | ha | pattern `^VPT(30|40)_[A-Z0-9]{4,12}$` |  |
+| `model` | `PT30` \| `PT40` | ha |  |  |
+| `firmware` | string | yo'q | 1–20 belgi |  |
+| `vin` | string | yo'q | 1–20 belgi |  |
+
+So'rov misoli:
+
+```json
+{
+  "serial": "VPT30_A1B2",
+  "model": "PT30",
+  "firmware": "V1.0.0",
+  "vin": "1FUJGLDR7CLBP8834"
+}
+```
+
+**Javob `200`:** OK.
+
+```json
+{
+  "data": {
+    "id": "0b6f1c2e-0000-4000-8000-000000000199",
+    "serial": "VPT30_A1B2",
+    "model": "PT30",
+    "isVirtual": true,
+    "firmware": "V1.0.0",
+    "vehicleId": "0b6f1c2e-0000-4000-8000-000000000201",
+    "status": "ASSIGNED",
+    "bleState": "DISCONNECTED",
+    "bleMacAddress": null,
+    "reportedVin": "1FUJGLDR7CLBP8834",
+    "pairedAt": "2026-10-12T09:00:00.000Z",
+    "createdAt": "2026-10-12T09:00:00.000Z",
+    "firmwareOutdated": false,
+    "systemVars": {
+      "PERIODIC_EVENT_GAP": 30,
+      "PERIODIC_EVENT_GAP_NOBLE": 30,
+      "EVENTS_STORED": 1,
+      "DRIVING_ACCL": 0,
+      "DRIVING_BRAKING": 0,
+      "DRIVING_CORNERING": 0,
+      "HSI_MODE": 1
+    }
+  },
+  "traceId": "01J8X3QK9Z0000000000000000",
+  "timestamp": "2026-10-08T15:41:00.000Z"
+}
+```
+
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` pt30_pt40/tz.md §9.3 — only for a virtual (`VPT…`) device while the carrier switch is off or env VIRTUAL_ELD_ALLOWED=false. · `409` Field-level conflict — one of: NO_ACTIVE_VEHICLE (details.vehicle: "Select a vehicle before connecting a test (virtual) ELD."); DEVICE_AL… · `422` VALIDATION_FAILED — serial must look like VPT30_A1B2 and match model.
 
 ---
 
@@ -2243,6 +2366,7 @@ Re-certification: certifying a day that is already certified, or one whose certi
 
 - **Auth:** `Authorization: Bearer <driver access token>`
 - **operationId:** `MobileLogsController_listEditRequests` · original: _Carrier edit proposals waiting for this driver (§395.30 — nothing applies until they answer)._
+- **Izoh (backend):** Query `status` = PENDING (default) | ACCEPTED | REJECTED | ALL, optional `from`/`to` RODS days. MB-10 (additive): every item carries `date` (RODS day of `proposedStart`, home-terminal zone), `original` {status, start, end|null, location} of the record being replaced (null for an INSERT), `proposedGraph[]` — the day graph as it would read if accepted now, built by the same plan `POST /logs/edit-requests/:id/accept` writes (empty once resolved) — and `requestedBy` {id, name}. Answer with `POST /logs/edit-requests/:id/accept|reject`.
 
 **Parametrlar:**
 
@@ -2273,13 +2397,34 @@ Re-certification: certifying a day that is already certified, or one whose certi
         "annotation": "Forgot to switch to On duty while loading",
         "requestedById": "usr_1",
         "requestedAt": "2026-09-11T14:00:00.000Z",
-        "resolvedAt": null
-      }
-    ]
-  },
-  "traceId": "01J8X3QK9Z0000000000000000",
-  "timestamp": "2026-10-08T15:41:00.000Z"
-}
+        "resolvedAt": null,
+        "date": "2026-09-10",
+        "original": {
+          "status": "OFF",
+          "start": "2026-09-10T18:26:58.000Z",
+          "end": "2026-09-10T19:30:00.000Z",
+          "location": "3mi W OH Columbus"
+        },
+        "proposedGraph": [
+          {
+            "status": "OFF",
+            "effective": "OFF",
+            "special": "NONE",
+            "startAt": "2026-09-10T04:00:00.000Z",
+            "endAt": "2026-09-10T18:26:58.000Z",
+            "durationSec": 52018
+          },
+          {
+            "status": "ON",
+            "effective": "ON",
+            "special": "NONE",
+            "startAt": "2026-09-10T18:26:58.000Z",
+            "endAt": "2026-09-10T19:30:00.000Z",
+            "durationSec": 3782
+          },
+          {
+            "status": "OFF",
+  …
 ```
 
 **Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `422` VALIDATION_FAILED — Request validation failed.
@@ -2335,7 +2480,7 @@ Re-certification: certifying a day that is already certified, or one whose certi
 
 - **Auth:** `Authorization: Bearer <driver access token>`
 - **operationId:** `MobileLogsController_getDay` · original: _The driver's own RODS day (grid, records, certification state)._
-- **Izoh (backend):** Additive fields (2026-10-08): `trip` {shippingDocuments, trailerNumbers, notes, bobtail, tripIds, tripNumbers} from the trips overlapping the day (MR-12), merged (D-129) with the driver's no-trip day details for that day (union of lists, trip notes win; `dayDetails: true` when a day-details row exists — written by `PATCH /mobile/trip` with no active trip); `malfunctionIndicator` / `diagnosticIndicator` — an Appendix A malfunction / data diagnostic was in force at some instant of the day (MR-16); every `graph` segment carries `eventId`, `locationDescription`, `odometerMi`, `engineHours`, `annotation`, `carriedOver` of the record that opened it, and every event `eventId`, `locationDescription`, `odometerMi`, `engineHours`, `specialCondition` (MR-13). `locationDescription` is the stored location text (device-provided or driver-entered); when there is none, the server computes the §395 Appendix A 7.29 geo-location offline from the stored position (`3mi W OH Columbus`, PC: 10-mile steps — `docs/location-description.md`).
+- **Izoh (backend):** MB-14: `events[]` holds EVERY §395 record dated inside the day (every duty-status record, all statuses and origins); `graph[].carriedOver` is true only on the opening segment whose status was recorded on an earlier day (that record is not repeated in `events[]`). Additive fields (2026-10-08): `trip` {shippingDocuments, trailerNumbers, notes, bobtail, tripIds, tripNumbers} from the trips overlapping the day (MR-12), merged (D-129) with the driver's no-trip day details for that day (union of lists, trip notes win; `dayDetails: true` when a day-details row exists — written by `PATCH /mobile/trip` with no active trip); `malfunctionIndicator` / `diagnosticIndicator` — an Appendix A malfunction / data diagnostic was in force at some instant of the day (MR-16); every `graph` segment carries `eventId`, `locationDescription`, `odometerMi`, `engineHours`, `annotation`, `carriedOver` of the record that opened it, and every event `eventId`, `locationDescription`, `odometerMi`, `engineHours`, `specialCondition` (MR-13). `locationDescription` is the stored location text (device-provided or driver-entered); when there is none, the server computes the §395 Appendix A 7.29 geo-location offline from the stored position (`3mi W OH Columbus`, PC: 10-mile steps — `docs/location-description.md`).
 
 **Parametrlar:**
 
@@ -2403,7 +2548,7 @@ Re-certification: certifying a day that is already certified, or one whose certi
 **Nima qiladi:** Haydovchining bitta RODS kunini yuklab beradi: `format=csv` ishlaydi, `pdf` → 501.
 
 - **Auth:** `Authorization: Bearer <driver access token>`
-- **operationId:** `MobileLogsExportController_exportDay` · original: _Downloads one of the driver's own RODS days. format=csv → text/csv (every §395 record of the day, home-terminal local time). format=pdf → 501 NOT_IMPLEMENTED for now._
+- **operationId:** `MobileLogsExportController_exportDay` · original: _Downloads one of the driver's own RODS days. format=csv → text/csv (every §395 record of the day, home-terminal local time). format=pdf → application/pdf §395.8 daily-log sheet (header fields, 24 h graph grid, remarks)._
 
 **Parametrlar:**
 
@@ -2411,13 +2556,113 @@ Re-certification: certifying a day that is already certified, or one whose certi
 |---|---|---|---|---|---|
 | `format` | query | `csv` \| `pdf` | yo'q | default `"csv"` |  |
 
-**Javob `200`:** Raw CSV (not wrapped in the success envelope), `Content-Disposition: attachment; filename="RODS_<date>.csv"`.
+**Javob `200`:** Raw file (not wrapped in the success envelope), `Content-Disposition: attachment; filename="RODS_<date>.csv|pdf"`.
 
 ```json
-"sequenceId,eventType,eventCode,eventDateTime,status,location,odometerMi,engineHours,origin,recordStatus,annotation\r\n17,1,3,2026-09-10 09:00:00,D,\"New Haven, CT\",993107,4321.4,ELD,ACTIVE,\r\n"
+"%PDF-1.4 ..."
 ```
 
-**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Driver token required (DRIVER_CONTEXT_REQUIRED). · `404` DRIVER_NOT_FOUND — Driver not found. · `422` VALIDATION_FAILED — Request validation failed. · `501` NOT_IMPLEMENTED — PDF export of a RODS day is not available yet.
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Driver token required (DRIVER_CONTEXT_REQUIRED). · `404` DRIVER_NOT_FOUND — Driver not found. · `422` VALIDATION_FAILED — Request validation failed.
+
+---
+
+### `POST /api/mobile/transfers`
+
+**Nima qiladi:** Haydovchi o'z RODS'i uchun eRODS transfer boshlaydi: Appendix A fayl yaratiladi, tekshiriladi, saqlanadi, yuborish navbatga qo'yiladi. TEST rejimda yuborilmaydi.
+
+- **Auth:** `Authorization: Bearer <driver access token>`
+- **operationId:** `MobileTransfersController_create` · original: _Driver-initiated eRODS transfer of the driver's own RODS: generates and validates the §395 Appendix A file, stores it, queues the send. TEST mode never sends to FMCSA (status TEST_ONLY)._
+- **Izoh (backend):** The row is returned as it stands right after generation (`status = QUEUED`); the worker moves it to TEST_ONLY / SENT / ACCEPTED / REJECTED / FAILED and fills `referenceId` + `sentAt`. Poll `GET /mobile/transfers` for the receipt (S-10). MB-18 — an offline roadside-inspection transfer is queued by the app and replayed on reconnect: send a `clientId` (idempotent — a replay returns the FIRST result, no second file or send; a clientId used by another operation is 409) and optionally `requestedAt` (device time of the request, echoed back). 4xx is final; retry only on 5xx/network. RANGE (B-172): the range is counted in home-terminal-timezone days, at most 8 (inclusive). `rangeStart`/`rangeEnd` may be `YYYY-MM-DD` (taken as that home-terminal RODS day) or an ISO instant (mapped to the home-terminal day it falls on); the file covers home-terminal midnight of the first day to home-terminal midnight after the last day (DST-aware). The response `rangeStart`/`rangeEnd` are those home-terminal day keys at T00:00:00.000Z (date-only columns), not instants.
+
+**Body** (`application/json`):
+
+| Maydon | Turi | Majburiy | Cheklov | Izoh |
+|---|---|---|---|---|
+| `method` | `WEB_SERVICES` \| `EMAIL` | ha |  |  |
+| `rangeStart` | string | ha |  | RODS day `YYYY-MM-DD` (e.g. `2026-10-06`) or ISO date-time (e.g. `2026-10-06T06:00:00Z`). Days are counted in the driver's home-terminal timezone; at most 8 inclusive. |
+| `rangeEnd` | string | ha |  | RODS day `YYYY-MM-DD` (e.g. `2026-10-06`) or ISO date-time (e.g. `2026-10-06T06:00:00Z`). Days are counted in the driver's home-terminal timezone; at most 8 inclusive. |
+| `outputFileComment` | string | yo'q | ≤ 60 belgi, default `""` |  |
+| `recipient` | string | yo'q | ≤ 254 belgi |  |
+| `clientId` | string | yo'q | 8–100 belgi |  |
+| `requestedAt` | string (date-time) | yo'q |  |  |
+
+**Javob `201`:** Created.
+
+```json
+{
+  "data": {
+    "id": "trf_1",
+    "method": "WEB_SERVICES",
+    "status": "QUEUED",
+    "erodsMode": "TEST",
+    "referenceId": null,
+    "sentAt": null,
+    "createdAt": "2026-09-10T15:44:02.000Z",
+    "fileName": "SMITH38018.csv",
+    "outputFileComment": "ROADSIDE INSPECTION 2026-09-10",
+    "rangeStart": "2026-09-03T00:00:00.000Z",
+    "rangeEnd": "2026-09-10T00:00:00.000Z",
+    "warnings": [
+      "ERODS_TEST_MODE"
+    ],
+    "counts": {
+      "header": 9,
+      "events": 42
+    },
+    "clientId": "0b9d6f5e-0000-4000-8000-000000000002",
+    "requestedAt": "2026-09-10T15:40:00.000Z"
+  },
+  "traceId": "01J8X3QK9Z0000000000000000",
+  "timestamp": "2026-10-08T15:41:00.000Z"
+}
+```
+
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Driver token required (DRIVER_CONTEXT_REQUIRED). · `404` DRIVER_NOT_FOUND — Driver not found. · `422` Unprocessable — one of: RANGE_TOO_LARGE (Requested range is 9 days; §395.24 / Appendix A allows at most 8. The range is counted in home-t…
+
+---
+
+### `GET /api/mobile/transfers`
+
+**Nima qiladi:** Haydovchining oxirgi transferlari (S-10 / M-27 "Last transfer" kvitansiyalari).
+
+- **Auth:** `Authorization: Bearer <driver access token>`
+- **operationId:** `MobileTransfersController_list` · original: _The driver's own most recent transfers (receipts for S-10 / M-27 `Last transfer`)._
+
+**Parametrlar:**
+
+| Nomi | Joyi | Turi | Majburiy | Cheklov | Izoh |
+|---|---|---|---|---|---|
+| `limit` | query | integer | yo'q | 1–50, default `5` |  |
+
+**Javob `200`:** OK.
+
+```json
+{
+  "data": {
+    "items": [
+      {
+        "id": "trf_1",
+        "method": "WEB_SERVICES",
+        "status": "TEST_ONLY",
+        "erodsMode": "TEST",
+        "referenceId": "ERODS-TEST-26-0910-4821",
+        "sentAt": "2026-09-10T15:44:02.000Z",
+        "createdAt": "2026-09-10T15:44:00.000Z",
+        "fileName": "SMITH38018.csv",
+        "outputFileComment": "ROADSIDE INSPECTION 2026-09-10",
+        "rangeStart": "2026-09-03T00:00:00.000Z",
+        "rangeEnd": "2026-09-10T00:00:00.000Z"
+      }
+    ],
+    "total": 1,
+    "limit": 5
+  },
+  "traceId": "01J8X3QK9Z0000000000000000",
+  "timestamp": "2026-10-08T15:41:00.000Z"
+}
+```
+
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Driver token required (DRIVER_CONTEXT_REQUIRED). · `422` VALIDATION_FAILED — Request validation failed.
 
 ---
 
@@ -2674,122 +2919,6 @@ Re-certification: certifying a day that is already certified, or one whose certi
 
 ---
 
-<a id="bolim-notifications"></a>
-
-## Bildirishnomalar
-
-### `GET /api/notifications` ♻️ O'ZGARGAN
-
-**Nima qiladi:** Chaqiruvchining in-app bildirishnomalari, segment sonlari bilan. 🆕 yangi tur: `alert.device_vin_mismatch`.
-
-- **Auth:** `Authorization: Bearer <access token>`
-- **operationId:** `NotificationsController_list` · original: _Lists the caller's own in-app notifications, with segment counts._
-- **Izoh (backend):** Every item carries `createdAt` (ISO-8601, newest first). `total`/`totalPages` describe the filtered list (honour `unreadOnly`/`category`). `counts` are TOTAL rows per segment (read + unread), ignoring `unreadOnly`/`category` — they are NOT unread counts. `unreadCount` is the number of unread notifications across all categories (badge number).
-
-**Parametrlar:**
-
-| Nomi | Joyi | Turi | Majburiy | Cheklov | Izoh |
-|---|---|---|---|---|---|
-| `category` | query | `VIOLATIONS` \| `MAINTENANCE` | yo'q |  |  |
-| `unreadOnly` | query | boolean | yo'q | default `false` |  |
-| `limit` | query | integer | yo'q | 1–200, default `25` |  |
-| `page` | query | integer | yo'q | ≥ 1, default `1` |  |
-
-**Javob `200`:** OK.
-
-```json
-{
-  "data": {
-    "items": [
-      {
-        "id": "ntf_1",
-        "userId": "usr_1",
-        "driverId": null,
-        "type": "hos_violation",
-        "kind": "VIOLATION",
-        "title": "HOS violation",
-        "body": "An HOS violation was detected.",
-        "objectType": "Driver",
-        "objectId": "drv_1",
-        "category": "VIOLATIONS",
-        "severity": "CRITICAL",
-        "readAt": null,
-        "createdAt": "2026-10-08T15:41:00.000Z"
-      }
-    ],
-    "page": 1,
-    "limit": 25,
-    "total": 1,
-    "totalPages": 1,
-    "counts": {
-      "all": 12,
-      "violations": 5,
-      "maintenance": 3
-    },
-    "unreadCount": 4
-  },
-  "traceId": "01J8X3QK9Z0000000000000000",
-  "timestamp": "2026-10-08T15:41:00.000Z"
-}
-```
-
-**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `422` VALIDATION_FAILED — Request validation failed.
-
----
-
-### `POST /api/notifications/read-all`
-
-**Nima qiladi:** Barcha o'qilmagan bildirishnomalarni o'qilgan qiladi.
-
-- **Auth:** `Authorization: Bearer <access token>`
-- **operationId:** `NotificationsController_readAll` · original: _Marks every unread notification of the caller as read._
-
-**Javob `201`:** Created.
-
-```json
-{
-  "data": {
-    "updated": 3
-  },
-  "traceId": "01J8X3QK9Z0000000000000000",
-  "timestamp": "2026-10-08T15:41:00.000Z"
-}
-```
-
-**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `422` VALIDATION_FAILED — Request validation failed.
-
----
-
-### `POST /api/notifications/{id}/read`
-
-**Nima qiladi:** Bitta bildirishnomani o'qilgan qiladi.
-
-- **Auth:** `Authorization: Bearer <access token>`
-- **operationId:** `NotificationsController_markRead` · original: _Marks one of the caller's own notifications as read._
-
-**Parametrlar:**
-
-| Nomi | Joyi | Turi | Majburiy | Cheklov | Izoh |
-|---|---|---|---|---|---|
-| `id` | path | string | ha |  |  |
-
-**Javob `201`:** Created.
-
-```json
-{
-  "data": {
-    "id": "ntf_1",
-    "readAt": "2026-09-24T15:41:00.000Z"
-  },
-  "traceId": "01J8X3QK9Z0000000000000000",
-  "timestamp": "2026-10-08T15:41:00.000Z"
-}
-```
-
-**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `404` NOT_FOUND — Notification not found. · `422` VALIDATION_FAILED — Request validation failed.
-
----
-
 <a id="bolim-logs"></a>
 
 ## RODS loglar
@@ -2814,16 +2943,17 @@ Re-certification: certifying a day that is already certified, or one whose certi
 |---|---|---|---|---|
 | `note` | string | yo'q | 4–60 belgi |  |
 
-**Javob `201`:** The proposal is now the active record; the original keeps recordStatus = 2 (Inactive — Changed).
+**Javob `201`:** MB-12 — the real `data` payload. The proposal is now the active record (recordStatus 1); the original is retired (recordStatus 2, Inactive — Changed); the touched days lose their certification (re-certify, §395.30) and hos.recalc runs. Body `{note?: string}` (optional, may be omitted). Refresh `GET /mobile/logs` for the new day.
 
 ```json
 {
-  "id": "edt_1",
-  "status": "ACCEPTED",
-  "resolvedAt": "2026-09-11T15:41:00.000Z",
-  "activeEventId": "evt_9001",
-  "supersededEventId": "evt_8801",
-  "recertificationRequired": true
+  "data": {
+    "id": "9120",
+    "status": "ACCEPTED",
+    "applied": true
+  },
+  "traceId": "01J8X3QK9Z0000000000000000",
+  "timestamp": "2026-10-08T15:41:00.000Z"
 }
 ```
 
@@ -2851,14 +2981,17 @@ Re-certification: certifying a day that is already certified, or one whose certi
 |---|---|---|---|---|
 | `note` | string | yo'q | 4–60 belgi |  |
 
-**Javob `201`:** The request is closed and the log is untouched.
+**Javob `201`:** MB-12 — the real `data` payload. The proposal gets a recordStatus 4 (Inactive — Change Rejected) marker; the log is untouched. Body `{note?: string}` (optional, stored as the edit reason).
 
 ```json
 {
-  "id": "edt_1",
-  "status": "REJECTED",
-  "resolvedAt": "2026-09-11T15:41:00.000Z",
-  "driverComment": "I was off duty, not on duty."
+  "data": {
+    "id": "9120",
+    "status": "REJECTED",
+    "applied": false
+  },
+  "traceId": "01J8X3QK9Z0000000000000000",
+  "timestamp": "2026-10-08T15:41:00.000Z"
 }
 ```
 
@@ -2906,7 +3039,7 @@ Re-certification: certifying a day that is already certified, or one whose certi
 | `batch[].comment` | string | yo'q, null mumkin | ≤ 500 belgi |  |
 | `batch[].checksum` | string | yo'q, null mumkin | ≤ 128 belgi |  |
 
-**Javob `200`:** Stored. Duplicates by `uuid` are counted, not re-inserted.
+**Javob `200`:** Stored. Duplicates by `uuid` are counted, not re-inserted. `checksum` is optional: when omitted the server computes and stores it and adds ONE informational warning `CHECKSUM_MISSING` (`informational: true`, no diagnostic, still 200). Clock drift is NOT derived from `eventDateTime` (events arrive late) — see `deviceTime` on /ingest/device-status and /ingest/ble-state; `timeDriftSec` on stored events is null.
 
 ```json
 {
@@ -2918,7 +3051,13 @@ Re-certification: certifying a day that is already certified, or one whose certi
       1043
     ]
   },
-  "warnings": [],
+  "warnings": [
+    {
+      "code": "CHECKSUM_MISSING",
+      "detail": "118 event(s) carried no checksum; server-computed checksum stored, no diagnostic.",
+      "informational": true
+    }
+  ],
   "malfunctions": [],
   "diagnostics": [],
   "unidentifiedSegmentIds": [],
@@ -2926,7 +3065,7 @@ Re-certification: certifying a day that is already certified, or one whose certi
 }
 ```
 
-**Javob `202`:** ACCEPTED_WITH_WARNINGS — stored, but at least one event had a bad checksum, a drifted clock or an implausible odometer (§7.3 rules 4/5, §4.3).
+**Javob `202`:** ACCEPTED_WITH_WARNINGS — stored, but at least one event had a SENT checksum that did not match (CHECKSUM_MISMATCH) or an implausible odometer (ODOMETER_ANOMALY) (§7.3 rule 4, §4.3). Diagnostic 3 is logged as ONE eventType 7 record per driver per batch, and not again while one is active (App. A 4.5.1.7).
 
 ```json
 {
@@ -2953,7 +3092,7 @@ Re-certification: certifying a day that is already certified, or one whose certi
 }
 ```
 
-**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — DRIVER_CONTEXT_REQUIRED — ingest accepts a driver token only. · `413` PAYLOAD_TOO_LARGE — Ingest batch exceeds the 1 MB limit. · `422` VALIDATION_FAILED — Schema violation — the only reason an event is ever rejected.
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` PERMANENT refusal (the app quarantines). `FORBIDDEN` with `details.reason` one of DEVICE_PAIRED_ELSEWHERE, UNIT_HAS_OTHER_DEVICE, UNIT_AS… · `413` PAYLOAD_TOO_LARGE — Ingest batch exceeds the 1 MB limit. · `422` Schema violation — the only reason a row is ever rejected. `details.issues[].path` names the bad row (`batch.N.*` / `points.N.*` / `event… · `429` Transient — always carries a `Retry-After` header (seconds, = `details.retryAfterSec`). · `503` Transient — always carries a `Retry-After` header. `INGEST_ASSIGNMENT_PENDING`: the claimed device pairing / driver assignment is not vis…
 
 ---
 
@@ -3091,7 +3230,7 @@ So'rov misoli:
 }
 ```
 
-**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — DRIVER_CONTEXT_REQUIRED — ingest accepts a driver token only. · `422` VALIDATION_FAILED — Request validation failed.
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` PERMANENT refusal (the app quarantines). `FORBIDDEN` with `details.reason` one of DEVICE_PAIRED_ELSEWHERE, UNIT_HAS_OTHER_DEVICE, UNIT_AS… · `413` PAYLOAD_TOO_LARGE — Ingest batch exceeds the 1 MB limit. · `422` Schema violation — the only reason a row is ever rejected. `details.issues[].path` names the bad row (`batch.N.*` / `points.N.*` / `event… · `429` Transient — always carries a `Retry-After` header (seconds, = `details.retryAfterSec`). · `503` Transient — always carries a `Retry-After` header. `INGEST_ASSIGNMENT_PENDING`: the claimed device pairing / driver assignment is not vis…
 
 ---
 
@@ -3176,7 +3315,7 @@ So'rov misoli:
 }
 ```
 
-**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — DRIVER_CONTEXT_REQUIRED — ingest accepts a driver token only; or the device/unit is not yours. · `413` PAYLOAD_TOO_LARGE — Ingest batch exceeds the 1 MB limit. · `422` VALIDATION_FAILED — Request validation failed.
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` PERMANENT refusal (the app quarantines). `FORBIDDEN` with `details.reason` one of DEVICE_PAIRED_ELSEWHERE, UNIT_HAS_OTHER_DEVICE, UNIT_AS… · `413` PAYLOAD_TOO_LARGE — Ingest batch exceeds the 1 MB limit. · `422` Schema violation — the only reason a row is ever rejected. `details.issues[].path` names the bad row (`batch.N.*` / `points.N.*` / `event… · `429` Transient — always carries a `Retry-After` header (seconds, = `details.retryAfterSec`). · `503` Transient — always carries a `Retry-After` header. `INGEST_ASSIGNMENT_PENDING`: the claimed device pairing / driver assignment is not vis…
 
 ---
 
@@ -3187,6 +3326,7 @@ So'rov misoli:
 - **Auth:** `Authorization: Bearer <driver access token>`
 - **Ekran:** `{'id': 'web/settings-eld-devices', 'title': 'Settings · ELD devices', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.22 (Settings sub-nav); referenced again on p.28'}`
 - **operationId:** `IngestController_bleState` · original: _Reports a BLE state transition (§7.6): CONNECTED / OUT_OF_RANGE / DISCONNECTED; optional `connectionType` BLE|USB (SDK 6.11)._
+- **Izoh (backend):** Optional `deviceTime` (ISO-8601) = the PT30 clock read just before sending. |deviceTime − server UTC| > 600 s logs malfunction T once (7/1, not repeated while active); back within 600 s clears it (7/2). Omitted → no timing check. `clockDriftSec` echoes the measured drift.
 
 **Body** (`application/json`):
 
@@ -3196,6 +3336,7 @@ So'rov misoli:
 | `state` | `CONNECTED` \| `OUT_OF_RANGE` \| `DISCONNECTED` | ha |  |  |
 | `at` | string (date-time) | yo'q |  |  |
 | `connectionType` | `BLE` \| `USB` | yo'q |  |  |
+| `deviceTime` | string (date-time) | yo'q |  |  |
 
 So'rov misoli:
 
@@ -3204,7 +3345,8 @@ So'rov misoli:
   "deviceSerial": "PT30_A86E",
   "state": "CONNECTED",
   "at": "2026-10-10T12:00:00Z",
-  "connectionType": "USB"
+  "connectionType": "USB",
+  "deviceTime": "2026-10-10T12:00:01Z"
 }
 ```
 
@@ -3214,11 +3356,12 @@ So'rov misoli:
 {
   "bleState": "CONNECTED",
   "connectionType": "USB",
-  "disconnectedAlert": false
+  "disconnectedAlert": false,
+  "clockDriftSec": 1
 }
 ```
 
-**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — DRIVER_CONTEXT_REQUIRED — ingest accepts a driver token only. · `422` VALIDATION_FAILED — Request validation failed.
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` PERMANENT refusal (the app quarantines). `FORBIDDEN` with `details.reason` one of DEVICE_PAIRED_ELSEWHERE, UNIT_HAS_OTHER_DEVICE, UNIT_AS… · `422` Schema violation — the only reason a row is ever rejected. `details.issues[].path` names the bad row (`batch.N.*` / `points.N.*` / `event… · `429` Transient — always carries a `Retry-After` header (seconds, = `details.retryAfterSec`). · `503` Transient — always carries a `Retry-After` header. `INGEST_ASSIGNMENT_PENDING`: the claimed device pairing / driver assignment is not vis…
 
 ---
 
@@ -3229,7 +3372,7 @@ So'rov misoli:
 - **Auth:** `Authorization: Bearer <driver access token>`
 - **Ekran:** `{'id': 'web/settings-eld-devices', 'title': 'Settings · ELD devices', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.22 (Settings sub-nav); referenced again on p.28'}`
 - **operationId:** `IngestController_deviceStatus` · original: _Reports stored-event backlog, firmware and SDK TrackerInfo (§7.7); answers the system variables to apply._
-- **Izoh (backend):** `productName` `PT40*` -> model PT40, `PT30*` -> PT30. `reportedVin` differing from the paired unit VIN -> `vinMismatch: true` (never blocks; `alert.device_vin_mismatch` once per new VIN). `systemVars` are the PT SDK SetSystemVar targets.
+- **Izoh (backend):** `productName` `PT40*` -> model PT40, `PT30*` -> PT30. `reportedVin` differing from the paired unit VIN -> `vinMismatch: true` (never blocks; `alert.device_vin_mismatch` once per new VIN). `systemVars` are the PT SDK SetSystemVar targets. Optional `deviceTime` (ISO-8601, PT30 clock read just before sending): |drift| > 600 s logs malfunction T once (7/1, `codes` gets `M:T`), back within 600 s clears it (7/2); omitted → no timing check. `clockDriftSec` = deviceTime − server UTC (null without deviceTime).
 
 **Body** (`application/json`):
 
@@ -3249,6 +3392,7 @@ So'rov misoli:
 | `appPlatform` | `IOS` \| `ANDROID` | yo'q |  |  |
 | `recordsLost` | boolean | yo'q | default `false` |  |
 | `consecutiveTransferFailures` | integer | yo'q | 0–1000, default `0` |  |
+| `deviceTime` | string (date-time) | yo'q |  |  |
 
 So'rov misoli:
 
@@ -3266,7 +3410,8 @@ So'rov misoli:
   "busType": "J1939",
   "appPlatform": "ANDROID",
   "recordsLost": false,
-  "consecutiveTransferFailures": 0
+  "consecutiveTransferFailures": 0,
+  "deviceTime": "2026-10-13T15:04:05Z"
 }
 ```
 
@@ -3277,6 +3422,7 @@ So'rov misoli:
   "storedEventsCount": 12,
   "backlogAlert": false,
   "codes": [],
+  "clockDriftSec": 2,
   "model": "PT40",
   "vinMismatch": false,
   "systemVars": {
@@ -3292,7 +3438,7 @@ So'rov misoli:
 }
 ```
 
-**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — DRIVER_CONTEXT_REQUIRED — ingest accepts a driver token only. · `422` VALIDATION_FAILED — Request validation failed.
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` PERMANENT refusal (the app quarantines). `FORBIDDEN` with `details.reason` one of DEVICE_PAIRED_ELSEWHERE, UNIT_HAS_OTHER_DEVICE, UNIT_AS… · `422` Schema violation — the only reason a row is ever rejected. `details.issues[].path` names the bad row (`batch.N.*` / `points.N.*` / `event… · `429` Transient — always carries a `Retry-After` header (seconds, = `details.retryAfterSec`). · `503` Transient — always carries a `Retry-After` header. `INGEST_ASSIGNMENT_PENDING`: the claimed device pairing / driver assignment is not vis…
 
 ---
 
@@ -3306,7 +3452,8 @@ So'rov misoli:
 
 - **Auth:** `Authorization: Bearer <driver access token>`
 - **Ekran:** `{'id': 'web/hos-logs', 'title': 'Hours of Service · Driver log', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.13'}`, `{'id': 'web/fleet-dashboard', 'title': 'Fleet Dashboard', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.5'}`
-- **operationId:** `UnidentifiedController_confirm` · original: _Driver answers "was this you?" (§7.4 rule 2). Accepting attributes the records with recordOrigin = 1 — never 2._
+- **operationId:** `UnidentifiedController_confirm` · original: _Driver answers "was this you?" (§7.4 rule 2). Accepting = the driver assumes the records: recordOrigin = 4 (Appendix A 4.4.4.2.4(e), MB-3) — never 2._
+- **Izoh (backend):** Body `{accept: boolean, annotation?: string (4-60)}`. On a `PENDING_CONFIRMATION` segment only the asked driver may answer: accept → `ASSIGNED` (assignedById stays the carrier user who asked), decline → back to `PENDING`, nothing written. On any other segment, accept is a self-claim and needs a driver↔unit association (§395.32, else 403). Response `data` is the segment after the answer.
 
 **Parametrlar:**
 
@@ -3321,19 +3468,35 @@ So'rov misoli:
 | `accept` | boolean | ha |  |  |
 | `annotation` | string | yo'q | 4–60 belgi |  |
 
-**Javob `201`:** Accepting attributes the records to the driver with recordOrigin = 1 — never 2 (§23).
+**Javob `201`:** The segment after the answer. Attributed copies carry recordOrigin = 4 and recordStatus = 1; the pool originals are retired (recordStatus 2), never deleted (§23).
 
 ```json
 {
-  "id": "seg_1",
-  "status": "ASSIGNED",
-  "driverId": "drv_1",
-  "recordOrigin": 1,
-  "eventCount": 4
+  "data": {
+    "id": "6f1c2a0e-3d1b-4c55-9a51-2f0f6b1d9e10",
+    "vehicleId": "b3e0c1d2-8a4f-4f0e-9d7c-1a2b3c4d5e6f",
+    "startAt": "2026-09-10T12:30:00.000Z",
+    "endAt": "2026-09-10T13:00:00.000Z",
+    "durationSec": 1800,
+    "distanceMi": 21,
+    "status": "ASSIGNED",
+    "assignedDriverId": "drv_1",
+    "assignedById": "usr_1",
+    "assignedAt": "2026-09-11T15:41:00.000Z",
+    "annotation": "Unidentified driving assigned to johnsmith",
+    "confirmationRequestedAt": null,
+    "fromStoredEvents": true,
+    "eventIds": [
+      "7701",
+      "7702"
+    ]
+  },
+  "traceId": "01J8X3QK9Z0000000000000000",
+  "timestamp": "2026-10-08T15:41:00.000Z"
 }
 ```
 
-**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `404` NOT_FOUND — Unidentified segment not found. · `409` UNIDENTIFIED_ALREADY_ASSIGNED — This segment is already assigned to a driver. · `422` VALIDATION_FAILED — Request validation failed.
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — This unidentified driving is awaiting confirmation from another driver, or the driver never operated this unit (§395.32). · `404` NOT_FOUND — Unidentified segment not found. · `409` UNIDENTIFIED_ALREADY_ASSIGNED — This segment is already assigned to a driver. · `422` VALIDATION_FAILED — Request validation failed.
 
 ---
 
@@ -3345,24 +3508,40 @@ So'rov misoli:
 - **Ekran:** `{'id': 'web/hos-logs', 'title': 'Hours of Service · Driver log', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.13'}`, `{'id': 'web/fleet-dashboard', 'title': 'Fleet Dashboard', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.5'}`
 - **operationId:** `UnidentifiedController_listConfirmationRequests` · original: _B-83 — driver app: segments a carrier asked THIS driver to confirm (status PENDING_CONFIRMATION). Answer with POST /unidentified/:id/confirm._
 
-**Javob `200`:** 
+**Javob `200`:** MB-11 — every item adds `startLocation`/`endLocation` (Appendix A 7.29 text), `unitNumber`, `startOdometerMi`/`endOdometerMi` to the segment fields. Up to 200 items, newest first.
 
 ```json
 {
-  "items": [
-    {
-      "id": "seg_1",
-      "vehicleId": "veh_1",
-      "status": "PENDING_CONFIRMATION",
-      "assignedDriverId": "drv_1",
-      "assignedById": "usr_1",
-      "confirmationRequestedAt": "2026-09-11T15:41:00.000Z",
-      "startAt": "2026-09-10T12:30:00.000Z",
-      "endAt": "2026-09-10T13:00:00.000Z",
-      "durationSec": 1800,
-      "distanceMi": 21
-    }
-  ]
+  "data": {
+    "items": [
+      {
+        "id": "6f1c2a0e-3d1b-4c55-9a51-2f0f6b1d9e10",
+        "vehicleId": "b3e0c1d2-8a4f-4f0e-9d7c-1a2b3c4d5e6f",
+        "startAt": "2026-09-10T12:30:00.000Z",
+        "endAt": "2026-09-10T13:00:00.000Z",
+        "durationSec": 1800,
+        "distanceMi": 21,
+        "status": "PENDING_CONFIRMATION",
+        "assignedDriverId": "drv_1",
+        "assignedById": "usr_1",
+        "assignedAt": null,
+        "annotation": null,
+        "confirmationRequestedAt": "2026-09-11T15:41:00.000Z",
+        "fromStoredEvents": true,
+        "eventIds": [
+          "7701",
+          "7702"
+        ],
+        "startLocation": "3mi W OH Columbus",
+        "endLocation": "1mi N OH Hilliard",
+        "unitNumber": "4821",
+        "startOdometerMi": 120345,
+        "endOdometerMi": 120366
+      }
+    ]
+  },
+  "traceId": "01J8X3QK9Z0000000000000000",
+  "timestamp": "2026-10-08T15:41:00.000Z"
 }
 ```
 

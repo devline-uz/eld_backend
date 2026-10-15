@@ -285,8 +285,18 @@ export class TokenService extends TokenVerifier {
     if (claims.typ === 'driver' && this.principals) {
       // Driver disable — an INACTIVE/TERMINATED/deleted driver, or one whose app sessions were all
       // revoked, is cut off before the 24 h access token expires.
-      const live = await this.principals.resolveDriver(claims.sub);
-      if (!live) throw new AppException(ERROR_CODES.DRIVER_DISABLED, 'Driver access has been revoked.', 401);
+      const live = await this.principals.resolveDriver(claims.sub, claims.sid);
+      if (!live) {
+        // MD-195 — a takeover from another device is final and says who did it.
+        const replaced = await this.principals.driverReplacement(claims.sub, claims.sid);
+        if (replaced) {
+          throw new AppException(ERROR_CODES.SESSION_REPLACED, 'Your account was signed in on another device.', 401, {
+            byDeviceLabel: replaced.byDeviceLabel,
+            at: replaced.at.toISOString(),
+          });
+        }
+        throw new AppException(ERROR_CODES.DRIVER_DISABLED, 'Driver access has been revoked.', 401);
+      }
     }
     return {
       id: claims.sub,

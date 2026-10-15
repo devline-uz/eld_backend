@@ -79,6 +79,16 @@ export class LogEventView {
   @ApiProperty({ enum: SPECIAL_CONDITIONS, enumName: 'SpecialCondition', nullable: true, description: 'Only for eventType 3.' }) specialCondition!: (typeof SPECIAL_CONDITIONS)[number] | null;
   @ApiProperty({ type: String, nullable: true }) malfunctionCode!: string | null;
   @ApiProperty({ type: String, nullable: true }) diagnosticCode!: string | null;
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    enum: ['REPLACED_DEVICE'],
+    description:
+      'D-163 — set when a replaced device (single-device rule) delivered this record late: recorded after that device was signed out by another login and before the driver signed in on it again. Driver-entered duty / PC-YM records so flagged are stored with recordStatus 3 and change no graph / HOS until a fleet manager re-enters them via the §395.30 edit flow; ELD-automatic records (PT30 driving) stay active and are only labelled.',
+  })
+  reviewReason!: 'REPLACED_DEVICE' | null;
+  @ApiProperty({ type: String, nullable: true, description: 'D-163 — label of the replaced device the record came from (e.g. "Pixel 7").' })
+  reviewDeviceLabel!: string | null;
 }
 
 export class LogDayTripView {

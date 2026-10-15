@@ -1,7 +1,9 @@
 /** PT SDK 6.11 alignment — ingest DTO normalisation (D-135). */
+import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import {
   IngestDeviceEventsDto,
   IngestDeviceStatusDto,
+  IngestEventsDto,
   IngestTelemetryDto,
   normaliseBusType,
   normaliseDeviceEventType,
@@ -127,5 +129,56 @@ describe('IngestDeviceStatusDto (SDK TrackerInfo)', () => {
 
   it('rejects an unknown connectionType', () => {
     expect(IngestDeviceStatusDto.safeParse({ deviceSerial: 'S', storedEventsCount: 0, connectionType: 'WIFI' }).success).toBe(false);
+  });
+});
+
+/** D-164 — the app splits a batch on 400/413/422 to find the bad row, so 422 must name the row. */
+describe('422 VALIDATION_FAILED names the bad row path on every batch endpoint', () => {
+  const issuesOf = (schema: unknown, body: unknown): { status: number; paths: string[] } => {
+    try {
+      new ZodValidationPipe(schema as never).transform(body, { type: 'body' });
+    } catch (err) {
+      const e = err as { getStatus(): number; details: { issues: Array<{ path: string }> } };
+      return { status: e.getStatus(), paths: e.details.issues.map((i) => i.path) };
+    }
+    throw new Error('expected a validation failure');
+  };
+  const event = (uuid: string, over: Record<string, unknown> = {}) => ({
+    uuid, eventType: 1, eventCode: 3, eventDateTime: '2026-10-10T12:00:00Z', timezoneOffset: -240, recordOrigin: 1, ...over,
+  });
+
+  it('/ingest/events -> batch.N.*', () => {
+    const r = issuesOf(IngestEventsDto, {
+      deviceSerial: 'PT30_A86E', vehicleId: VEHICLE_ID,
+      batch: [
+        event('8f14e45f-ceea-467a-9575-8b1d6b1c9f11'),
+        event('8f14e45f-ceea-467a-9575-8b1d6b1c9f12', { eventDateTime: 'not-a-date' }),
+        event('8f14e45f-ceea-467a-9575-8b1d6b1c9f13'),
+      ],
+    });
+    expect(r.status).toBe(422);
+    expect(r.paths.length).toBeGreaterThan(0);
+    expect(r.paths.every((p) => p.startsWith('batch.1.'))).toBe(true);
+  });
+
+  it('/ingest/telemetry -> points.N.*', () => {
+    const r = issuesOf(IngestTelemetryDto, {
+      deviceSerial: 'PT30_A86E', vehicleId: VEHICLE_ID,
+      points: [{ time: '2026-10-10T12:00:00Z' }, { time: '2026-10-10T12:01:00Z' }, { time: 'garbage' }],
+    });
+    expect(r.status).toBe(422);
+    expect(r.paths.every((p) => p.startsWith('points.2.'))).toBe(true);
+  });
+
+  it('/ingest/device-events -> events.N.*', () => {
+    const r = issuesOf(IngestDeviceEventsDto, {
+      deviceSerial: 'PT30_A86E', vehicleId: VEHICLE_ID,
+      events: [
+        { type: 'EV_ENGINE_ON', seq: 1, occurredAt: '2026-10-10T12:00:00Z', live: true },
+        { type: 'EV_ENGINE_ON', seq: 2, occurredAt: 'nope', live: true },
+      ],
+    });
+    expect(r.status).toBe(422);
+    expect(r.paths).toEqual(['events.1.occurredAt']);
   });
 });

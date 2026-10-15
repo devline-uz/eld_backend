@@ -72,6 +72,8 @@ describe('AuthService', () => {
     };
     driverSessions = {
       create: jest.fn(),
+      createExclusive: jest.fn(),
+      replacementFor: jest.fn().mockResolvedValue(null),
       findByRefreshHash: jest.fn(),
       revoke: jest.fn(),
       rotate: jest.fn(),
@@ -113,7 +115,7 @@ describe('AuthService', () => {
     };
     graceStore = { windowSeconds: 60, put: jest.fn().mockResolvedValue(undefined), get: jest.fn() } as never;
     events = { publish: jest.fn().mockResolvedValue(undefined) };
-    principals = { invalidateUser: jest.fn().mockResolvedValue(undefined), invalidateDriver: jest.fn().mockResolvedValue(undefined) };
+    principals = { invalidateUser: jest.fn().mockResolvedValue(undefined), invalidateDriver: jest.fn().mockResolvedValue(undefined), evictDriverSessions: jest.fn().mockResolvedValue(undefined) };
     service = new AuthService(
       users as never,
       drivers as never,
@@ -276,6 +278,74 @@ describe('AuthService', () => {
       drivers.findByUsername.mockResolvedValueOnce({ ...driver, assignedVehicleId: null });
       await service.loginDriver('john', 'pw', {});
       expect(loginRecords.login).not.toHaveBeenCalled();
+    });
+
+    describe('MD-195 single signed-in device', () => {
+      const DEV = { deviceId: '11111111-1111-4111-8111-111111111111', deviceLabel: 'Pixel tablet', platform: 'android', formFactor: 'tablet' as const, appVersion: '1.0.0+1' };
+      const old = (over: object = {}) => ({ id: 'old1', deviceId: 'other-dev', deviceLabel: 'Galaxy', lastSeenAt: new Date('2026-10-15T08:00:00Z'), lastMotionAt: null, pendingCount: 12, familyId: 'f1', ...over });
+      beforeEach(() => {
+        drivers.findByUsername.mockResolvedValue(driver);
+        driverSessions.create.mockResolvedValue({ id: 'new1' });
+        driverSessions.createExclusive.mockResolvedValue({ kind: 'created', session: { id: 'new1' }, replaced: [] });
+      });
+
+      it('no device -> legacy behaviour: no replacement, no replacedDevice field', async () => {
+        const r = await service.loginDriver('john', 'pw', {});
+        expect(driverSessions.createExclusive).not.toHaveBeenCalled();
+        expect(driverSessions.create).toHaveBeenCalled();
+        expect(r).not.toHaveProperty('replacedDevice');
+      });
+
+      it('wrong password with a device -> INVALID_CREDENTIALS before any session lookup (no 409/replacedDevice oracle)', async () => {
+        (passwordUtil.verifyPassword as jest.Mock).mockResolvedValueOnce(false);
+        await expect(service.loginDriver('john', 'bad', {}, DEV)).rejects.toMatchObject({ code: 'INVALID_CREDENTIALS' });
+        expect(driverSessions.createExclusive).not.toHaveBeenCalled();
+      });
+
+      it('replaces other devices atomically, pushes session.replaced to the revoked session rooms, audits with IP/UA, reports replacedDevice', async () => {
+        const o = old();
+        driverSessions.createExclusive.mockResolvedValue({ kind: 'created', session: { id: 'new1' }, replaced: [{ session: o, familyIds: ['old0', 'old1'] }] });
+        const r = await service.loginDriver('john', 'pw', { ip: '10.0.0.9', userAgent: 'okhttp/4' }, DEV);
+        expect(driverSessions.createExclusive).toHaveBeenCalledWith(
+          expect.objectContaining({ driverId: 'd1', deviceId: DEV.deviceId, deviceLabel: 'Pixel tablet', formFactor: 'tablet', ip: '10.0.0.9' }),
+          120_000,
+        );
+        expect(principals.evictDriverSessions).toHaveBeenCalledWith('d1');
+        expect(principals.invalidateDriver).not.toHaveBeenCalled();
+        expect(events.publish).toHaveBeenCalledWith('realtime.push', expect.objectContaining({
+          room: ['session:old0', 'session:old1'],
+          event: 'session.replaced',
+          payload: expect.objectContaining({ byDeviceLabel: 'Pixel tablet', deviceId: 'other-dev', byDeviceId: DEV.deviceId }) as unknown,
+        }));
+        expect(events.publish).toHaveBeenCalledWith('audit.record', expect.objectContaining({ action: 'SESSION_REPLACED', ip: '10.0.0.9', userAgent: 'okhttp/4' }));
+        expect(r.replacedDevice).toEqual({ label: 'Galaxy', lastSeenAt: '2026-10-15T08:00:00.000Z', pendingCount: 12, inMotion: false });
+      });
+
+      it('B-175: an older session claiming the SAME deviceId is ended too, but gets no socket push and no replacedDevice', async () => {
+        const same = old({ id: 'same1', deviceId: DEV.deviceId, deviceLabel: 'Pixel tablet' });
+        driverSessions.createExclusive.mockResolvedValue({ kind: 'created', session: { id: 'new1' }, replaced: [{ session: same, familyIds: ['same1'] }] });
+        const r = await service.loginDriver('john', 'pw', {}, DEV);
+        expect(events.publish).not.toHaveBeenCalledWith('realtime.push', expect.objectContaining({ event: 'session.replaced' }));
+        expect(principals.evictDriverSessions).toHaveBeenCalledWith('d1');
+        expect(r.replacedDevice).toBeNull();
+      });
+
+      it('nothing to replace -> replacedDevice null', async () => {
+        const r = await service.loginDriver('john', 'pw', {}, DEV);
+        expect(principals.evictDriverSessions).not.toHaveBeenCalled();
+        expect(r.replacedDevice).toBeNull();
+      });
+
+      it('another device moving -> 409 DRIVING_ON_OTHER_DEVICE, no token issued', async () => {
+        const at = new Date(Date.now() - 30_000);
+        driverSessions.createExclusive.mockResolvedValue({ kind: 'moving', moving: old({ lastMotionAt: at }) });
+        await expect(service.loginDriver('john', 'pw', {}, DEV)).rejects.toMatchObject({
+          code: 'DRIVING_ON_OTHER_DEVICE',
+          status: 409,
+          details: { byDeviceLabel: 'Galaxy', lastSeenAt: at.toISOString() },
+        });
+        expect(tokens.signDriverAccessToken).not.toHaveBeenCalled();
+      });
     });
 
     it('uses TokenService.refreshTtlMs(driver) for the session expiry (MB-21)', async () => {
@@ -487,6 +557,33 @@ describe('AuthService', () => {
     });
 
     if (subject === 'driver') {
+      it('MD-195: a REPLACED session (or a rotated ancestor of one) -> 401 SESSION_REPLACED, never REUSED/INVALID, family untouched', async () => {
+        const at = new Date('2026-10-15T09:00:00Z');
+        driverSessions.replacementFor.mockResolvedValue({ byDeviceLabel: 'Pixel tablet', at });
+        for (const row of [live({ revokedAt: at }), live({ revokedAt: new Date(Date.now() - 600_000), rotatedAt: new Date(Date.now() - 600_000) })]) {
+          driverSessions.findByRefreshHash.mockResolvedValue(row);
+          await expect(service.refresh('rt', 'driver', {})).rejects.toMatchObject({
+            code: 'SESSION_REPLACED',
+            status: 401,
+            details: { byDeviceLabel: 'Pixel tablet', at: at.toISOString() },
+          });
+        }
+        expect(driverSessions.revokeFamily).not.toHaveBeenCalled();
+      });
+
+      it('B-176: rotation that loses its claim to a concurrent takeover -> SESSION_REPLACED, no reuse revoke / socket drop', async () => {
+        const at = new Date();
+        driverSessions.findByRefreshHash
+          .mockResolvedValueOnce(live())
+          .mockResolvedValueOnce(live({ revokedAt: at }));
+        drivers.findById.mockResolvedValue({ id: 'd1', status: 'ACTIVE', deletedAt: null });
+        driverSessions.rotate.mockResolvedValue(null);
+        driverSessions.replacementFor.mockResolvedValue({ byDeviceLabel: 'Pixel tablet', at });
+        await expect(service.refresh('rt', 'driver', {})).rejects.toMatchObject({ code: 'SESSION_REPLACED', status: 401 });
+        expect(driverSessions.revokeFamily).not.toHaveBeenCalled();
+        expect(principals.invalidateDriver).not.toHaveBeenCalled();
+      });
+
       it('refuses a deleted driver with DRIVER_DISABLED and revokes their sessions', async () => {
         repo().findByRefreshHash.mockResolvedValue(live());
         drivers.findById.mockResolvedValue({ id: 'd1', status: 'ACTIVE', deletedAt: new Date() });

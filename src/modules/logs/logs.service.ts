@@ -1,5 +1,5 @@
 import { InjectQueue } from '@nestjs/bullmq';
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { EditorType, type Prisma } from '@prisma/client';
 import { Queue } from 'bullmq';
 import type { DailyLog, EldEvent } from '@prisma/client';
@@ -11,6 +11,7 @@ import { RequestContext } from '../../core/context/request-context';
 import { EventBusService } from '../../core/events/event-bus.service';
 import { QUEUES } from '../../core/queue/queue.constants';
 import { AuditRepository } from '../audit/audit.repository';
+import { planReplacedDeviceRows, ReplacedDeviceReviewService, reviewFor, type RecordReview } from './replaced-device-review';
 import { addDays, dayEnd, dayKey, dayStart } from '../hos/engine/timezone';
 import type { DutyStatus } from '../hos/hos.types';
 import {
@@ -113,6 +114,8 @@ export class LogsService {
     private readonly events: EventBusService,
     @InjectQueue(QUEUES.HOS_RECALC) private readonly hosRecalcQueue: Queue,
     @InjectQueue(QUEUES.ALERT) private readonly alertQueue: Queue,
+    // D-163 — flags late `/mobile/sync` records from a replaced device (optional for unit tests).
+    @Optional() private readonly replacedDevice?: ReplacedDeviceReviewService,
   ) {}
 
   // =========================================================================
@@ -199,9 +202,10 @@ export class LogsService {
    * an empty record table ("No ELD records for this day"). Same day boundaries and the same
    * lookback (`RODS_HEADER_LOOKBACK_DAYS`) the grid is built with.
    */
-  async getEvents(driverId: string, date: string | undefined, now: Date = new Date()) {
+  async getEvents(driverId: string, date: string | undefined, now: Date = new Date(), review?: string) {
     const driver = await this.requireDriver(driverId);
     const timezone = driver.homeTerminalTimezone;
+    if (review && !date) return this.getReviewEvents(driverId, timezone, review);
     const key = date ?? dayKey(timezone, now);
     const startAt = dayStart(timezone, key);
     const events = await this.repo.findEvents(driverId, startAt, dayEnd(timezone, key));
@@ -211,12 +215,27 @@ export class LogsService {
     // outside this day's window, so they are fetched by id.
     const markers = await this.repo.findSupersedingEvents([...events, ...(carriedIn ? [carriedIn] : [])].map((event) => event.id));
     const withEffective = (event: EldEvent) => ({ ...this.toEventView(event), effectiveRecordStatus: effectiveRecordStatus(event, markers) });
+    // D-163 — `review=REPLACED_DEVICE` keeps only the flagged records of the day.
+    const keep = (event: EldEvent) => !review || event.reviewReason === review;
     return {
       driverId,
       date: key,
       timezone,
-      events: events.map(withEffective),
-      carriedIn: carriedIn ? withEffective(carriedIn) : null,
+      events: events.filter(keep).map(withEffective),
+      carriedIn: carriedIn && keep(carriedIn) ? withEffective(carriedIn) : null,
+    };
+  }
+
+  /** D-163 — every flagged record of the driver, across days (capped). */
+  private async getReviewEvents(driverId: string, timezone: string, review: string) {
+    const events = await this.repo.findReviewEvents(driverId, review, MAX_REVIEW_EVENTS);
+    const markers = await this.repo.findSupersedingEvents(events.map((event) => event.id));
+    return {
+      driverId,
+      date: null,
+      timezone,
+      events: events.map((event) => ({ ...this.toEventView(event), effectiveRecordStatus: effectiveRecordStatus(event, markers) })),
+      carriedIn: null,
     };
   }
 
@@ -825,8 +844,15 @@ export class LogsService {
   // §9.3 — the driver's own correction (POST /mobile/log-entries)
   // =========================================================================
 
-  async createLogEntry(driverId: string, dto: CreateLogEntryDto, actor: ContextUser) {
+  /**
+   * `options.occurredAt` — set by `/mobile/sync` only (when the driver made the change on the
+   * device). D-163: a change made on a REPLACED device after the takeover is never rejected; it is
+   * stored inert (recordStatus 3) with `reviewReason = 'REPLACED_DEVICE'`, retires nothing, voids
+   * no certification and changes no graph/HOS until a fleet manager acts (§395.30 edit flow).
+   */
+  async createLogEntry(driverId: string, dto: CreateLogEntryDto, actor: ContextUser, options: { occurredAt?: Date } = {}) {
     const driver = await this.requireDriver(driverId);
+    const review = await this.replacedDeviceReview(driverId, actor, options.occurredAt);
     const timezone = driver.homeTerminalTimezone;
     const now = new Date();
     const special: SpecialCategory = dto.specialCondition ?? 'NONE';
@@ -859,16 +885,19 @@ export class LogsService {
       };
     }
 
+    // D-163 — an inert review record overlaps nothing that counts, so only the content rules
+    // (no manual driving, no restatus of a driving record) apply; overlap with driving is the
+    // very case the reviewer has to resolve and must not lose the record.
     this.assertDrivingImmutable(
       checkDriverSelfEdit(
         { status: dto.status, startAt: dto.startAt, endAt: dto.endAt ?? null },
-        context.driving,
-        target,
+        review ? [] : context.driving,
+        review && target ? { ...target, statusBefore: null } : target,
         now,
       ),
     );
 
-    const rows = planDriverSelfEdit(
+    const planned = planDriverSelfEdit(
       {
         status: dto.status,
         startAt: dto.startAt,
@@ -882,6 +911,7 @@ export class LogsService {
       },
       target,
     );
+    const rows = review ? planReplacedDeviceRows(planned, review) : planned;
 
     // MR-6 — a name-only location is accepted; `locationName` wins over `location.name`.
     const locationName = dto.locationName ?? dto.location?.name ?? null;
@@ -918,13 +948,16 @@ export class LogsService {
           personalConveyance: special === 'PC',
           totalVehicleMiles: odometerMi,
           totalEngineHours: engineHours,
+          review,
         },
         rows,
       ),
     );
 
-    await this.afterLogChange(driverId, timezone, rows, dto.startAt);
     const newId = firstId(ids, rows, 'NEW_ACTIVE');
+    if (review) return this.finishReplacedDeviceEntry(driverId, timezone, dto, actor, newId, target?.id ?? null, review, locationName, special);
+
+    await this.afterLogChange(driverId, timezone, rows, dto.startAt);
     await this.writeAudit(actor, 'LOG_SELF_EDIT', 'EldEvent', String(newId), {
       before: target ? { eventId: String(target.id), recordStatus: 1 } : null,
       after: {
@@ -953,6 +986,63 @@ export class LogsService {
       recordStatus: 1,
       applied: true,
       recertificationRequired: true,
+    };
+  }
+
+  /** D-163 — the caller's replaced-device flag for a synced change (own records only). */
+  private async replacedDeviceReview(driverId: string, actor: ContextUser, occurredAt?: Date): Promise<RecordReview | null> {
+    if (!occurredAt || !this.replacedDevice || actor.type !== 'driver' || actor.id !== driverId) return null;
+    return reviewFor(await this.replacedDevice.contextFor(driverId, actor.sessionId), occurredAt);
+  }
+
+  /**
+   * D-163 — nothing active changed, so no certification is voided and no `hos.recalc` is queued;
+   * `log.changed` still tells the clients (W-08) a record needing review arrived.
+   */
+  private async finishReplacedDeviceEntry(
+    driverId: string,
+    timezone: string,
+    dto: CreateLogEntryDto,
+    actor: ContextUser,
+    newId: bigint,
+    originalId: bigint | null,
+    review: RecordReview,
+    locationName: string | null,
+    special: SpecialCategory,
+  ) {
+    const dates = [...new Set([dto.startAt, dto.endAt ?? dto.startAt].map((at) => dayKey(timezone, at)))];
+    await this.events.publish('log.changed', { driverId, dates, reviewReason: review.reviewReason });
+    await this.writeAudit(actor, 'LOG_REPLACED_DEVICE_RECORD', 'EldEvent', String(newId), {
+      before: originalId ? { eventId: String(originalId), recordStatus: 1 } : null,
+      after: {
+        driverId,
+        status: dto.status,
+        startAt: dto.startAt.toISOString(),
+        endAt: dto.endAt?.toISOString() ?? null,
+        annotation: dto.annotation,
+        specialCondition: special,
+        locationName,
+        recordOrigin: 2,
+        recordStatus: 3,
+        reviewReason: review.reviewReason,
+        reviewDeviceLabel: review.reviewDeviceLabel,
+      },
+      detail: 'Recorded offline on a replaced device after the takeover (D-163) — stored for fleet-manager review, not applied.',
+    });
+    return {
+      id: String(newId),
+      driverId,
+      status: dto.status,
+      specialCondition: special,
+      locationName,
+      startAt: dto.startAt,
+      endAt: dto.endAt ?? null,
+      recordOrigin: 2,
+      recordStatus: 3,
+      applied: false,
+      recertificationRequired: false,
+      reviewReason: review.reviewReason,
+      reviewDeviceLabel: review.reviewDeviceLabel,
     };
   }
 
@@ -1350,7 +1440,8 @@ export class LogsService {
 
   private async loadPendingRequest(requestId: string, actor: ContextUser) {
     const request = await this.repo.findEventById(BigInt(requestId));
-    if (!request || request.recordStatus !== 3) {
+    // D-163 — a replaced-device review row (recordStatus 3, reviewReason set) is no carrier proposal.
+    if (!request || request.recordStatus !== 3 || request.reviewReason) {
       throw new AppException(ERROR_CODES.NOT_FOUND, 'Edit request not found.', 404, { requestId });
     }
     if (!request.driverId) {
@@ -1408,7 +1499,8 @@ export class LogsService {
 
   /** QA CODE-028 — at most one pending carrier proposal per record. */
   private async assertNoPendingProposal(originalId: bigint): Promise<void> {
-    const proposals = (await this.repo.findSupersedingEvents([originalId])).filter((row) => row.recordStatus === 3);
+    // D-163 — a replaced-device review row points at the original too, but is no carrier proposal.
+    const proposals = (await this.repo.findSupersedingEvents([originalId])).filter((row) => row.recordStatus === 3 && !row.reviewReason);
     if (!proposals.length) return;
     const markers = await this.repo.findSupersedingEvents(proposals.map((row) => row.id));
     const pending = proposals.find((row) => !markers.some((marker) => String(marker.supersedesId) === String(row.id)));
@@ -1514,6 +1606,10 @@ export class LogsService {
       specialCondition: event.eventType === 3 ? (SPECIAL_BY_CODE[event.eventCode] ?? null) : null,
       malfunctionCode: event.malfunctionCode,
       diagnosticCode: event.diagnosticCode,
+      /** D-163 — 'REPLACED_DEVICE' when a replaced device delivered this record late (needs review). */
+      reviewReason: event.reviewReason ?? null,
+      /** D-163 — label of the replaced device the record came from. */
+      reviewDeviceLabel: event.reviewDeviceLabel ?? null,
     };
   }
 }
@@ -1594,6 +1690,9 @@ export function previewDay(
   }));
   return buildRodsDay([...events, ...synthetic], timezone, date, now).segments;
 }
+
+/** D-163 — cap of `GET /logs/:driverId/events?review=…` without a date. */
+const MAX_REVIEW_EVENTS = 500;
 
 function firstId(ids: Map<string, bigint>, rows: AppendRow[], kind?: string): bigint {
   for (let index = 0; index < rows.length; index += 1) {

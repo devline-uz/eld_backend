@@ -45,6 +45,13 @@ function makeService(overrides: Record<string, unknown> = {}): {
     findVehicle: jest.fn(async () => vehicle),
     findDriverAssignedVehicleId: jest.fn(async () => VEHICLE_ID),
     hasOpenSessionOnVehicle: jest.fn(async () => true),
+    // D-164 — fresh re-read on a miss; default = nothing conflicts (unit free, device on it).
+    findAssociationState: jest.fn(async () => ({
+      holder: null,
+      driverAssignedVehicleId: null,
+      pairedDeviceId: 'dev_1',
+      lastSession: null,
+    })),
     findExistingUuids: jest.fn(async () => new Set<string>()),
     findPcStateBefore: jest.fn(async () => false),
     findLastRawOdometerKm: jest.fn(async () => null),
@@ -171,14 +178,97 @@ describe('IngestService — TZ §7', () => {
       ).rejects.toMatchObject({ status: 403 });
     });
 
-    it('rejects a driver who is neither assigned to the unit nor logged in on it', async () => {
+    it('rejects a driver who is neither assigned to the unit nor logged in on it (unit held by another driver)', async () => {
       const { service } = makeService({
         findDriverAssignedVehicleId: jest.fn(async () => null),
         hasOpenSessionOnVehicle: jest.fn(async () => false),
+        findAssociationState: jest.fn(async () => ({
+          holder: { id: 'drv_other', status: 'ACTIVE' },
+          driverAssignedVehicleId: null,
+          pairedDeviceId: 'dev_1',
+          lastSession: null,
+        })),
       });
       await expect(
         service.ingestEvents(batch([withChecksum()]), DRIVER_ID),
-      ).rejects.toMatchObject({ status: 403 });
+      ).rejects.toMatchObject({ status: 403, code: 'FORBIDDEN', details: { reason: 'UNIT_ASSIGNED_TO_ANOTHER_DRIVER' } });
+    });
+
+    describe('D-164 — transient "assignment not visible yet" is 503 + retryAfterSec, never 4xx', () => {
+      const noAssoc = { findDriverAssignedVehicleId: jest.fn(async () => null), hasOpenSessionOnVehicle: jest.fn(async () => false) };
+
+      it('driver unassigned, unit free, no logout from it -> 503 INGEST_ASSIGNMENT_PENDING, nothing written', async () => {
+        const { service, repo } = makeService(noAssoc);
+        await expect(service.ingestEvents(batch([withChecksum()]), DRIVER_ID)).rejects.toMatchObject({
+          status: 503,
+          code: 'INGEST_ASSIGNMENT_PENDING',
+          details: { pending: ['DRIVER_ASSIGNMENT'], retryAfterSec: 30 },
+        });
+        expect(repo.runInTransaction).not.toHaveBeenCalled();
+      });
+
+      it('the fresh re-read sees the assignment landed meanwhile -> accepted', async () => {
+        const { service, captured } = makeService({
+          ...noAssoc,
+          findAssociationState: jest.fn(async () => ({
+            holder: { id: DRIVER_ID, status: 'ACTIVE' }, driverAssignedVehicleId: VEHICLE_ID, pairedDeviceId: 'dev_1', lastSession: null,
+          })),
+        });
+        await service.ingestEvents(batch([withChecksum()]), DRIVER_ID);
+        expect(captured.rows).toHaveLength(1);
+      });
+
+      it('a logout from the unit within 10 min -> 503; older than 10 min -> 403 DRIVER_LEFT_UNIT', async () => {
+        const at = (ms: number) => ({
+          ...noAssoc,
+          findAssociationState: jest.fn(async () => ({
+            holder: null, driverAssignedVehicleId: null, pairedDeviceId: 'dev_1',
+            lastSession: { eventCode: 2, eventDateTime: new Date(Date.now() - ms) },
+          })),
+        });
+        await expect(makeService(at(60_000)).service.ingestEvents(batch([withChecksum()]), DRIVER_ID)).rejects.toMatchObject({ status: 503 });
+        await expect(makeService(at(11 * 60_000)).service.ingestEvents(batch([withChecksum()]), DRIVER_ID)).rejects.toMatchObject({
+          status: 403, details: { reason: 'DRIVER_LEFT_UNIT' },
+        });
+      });
+
+      it('driver now assigned to another unit -> 403 DRIVER_ASSIGNED_TO_ANOTHER_UNIT', async () => {
+        const { service } = makeService({
+          ...noAssoc,
+          findAssociationState: jest.fn(async () => ({ holder: null, driverAssignedVehicleId: 'veh_other', pairedDeviceId: 'dev_1', lastSession: null })),
+        });
+        await expect(service.ingestEvents(batch([withChecksum()]), DRIVER_ID)).rejects.toMatchObject({
+          status: 403, details: { reason: 'DRIVER_ASSIGNED_TO_ANOTHER_UNIT' },
+        });
+      });
+
+      it('unpaired device claiming a free unit -> 503 pending DEVICE_PAIRING (telemetry + device-events share it)', async () => {
+        const { service } = makeService({
+          findDeviceBySerial: jest.fn(async () => ({ ...device, vehicleId: null })),
+          findAssociationState: jest.fn(async () => ({ holder: null, driverAssignedVehicleId: VEHICLE_ID, pairedDeviceId: null, lastSession: null })),
+        });
+        await expect(service.resolveContext('PT30_A86E', DRIVER_ID, VEHICLE_ID)).rejects.toMatchObject({
+          status: 503, code: 'INGEST_ASSIGNMENT_PENDING', details: { pending: ['DEVICE_PAIRING'] },
+        });
+      });
+
+      it('unpaired device claiming a unit that has another device -> 403 UNIT_HAS_OTHER_DEVICE', async () => {
+        const { service } = makeService({
+          findDeviceBySerial: jest.fn(async () => ({ ...device, vehicleId: null })),
+          findAssociationState: jest.fn(async () => ({ holder: null, driverAssignedVehicleId: VEHICLE_ID, pairedDeviceId: 'dev_2', lastSession: null })),
+        });
+        await expect(service.resolveContext('PT30_A86E', DRIVER_ID, VEHICLE_ID)).rejects.toMatchObject({
+          status: 403, details: { reason: 'UNIT_HAS_OTHER_DEVICE' },
+        });
+      });
+
+      it('device paired with another unit stays 403 DEVICE_PAIRED_ELSEWHERE without a re-read', async () => {
+        const { service, repo } = makeService({ findDeviceBySerial: jest.fn(async () => ({ ...device, vehicleId: 'other' })) });
+        await expect(service.resolveContext('PT30_A86E', DRIVER_ID, VEHICLE_ID)).rejects.toMatchObject({
+          status: 403, details: { reason: 'DEVICE_PAIRED_ELSEWHERE' },
+        });
+        expect(repo.findAssociationState).not.toHaveBeenCalled();
+      });
     });
   });
 
@@ -429,6 +519,93 @@ describe('IngestService — TZ §7', () => {
       DRIVER_ID,
     );
     expect(captured.rows.map((r) => r.recordOrigin)).not.toContain(RECORD_ORIGIN.DRIVER_ENTERED);
+  });
+
+  describe('B-181 / D-165 — recordStatus / recordOrigin are server-derived, client claims ignored', () => {
+    it('a PT30 Driving record claimed inactive + driver-origin is stored ACTIVE, origin 1, batch not failed', async () => {
+      const { service, captured } = makeService();
+      const warn = jest.spyOn((service as unknown as { logger: { warn: () => void } }).logger, 'warn').mockImplementation(() => undefined);
+      const result = await service.ingestEvents(
+        batch([withChecksum({ uuid: 'evt-tamper-1', recordStatus: 2, recordOrigin: 2 })]),
+        DRIVER_ID,
+      );
+      expect(result.accepted).toBeGreaterThanOrEqual(1);
+      expect(captured.rows[0]).toMatchObject({ uuid: 'evt-tamper-1', driverId: DRIVER_ID, recordStatus: 1, recordOrigin: 1 });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(warn.mock.calls[0])).toContain('evt-tamper-1');
+      expect(String((warn.mock.calls[0] as unknown[])[1])).toContain('INGEST_RECORD_ATTRIBUTES_OVERRIDDEN');
+    });
+
+    it('every recordStatus 2..4 is ignored on any event type', async () => {
+      const { service, captured } = makeService();
+      await service.ingestEvents(
+        batch([
+          withChecksum({ uuid: 'evt-st-2', recordStatus: 2, eventCode: 4, recordOrigin: 2 }),
+          withChecksum({ uuid: 'evt-st-3', recordStatus: 3, eventType: 6, eventCode: 1 }),
+          withChecksum({ uuid: 'evt-st-4', recordStatus: 4, eventType: 2, eventCode: 1 }),
+        ]),
+        DRIVER_ID,
+      );
+      const stored = captured.rows.filter((r) => String(r.uuid).startsWith('evt-st-'));
+      expect(stored.map((r) => r.recordStatus)).toEqual([1, 1, 1]);
+    });
+
+    it('automatic types (intermediate, engine power, malfunction) are forced to origin 1', async () => {
+      const { service, captured } = makeService();
+      await service.ingestEvents(
+        batch([
+          withChecksum({ uuid: 'evt-or-2', eventType: 2, eventCode: 1, recordOrigin: 2 }),
+          withChecksum({ uuid: 'evt-or-6', eventType: 6, eventCode: 1, recordOrigin: 3 }),
+          withChecksum({ uuid: 'evt-or-7', eventType: 7, eventCode: 3, recordOrigin: 2, diagnosticCode: '6' }),
+        ]),
+        DRIVER_ID,
+      );
+      const stored = captured.rows.filter((r) => String(r.uuid).startsWith('evt-or-'));
+      expect(stored.map((r) => r.recordOrigin)).toEqual([1, 1, 1]);
+    });
+
+    it('a driver-selectable status keeps origin 1 or 2; origin 3/4 from a driver JWT becomes 2', async () => {
+      const { service, captured } = makeService();
+      await service.ingestEvents(
+        batch([
+          withChecksum({ uuid: 'evt-on-1', eventCode: 4, recordOrigin: 1 }),
+          withChecksum({ uuid: 'evt-on-2', eventCode: 4, recordOrigin: 2 }),
+          withChecksum({ uuid: 'evt-on-3', eventCode: 4, recordOrigin: 3 }),
+          withChecksum({ uuid: 'evt-on-4', eventCode: 4, recordOrigin: 4 }),
+        ]),
+        DRIVER_ID,
+      );
+      const byUuid = new Map(captured.rows.map((r) => [r.uuid, r]));
+      expect(byUuid.get('evt-on-1')).toMatchObject({ recordOrigin: 1, driverId: DRIVER_ID });
+      expect(byUuid.get('evt-on-2')).toMatchObject({ recordOrigin: 2, driverId: DRIVER_ID });
+      expect(byUuid.get('evt-on-3')).toMatchObject({ recordOrigin: 2, driverId: DRIVER_ID });
+      expect(byUuid.get('evt-on-4')).toMatchObject({ recordOrigin: 2, driverId: DRIVER_ID });
+    });
+
+    it('a client origin 4 on live Driving is only a hint: an open session keeps it on the driver as origin 1', async () => {
+      const { service, captured } = makeService({
+        findSessionWindow: jest.fn(async () => ({ openSessionDriverId: DRIVER_ID, lastBefore: null, firstAfter: null })),
+      });
+      const warn = jest.spyOn((service as unknown as { logger: { warn: () => void } }).logger, 'warn').mockImplementation(() => undefined);
+      const result = await service.ingestEvents(batch([withChecksum({ uuid: 'evt-hint-1', recordOrigin: 4 })]), DRIVER_ID);
+      expect(captured.rows[0]).toMatchObject({ driverId: DRIVER_ID, recordOrigin: 1, recordStatus: 1 });
+      expect(result.unidentifiedSegmentIds).toEqual([]);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('a client origin 4 on live Driving with nobody logged in stays unidentified (origin 4 + segment)', async () => {
+      const { service, captured } = makeService();
+      const result = await service.ingestEvents(batch([withChecksum({ uuid: 'evt-hint-2', recordOrigin: 4 })]), DRIVER_ID);
+      expect(captured.rows[0]).toMatchObject({ driverId: null, recordOrigin: 4 });
+      expect(result.unidentifiedSegmentIds).toEqual(['seg_1']);
+    });
+
+    it('an honest batch (status 1, correct origins) logs no override trace', async () => {
+      const { service } = makeService();
+      const warn = jest.spyOn((service as unknown as { logger: { warn: () => void } }).logger, 'warn').mockImplementation(() => undefined);
+      await service.ingestEvents(batch([withChecksum(), withChecksum({ uuid: 'evt-on-x', eventCode: 4, recordOrigin: 2 })]), DRIVER_ID);
+      expect(warn).not.toHaveBeenCalled();
+    });
   });
 
   it('§7.3 rule 10 — a committed batch queues hos.recalc and pushes realtime', async () => {

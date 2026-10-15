@@ -155,6 +155,7 @@
     },
     "/health/deep": {
       "get": {
+        "description": "CODE-082 — internal only: a private/loopback caller or `Authorization: Bearer <METRICS_TOKEN>`; anyone else gets 404.",
         "operationId": "HealthController_deep",
         "parameters": [],
         "responses": {
@@ -418,7 +419,7 @@
             }
           },
           "423": {
-            "description": "ACCOUNT_LOCKED — Too many failed attempts — the account is temporarily locked.",
+            "description": "ACCOUNT_LOCKED — CODE-082 — 10 wrong passwords in a row lock the account for 15 minutes (`details.retryAfterSec`). Only a caller who sends the right password sees 423; wrong passwords keep getting 401.",
             "content": {
               "application/json": {
                 "schema": {
@@ -456,7 +457,7 @@
                   "example": {
                     "statusCode": 423,
                     "code": "ACCOUNT_LOCKED",
-                    "message": "Too many failed attempts — the account is temporarily locked.",
+                    "message": "CODE-082 — 10 wrong passwords in a row lock the account for 15 minutes (`details.retryAfterSec`). Only a caller who sends the right password sees 423; wrong passwords keep getting 401.",
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
                   }
@@ -527,7 +528,7 @@
     },
     "/api/auth/login/driver": {
       "post": {
-        "description": "D-130 — when the driver already has an assigned unit, the server writes the §395 Appendix A 4.5.1.5 login record (eventType 5, code 1) on it (idempotent).",
+        "description": "MD-195 — an optional `device {deviceId uuid, deviceLabel ≤64, platform, formFactor phone|tablet, appVersion}` makes this the account's only signed-in device: every session of another device is ended (REPLACED) and the response carries `replacedDevice`. Without `device` the legacy behaviour applies. D-130 — when the driver already has an assigned unit, the server writes the §395 Appendix A 4.5.1.5 login record (eventType 5, code 1) on it (idempotent).",
         "operationId": "AuthController_loginDriver",
         "parameters": [],
         "requestBody": {
@@ -619,6 +620,53 @@
                     "statusCode": 401,
                     "code": "INVALID_CREDENTIALS",
                     "message": "Username or password is incorrect.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "DRIVING_ON_OTHER_DEVICE — MD-195 — another device of this account reported motion in the last 2 minutes (`details: { byDeviceLabel, lastSeenAt }`). There is no force flag.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 409,
+                    "code": "DRIVING_ON_OTHER_DEVICE",
+                    "message": "MD-195 — another device of this account reported motion in the last 2 minutes (`details: { byDeviceLabel, lastSeenAt }`). There is no force flag.",
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
                   }
@@ -1229,7 +1277,7 @@
             }
           },
           "403": {
-            "description": "FORBIDDEN — Insufficient permissions for this action.",
+            "description": "FORBIDDEN — USER_CONTEXT_REQUIRED — an API key has no session to sign out of.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1267,7 +1315,7 @@
                   "example": {
                     "statusCode": 403,
                     "code": "FORBIDDEN",
-                    "message": "Insufficient permissions for this action.",
+                    "message": "USER_CONTEXT_REQUIRED — an API key has no session to sign out of.",
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
                   }
@@ -24548,7 +24596,8 @@
             "schema": {
               "enum": [
                 "VIOLATIONS",
-                "MAINTENANCE"
+                "MAINTENANCE",
+                "CONNECTIVITY"
               ],
               "type": "string"
             }
@@ -24558,8 +24607,7 @@
             "required": false,
             "in": "query",
             "schema": {
-              "type": "boolean",
-              "default": false
+              "$ref": "#/components/schemas/QueryBoolean"
             }
           },
           {
@@ -27898,7 +27946,7 @@
     },
     "/api/mobile/sync": {
       "post": {
-        "description": "Per-change outcomes: every `clientId` lands in `accepted` or `rejected` (never dropped; replays idempotent).\n\n`duty_status` / `log_entry` payloads accept `locationName` (5-60 chars, no lat/lon needed — MR-6), `specialCondition` PC|YM (MR-23, gated by driver exceptions) and `engineHours`.\n\nMR-25 shared tablet — optional `driverId` on a change: applied to that driver only for `duty_status` / `log_entry`, and only if the two drivers shared one unit at `occurredAt` (a co-driver pairing on it, or both logged in to it per their ELD login records, eventType 5); otherwise that change alone is rejected with `SYNC_DELEGATION_NOT_ALLOWED`. Delegated changes are audited (`SYNC_DELEGATED_CHANGE`); certification and DVIR are never delegated.",
+        "description": "Per-change outcomes: every `clientId` lands in `accepted` or `rejected` (never dropped; replays idempotent).\n\n`duty_status` / `log_entry` payloads accept `locationName` (5-60 chars, no lat/lon needed — MR-6), `specialCondition` PC|YM (MR-23, gated by driver exceptions) and `engineHours`.\n\nMR-25 shared tablet — optional `driverId` on a change: applied to that driver only for `duty_status` / `log_entry`, and only if the two drivers shared one unit at `occurredAt` (a co-driver pairing on it, or both logged in to it per their ELD login records, eventType 5); otherwise that change alone is rejected with `SYNC_DELEGATION_NOT_ALLOWED`. Delegated changes are audited (`SYNC_DELEGATED_CHANGE`); certification and DVIR are never delegated.\n\nOptional `backlog` example: `{ \"days\": 2.5, \"bytes\": 18432, \"pendingCount\": 12, \"oldestPendingAt\": \"2026-09-11T08:00:00.000Z\" }` — `days`/`bytes` drive `alert.sync_backlog`; `pendingCount` (unsent queue records + ELD events `/ingest/events` has not accepted) and `oldestPendingAt` are stored on the caller's session and shown to the next device that signs in.",
         "operationId": "MobileSyncController_sync",
         "parameters": [],
         "requestBody": {
@@ -29888,7 +29936,7 @@
     },
     "/api/mobile/co-driver/switch": {
       "post": {
-        "description": "D-155 — the CALLER's own session family (from the access token `sid`) is revoked atomically with the seat swap; their other devices stay signed in. The app must drop the old tokens and MUST NOT call /auth/logout with them (harmless if it does: 200 {success:true}, no further effect). Optional `clientId`: a replay (within REFRESH_REUSE_GRACE_SECONDS, same password) returns the first pair; later replay = 409 CONFLICT, sign in as the co-driver. A stale caller token (session already revoked) without a replaying clientId = 401 TOKEN_INVALID.",
+        "description": "D-155 — the CALLER's own session family (from the access token `sid`) is revoked atomically with the seat swap; their other devices stay signed in. The app must drop the old tokens and MUST NOT call /auth/logout with them (harmless if it does: 200 {success:true}, no further effect). Optional `clientId`: a replay (within REFRESH_REUSE_GRACE_SECONDS, same password) returns the first pair; later replay = 409 CONFLICT, sign in as the co-driver. A stale caller token (session already revoked) without a replaying clientId = 401 TOKEN_INVALID. MD-195 / D-161 — optional `device {deviceId uuid, deviceLabel ≤64, platform, formFactor phone|tablet, appVersion}` (same schema as POST /auth/login/driver) makes this the co-driver's only signed-in device: their sessions on other devices end as REPLACED and the response carries `replacedDevice`; 409 DRIVING_ON_OTHER_DEVICE if another device of the co-driver reported motion in the last 2 minutes. Without `device` the legacy behaviour applies.",
         "operationId": "MobileCoDriverController_switch",
         "parameters": [],
         "requestBody": {
@@ -29915,7 +29963,7 @@
                   ],
                   "properties": {
                     "data": {
-                      "$ref": "#/components/schemas/TokenPairResponse"
+                      "$ref": "#/components/schemas/DriverLoginResponse"
                     },
                     "traceId": {
                       "type": "string",
@@ -29930,7 +29978,9 @@
                     "data": {
                       "accessToken": "eyJ...",
                       "refreshToken": "a1b2...",
-                      "tokenType": "Bearer"
+                      "tokenType": "Bearer",
+                      "driverId": "drv_2",
+                      "replacedDevice": null
                     },
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-10-08T15:41:00.000Z"
@@ -30073,6 +30123,53 @@
                     "statusCode": 404,
                     "code": "NOT_FOUND",
                     "message": "No active co-driver pairing for this driver.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "DRIVING_ON_OTHER_DEVICE — MD-195 — only with `device`: another device of the co-driver reported motion in the last 2 minutes (`details: { byDeviceLabel, lastSeenAt }`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 409,
+                    "code": "DRIVING_ON_OTHER_DEVICE",
+                    "message": "MD-195 — only with `device`: another device of the co-driver reported motion in the last 2 minutes (`details: { byDeviceLabel, lastSeenAt }`).",
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
                   }
@@ -38206,6 +38303,18 @@
             }
           },
           {
+            "name": "review",
+            "required": false,
+            "in": "query",
+            "description": "D-163 — only records a replaced device delivered late (`reviewReason`). With `date`: that RODS day; without `date`: every flagged record of the driver (max 500, `date` = null). Driver-entered ones carry recordStatus 3 and count toward nothing until a fleet manager re-enters them via the §395.30 edit flow.",
+            "schema": {
+              "enum": [
+                "REPLACED_DEVICE"
+              ],
+              "type": "string"
+            }
+          },
+          {
             "name": "date",
             "required": false,
             "in": "query",
@@ -39278,7 +39387,7 @@
         },
         "responses": {
           "201": {
-            "description": "Certification is the driver signature; on-behalf certification is always written to the audit log.",
+            "description": "Certification is the driver signature (driver token only).",
             "content": {
               "application/json": {
                 "schema": {
@@ -39288,8 +39397,8 @@
                       {
                         "date": "2026-09-10",
                         "certifiedAt": "2026-09-11T15:41:00.000Z",
-                        "certifiedBy": "usr_1",
-                        "onBehalf": true,
+                        "certifiedBy": "drv_1",
+                        "onBehalf": false,
                         "signatureCount": 1
                       }
                     ]
@@ -39346,7 +39455,7 @@
             }
           },
           "403": {
-            "description": "FORBIDDEN — Certifying on behalf of a driver requires hosCertifyOnBehalf = FULL.",
+            "description": "CERTIFY_DRIVER_ONLY — Only the driver can certify their log, in the driver app.",
             "content": {
               "application/json": {
                 "schema": {
@@ -39383,8 +39492,8 @@
                   },
                   "example": {
                     "statusCode": 403,
-                    "code": "FORBIDDEN",
-                    "message": "Certifying on behalf of a driver requires hosCertifyOnBehalf = FULL.",
+                    "code": "CERTIFY_DRIVER_ONLY",
+                    "message": "Only the driver can certify their log, in the driver app.",
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
                   }
@@ -39501,7 +39610,7 @@
             "bearer": []
           }
         ],
-        "summary": "Certifies one or more RODS days (§9.2). A driver certifies their own log; a back-office user needs hosCertifyOnBehalf = FULL and the action is always audited.",
+        "summary": "Certifies one or more RODS days (§9.2). CODE-029 — driver tokens only: a driver certifies their own log; any back-office user or API key gets 403 CERTIFY_DRIVER_ONLY (§395.8(e)).",
         "tags": [
           "logs"
         ],
@@ -41329,7 +41438,7 @@
             }
           },
           "403": {
-            "description": "FORBIDDEN — DRIVER_CONTEXT_REQUIRED — ingest accepts a driver token only.",
+            "description": "PERMANENT refusal (the app quarantines). `FORBIDDEN` with `details.reason` one of DEVICE_PAIRED_ELSEWHERE, UNIT_HAS_OTHER_DEVICE, UNIT_ASSIGNED_TO_ANOTHER_DRIVER, DRIVER_ASSIGNED_TO_ANOTHER_UNIT, DRIVER_LEFT_UNIT (logout from the unit > 10 min ago); `DRIVER_CONTEXT_REQUIRED` (not a driver token); `VIRTUAL_ELD_DISABLED`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -41367,7 +41476,12 @@
                   "example": {
                     "statusCode": 403,
                     "code": "FORBIDDEN",
-                    "message": "DRIVER_CONTEXT_REQUIRED — ingest accepts a driver token only.",
+                    "message": "Driver is not associated with this unit: it is assigned to another driver.",
+                    "details": {
+                      "deviceSerial": "PT30_A86E",
+                      "vehicleId": "0b6f1c2e-0000-4000-8000-000000000201",
+                      "reason": "UNIT_ASSIGNED_TO_ANOTHER_DRIVER"
+                    },
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
                   }
@@ -41427,7 +41541,7 @@
             }
           },
           "422": {
-            "description": "VALIDATION_FAILED — Schema violation — the only reason an event is ever rejected.",
+            "description": "Schema violation — the only reason a row is ever rejected. `details.issues[].path` names the bad row (`batch.N.*` / `points.N.*` / `events.N.*`); a path without an index (e.g. `batch` over 500 rows) is a whole-batch shape error. Never used for business or transient conditions.",
             "content": {
               "application/json": {
                 "schema": {
@@ -41465,7 +41579,124 @@
                   "example": {
                     "statusCode": 422,
                     "code": "VALIDATION_FAILED",
-                    "message": "Schema violation — the only reason an event is ever rejected.",
+                    "message": "Request validation failed.",
+                    "details": {
+                      "issues": [
+                        {
+                          "path": "batch.17.eventDateTime",
+                          "code": "invalid_date",
+                          "message": "Invalid date"
+                        }
+                      ]
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Transient — always carries a `Retry-After` header (seconds, = `details.retryAfterSec`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 429,
+                    "code": "RATE_LIMITED",
+                    "message": "Ingest rate limit exceeded for this driver (300 requests per 60s).",
+                    "details": {
+                      "scope": "driver",
+                      "limit": 300,
+                      "windowSec": 60,
+                      "retryAfterSec": 12
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Transient — always carries a `Retry-After` header. `INGEST_ASSIGNMENT_PENDING`: the claimed device pairing / driver assignment is not visible yet and nothing conflicts with it (`details.pending`); `SERVICE_UNAVAILABLE`: overload (DB pool / transaction wait exhausted). Nothing was stored; resend the same batch.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 503,
+                    "code": "INGEST_ASSIGNMENT_PENDING",
+                    "message": "The unit assignment is not visible yet — retry after the Retry-After delay.",
+                    "details": {
+                      "deviceSerial": "PT30_A86E",
+                      "vehicleId": "0b6f1c2e-0000-4000-8000-000000000201",
+                      "pending": [
+                        "DRIVER_ASSIGNMENT"
+                      ],
+                      "retryAfterSec": 30
+                    },
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
                   }
@@ -41611,7 +41842,7 @@
             }
           },
           "403": {
-            "description": "FORBIDDEN — DRIVER_CONTEXT_REQUIRED — ingest accepts a driver token only.",
+            "description": "PERMANENT refusal (the app quarantines). `FORBIDDEN` with `details.reason` one of DEVICE_PAIRED_ELSEWHERE, UNIT_HAS_OTHER_DEVICE, UNIT_ASSIGNED_TO_ANOTHER_DRIVER, DRIVER_ASSIGNED_TO_ANOTHER_UNIT, DRIVER_LEFT_UNIT (logout from the unit > 10 min ago); `DRIVER_CONTEXT_REQUIRED` (not a driver token); `VIRTUAL_ELD_DISABLED`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -41649,7 +41880,63 @@
                   "example": {
                     "statusCode": 403,
                     "code": "FORBIDDEN",
-                    "message": "DRIVER_CONTEXT_REQUIRED — ingest accepts a driver token only.",
+                    "message": "Driver is not associated with this unit: it is assigned to another driver.",
+                    "details": {
+                      "deviceSerial": "PT30_A86E",
+                      "vehicleId": "0b6f1c2e-0000-4000-8000-000000000201",
+                      "reason": "UNIT_ASSIGNED_TO_ANOTHER_DRIVER"
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "PAYLOAD_TOO_LARGE — Ingest batch exceeds the 1 MB limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 413,
+                    "code": "PAYLOAD_TOO_LARGE",
+                    "message": "Ingest batch exceeds the 1 MB limit.",
+                    "details": {
+                      "bytes": 1400000,
+                      "limit": 1048576
+                    },
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
                   }
@@ -41658,7 +41945,7 @@
             }
           },
           "422": {
-            "description": "VALIDATION_FAILED — Request validation failed.",
+            "description": "Schema violation — the only reason a row is ever rejected. `details.issues[].path` names the bad row (`batch.N.*` / `points.N.*` / `events.N.*`); a path without an index (e.g. `batch` over 500 rows) is a whole-batch shape error. Never used for business or transient conditions.",
             "content": {
               "application/json": {
                 "schema": {
@@ -41700,11 +41987,119 @@
                     "details": {
                       "issues": [
                         {
-                          "path": "field",
-                          "code": "invalid_type",
-                          "message": "Required"
+                          "path": "batch.17.eventDateTime",
+                          "code": "invalid_date",
+                          "message": "Invalid date"
                         }
                       ]
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Transient — always carries a `Retry-After` header (seconds, = `details.retryAfterSec`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 429,
+                    "code": "RATE_LIMITED",
+                    "message": "Ingest rate limit exceeded for this driver (300 requests per 60s).",
+                    "details": {
+                      "scope": "driver",
+                      "limit": 300,
+                      "windowSec": 60,
+                      "retryAfterSec": 12
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Transient — always carries a `Retry-After` header. `INGEST_ASSIGNMENT_PENDING`: the claimed device pairing / driver assignment is not visible yet and nothing conflicts with it (`details.pending`); `SERVICE_UNAVAILABLE`: overload (DB pool / transaction wait exhausted). Nothing was stored; resend the same batch.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 503,
+                    "code": "INGEST_ASSIGNMENT_PENDING",
+                    "message": "The unit assignment is not visible yet — retry after the Retry-After delay.",
+                    "details": {
+                      "deviceSerial": "PT30_A86E",
+                      "vehicleId": "0b6f1c2e-0000-4000-8000-000000000201",
+                      "pending": [
+                        "DRIVER_ASSIGNMENT"
+                      ],
+                      "retryAfterSec": 30
                     },
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
@@ -41839,7 +42234,7 @@
             }
           },
           "403": {
-            "description": "FORBIDDEN — DRIVER_CONTEXT_REQUIRED — ingest accepts a driver token only; or the device/unit is not yours.",
+            "description": "PERMANENT refusal (the app quarantines). `FORBIDDEN` with `details.reason` one of DEVICE_PAIRED_ELSEWHERE, UNIT_HAS_OTHER_DEVICE, UNIT_ASSIGNED_TO_ANOTHER_DRIVER, DRIVER_ASSIGNED_TO_ANOTHER_UNIT, DRIVER_LEFT_UNIT (logout from the unit > 10 min ago); `DRIVER_CONTEXT_REQUIRED` (not a driver token); `VIRTUAL_ELD_DISABLED`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -41877,7 +42272,12 @@
                   "example": {
                     "statusCode": 403,
                     "code": "FORBIDDEN",
-                    "message": "DRIVER_CONTEXT_REQUIRED — ingest accepts a driver token only; or the device/unit is not yours.",
+                    "message": "Driver is not associated with this unit: it is assigned to another driver.",
+                    "details": {
+                      "deviceSerial": "PT30_A86E",
+                      "vehicleId": "0b6f1c2e-0000-4000-8000-000000000201",
+                      "reason": "UNIT_ASSIGNED_TO_ANOTHER_DRIVER"
+                    },
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
                   }
@@ -41937,7 +42337,7 @@
             }
           },
           "422": {
-            "description": "VALIDATION_FAILED — Request validation failed.",
+            "description": "Schema violation — the only reason a row is ever rejected. `details.issues[].path` names the bad row (`batch.N.*` / `points.N.*` / `events.N.*`); a path without an index (e.g. `batch` over 500 rows) is a whole-batch shape error. Never used for business or transient conditions.",
             "content": {
               "application/json": {
                 "schema": {
@@ -41979,11 +42379,119 @@
                     "details": {
                       "issues": [
                         {
-                          "path": "field",
-                          "code": "invalid_type",
-                          "message": "Required"
+                          "path": "batch.17.eventDateTime",
+                          "code": "invalid_date",
+                          "message": "Invalid date"
                         }
                       ]
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Transient — always carries a `Retry-After` header (seconds, = `details.retryAfterSec`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 429,
+                    "code": "RATE_LIMITED",
+                    "message": "Ingest rate limit exceeded for this driver (300 requests per 60s).",
+                    "details": {
+                      "scope": "driver",
+                      "limit": 300,
+                      "windowSec": 60,
+                      "retryAfterSec": 12
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Transient — always carries a `Retry-After` header. `INGEST_ASSIGNMENT_PENDING`: the claimed device pairing / driver assignment is not visible yet and nothing conflicts with it (`details.pending`); `SERVICE_UNAVAILABLE`: overload (DB pool / transaction wait exhausted). Nothing was stored; resend the same batch.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 503,
+                    "code": "INGEST_ASSIGNMENT_PENDING",
+                    "message": "The unit assignment is not visible yet — retry after the Retry-After delay.",
+                    "details": {
+                      "deviceSerial": "PT30_A86E",
+                      "vehicleId": "0b6f1c2e-0000-4000-8000-000000000201",
+                      "pending": [
+                        "DRIVER_ASSIGNMENT"
+                      ],
+                      "retryAfterSec": 30
                     },
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
@@ -42094,7 +42602,7 @@
             }
           },
           "403": {
-            "description": "FORBIDDEN — DRIVER_CONTEXT_REQUIRED — ingest accepts a driver token only.",
+            "description": "PERMANENT refusal (the app quarantines). `FORBIDDEN` with `details.reason` one of DEVICE_PAIRED_ELSEWHERE, UNIT_HAS_OTHER_DEVICE, UNIT_ASSIGNED_TO_ANOTHER_DRIVER, DRIVER_ASSIGNED_TO_ANOTHER_UNIT, DRIVER_LEFT_UNIT (logout from the unit > 10 min ago); `DRIVER_CONTEXT_REQUIRED` (not a driver token); `VIRTUAL_ELD_DISABLED`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -42132,7 +42640,12 @@
                   "example": {
                     "statusCode": 403,
                     "code": "FORBIDDEN",
-                    "message": "DRIVER_CONTEXT_REQUIRED — ingest accepts a driver token only.",
+                    "message": "Driver is not associated with this unit: it is assigned to another driver.",
+                    "details": {
+                      "deviceSerial": "PT30_A86E",
+                      "vehicleId": "0b6f1c2e-0000-4000-8000-000000000201",
+                      "reason": "UNIT_ASSIGNED_TO_ANOTHER_DRIVER"
+                    },
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
                   }
@@ -42141,7 +42654,7 @@
             }
           },
           "422": {
-            "description": "VALIDATION_FAILED — Request validation failed.",
+            "description": "Schema violation — the only reason a row is ever rejected. `details.issues[].path` names the bad row (`batch.N.*` / `points.N.*` / `events.N.*`); a path without an index (e.g. `batch` over 500 rows) is a whole-batch shape error. Never used for business or transient conditions.",
             "content": {
               "application/json": {
                 "schema": {
@@ -42183,11 +42696,119 @@
                     "details": {
                       "issues": [
                         {
-                          "path": "field",
-                          "code": "invalid_type",
-                          "message": "Required"
+                          "path": "batch.17.eventDateTime",
+                          "code": "invalid_date",
+                          "message": "Invalid date"
                         }
                       ]
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Transient — always carries a `Retry-After` header (seconds, = `details.retryAfterSec`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 429,
+                    "code": "RATE_LIMITED",
+                    "message": "Ingest rate limit exceeded for this driver (300 requests per 60s).",
+                    "details": {
+                      "scope": "driver",
+                      "limit": 300,
+                      "windowSec": 60,
+                      "retryAfterSec": 12
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Transient — always carries a `Retry-After` header. `INGEST_ASSIGNMENT_PENDING`: the claimed device pairing / driver assignment is not visible yet and nothing conflicts with it (`details.pending`); `SERVICE_UNAVAILABLE`: overload (DB pool / transaction wait exhausted). Nothing was stored; resend the same batch.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 503,
+                    "code": "INGEST_ASSIGNMENT_PENDING",
+                    "message": "The unit assignment is not visible yet — retry after the Retry-After delay.",
+                    "details": {
+                      "deviceSerial": "PT30_A86E",
+                      "vehicleId": "0b6f1c2e-0000-4000-8000-000000000201",
+                      "pending": [
+                        "DRIVER_ASSIGNMENT"
+                      ],
+                      "retryAfterSec": 30
                     },
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
@@ -42326,7 +42947,7 @@
             }
           },
           "403": {
-            "description": "FORBIDDEN — DRIVER_CONTEXT_REQUIRED — ingest accepts a driver token only.",
+            "description": "PERMANENT refusal (the app quarantines). `FORBIDDEN` with `details.reason` one of DEVICE_PAIRED_ELSEWHERE, UNIT_HAS_OTHER_DEVICE, UNIT_ASSIGNED_TO_ANOTHER_DRIVER, DRIVER_ASSIGNED_TO_ANOTHER_UNIT, DRIVER_LEFT_UNIT (logout from the unit > 10 min ago); `DRIVER_CONTEXT_REQUIRED` (not a driver token); `VIRTUAL_ELD_DISABLED`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -42364,7 +42985,12 @@
                   "example": {
                     "statusCode": 403,
                     "code": "FORBIDDEN",
-                    "message": "DRIVER_CONTEXT_REQUIRED — ingest accepts a driver token only.",
+                    "message": "Driver is not associated with this unit: it is assigned to another driver.",
+                    "details": {
+                      "deviceSerial": "PT30_A86E",
+                      "vehicleId": "0b6f1c2e-0000-4000-8000-000000000201",
+                      "reason": "UNIT_ASSIGNED_TO_ANOTHER_DRIVER"
+                    },
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
                   }
@@ -42373,7 +42999,7 @@
             }
           },
           "422": {
-            "description": "VALIDATION_FAILED — Request validation failed.",
+            "description": "Schema violation — the only reason a row is ever rejected. `details.issues[].path` names the bad row (`batch.N.*` / `points.N.*` / `events.N.*`); a path without an index (e.g. `batch` over 500 rows) is a whole-batch shape error. Never used for business or transient conditions.",
             "content": {
               "application/json": {
                 "schema": {
@@ -42415,11 +43041,119 @@
                     "details": {
                       "issues": [
                         {
-                          "path": "field",
-                          "code": "invalid_type",
-                          "message": "Required"
+                          "path": "batch.17.eventDateTime",
+                          "code": "invalid_date",
+                          "message": "Invalid date"
                         }
                       ]
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Transient — always carries a `Retry-After` header (seconds, = `details.retryAfterSec`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 429,
+                    "code": "RATE_LIMITED",
+                    "message": "Ingest rate limit exceeded for this driver (300 requests per 60s).",
+                    "details": {
+                      "scope": "driver",
+                      "limit": 300,
+                      "windowSec": 60,
+                      "retryAfterSec": 12
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Transient — always carries a `Retry-After` header. `INGEST_ASSIGNMENT_PENDING`: the claimed device pairing / driver assignment is not visible yet and nothing conflicts with it (`details.pending`); `SERVICE_UNAVAILABLE`: overload (DB pool / transaction wait exhausted). Nothing was stored; resend the same batch.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 503,
+                    "code": "INGEST_ASSIGNMENT_PENDING",
+                    "message": "The unit assignment is not visible yet — retry after the Retry-After delay.",
+                    "details": {
+                      "deviceSerial": "PT30_A86E",
+                      "vehicleId": "0b6f1c2e-0000-4000-8000-000000000201",
+                      "pending": [
+                        "DRIVER_ASSIGNMENT"
+                      ],
+                      "retryAfterSec": 30
                     },
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
@@ -49737,7 +50471,7 @@
         },
         "responses": {
           "201": {
-            "description": "The segment after the assignment. A carrier assignment keeps recordOrigin 1 (TZ §23) and is audited as UNIDENTIFIED_ASSIGNED.",
+            "description": "The segment after the request: status PENDING_CONFIRMATION, assignedDriverId = the driver asked to confirm.",
             "content": {
               "application/json": {
                 "schema": {
@@ -49929,7 +50663,7 @@
             }
           },
           "409": {
-            "description": "UNIDENTIFIED_ALREADY_ASSIGNED — This segment is already assigned to a driver.",
+            "description": "UNIDENTIFIED_OVERLAPS_DRIVER_LOG — CODE-007 — the driver's own log already covers part of the segment (own duty-status records inside it, or driving / PC / YM in force when it starts). Nothing is written; correct the driver's log first.",
             "content": {
               "application/json": {
                 "schema": {
@@ -49966,8 +50700,8 @@
                   },
                   "example": {
                     "statusCode": 409,
-                    "code": "UNIDENTIFIED_ALREADY_ASSIGNED",
-                    "message": "This segment is already assigned to a driver.",
+                    "code": "UNIDENTIFIED_OVERLAPS_DRIVER_LOG",
+                    "message": "CODE-007 — the driver's own log already covers part of the segment (own duty-status records inside it, or driving / PC / YM in force when it starts). Nothing is written; correct the driver's log first.",
                     "traceId": "01J8X3QK9Z0000000000000000",
                     "timestamp": "2026-09-11T15:41:00.000Z"
                   }
@@ -50037,7 +50771,7 @@
             "bearer": []
           }
         ],
-        "summary": "Assigns the segment to a driver: status ASSIGNED, assignedById/At set, recordOrigin stays 1, AuditLog entry UNIDENTIFIED_ASSIGNED. With requireDriverConfirmation = true (B-83) nothing is attributed yet: status PENDING_CONFIRMATION, the driver is asked in the app (AuditLog UNIDENTIFIED_CONFIRMATION_REQUESTED) and the records move to their log only when they confirm.",
+        "summary": "CODE-029 — proposes the segment to a driver; nothing is attributed yet. Status PENDING_CONFIRMATION, the driver is asked in the app (AuditLog UNIDENTIFIED_CONFIRMATION_REQUESTED) and the records move to their log only when they confirm (POST /unidentified/:id/confirm, AuditLog UNIDENTIFIED_ASSIGNED). requireDriverConfirmation is optional and may only be true.",
         "tags": [
           "unidentified"
         ],
@@ -53928,7 +54662,7 @@
             "required": false,
             "in": "query",
             "schema": {
-              "type": "boolean"
+              "$ref": "#/components/schemas/QueryBoolean"
             }
           },
           {
@@ -57130,7 +57864,7 @@
             "in": "query",
             "description": "Only schedules currently DUE_SOON or OVERDUE.",
             "schema": {
-              "type": "boolean"
+              "$ref": "#/components/schemas/QueryBoolean"
             }
           },
           {
@@ -57153,7 +57887,7 @@
             "required": false,
             "in": "query",
             "schema": {
-              "type": "boolean"
+              "$ref": "#/components/schemas/QueryBoolean"
             }
           },
           {
@@ -62788,6 +63522,7 @@
     },
     "/api/trips/auto-assign": {
       "post": {
+        "description": "Each load is assigned on its own (atomic per load). `skipped` = loads left unassigned because no driver was free for that time (or the load has no planned start / delivery time — `noSchedule`); `failed` = loads stopped by another error, each with its reason. The run never aborts half-way.",
         "operationId": "TripsController_autoAssign",
         "parameters": [],
         "responses": {
@@ -62803,7 +63538,9 @@
                         "driverId": "drv_1"
                       }
                     ],
-                    "skipped": 0
+                    "skipped": 1,
+                    "noSchedule": 0,
+                    "failed": []
                   }
                 }
               }
@@ -62965,7 +63702,7 @@
             "bearer": []
           }
         ],
-        "summary": "Greedily assigns every unassigned load to the next free ACTIVE driver.",
+        "summary": "Greedily assigns every unassigned load to a free ACTIVE driver (no HOS-hours check).",
         "tags": [
           "trips"
         ],
@@ -63061,8 +63798,7 @@
             "required": false,
             "in": "query",
             "schema": {
-              "type": "string",
-              "format": "date-time"
+              "type": "string"
             }
           },
           {
@@ -63070,8 +63806,7 @@
             "required": false,
             "in": "query",
             "schema": {
-              "type": "string",
-              "format": "date-time"
+              "type": "string"
             }
           }
         ],
@@ -63256,6 +63991,209 @@
           }
         ],
         "summary": "Lists harsh-driving events (\"Events by type\").",
+        "tags": [
+          "safety"
+        ],
+        "x-figma-screens": [
+          {
+            "id": "web/safety",
+            "title": "Safety",
+            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.19"
+          }
+        ]
+      }
+    },
+    "/api/safety/summary": {
+      "get": {
+        "operationId": "SafetyController_summary",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "from": "2026-09-14T12:00:00.000Z",
+                    "to": "2026-10-14T12:00:00.000Z",
+                    "current": {
+                      "total": 742,
+                      "harsh": 512,
+                      "speeding": 220,
+                      "seatbelt": 10,
+                      "coached": 31,
+                      "pendingCoaching": 640
+                    },
+                    "previous": {
+                      "total": 690,
+                      "harsh": 480,
+                      "speeding": 200,
+                      "seatbelt": 10,
+                      "coached": 25,
+                      "pendingCoaching": 0
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHORIZED — Authentication required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 401,
+                    "code": "UNAUTHORIZED",
+                    "message": "Authentication required.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN — Insufficient permissions for this action.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 403,
+                    "code": "FORBIDDEN",
+                    "message": "Insufficient permissions for this action.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "VALIDATION_FAILED — Request validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 422,
+                    "code": "VALIDATION_FAILED",
+                    "message": "Request validation failed.",
+                    "details": {
+                      "issues": [
+                        {
+                          "path": "field",
+                          "code": "invalid_type",
+                          "message": "Required"
+                        }
+                      ]
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "CODE-040 — Safety page KPIs: event counts over the rolling 30 days (`current`) and the 30 days before (`previous`): total, harsh (braking+accel+turn), speeding, seatbelt, coached, pendingCoaching (status NEW).",
         "tags": [
           "safety"
         ],
@@ -63762,209 +64700,6 @@
           }
         ],
         "summary": "Fleet safety score and per-driver ranking (\"Driver scorecard\", below-70 flagged). D-141: returns the latest nightly-computed rolling 30-day period (or the one starting on `periodStart` / ending on `periodEnd`, YYYY-MM-DD). Drivers under `minMiles` have `score: null`, `rank: null`. `fleet.score` is the mile-weighted mean of scored drivers; `fleet.trend` and per-row `trend` compare with the previous period of the same length.",
-        "tags": [
-          "safety"
-        ],
-        "x-figma-screens": [
-          {
-            "id": "web/safety",
-            "title": "Safety",
-            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.19"
-          }
-        ]
-      }
-    },
-    "/api/safety/summary": {
-      "get": {
-        "operationId": "SafetyController_summary",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "example": {
-                    "from": "2026-09-14T12:00:00.000Z",
-                    "to": "2026-10-14T12:00:00.000Z",
-                    "current": {
-                      "total": 742,
-                      "harsh": 512,
-                      "speeding": 220,
-                      "seatbelt": 10,
-                      "coached": 31,
-                      "pendingCoaching": 640
-                    },
-                    "previous": {
-                      "total": 690,
-                      "harsh": 480,
-                      "speeding": 200,
-                      "seatbelt": 10,
-                      "coached": 25,
-                      "pendingCoaching": 0
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "UNAUTHORIZED — Authentication required.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "statusCode",
-                    "code",
-                    "message",
-                    "traceId",
-                    "timestamp"
-                  ],
-                  "properties": {
-                    "statusCode": {
-                      "type": "number"
-                    },
-                    "code": {
-                      "type": "string",
-                      "description": "Stable code from common/errors/codes.ts (append-only)."
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "type": "object",
-                      "additionalProperties": true
-                    },
-                    "traceId": {
-                      "type": "string"
-                    },
-                    "timestamp": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  },
-                  "example": {
-                    "statusCode": 401,
-                    "code": "UNAUTHORIZED",
-                    "message": "Authentication required.",
-                    "traceId": "01J8X3QK9Z0000000000000000",
-                    "timestamp": "2026-09-11T15:41:00.000Z"
-                  }
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "FORBIDDEN — Insufficient permissions for this action.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "statusCode",
-                    "code",
-                    "message",
-                    "traceId",
-                    "timestamp"
-                  ],
-                  "properties": {
-                    "statusCode": {
-                      "type": "number"
-                    },
-                    "code": {
-                      "type": "string",
-                      "description": "Stable code from common/errors/codes.ts (append-only)."
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "type": "object",
-                      "additionalProperties": true
-                    },
-                    "traceId": {
-                      "type": "string"
-                    },
-                    "timestamp": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  },
-                  "example": {
-                    "statusCode": 403,
-                    "code": "FORBIDDEN",
-                    "message": "Insufficient permissions for this action.",
-                    "traceId": "01J8X3QK9Z0000000000000000",
-                    "timestamp": "2026-09-11T15:41:00.000Z"
-                  }
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "VALIDATION_FAILED — Request validation failed.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "statusCode",
-                    "code",
-                    "message",
-                    "traceId",
-                    "timestamp"
-                  ],
-                  "properties": {
-                    "statusCode": {
-                      "type": "number"
-                    },
-                    "code": {
-                      "type": "string",
-                      "description": "Stable code from common/errors/codes.ts (append-only)."
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "type": "object",
-                      "additionalProperties": true
-                    },
-                    "traceId": {
-                      "type": "string"
-                    },
-                    "timestamp": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  },
-                  "example": {
-                    "statusCode": 422,
-                    "code": "VALIDATION_FAILED",
-                    "message": "Request validation failed.",
-                    "details": {
-                      "issues": [
-                        {
-                          "path": "field",
-                          "code": "invalid_type",
-                          "message": "Required"
-                        }
-                      ]
-                    },
-                    "traceId": "01J8X3QK9Z0000000000000000",
-                    "timestamp": "2026-09-11T15:41:00.000Z"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "summary": "CODE-040 — Safety page KPIs: event counts over the rolling 30 days (`current`) and the 30 days before (`previous`): total, harsh (braking+accel+turn), speeding, seatbelt, coached, pendingCoaching (status NEW).",
         "tags": [
           "safety"
         ],
@@ -65629,7 +66364,7 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": "UI-003/UI-004 (additive): recordStatus 'ACTIVE'|'INACTIVE'|'OUT_OF_SERVICE' (stored Vehicle.status); connectivity 'NO_DEVICE'|'ELD_OFFLINE'|'ONLINE' (ELD_OFFLINE = silent > 30 min); isStale boolean (duty status past its plausibility cap, or a DRIVING/ON_DUTY unit whose ELD went silent); staleSince ISO string|null. dutyStatus semantics: a stale assigned D/ON unit reads ELD_OFFLINE; an OUT_OF_SERVICE/INACTIVE record reads INACTIVE. speedMph is null when telemetry is older than 30 min.",
+            "description": "UI-003/UI-004 (additive): recordStatus 'ACTIVE'|'INACTIVE'|'OUT_OF_SERVICE' (stored Vehicle.status); connectivity 'NO_DEVICE'|'ELD_OFFLINE'|'ONLINE' (ELD_OFFLINE = silent > 30 min); isStale boolean (duty status past its plausibility cap, or a DRIVING/ON_DUTY unit whose ELD went silent); staleSince ISO string|null. dutyStatus semantics: a stale assigned D/ON unit reads ELD_OFFLINE; an OUT_OF_SERVICE/INACTIVE record reads INACTIVE. speedMph is null when telemetry is older than 30 min. QA LIVE-002 (additive): driverDutyStatus 'DRIVING'|'ON_DUTY'|'SLEEPER'|'OFF_DUTY'|null — the assigned driver's own HOS status (Drivers roster vocabulary), last known even when the unit reads ELD_OFFLINE/INACTIVE; null with no driver or no HOS state.",
             "content": {
               "application/json": {
                 "schema": {
@@ -65653,6 +66388,7 @@
                         "shiftEndsAt": "2026-09-12T15:59:34.000Z",
                         "eldSerial": "PT30_A86E",
                         "bleState": "CONNECTED",
+                        "driverDutyStatus": "DRIVING",
                         "recordStatus": "ACTIVE",
                         "connectivity": "ONLINE",
                         "isStale": false,
@@ -65845,7 +66581,7 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": "UI-003/UI-004 (additive): recordStatus 'ACTIVE'|'INACTIVE'|'OUT_OF_SERVICE' (stored Vehicle.status); connectivity 'NO_DEVICE'|'ELD_OFFLINE'|'ONLINE' (ELD_OFFLINE = silent > 30 min); isStale boolean (duty status past its plausibility cap, or a DRIVING/ON_DUTY unit whose ELD went silent); staleSince ISO string|null. dutyStatus semantics: a stale assigned D/ON unit reads ELD_OFFLINE; an OUT_OF_SERVICE/INACTIVE record reads INACTIVE. speedMph is null when telemetry is older than 30 min. vehicles.inactive / vehicles.outOfService: fleet-wide record-status counts. liveFleet.counts.moving counts DRIVING units that are not stale.",
+            "description": "UI-003/UI-004 (additive): recordStatus 'ACTIVE'|'INACTIVE'|'OUT_OF_SERVICE' (stored Vehicle.status); connectivity 'NO_DEVICE'|'ELD_OFFLINE'|'ONLINE' (ELD_OFFLINE = silent > 30 min); isStale boolean (duty status past its plausibility cap, or a DRIVING/ON_DUTY unit whose ELD went silent); staleSince ISO string|null. dutyStatus semantics: a stale assigned D/ON unit reads ELD_OFFLINE; an OUT_OF_SERVICE/INACTIVE record reads INACTIVE. speedMph is null when telemetry is older than 30 min. vehicles.inactive / vehicles.outOfService: fleet-wide record-status counts. liveFleet.counts.moving counts DRIVING units that are not stale. QA LIVE-002: liveFleet.counts.onDuty = assigned drivers whose HOS status (driverDutyStatus) is DRIVING/ON_DUTY/SLEEPER (the Drivers list definition); liveFleet.counts.driverDuty = assigned drivers per status + UNKNOWN, summing to assigned. QA LIVE-011: liveFleet.counts.offline = units with connectivity ELD_OFFLINE (paired ELD silent > 30 min).",
             "content": {
               "application/json": {
                 "schema": {
@@ -65856,6 +66592,7 @@
                           "vehicleId": "veh_1",
                           "unitNumber": "101",
                           "dutyStatus": "DRIVING",
+                          "driverDutyStatus": "DRIVING",
                           "recordStatus": "ACTIVE",
                           "connectivity": "ONLINE",
                           "isStale": false,
@@ -65868,7 +66605,15 @@
                         "onDuty": 30,
                         "moving": 18,
                         "idle": 5,
-                        "offline": 2
+                        "offline": 2,
+                        "driverDuty": {
+                          "assigned": 36,
+                          "DRIVING": 18,
+                          "ON_DUTY": 10,
+                          "SLEEPER": 2,
+                          "OFF_DUTY": 6,
+                          "UNKNOWN": 0
+                        }
                       }
                     },
                     "violations": {
@@ -65884,7 +66629,9 @@
                     },
                     "unidentified": {
                       "total": 2,
-                      "totalDurationSec": 3600
+                      "totalDurationSec": 3600,
+                      "awaitingDriver": 1,
+                      "awaitingDriverDurationSec": 900
                     },
                     "notifications": {
                       "unreadCount": 4
@@ -69878,6 +70625,228 @@
           "reports"
         ]
       }
+    },
+    "/api/client-errors": {
+      "post": {
+        "description": "Public — works before login. A valid Bearer access token, if sent, tags the report with `user:<id>` / `driver:<id>`; an invalid or expired token is ignored (never 401). Body: one item or `{ errors: [...] }` (1..10), max 32 KB. Bearer tokens, JWTs, password/token values and email addresses are scrubbed, then the reports are forwarded asynchronously to the ops error channel. Always 202 once validated; delivery is best-effort.",
+        "operationId": "ClientErrorsController_report",
+        "parameters": [
+          {
+            "name": "authorization",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClientErrorsDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Accepted for asynchronous forwarding.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "data",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ClientErrorsAcceptedResponse"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "Request trace id (same as the §20 error envelope)."
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "data": {
+                      "accepted": 1
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-10-08T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "PAYLOAD_TOO_LARGE — body over 32 KB.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 413,
+                    "code": "PAYLOAD_TOO_LARGE",
+                    "message": "Request body is too large.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "VALIDATION_FAILED — Request validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 422,
+                    "code": "VALIDATION_FAILED",
+                    "message": "Request validation failed.",
+                    "details": {
+                      "issues": [
+                        {
+                          "path": "field",
+                          "code": "invalid_type",
+                          "message": "Required"
+                        }
+                      ]
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "RATE_LIMITED — Client error reports are limited to 30 requests per minute per IP.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 429,
+                    "code": "RATE_LIMITED",
+                    "message": "Client error reports are limited to 30 requests per minute per IP.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Report client-side errors from the admin panel or the driver app (D-158).",
+        "tags": [
+          "client-errors"
+        ]
+      }
     }
   },
   "info": {
@@ -69920,6 +70889,29 @@
           },
           "driverId": {
             "type": "string"
+          },
+          "replacedDevice": {
+            "type": "object",
+            "nullable": true,
+            "description": "MD-195 — present when `device` was sent: the other device this login signed out (null if none). `inMotion` is always false (a moving device blocks the login with 409 DRIVING_ON_OTHER_DEVICE).",
+            "properties": {
+              "label": {
+                "type": "string"
+              },
+              "lastSeenAt": {
+                "type": "string",
+                "format": "date-time",
+                "nullable": true
+              },
+              "pendingCount": {
+                "type": "integer",
+                "nullable": true
+              },
+              "inMotion": {
+                "type": "boolean",
+                "example": false
+              }
+            }
           }
         },
         "required": [
@@ -70134,7 +71126,7 @@
             "type": "string",
             "nullable": true,
             "example": "VIOLATIONS",
-            "description": "Segment: VIOLATIONS | MAINTENANCE | null."
+            "description": "Segment: VIOLATIONS | MAINTENANCE | CONNECTIVITY | null."
           },
           "severity": {
             "nullable": true,
@@ -70182,12 +71174,17 @@
           },
           "maintenance": {
             "type": "integer"
+          },
+          "connectivity": {
+            "type": "integer",
+            "description": "ELD connectivity (connection lost, disconnected, malfunction)."
           }
         },
         "required": [
           "all",
           "violations",
-          "maintenance"
+          "maintenance",
+          "connectivity"
         ]
       },
       "NotificationListResponse": {
@@ -71263,6 +72260,19 @@
           "diagnosticCode": {
             "type": "string",
             "nullable": true
+          },
+          "reviewReason": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "REPLACED_DEVICE"
+            ],
+            "description": "D-163 — set when a replaced device (single-device rule) delivered this record late: recorded after that device was signed out by another login and before the driver signed in on it again. Driver-entered duty / PC-YM records so flagged are stored with recordStatus 3 and change no graph / HOS until a fleet manager re-enters them via the §395.30 edit flow; ELD-automatic records (PT30 driving) stay active and are only labelled."
+          },
+          "reviewDeviceLabel": {
+            "type": "string",
+            "nullable": true,
+            "description": "D-163 — label of the replaced device the record came from (e.g. \"Pixel 7\")."
           }
         },
         "required": [
@@ -71290,7 +72300,9 @@
           "engineHours",
           "specialCondition",
           "malfunctionCode",
-          "diagnosticCode"
+          "diagnosticCode",
+          "reviewReason",
+          "reviewDeviceLabel"
         ]
       },
       "LogDayTripView": {
@@ -75308,6 +76320,19 @@
           "items"
         ]
       },
+      "ClientErrorsAcceptedResponse": {
+        "type": "object",
+        "properties": {
+          "accepted": {
+            "type": "number",
+            "example": 1,
+            "description": "Number of error reports accepted (forwarding is asynchronous)."
+          }
+        },
+        "required": [
+          "accepted"
+        ]
+      },
       "AlertChannelEnum": {
         "type": "string",
         "enum": [
@@ -75425,7 +76450,10 @@
             "maxLength": 60
           },
           "requireDriverConfirmation": {
-            "type": "boolean"
+            "type": "boolean",
+            "enum": [
+              true
+            ]
           }
         },
         "required": [
@@ -75550,6 +76578,93 @@
           "dates"
         ]
       },
+      "ClientErrorBatchDto": {
+        "type": "object",
+        "properties": {
+          "errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClientErrorItemDto"
+            },
+            "minItems": 1,
+            "maxItems": 10
+          }
+        },
+        "required": [
+          "errors"
+        ]
+      },
+      "ClientErrorItemDto": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string",
+            "enum": [
+              "admin",
+              "mobile"
+            ]
+          },
+          "level": {
+            "type": "string",
+            "enum": [
+              "error",
+              "fatal"
+            ],
+            "default": "error"
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "stack": {
+            "type": "string",
+            "maxLength": 8000
+          },
+          "url": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "route": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "appVersion": {
+            "type": "string",
+            "maxLength": 40
+          },
+          "platform": {
+            "type": "string",
+            "maxLength": 40
+          },
+          "device": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "release": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "occurredAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "source",
+          "message"
+        ]
+      },
+      "ClientErrorsDto": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/ClientErrorBatchDto"
+          },
+          {
+            "$ref": "#/components/schemas/ClientErrorItemDto"
+          }
+        ]
+      },
       "CoDriverSwitchDto": {
         "type": "object",
         "properties": {
@@ -75562,6 +76677,9 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 100
+          },
+          "device": {
+            "$ref": "#/components/schemas/DeviceInfoDto"
           }
         },
         "required": [
@@ -76195,10 +77313,14 @@
               "type": "object",
               "properties": {
                 "lat": {
-                  "type": "number"
+                  "type": "number",
+                  "minimum": -90,
+                  "maximum": 90
                 },
                 "lon": {
-                  "type": "number"
+                  "type": "number",
+                  "minimum": -180,
+                  "maximum": 180
                 }
               },
               "required": [
@@ -76206,7 +77328,8 @@
                 "lon"
               ]
             },
-            "minItems": 3
+            "minItems": 3,
+            "maxItems": 500
           },
           "address": {
             "type": "string",
@@ -76756,16 +77879,18 @@
           },
           "make": {
             "type": "string",
-            "maxLength": 60
+            "maxLength": 60,
+            "nullable": true
           },
           "model": {
             "type": "string",
-            "maxLength": 60
+            "maxLength": 60,
+            "nullable": true
           },
           "year": {
             "type": "integer",
             "minimum": 1900,
-            "maximum": 2100
+            "nullable": true
           },
           "licensePlate": {
             "type": "string",
@@ -76798,7 +77923,8 @@
           },
           "notes": {
             "type": "string",
-            "maxLength": 500
+            "maxLength": 500,
+            "nullable": true
           },
           "groupId": {
             "type": "string",
@@ -76943,6 +78069,47 @@
           "IN_PROGRESS",
           "REPAIRED",
           "DEFERRED"
+        ]
+      },
+      "DeviceInfoDto": {
+        "type": "object",
+        "properties": {
+          "deviceId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "deviceLabel": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[^\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]*$"
+          },
+          "platform": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "^[^\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]*$"
+          },
+          "formFactor": {
+            "type": "string",
+            "enum": [
+              "phone",
+              "tablet"
+            ]
+          },
+          "appVersion": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "^[^\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]*$"
+          }
+        },
+        "required": [
+          "deviceId",
+          "deviceLabel",
+          "platform",
+          "formFactor",
+          "appVersion"
         ]
       },
       "DeviceModelEnum": {
@@ -77134,6 +78301,9 @@
           "password": {
             "type": "string",
             "minLength": 1
+          },
+          "device": {
+            "$ref": "#/components/schemas/DeviceInfoDto"
           }
         },
         "required": [
@@ -77718,16 +78888,18 @@
           },
           "make": {
             "type": "string",
-            "maxLength": 60
+            "maxLength": 60,
+            "nullable": true
           },
           "model": {
             "type": "string",
-            "maxLength": 60
+            "maxLength": 60,
+            "nullable": true
           },
           "year": {
             "type": "integer",
             "minimum": 1900,
-            "maximum": 2100
+            "nullable": true
           },
           "licensePlate": {
             "type": "string",
@@ -77760,7 +78932,8 @@
           },
           "notes": {
             "type": "string",
-            "maxLength": 500
+            "maxLength": 500,
+            "nullable": true
           },
           "groupId": {
             "type": "string",
@@ -78551,7 +79724,8 @@
         "type": "string",
         "enum": [
           "VIOLATIONS",
-          "MAINTENANCE"
+          "MAINTENANCE",
+          "CONNECTIVITY"
         ]
       },
       "NotificationChannelsDto": {
@@ -78576,7 +79750,8 @@
               },
               "url": {
                 "type": "string",
-                "format": "uri"
+                "maxLength": 2048,
+                "nullable": true
               }
             },
             "required": [
@@ -78795,7 +79970,6 @@
           "drivers",
           "hos",
           "hosEdit",
-          "hosCertifyOnBehalf",
           "dvir",
           "maintenance",
           "safety",
@@ -78924,6 +80098,22 @@
           "NONE",
           "PC",
           "YM"
+        ]
+      },
+      "QueryBoolean": {
+        "oneOf": [
+          {
+            "type": "boolean"
+          },
+          {
+            "type": "string",
+            "enum": [
+              "true",
+              "false",
+              "1",
+              "0"
+            ]
+          }
         ]
       },
       "RefreshTokenDto": {
@@ -79111,6 +80301,11 @@
             "type": "number",
             "minimum": 0,
             "maximum": 1000000
+          },
+          "workOrderId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
           }
         },
         "required": [
@@ -79352,6 +80547,15 @@
           "bytes": {
             "type": "integer",
             "minimum": 0
+          },
+          "pendingCount": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10000000
+          },
+          "oldestPendingAt": {
+            "type": "string",
+            "format": "date-time"
           }
         },
         "required": [
@@ -80269,7 +81473,8 @@
           },
           "phone": {
             "type": "string",
-            "maxLength": 30
+            "maxLength": 30,
+            "nullable": true
           },
           "cdlNumber": {
             "type": "string",
@@ -80319,7 +81524,8 @@
           },
           "eldExemptReason": {
             "type": "string",
-            "maxLength": 200
+            "maxLength": 200,
+            "nullable": true
           },
           "sendInvitation": {
             "type": "boolean",
@@ -80389,10 +81595,14 @@
               "type": "object",
               "properties": {
                 "lat": {
-                  "type": "number"
+                  "type": "number",
+                  "minimum": -90,
+                  "maximum": 90
                 },
                 "lon": {
-                  "type": "number"
+                  "type": "number",
+                  "minimum": -180,
+                  "maximum": 180
                 }
               },
               "required": [
@@ -80400,7 +81610,8 @@
                 "lon"
               ]
             },
-            "minItems": 3
+            "minItems": 3,
+            "maxItems": 500
           },
           "address": {
             "type": "string",
@@ -80479,11 +81690,13 @@
           "lastServiceMi": {
             "type": "integer",
             "minimum": 0,
-            "maximum": 10000000
+            "maximum": 10000000,
+            "nullable": true
           },
           "lastServiceAt": {
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "nullable": true
           },
           "enabled": {
             "type": "boolean"
@@ -80583,7 +81796,11 @@
         "type": "object",
         "properties": {
           "status": {
-            "$ref": "#/components/schemas/CoachingStatusEnum"
+            "type": "string",
+            "enum": [
+              "REVIEWED",
+              "DISMISSED"
+            ]
           },
           "coachingNote": {
             "type": "string",
@@ -80761,16 +81978,18 @@
           },
           "make": {
             "type": "string",
-            "maxLength": 60
+            "maxLength": 60,
+            "nullable": true
           },
           "model": {
             "type": "string",
-            "maxLength": 60
+            "maxLength": 60,
+            "nullable": true
           },
           "year": {
             "type": "integer",
             "minimum": 1900,
-            "maximum": 2100
+            "nullable": true
           },
           "licensePlate": {
             "type": "string",
@@ -80803,7 +82022,8 @@
           },
           "notes": {
             "type": "string",
-            "maxLength": 500
+            "maxLength": 500,
+            "nullable": true
           },
           "groupId": {
             "type": "string",
@@ -80893,7 +82113,8 @@
           "estimatedLaborHours": {
             "type": "number",
             "minimum": 0,
-            "maximum": 999
+            "maximum": 999,
+            "nullable": true
           },
           "keepOutOfService": {
             "type": "boolean"

@@ -18,7 +18,7 @@ import { RefreshGraceStore } from './refresh-grace.store';
 import { PrincipalStateService } from './principal-state.service';
 import { DriverAuthRepository } from './repositories/driver-auth.repository';
 import { DriverResetCodeRepository } from './repositories/driver-reset-code.repository';
-import { DriverSessionRepository } from './repositories/driver-session.repository';
+import { DriverSessionRepository, MOTION_WINDOW_MS } from './repositories/driver-session.repository';
 import { SessionRepository } from './repositories/session.repository';
 import { UserAuthRepository, UserWithRole } from './repositories/user-auth.repository';
 import { RodsLoginRecorder } from '../logs/rods-login-recorder';
@@ -68,6 +68,17 @@ interface RotatableSession {
  */
 export interface DriverLoginResult extends AccessTokenPair {
   driverId: string;
+  /** MD-195 — only when a `device` was sent: the other device this login signed out, or null. */
+  replacedDevice?: { label: string; lastSeenAt: string | null; pendingCount: number | null; inMotion: false } | null;
+}
+
+/** MD-195 — device identity sent by the app at driver login / co-driver switch. */
+export interface DriverDeviceInfo {
+  deviceId: string;
+  deviceLabel: string;
+  platform: string;
+  formFactor: 'phone' | 'tablet';
+  appVersion: string;
 }
 
 /**
@@ -145,7 +156,7 @@ export class AuthService {
   // Password login — Driver
   // ---------------------------------------------------------------------
 
-  async loginDriver(username: string, password: string, meta: RequestMeta): Promise<DriverLoginResult> {
+  async loginDriver(username: string, password: string, meta: RequestMeta, device?: DriverDeviceInfo): Promise<DriverLoginResult> {
     const driver = await this.drivers.findByUsername(username);
     if (!driver || driver.status !== 'ACTIVE') {
       throw new AppException(ERROR_CODES.INVALID_CREDENTIALS, 'Invalid username or password.', 401);
@@ -154,15 +165,44 @@ export class AuthService {
     if (!ok) {
       throw new AppException(ERROR_CODES.INVALID_CREDENTIALS, 'Invalid username or password.', 401);
     }
+    // MD-195 — single signed-in device. Credentials are verified above, so nothing below (the 409
+    // or `replacedDevice`) is shown to a caller without the password. With a `device`, a moving
+    // other device blocks the login; otherwise every other live session family is ended, atomically
+    // under a per-driver lock (B-174: two concurrent logins cannot both survive).
     const refreshToken = randomOpaqueToken();
-    const session = await this.driverSessions.create({
+    const base = {
       driverId: driver.id,
       refreshHash: sha256(refreshToken),
       userAgent: meta.userAgent,
       ip: meta.ip,
       familyId: randomUUID(),
       expiresAt: new Date(Date.now() + this.tokens.refreshTtlMs('driver')),
-    });
+    };
+    let session: { id: string };
+    let replacedDevice: DriverLoginResult['replacedDevice'];
+    if (device) {
+      const r = await this.driverSessions.createExclusive(
+        {
+          ...base,
+          deviceId: device.deviceId,
+          deviceLabel: device.deviceLabel,
+          platform: device.platform,
+          formFactor: device.formFactor,
+          appVersion: device.appVersion,
+        },
+        MOTION_WINDOW_MS,
+      );
+      if (r.kind === 'moving') {
+        throw new AppException(ERROR_CODES.DRIVING_ON_OTHER_DEVICE, 'Your account is driving on another device.', 409, {
+          byDeviceLabel: r.moving.deviceLabel ?? 'another device',
+          lastSeenAt: (r.moving.lastMotionAt as Date).toISOString(),
+        });
+      }
+      session = r.session;
+      replacedDevice = await this.announceReplaced(driver.id, r.replaced, device, meta);
+    } else {
+      session = await this.driverSessions.create(base);
+    }
     const accessToken = this.tokens.signDriverAccessToken({ id: driver.id, sessionId: session.id });
     // D-130 — §395 Appendix A 4.5.1.5: authenticating on an already-assigned unit is an ELD
     // login (idempotent: no second record while one is open on that unit; never throws).
@@ -170,7 +210,61 @@ export class AuthService {
       await this.loginRecords.login(driver.id, driver.assignedVehicleId, 'AUTH_LOGIN');
     }
     this.audit('LOGIN', driver.id, meta, { objectType: 'Driver' });
-    return { accessToken, refreshToken, tokenType: 'Bearer', driverId: driver.id };
+    return {
+      accessToken,
+      refreshToken,
+      tokenType: 'Bearer',
+      driverId: driver.id,
+      ...(replacedDevice !== undefined ? { replacedDevice } : {}),
+    };
+  }
+
+  /**
+   * MD-195 — after `createExclusive` ended the other session families (REPLACED): drop cached
+   * liveness everywhere, tell other devices' sockets, audit, and describe the most recently seen
+   * other device for the new device's notice. Older sessions of the SAME deviceId were ended too
+   * (B-175) but get no socket push — that is the caller's own device.
+   */
+  private async announceReplaced(
+    driverId: string,
+    replaced: Array<{ session: { id: string; deviceId: string | null; deviceLabel: string | null; lastSeenAt: Date; pendingCount: number | null }; familyIds: string[] }>,
+    device: DriverDeviceInfo,
+    meta: RequestMeta,
+  ): Promise<NonNullable<DriverLoginResult['replacedDevice']> | null> {
+    if (replaced.length === 0) return null;
+    await this.principals.evictDriverSessions(driverId);
+    const at = new Date().toISOString();
+    const otherDevices = replaced.filter((r) => r.session.deviceId !== device.deviceId);
+    for (const { session, familyIds } of otherDevices) {
+      try {
+        await this.events?.publish('realtime.push', {
+          room: familyIds.map((id) => `session:${id}`),
+          event: 'session.replaced',
+          payload: { byDeviceLabel: device.deviceLabel, at, deviceId: session.deviceId, byDeviceId: device.deviceId },
+        });
+      } catch (err) {
+        this.logger.warn({ driverId, err: String(err) }, 'session.replaced push failed; the old device learns on its next request');
+      }
+    }
+    // Audit carries the new device's IP / user agent (the request that performed the takeover).
+    this.audit('SESSION_REPLACED', driverId, meta, {
+      objectType: 'Driver',
+      actorId: driverId,
+      actorType: 'driver',
+      after: {
+        byDeviceId: device.deviceId,
+        byDeviceLabel: device.deviceLabel,
+        replaced: replaced.map((r) => ({ sessionId: r.session.id, deviceId: r.session.deviceId, deviceLabel: r.session.deviceLabel })),
+      },
+    });
+    if (otherDevices.length === 0) return null;
+    const latest = otherDevices.reduce((best, r) => (r.session.lastSeenAt > best.lastSeenAt ? r.session : best), otherDevices[0].session);
+    return {
+      label: latest.deviceLabel ?? 'another device',
+      lastSeenAt: latest.lastSeenAt.toISOString(),
+      pendingCount: latest.pendingCount,
+      inMotion: false,
+    };
   }
 
   // ---------------------------------------------------------------------
@@ -315,6 +409,8 @@ export class AuthService {
     ops: {
       find: (hash: string) => Promise<S | null>;
       revokeFamily: (familyId: string) => Promise<unknown>;
+      /** MD-195 — for a revoked session: was its family ended by a takeover from another device? */
+      replaced?: (session: S) => Promise<{ byDeviceLabel: string; at: Date } | null>;
       /** Validates the subject and performs the atomic rotation; null = lost the race. */
       rotate: (session: S, newHash: string, familyId: string) => Promise<{ accessToken: string } | null>;
       subjectId: (session: S) => string;
@@ -327,6 +423,8 @@ export class AuthService {
     if (!session) throw new AppException(ERROR_CODES.TOKEN_INVALID, 'Unknown refresh token.', 401);
 
     if (session.revokedAt) {
+      // MD-195 — checked first: a takeover is final and must never surface as REUSED/INVALID.
+      await this.throwIfReplaced(session, ops);
       if (!session.rotatedAt) {
         throw new AppException(ERROR_CODES.TOKEN_INVALID, 'Session was revoked — sign in again.', 401);
       }
@@ -338,10 +436,26 @@ export class AuthService {
 
     const newRefreshToken = randomOpaqueToken();
     const won = await ops.rotate(session, sha256(newRefreshToken), session.familyId ?? session.id);
-    if (!won) return this.replayOrReuse(refreshToken, hash, (await ops.find(hash)) ?? session, ops);
+    if (!won) {
+      // B-176 — lost the claim to a concurrent takeover: answer SESSION_REPLACED, never a reuse
+      // (which would revoke + drop the sockets of the new device's driver room).
+      const fresh = (await ops.find(hash)) ?? session;
+      if (fresh.revokedAt) await this.throwIfReplaced(fresh, ops);
+      return this.replayOrReuse(refreshToken, hash, fresh, ops);
+    }
     const pair: AccessTokenPair = { accessToken: won.accessToken, refreshToken: newRefreshToken, tokenType: 'Bearer' };
     await this.graceStore.put(refreshToken, hash, { accessToken: pair.accessToken, refreshToken: pair.refreshToken });
     return pair;
+  }
+
+  private async throwIfReplaced<S>(session: S, ops: { replaced?: (session: S) => Promise<{ byDeviceLabel: string; at: Date } | null> }): Promise<void> {
+    const replaced = await ops.replaced?.(session);
+    if (replaced) {
+      throw new AppException(ERROR_CODES.SESSION_REPLACED, 'Your account was signed in on another device.', 401, {
+        byDeviceLabel: replaced.byDeviceLabel,
+        at: replaced.at.toISOString(),
+      });
+    }
   }
 
   private async replayOrReuse<S extends RotatableSession>(
@@ -414,6 +528,7 @@ export class AuthService {
     return this.rotateRefresh(refreshToken, {
       find: (h) => this.driverSessions.findByRefreshHash(h),
       revokeFamily: (f) => this.driverSessions.revokeFamily(f),
+      replaced: (s) => this.driverSessions.replacementFor(s.driverId, s.id),
       subjectId: (s) => s.driverId,
       evict: (id) => this.principals.invalidateDriver(id),
       rotate: async (session, newHash, familyId) => {
@@ -431,6 +546,12 @@ export class AuthService {
           ip: meta.ip ?? session.ip ?? undefined,
           deviceLabel: session.deviceLabel ?? undefined,
           appVersion: session.appVersion ?? undefined,
+          deviceId: session.deviceId ?? undefined,
+          platform: session.platform ?? undefined,
+          formFactor: session.formFactor ?? undefined,
+          lastMotionAt: session.lastMotionAt ?? undefined,
+          pendingCount: session.pendingCount ?? undefined,
+          oldestPendingAt: session.oldestPendingAt ?? undefined,
           familyId,
           expiresAt: new Date(Date.now() + this.tokens.refreshTtlMs('driver')),
         });

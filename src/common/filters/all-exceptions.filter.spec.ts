@@ -6,7 +6,7 @@ import { ERROR_CODES } from '../errors/codes';
 import type { ErrorEnvelope } from './error-envelope';
 
 function makeHost(url = '/api/vehicles') {
-  const res = { status: jest.fn().mockReturnThis(), json: jest.fn() };
+  const res = { status: jest.fn().mockReturnThis(), json: jest.fn(), setHeader: jest.fn() };
   const req = { url };
   return {
     host: {
@@ -158,8 +158,39 @@ describe('AllExceptionsFilter', () => {
 
     it('an unmapped Prisma code is still a 500', () => {
       const { host, res } = makeHost();
-      filter.catch(known('P2034'), host as never);
+      filter.catch(known('P2010'), host as never);
       expect(res.status).toHaveBeenCalledWith(500);
+    });
+  });
+
+  describe('D-164 — Retry-After on transient failures', () => {
+    it('503 INGEST_ASSIGNMENT_PENDING sets Retry-After from details.retryAfterSec', () => {
+      const { host, res } = makeHost('/api/ingest/events');
+      filter.catch(new AppException(ERROR_CODES.INGEST_ASSIGNMENT_PENDING, 'pending', 503, { retryAfterSec: 30 }), host as never);
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(res.setHeader).toHaveBeenCalledWith('Retry-After', '30');
+    });
+
+    it('429 RATE_LIMITED sets Retry-After (rounded up, at least 1)', () => {
+      const { host, res } = makeHost('/api/ingest/events');
+      filter.catch(new AppException(ERROR_CODES.RATE_LIMITED, 'slow down', 429, { retryAfterSec: 0 }), host as never);
+      expect(res.setHeader).toHaveBeenCalledWith('Retry-After', '1');
+    });
+
+    it('pool timeout / transaction wait (P2024, P2028, P2034, P2037 too many connections) -> 503 SERVICE_UNAVAILABLE + Retry-After, not 500', () => {
+      for (const code of ['P2024', 'P2028', 'P2034', 'P2037']) {
+        const { host, res } = makeHost('/api/ingest/events');
+        filter.catch(new Prisma.PrismaClientKnownRequestError('busy', { code, clientVersion: 'test' }), host as never);
+        expect(res.status).toHaveBeenCalledWith(503);
+        expect(envelopeOf(res).code).toBe(ERROR_CODES.SERVICE_UNAVAILABLE);
+        expect(res.setHeader).toHaveBeenCalledWith('Retry-After', '5');
+      }
+    });
+
+    it('4xx refusals carry no Retry-After', () => {
+      const { host, res } = makeHost('/api/ingest/events');
+      filter.catch(AppException.forbidden('nope'), host as never);
+      expect(res.setHeader).not.toHaveBeenCalled();
     });
   });
 });

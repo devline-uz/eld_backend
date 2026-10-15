@@ -40,7 +40,11 @@ export const IngestEventDto = z.object({
   eventCode: z.number().int().min(0).max(9),
   eventDateTime: isoDateTime,
   timezoneOffset: z.number().int().min(-840).max(840),
+  /** B-181 / D-165 — accepted for backward compatibility only; IGNORED: ingest always stores 1
+   * (the D-163 replaced-device review alone may store a driver-entered record as 3). */
   recordStatus: z.number().int().min(1).max(4).default(1),
+  /** B-181 / D-165 — a claim, not trusted: the server derives the stored origin
+   * (`ingestRecordOrigin` + the §7.4 ladder). A differing value leaves a warn trace. */
   recordOrigin: z.number().int().min(1).max(4),
   wasStoredOnDevice: z.boolean().default(false),
   latitude: latitude.nullish(),

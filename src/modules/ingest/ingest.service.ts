@@ -1,5 +1,5 @@
 import { InjectQueue } from '@nestjs/bullmq';
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import type { Device, Prisma, Vehicle } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { AppException } from '../../common/errors/app.exception';
@@ -16,6 +16,8 @@ import {
 } from '../../common/units';
 import { EventBusService } from '../../core/events/event-bus.service';
 import { QUEUES } from '../../core/queue/queue.constants';
+import { RequestContext } from '../../core/context/request-context';
+import { ReplacedDeviceReviewService, reviewedRecordStatus, reviewFor } from '../logs/replaced-device-review';
 import {
   buildSystemVars,
   configVersion,
@@ -42,10 +44,13 @@ import {
 import {
   DIAGNOSTIC,
   EVENT_TYPE,
+  ingestRecordOrigin,
+  isAutomaticDeviceEvent,
   MALFUNCTION,
   MALFUNCTION_EVENT_CODE,
   PC_YM_CODE,
   RECORD_ORIGIN,
+  RECORD_STATUS,
 } from './event-codes';
 import {
   IngestBleStateDto,
@@ -56,6 +61,13 @@ import {
   TelemetryPointDto,
 } from './dto/ingest.dto';
 import { IngestRepository, IngestTx } from './ingest.repository';
+import {
+  AssociationState,
+  assignmentPending,
+  associationRefused,
+  classifyDeviceMiss,
+  classifyDriverMiss,
+} from './association';
 import { resolveStoredEventOwner } from './ownership';
 
 export interface IngestWarning {
@@ -134,7 +146,36 @@ export class IngestService {
     @InjectQueue(QUEUES.ALERT) private readonly alertQueue: Queue,
     @InjectQueue(QUEUES.SAFETY_DETECT) private readonly safetyDetectQueue: Queue,
     private readonly virtualEld: VirtualEldPolicy,
+    // D-163 — flags late records from a replaced device (optional: unit tests construct without it).
+    @Optional() private readonly replacedDevice?: ReplacedDeviceReviewService,
   ) {}
+
+  /**
+   * B-181 / D-165 — `recordStatus` / `recordOrigin` are server-derived; a client value that
+   * differs is ignored (never a 4xx — old apps keep working) but leaves ONE warn line per batch
+   * so tampering is visible. A `4` on an automatic event is a legitimate ladder hint, not logged.
+   */
+  private traceOverriddenRecordAttributes(dto: IngestEventsDto, driverId: string, deviceId: string): void {
+    const overridden = dto.batch
+      .filter((e) => {
+        const hint = e.recordOrigin === RECORD_ORIGIN.UNIDENTIFIED && isAutomaticDeviceEvent(e.eventType, e.eventCode);
+        const origin = ingestRecordOrigin(e.eventType, e.eventCode, e.recordOrigin);
+        return e.recordStatus !== RECORD_STATUS.ACTIVE || (!hint && origin !== e.recordOrigin);
+      })
+      .map((e) => ({
+        uuid: e.uuid,
+        eventType: e.eventType,
+        eventCode: e.eventCode,
+        sentStatus: e.recordStatus,
+        sentOrigin: e.recordOrigin,
+        storedOrigin: ingestRecordOrigin(e.eventType, e.eventCode, e.recordOrigin),
+      }));
+    if (!overridden.length) return;
+    this.logger.warn(
+      { driverId, deviceId, vehicleId: dto.vehicleId, count: overridden.length, events: overridden.slice(0, 20) },
+      'INGEST_RECORD_ATTRIBUTES_OVERRIDDEN: client recordStatus/recordOrigin ignored (B-181)',
+    );
+  }
 
   // =========================================================================
   // POST /ingest/events
@@ -144,6 +185,8 @@ export class IngestService {
     const ctx = await this.resolveContext(dto.deviceSerial, driverId, dto.vehicleId);
     const now = new Date();
     const warnings: IngestWarning[] = [];
+    this.traceOverriddenRecordAttributes(dto, driverId, ctx.device.id);
+    const reviewContext = (await this.replacedDevice?.contextFor(driverId, RequestContext.user?.sessionId)) ?? null;
 
     const ordered = [...dto.batch].sort(
       (a, b) => a.eventDateTime.getTime() - b.eventDateTime.getTime(),
@@ -232,13 +275,19 @@ export class IngestService {
         });
 
         // --- §7.4 — ownership of device-stored events (ordered ladder, first match wins).
+        // B-181 / D-165 — origin and status are SERVER-derived (App. A 4.4.4.2.1 / 7.22); the
+        // client's values are claims, kept only as a trace when they differ.
         let ownerId: string | null = driverId;
-        let recordOrigin: number = event.recordOrigin;
+        let recordOrigin: number = ingestRecordOrigin(event.eventType, event.eventCode, event.recordOrigin);
         let rule: 1 | 2 | 3 | undefined;
         let requiresConfirmation = false;
         let unidentified = false;
+        // A client `4` on an automatic event is only a hint ("nobody was logged in"): the §7.4
+        // ladder decides — an open session keeps it on the driver as origin 1.
+        const unidentifiedHint =
+          event.recordOrigin === RECORD_ORIGIN.UNIDENTIFIED && isAutomaticDeviceEvent(event.eventType, event.eventCode);
 
-        if (event.wasStoredOnDevice) {
+        if (event.wasStoredOnDevice || unidentifiedHint) {
           const window = await this.repo.findSessionWindow(tx, ctx.vehicle.id, event.eventDateTime);
           const decision = resolveStoredEventOwner(event.eventDateTime, window);
           ownerId = decision.driverId;
@@ -246,10 +295,6 @@ export class IngestService {
           rule = decision.rule;
           requiresConfirmation = decision.requiresConfirmation;
           unidentified = decision.createsUnidentifiedSegment;
-        } else if (event.recordOrigin === RECORD_ORIGIN.UNIDENTIFIED) {
-          // Live unidentified driving: the engine ran with nobody logged in.
-          ownerId = null;
-          unidentified = true;
         }
 
         // --- §7.3 rule 9 — coarsen BEFORE storage; raw coordinates are stored NOWHERE.
@@ -278,6 +323,8 @@ export class IngestService {
         }
         // An app-sent eventType 7 record keeps its own malfunction/diagnostic code untouched.
         const isCodeRecord = event.eventType === EVENT_TYPE.MALFUNCTION_DIAGNOSTIC;
+        // D-163 — recorded on a replaced device after the takeover: stored, labelled, never rejected.
+        const review = ownerId === driverId ? reviewFor(reviewContext, event.eventDateTime) : null;
 
         prepared.push({
           sequenceKey,
@@ -297,8 +344,14 @@ export class IngestService {
             eventSequenceId: 0, // assigned below, once, under the advisory lock
             eventDateTime: event.eventDateTime,
             timezoneOffset: event.timezoneOffset,
-            recordStatus: event.recordStatus,
+            // B-181 — always ACTIVE at ingest; only the D-163 review may store it inert (never origin 1).
+            recordStatus: reviewedRecordStatus(
+              { eventType: event.eventType, eventCode: event.eventCode, recordOrigin, recordStatus: RECORD_STATUS.ACTIVE },
+              review,
+            ),
             recordOrigin,
+            reviewReason: review?.reviewReason ?? null,
+            reviewDeviceLabel: review?.reviewDeviceLabel ?? null,
             latitude: coords?.lat ?? null,
             longitude: coords?.lon ?? null,
             locationPrecisionMi: precisionMi,
@@ -732,11 +785,10 @@ export class IngestService {
       // BLE/status heartbeats from an unpaired device carry no vehicle claim to verify.
       return { device, vehicle: { id: '', odometerOffsetMi: 0 } as Vehicle, driverId };
     }
-    if (device.vehicleId !== vehicleId) {
-      throw AppException.forbidden('Device is not paired with the claimed unit.', {
-        deviceSerial,
-        vehicleId,
-      });
+    const claim = { deviceSerial, vehicleId };
+    // D-164 — paired with ANOTHER unit is a real refusal (403); unpaired may just be not visible yet.
+    if (device.vehicleId && device.vehicleId !== vehicleId) {
+      throw associationRefused('DEVICE_PAIRED_ELSEWHERE', claim);
     }
 
     const vehicle = await this.repo.findVehicle(vehicleId);
@@ -744,17 +796,33 @@ export class IngestService {
       throw new AppException(ERROR_CODES.VEHICLE_NOT_FOUND, 'Vehicle not found.', 404);
     }
 
+    // D-164 — the fast checks below read the DB directly (no association cache exists); only on a
+    // miss is the association state re-read and classified: conflict -> 403, otherwise 503 pending.
+    let state: AssociationState | null = null;
+    const freshState = async (): Promise<AssociationState> =>
+      (state ??= await this.repo.findAssociationState(driverId, vehicleId));
+    const pending: Array<'DEVICE_PAIRING' | 'DRIVER_ASSIGNMENT'> = [];
+    let ctxDevice = device;
+
+    if (device.vehicleId !== vehicleId) {
+      const verdict = classifyDeviceMiss(await freshState(), device.id);
+      if (verdict === 'visible') ctxDevice = { ...device, vehicleId };
+      else if (verdict === 'pending') pending.push('DEVICE_PAIRING');
+      else throw associationRefused(verdict, claim);
+    }
+
     const assigned = await this.repo.findDriverAssignedVehicleId(driverId);
     if (assigned !== vehicleId) {
-      const hasSession = await this.repo.hasOpenSessionOnVehicle(driverId, vehicleId, new Date());
+      const now = new Date();
+      const hasSession = await this.repo.hasOpenSessionOnVehicle(driverId, vehicleId, now);
       if (!hasSession) {
-        throw AppException.forbidden('Driver is not associated with this unit.', {
-          vehicleId,
-          deviceSerial,
-        });
+        const verdict = classifyDriverMiss(await freshState(), driverId, vehicleId, now);
+        if (verdict === 'pending') pending.push('DRIVER_ASSIGNMENT');
+        else if (verdict !== 'visible') throw associationRefused(verdict, claim);
       }
     }
-    return { device, vehicle, driverId };
+    if (pending.length > 0) throw assignmentPending(pending, claim);
+    return { device: ctxDevice, vehicle, driverId };
   }
 
   /** §5.5 / §7.3 rule 8 — one allocation per sequence key, inside the batch transaction. */

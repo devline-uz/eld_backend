@@ -72,6 +72,35 @@ export const RECORD_STATUS = {
   CHANGE_REJECTED: 4,
 } as const;
 
+/**
+ * D-165 / App. A 4.4.4.2.1 — records the ELD creates on its own, never by driver input:
+ * automatic Driving (1/3), intermediate logs (2), engine power (6), malfunction/diagnostic (7).
+ */
+export function isAutomaticDeviceEvent(eventType: number, eventCode: number): boolean {
+  return (
+    (eventType === EVENT_TYPE.DUTY_STATUS_CHANGE && eventCode === DUTY_CODE.D) ||
+    eventType === EVENT_TYPE.INTERMEDIATE_LOG ||
+    eventType === EVENT_TYPE.ENGINE_POWER ||
+    eventType === EVENT_TYPE.MALFUNCTION_DIAGNOSTIC
+  );
+}
+
+/**
+ * D-165 / App. A 7.22 — the `recordOrigin` the server stores for a `/ingest/events` record
+ * BEFORE the §7.4 ownership ladder (which may still turn it into 1 or 4). The client value is a
+ * claim, never trusted:
+ *  - automatic device events (`isAutomaticDeviceEvent`) → always 1;
+ *  - other types (OFF/SB/ON, PC/YM, certification, login/logout) may be ELD-automatic (1) or
+ *    driver-entered (2) — the claim is kept when it is 1 or 2; 3 (another authenticated user)
+ *    and 4 (unidentified) cannot be produced by a driver-JWT upload of these types → 2.
+ * The client's `4` on an automatic event is not trusted either: the caller treats it as a hint
+ * and lets the server ladder decide (see `ingest.service.ts`).
+ */
+export function ingestRecordOrigin(eventType: number, eventCode: number, claimed: number): 1 | 2 {
+  if (isAutomaticDeviceEvent(eventType, eventCode)) return RECORD_ORIGIN.ELD_AUTOMATIC;
+  return claimed === RECORD_ORIGIN.ELD_AUTOMATIC ? RECORD_ORIGIN.ELD_AUTOMATIC : RECORD_ORIGIN.DRIVER_ENTERED;
+}
+
 /** §5.5 — Appendix A sequence range: 1..65535, wrapping back to 1. */
 export const EVENT_SEQUENCE_MIN = 1;
 export const EVENT_SEQUENCE_MAX = 65535;

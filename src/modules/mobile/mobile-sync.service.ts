@@ -6,6 +6,7 @@ import { Queue } from 'bullmq';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
 import { RequestContext, type ContextUser } from '../../core/context/request-context';
+import { DriverSessionRepository } from '../auth/repositories/driver-session.repository';
 import { AuditRepository } from '../audit/audit.repository';
 import { EventBusService } from '../../core/events/event-bus.service';
 import { QUEUES } from '../../core/queue/queue.constants';
@@ -48,6 +49,11 @@ interface DelegationGrant {
   evidence: 'CO_DRIVER_PAIRING' | 'ELD_LOGIN_SESSION';
 }
 
+/** Single-device (MD-196) — shape of the helper the auth module adds to `DriverSessionRepository`. */
+interface SessionBacklogSink {
+  setBacklog(sessionId: string, pendingCount: number | null, oldestPendingAt: Date | null): Promise<unknown>;
+}
+
 @Injectable()
 export class MobileSyncService {
   private readonly logger = new Logger(MobileSyncService.name);
@@ -65,11 +71,15 @@ export class MobileSyncService {
     private readonly events: EventBusService,
     @InjectQueue(QUEUES.ALERT) private readonly alertQueue: Queue,
     @Optional() private readonly audit?: AuditRepository,
+    // TODO(single-device): AuthModule must export DriverSessionRepository and add `setBacklog`;
+    // until then this stays undefined / the call below is skipped (optional injection).
+    @Optional() private readonly sessions?: DriverSessionRepository,
   ) {}
 
   async sync(driverId: string, dto: SyncRequestDto, actor: ContextUser, now: Date = new Date()): Promise<SyncResult> {
     this.assertBatchSize(dto);
     await this.checkBacklog(driverId, dto.backlog, now);
+    await this.recordSessionBacklog(actor, dto.backlog);
 
     const accepted: string[] = [];
     const rejected: Array<{ clientId: string; code: string; message?: string }> = [];
@@ -153,12 +163,14 @@ export class MobileSyncService {
           target,
           { ...change.payload, annotation: change.payload.annotation ?? DEFAULT_DUTY_STATUS_ANNOTATION },
           actor,
+          // D-163 — when the driver made it on the device: flags late records of a replaced device.
+          { occurredAt: change.occurredAt },
         );
         if (grant) await this.auditDelegation(driverId, change, grant, actor);
         return result;
       }
       case 'log_entry': {
-        const result = await this.logs.createLogEntry(target, change.payload, actor);
+        const result = await this.logs.createLogEntry(target, change.payload, actor, { occurredAt: change.occurredAt });
         if (grant) await this.auditDelegation(driverId, change, grant, actor);
         return result;
       }
@@ -318,6 +330,19 @@ export class MobileSyncService {
     this.backlogAlertedToday.set(driverId, dayKey);
 
     await this.raiseAlert('alert.sync_backlog', { driverId, days: backlog.days, bytes: backlog.bytes });
+  }
+
+  /** Single-device (MD-196) — keep the caller's unsent-record count on its DriverSession so the
+   *  next device's login can warn "records on <label> will arrive when it is online". Best-effort. */
+  private async recordSessionBacklog(actor: ContextUser, backlog: SyncRequestDto['backlog']): Promise<void> {
+    if (!backlog || actor.type !== 'driver' || !actor.sessionId || backlog.pendingCount === undefined) return;
+    const sink = this.sessions as unknown as Partial<SessionBacklogSink> | undefined;
+    if (typeof sink?.setBacklog !== 'function') return;
+    try {
+      await sink.setBacklog(actor.sessionId, backlog.pendingCount, backlog.oldestPendingAt ?? null);
+    } catch (err) {
+      this.logger.warn({ err }, 'Failed to store session backlog');
+    }
   }
 
   private async raiseAlert(name: string, payload: Record<string, unknown>): Promise<void> {

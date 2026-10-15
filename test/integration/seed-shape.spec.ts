@@ -23,10 +23,6 @@ const prisma = new PrismaClient();
  * `db:reset:dev && db:seed` by hand.
  */
 const NOT_LEAKED_ROLE = { key: { not: { startsWith: 'E2E_AUDIT_ROLE_' } } };
-const NOT_LEAKED_VEHICLE = {
-  unitNumber: { not: { startsWith: 'TEST-' } },
-  AND: [{ unitNumber: { not: { startsWith: 'DBG2-' } } }],
-};
 const NOT_LEAKED_DRIVER = { username: { not: { startsWith: 'test_driver_' } } };
 
 describe('seed shape matches tz.md §22.3.6 (Figma demo dataset)', () => {
@@ -54,7 +50,10 @@ describe('seed shape matches tz.md §22.3.6 (Figma demo dataset)', () => {
   });
 
   it('has 69 vehicles, including unit #101 (Freightliner Cascadia) and unit #110 OUT_OF_SERVICE', async () => {
-    expect(await prisma.vehicle.count({ where: NOT_LEAKED_VEHICLE })).toBe(69);
+    // seed.ts creates exactly units 101..169; count those, not every row (D-166: ad-hoc units such as
+    // 201 `twodevice`, 90x, TRK-* and junk-named test units live in the same table).
+    const seedUnits = Array.from({ length: 69 }, (_, i) => String(101 + i));
+    expect(await prisma.vehicle.count({ where: { unitNumber: { in: seedUnits }, deletedAt: null } })).toBe(69);
     const unit101 = await prisma.vehicle.findFirst({ where: { unitNumber: '101', deletedAt: null } });
     expect(unit101?.make).toBe('Freightliner');
     expect(unit101?.model).toBe('Cascadia');
@@ -107,9 +106,16 @@ describe('seed shape matches tz.md §22.3.6 (Figma demo dataset)', () => {
       where: { driverId: john?.id },
       orderBy: { logDate: 'desc' },
     });
-    expect(dailyLogs.length).toBe(8); // 8-day HOS log (tz.md §22.3.6)
+    expect(dailyLogs.length).toBeGreaterThanOrEqual(8); // 8-day HOS log (tz.md §22.3.6)
 
-    const today = dailyLogs[0];
+    // seed.ts anchors "John's day" to the day the seed ran (D-166); the calendar has moved on since,
+    // so pick the log carrying the seeded DRIVING_11 violation instead of the newest header.
+    const seeded = await prisma.hosViolation.findFirst({
+      where: { driverId: john?.id, type: 'DRIVING_11' },
+      orderBy: { logDate: 'desc' },
+    });
+    expect(seeded).not.toBeNull();
+    const today = dailyLogs.find((l) => l.logDate.getTime() === seeded!.logDate.getTime())!;
     expect(today.drivingSec).toBe(11 * 3600 + 26 * 60);
     expect(today.hasViolation).toBe(true);
 

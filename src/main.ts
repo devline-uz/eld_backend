@@ -73,12 +73,27 @@ async function bootstrap(): Promise<void> {
 
   if (config.get('SWAGGER_ENABLED')) setupSwagger(app, config.get('API_PREFIX'));
 
-  // Graceful shutdown: SIGTERM drains in-flight requests before the process exits.
-  app.enableShutdownHooks();
+  // Graceful shutdown. Not app.enableShutdownHooks(): Nest runs onModuleDestroy (Prisma
+  // $disconnect) *before* it closes the HTTP server, so requests arriving during a pm2
+  // restart failed with "Engine is not yet connected". Stop accepting and drain first.
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+    process.once(signal, () => void shutdown(app, signal));
+  }
 
   const port = config.get('PORT');
   await app.listen(port, '0.0.0.0');
   app.get(Logger).log(`API listening on :${port} (${config.get('NODE_ENV')})`);
+}
+
+async function shutdown(app: INestApplication, signal: NodeJS.Signals): Promise<void> {
+  app.get(Logger).log(`${signal} received — draining HTTP before closing modules`);
+  const server = app.getHttpServer() as import('http').Server;
+  await new Promise<void>((resolve) => {
+    server.close(() => resolve());
+    server.closeIdleConnections();
+  });
+  await app.close();
+  process.exit(0);
 }
 
 /**

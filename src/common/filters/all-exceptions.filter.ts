@@ -37,6 +37,11 @@ export class AllExceptionsFilter implements ExceptionFilter {
       );
     }
 
+    // D-164 — clients back off on 429/503 by `Retry-After` (seconds). Set from
+    // `details.retryAfterSec`; a 503 without one still gets a short default.
+    const retryAfter = retryAfterSecFor(envelope);
+    if (retryAfter !== null) res.setHeader('Retry-After', String(retryAfter));
+
     res.status(envelope.statusCode).json(envelope);
   }
 
@@ -76,6 +81,19 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const prismaMapped = mapPrismaError(exception);
     if (prismaMapped) return { ...prismaMapped, traceId, timestamp };
 
+    // D-164 — pool exhausted / transaction could not start in time / DB unreachable: overload,
+    // not a client fault. 503 + Retry-After so the app retries instead of quarantining rows.
+    if (isTransientDbError(exception)) {
+      return {
+        statusCode: HttpStatus.SERVICE_UNAVAILABLE,
+        code: ERROR_CODES.SERVICE_UNAVAILABLE,
+        message: 'The service is temporarily overloaded — retry after the Retry-After delay.',
+        details: { retryAfterSec: TRANSIENT_DB_RETRY_AFTER_SEC },
+        traceId,
+        timestamp,
+      };
+    }
+
     // body-parser rejects an oversized body before Nest sees it and throws a plain
     // `PayloadTooLargeError` (not an HttpException). Ingest batches are capped at 1 MB
     // (TZ §7.3 rule 2), so this must answer 413, not 500.
@@ -97,6 +115,30 @@ export class AllExceptionsFilter implements ExceptionFilter {
       timestamp,
     };
   }
+}
+
+/** Default `Retry-After` for a 503 that names none, and for transient DB errors. */
+export const TRANSIENT_DB_RETRY_AFTER_SEC = 5;
+
+/** Prisma codes that mean "busy right now": P1001 can't reach DB, P1002 timed out, P1017 connection
+ * closed, P2024 pool timeout, P2028 transaction API error (maxWait/timeout), P2034 write conflict
+ * or deadlock, P2037 too many database connections opened. */
+const TRANSIENT_PRISMA_CODES = new Set(['P1001', 'P1002', 'P1017', 'P2024', 'P2028', 'P2034', 'P2037']);
+
+export function isTransientDbError(exception: unknown): boolean {
+  if (exception instanceof Prisma.PrismaClientInitializationError) return true;
+  if (exception instanceof Prisma.PrismaClientKnownRequestError) return TRANSIENT_PRISMA_CODES.has(exception.code);
+  return false;
+}
+
+/** `Retry-After` seconds for a 429/503 envelope, `null` for anything else. */
+export function retryAfterSecFor(envelope: Pick<ErrorEnvelope, 'statusCode' | 'details'>): number | null {
+  const status: number = envelope.statusCode;
+  const unavailable = status === Number(HttpStatus.SERVICE_UNAVAILABLE);
+  if (!unavailable && status !== Number(HttpStatus.TOO_MANY_REQUESTS)) return null;
+  const raw = Number(envelope.details?.retryAfterSec);
+  if (Number.isFinite(raw) && raw > 0) return Math.ceil(raw);
+  return unavailable ? TRANSIENT_DB_RETRY_AFTER_SEC : 1;
 }
 
 function extractMessage(body: Record<string, unknown>, fallback: string): string {

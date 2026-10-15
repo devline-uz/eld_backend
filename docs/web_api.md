@@ -7,7 +7,7 @@ haydovchi-only route'lar bundan tashqari).
 
 PT SDK 6.11.1 bo'yicha web o'zgarishlari tafsiloti: `backend/docs/pt-sdk-6.11-web.md`.
 
-Jami: **205 ta endpoint**, 37 bo'lim.
+Jami: **221 ta endpoint**, 38 bo'lim.
 
 
 ## Umumiy qoidalar
@@ -39,21 +39,27 @@ Jami: **205 ta endpoint**, 37 bo'lim.
   - `GET /health/live` — Jarayon tirikligini tekshiradi (liveness). Process ishlab tursa doim javob beradi.
   - `GET /health/ready` — Tayyorlikni tekshiradi (readiness): baza javob bersagina instansiya trafik qabul qiladi.
   - `GET /health/deep` — Chuqur tekshiruv: baza, Redis va object storage parallel tekshiriladi.
-- [Autentifikatsiya](#bolim-auth) — 8 ta
+- [Autentifikatsiya](#bolim-auth) — 14 ta
   - `POST /api/auth/login` — Back-office foydalanuvchisi (web) email + parol bilan kiradi; access + refresh token qaytaradi.
   - `POST /api/auth/google` — Firebase orqali Google Sign-In. Avtomatik ro'yxatdan o'tkazmaydi — foydalanuvchi oldindan taklif qilingan bo'l
   - `POST /api/auth/refresh` — Refresh token'ni almashtiradi (har ishlatilganda yangisi beriladi, eskisi bekor bo'ladi).
   - `POST /api/auth/logout` — Berilgan refresh token sessiyasini bekor qiladi (chiqish).
   - `POST /api/auth/password/forgot` — Parolni tiklash tokenini so'raydi. Doim 200 (foydalanuvchi bor-yo'qligi oshkor qilinmaydi).
   - `POST /api/auth/password/reset` — /auth/password/forgot dan kelgan token bilan yangi parol o'rnatadi.
-  - `POST /api/auth/password/reset-code` — Web "Forgot password?" 1-qadam: faol back-office foydalanuvchiga 6 xonali kod emailga yuboradi (yo'q email → 404).
-  - `POST /api/auth/password/reset-code/confirm` — Web "Forgot password?" 2-qadam: kodni tekshiradi va yangi parolni o'rnatadi; barcha sessiyalar bekor qilinadi.
-  - `POST /api/auth/email/verify` — `PATCH /users/:id { email }` dan keyingi email o'zgarishini tasdiqlaydi.
+  - `POST /api/auth/password/reset-code` — Web "Forgot password?" step 1 — emails a 6-digit code to an ACTIVE back-office user.
+  - `POST /api/auth/password/reset-code/confirm` — Web "Forgot password?" step 2 — verifies the emailed code and sets the new password.
   - `GET /api/auth/me` — Joriy autentifikatsiyalangan subyekt (token claim'lari) + web topbar maydonlari.
+  - `POST /api/auth/email/verify` — B-84 — confirms a `PATCH /users/:id { email }` change from the link mailed to the NEW address.
+  - `POST /api/auth/email/cancel` — B-84 — "This wasn't me" from the notice mailed to a web user's OLD address.
+  - `POST /api/auth/driver/email/confirm` — Confirms a driver email change from the link mailed to the NEW address.
+  - `POST /api/auth/driver/email/verify` — B-29/B-31 — verifies `Driver.email` from the link mailed by `POST /drivers/:id/send-verification`.
+  - `POST /api/auth/driver/email/cancel` — "This wasn't me" from the notice mailed to the OLD address.
 - [Kompaniya (carrier)](#bolim-carrier) — 3 ta
   - `GET /api/carrier` — Kompaniya (carrier) profilini oladi — bitta qator.
   - `PATCH /api/carrier` — Kompaniya profilini yangilaydi (Settings → Company).
   - `GET /api/carrier/transfer-config` — eRODS transfer sozlamalari: timezone, Appendix A identifikatorlari, TEST/PRODUCTION rejimi (faqat o'qish).
+- [Audit log](#bolim-audit-log) — 1 ta
+  - `GET /api/audit-log` — Audit log yozuvlari, eng yangisi birinchi, cursor pagination.
 - [Biriktirmalar](#bolim-attachments) — 1 ta
   - `GET /api/attachments/{id}/presign` — Bitta biriktirma (rasm/fayl) uchun 15 daqiqalik presigned GET URL; DVIR/defekt/tiket bo'yicha ruxsat tekshiril
 - [Rollar](#bolim-roles) — 5 ta
@@ -62,13 +68,15 @@ Jami: **205 ta endpoint**, 37 bo'lim.
   - `GET /api/roles/{id}` — Bitta rolni oladi.
   - `PATCH /api/roles/{id}` — Custom rolni tahrirlaydi. ADMIN (tizim roli) o'zgartirilmaydi.
   - `DELETE /api/roles/{id}` — Custom rolni o'chiradi. ADMIN o'chirilmaydi.
-- [Foydalanuvchilar](#bolim-users) — 6 ta
+- [Foydalanuvchilar](#bolim-users) — 8 ta
   - `GET /api/users` — Back-office foydalanuvchilarini roli bilan ro'yxatlaydi.
   - `POST /api/users` — Yangi back-office foydalanuvchini taklif qiladi (audit qilinadi).
   - `GET /api/users/{id}` — Bitta foydalanuvchini oladi.
   - `PATCH /api/users/{id}` — Foydalanuvchini tahrirlaydi, rolini ham (rol o'zgarishi audit qilinadi).
   - `DELETE /api/users/{id}` — Back-office foydalanuvchisini o'chiradi.
   - `POST /api/users/{id}/resend-invite` — INVITED holatidagi foydalanuvchiga taklif emailini qayta yuboradi va 7 kunlik muddatni yangilaydi.
+  - `POST /api/users/{id}/email-change/resend` — B-84 — re-mails the confirm link of the pending email change (same request; the old-address cancel link stays 
+  - `DELETE /api/users/{id}/email-change` — B-84 — cancels the pending email change; the current email stays and the emailed links stop working.
 - [Mening profilim (/me)](#bolim-me) — 9 ta
   - `GET /api/me/profile` — Joriy foydalanuvchi profili.
   - `PATCH /api/me/profile` — Joriy profilni yangilaydi (faqat ism/telefon, rol emas).
@@ -79,34 +87,33 @@ Jami: **205 ta endpoint**, 37 bo'lim.
   - `DELETE /api/me/avatar` — Profil avatarini o'chiradi.
   - `GET /api/me/preferences` — UI sozlamalari: til, timezone, saqlangan view'lar, jadval ustunlari.
   - `PUT /api/me/preferences` — UI sozlamalarini to'liq almashtiradi.
-- [Audit log](#bolim-audit-log) — 1 ta
-  - `GET /api/audit-log` — Audit log yozuvlari, eng yangisi birinchi, cursor pagination.
 - [API kalitlari](#bolim-api-keys) — 4 ta
   - `GET /api/api-keys` — API kalitlari ro'yxati — ochiq kalit yoki to'liq hash hech qachon qaytmaydi.
   - `POST /api/api-keys` — API kalit yaratadi. Ochiq kalit faqat bir marta qaytariladi.
   - `PATCH /api/api-keys/{id}/scopes` — Mavjud API kalitining scope'larini o'zgartiradi.
   - `DELETE /api/api-keys/{id}` — API kalitini darhol bekor qiladi.
-- [Haydovchilar](#bolim-drivers) — 15 ta
+- [Haydovchilar](#bolim-drivers) — 18 ta
   - `GET /api/drivers` — Haydovchilar ro'yxati: CDL, istisnolar, holat.
   - `POST /api/drivers` — Haydovchi yaratadi (CDL, home terminal timezone, HOS ruleset, istisno bayroqlari).
   - `GET /api/drivers/export` — Barcha haydovchilarni `POST /drivers/import` qabul qiladigan formatda eksport qiladi (parolsiz).
   - `GET /api/drivers/roster` — W-06 roster: har haydovchi uchun HOS soatlari, joriy duty status, unit va ochiq violation soni.
   - `GET /api/drivers/{id}/hos` — Bitta haydovchining 4 ta HOS soati, HOS engine hozir hisoblaydi.
+  - `POST /api/drivers/{id}/hos/adverse-driving` — BUG-001 — invokes adverse driving conditions (49 CFR §395.1(b)(1)) for one RODS day of a permitted driver, wit
   - `GET /api/drivers/{id}` — Bitta haydovchi profili.
   - `PATCH /api/drivers/{id}` — Haydovchi profili, CDL yoki istisno bayroqlarini yangilaydi.
   - `DELETE /api/drivers/{id}` — Haydovchini soft-delete qiladi (TERMINATED, unit ajratiladi). Hech qachon to'liq o'chirmaydi.
   - `POST /api/drivers/import` — Haydovchilarni ommaviy import qiladi; `username` bo'yicha upsert.
+  - `POST /api/drivers/{id}/email-change/resend` — Re-mails the confirm link of the pending driver email change (same request; the old-address cancel link stays 
+  - `DELETE /api/drivers/{id}/email-change` — Cancels the pending driver email change; the current email stays.
   - `POST /api/drivers/{id}/reset-password` — Dispetcher tomonidan haydovchi ilova parolini tiklash (email yoki og'zaki aytiladigan bir martalik kod). Audit
   - `POST /api/drivers/{id}/send-verification` — `Driver.email` ni tasdiqlash tokenini emailga yuboradi.
   - `POST /api/drivers/{id}/verify-email` — `send-verification` tokenini tasdiqlaydi; `emailVerifiedAt` o'rnatiladi.
   - `GET /api/drivers/{id}/documents` — Haydovchi hujjatlari ro'yxati (CDL skani, medical card va h.k.).
   - `POST /api/drivers/{id}/documents` — Hujjat metadata'sini yozadi va fayl yuklash uchun presigned PUT URL qaytaradi.
   - `DELETE /api/drivers/{id}/documents/{docId}` — Haydovchi hujjatini o'chiradi (storage obyekti va qator).
-- [eRODS transferlar](#bolim-transfers) — 4 ta
-  - `POST /api/transfers` — eRODS transfer so'raydi: §395 Appendix A output faylini yaratadi, tekshiradi, saqlaydi va yuborishni navbatga 
-  - `GET /api/transfers` — Transferlar tarixi. `TEST_ONLY` — yaratilgan, lekin yuborilmagan fayllar.
-  - `GET /api/transfers/{id}` — Bitta transfer yozuvi.
-  - `GET /api/transfers/{id}/download` — Yaratilgan Appendix A faylini rasmiy fayl nomi bilan yuklab beradi (TEST rejimda ham ishlaydi).
+- [HOS violation'lar](#bolim-violations) — 2 ta
+  - `GET /api/violations` — Flot HOS violation'lari (default status=OPEN), haydovchi ismi va unit bilan.
+  - `POST /api/violations/{id}/resolve` — OPEN violation'ni 4–60 belgilik izoh bilan yopadi. Audit qilinadi; RODS yozuvlari o'zgarmaydi.
 - [Unitlar (vehicles)](#bolim-vehicles) — 14 ta
   - `GET /api/vehicles` — Unitlar ro'yxati — unit raqami, VIN, odometr, holat.
   - `POST /api/vehicles` — Unit qo'shadi (VIN, qo'shilgan paytdagi dashboard odometri).
@@ -168,18 +175,20 @@ Jami: **205 ta endpoint**, 37 bo'lim.
   - `POST /api/logs/{driverId}/certify` — RODS kunlarini sertifikatlaydi. Back-office uchun `hosCertifyOnBehalf = FULL` kerak va audit qilinadi.
 - [DTC (nosozlik kodlari)](#bolim-dtc) — 1 ta
   - `GET /api/vehicles/{id}/dtc` ♻️ — Unit nosozlik kodlari (DTC), default faqat ochiqlari. 🆕 qatorda `code`, `bus`, `milOn`, `conversionMethod`, `a
-- [Xabarlar](#bolim-messaging) — 6 ta
+- [Xabarlar](#bolim-messaging) — 8 ta
   - `GET /api/conversations` — Chaqiruvchining suhbatlari.
   - `POST /api/conversations` — Berilgan ishtirokchilar bilan shaxsiy yoki guruh suhbati ochadi.
-  - `POST /api/conversations/attachments` — MB-9: chat ovoz/fayl yuklash (multipart), `messaging` FULL.
+  - `POST /api/conversations/attachments` — MB-9 — uploads a chat voice message (AAC/M4A) or file (PNG/JPEG/PDF), max 10 MB; returns the attachment id to 
   - `GET /api/conversations/{id}/messages` — Suhbatdagi xabarlar (chaqiruvchi ishtirokchi bo'lishi shart).
   - `POST /api/conversations/{id}/messages` — Suhbatga xabar yuboradi.
+  - `POST /api/conversations/{id}/messages/audio` — Sends a voice message into a conversation.
   - `POST /api/conversations/{id}/read` — Chaqiruvchi uchun suhbatni hozirgacha o'qilgan qiladi.
   - `POST /api/messages/broadcast` — Bitta xabarni ko'p haydovchiga yuboradi (har haydovchiga alohida suhbat).
-- [ELD qurilmalar](#bolim-devices) — 12 ta
+- [ELD qurilmalar](#bolim-devices) — 13 ta
   - `GET /api/devices` ♻️ — PT30/PT40 qurilmalar ro'yxati: BLE holati, firmware. 🆕 SDK TrackerInfo maydonlari (productName, bleFirmware, i
   - `POST /api/devices` ♻️ — PT30/PT40 qurilmani ro'yxatga oladi. 🆕 ixtiyoriy `periodicNoBleSec` 10–480 s, `harshAccelMg`/`harshBrakeMg`/`h
   - `GET /api/devices/export` — Barcha qurilmalarni `POST /devices/import` formatida eksport qiladi.
+  - `GET /api/devices/counts` — UI-012 — fleet-wide device connection counts (RETIRED excluded; list filters ignored). `connected` = stored CO
   - `GET /api/devices/{id}` ♻️ — Bitta qurilma. 🆕 yangi TrackerInfo maydonlari va `systemVars` bilan.
   - `PATCH /api/devices/{id}` ♻️ — Qurilmani tahrirlaydi (BLE MAC, periodik sozlamalar, holat). 🆕 `periodicNoBleSec`, `harshAccelMg`, `harshBrake
   - `DELETE /api/devices/{id}` — Qurilmani iste'moldan chiqaradi (RETIRED, ajratiladi). To'liq o'chirmaydi.
@@ -196,12 +205,14 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 - [Unidentified driving](#bolim-unidentified) — 5 ta
   - `GET /api/unidentified` — Unidentified driving segmentlari ro'yxati.
   - `GET /api/unidentified/{id}` — Bitta segment va uning ortidagi §395 yozuvlari.
-  - `POST /api/unidentified/{id}/assign` — Segmentni haydovchiga biriktiradi (ASSIGNED, audit). `requireDriverConfirmation` bilan haydovchi tasdig'i so'r
+  - `POST /api/unidentified/{id}/assign` — Segmentni haydovchiga taklif qiladi (PENDING_CONFIRMATION). Yozuvlar haydovchi ilovada tasdiqlagandan keyingin
   - `POST /api/unidentified/{id}/annotate` — Segmentga izoh qo'shadi (max 60 belgi).
   - `POST /api/unidentified/{id}/reject` — Biriktirishni rad etadi: yozuvlar pool'ga qaytadi (recordOrigin = 4, driverId = null). Hech narsa o'chirilmayd
-- [HOS violation'lar](#bolim-violations) — 2 ta
-  - `GET /api/violations` — Flot HOS violation'lari (default status=OPEN), haydovchi ismi va unit bilan.
-  - `POST /api/violations/{id}/resolve` — OPEN violation'ni 4–60 belgilik izoh bilan yopadi. Audit qilinadi; RODS yozuvlari o'zgarmaydi.
+- [eRODS transferlar](#bolim-transfers) — 4 ta
+  - `POST /api/transfers` — eRODS transfer so'raydi: §395 Appendix A output faylini yaratadi, tekshiradi, saqlaydi va yuborishni navbatga 
+  - `GET /api/transfers` — Transferlar tarixi. `TEST_ONLY` — yaratilgan, lekin yuborilmagan fayllar.
+  - `GET /api/transfers/{id}` — Bitta transfer yozuvi.
+  - `GET /api/transfers/{id}/download` — Yaratilgan Appendix A faylini rasmiy fayl nomi bilan yuklab beradi (TEST rejimda ham ishlaydi).
 - [DVIR](#bolim-dvir) — 6 ta
   - `GET /api/dvir` — Topshirilgan DVIR'lar ro'yxati.
   - `GET /api/dvir/compliance` — Sana oralig'ida kutilgan va topshirilgan PRE_TRIP DVIR'lar (W-14 compliance).
@@ -246,8 +257,9 @@ Jami: **205 ta endpoint**, 37 bo'lim.
   - `DELETE /api/trips/{id}` — Tripni stoplari bilan butunlay o'chiradi (IN_PROGRESS o'chirilmaydi).
   - `POST /api/trips/{id}/assign` — Tripga haydovchi/unit/treyler biriktiradi yoki almashtiradi.
   - `POST /api/trips/auto-assign` — Biriktirilmagan har bir yukni navbatdagi bo'sh ACTIVE haydovchiga beradi.
-- [Safety](#bolim-safety) — 4 ta
+- [Safety](#bolim-safety) — 5 ta
   - `GET /api/safety/events` ♻️ — Harsh-driving hodisalari ro'yxati. 🆕 qurilma akselerometri (EV_MEMS_*) dan kelgan HARSH_ACCEL/HARSH_BRAKING/HA
+  - `GET /api/safety/summary` — CODE-040 — Safety page KPIs: event counts over the rolling 30 days (`current`) and the 30 days before (`previo
   - `PATCH /api/safety/events/{id}` — Safety hodisasini REVIEWED/DISMISSED qiladi.
   - `GET /api/safety/scorecard` — Flot safety bahosi va haydovchilar reytingi (70 dan pasti belgilanadi), oldingi davr bilan trend.
   - `POST /api/safety/coaching` — "Assign coaching": hodisani izoh bilan COACHED qilib yopadi, yoki `driverId` bilan haydovchi darajasida.
@@ -280,6 +292,8 @@ Jami: **205 ta endpoint**, 37 bo'lim.
   - `GET /api/reports/{id}` — Hisobot ishi holati; READY bo'lsa 7 kunlik presigned yuklash URL'i.
   - `GET /api/reports/{id}/download` — READY hisobot uchun yangi presigned URL (7 kun). Tayyor bo'lmasa 409.
   - `GET /api/reports/{id}/file` — READY hisobot faylini API orqali yuklab beradi (`text/csv` yoki `application/pdf`). Web shuni ishlatadi.
+- [client-errors](#bolim-client-errors) — 1 ta
+  - `POST /api/client-errors` — Report client-side errors from the admin panel or the driver app (D-158).
 
 <a id="bolim-health"></a>
 
@@ -339,6 +353,7 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 
 - **Auth:** Ochiq (token kerak emas)
 - **operationId:** `HealthController_deep` · original: _Deep probe — database, Redis and object storage checked in parallel._
+- **Izoh (backend):** CODE-082 — internal only: a private/loopback caller or `Authorization: Bearer <METRICS_TOKEN>`; anyone else gets 404.
 
 **Javob `200`:** Database, Redis and object storage checked in parallel.
 
@@ -395,7 +410,7 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 }
 ```
 
-**Xatolar:** `401` INVALID_CREDENTIALS — Email or password is incorrect. · `403` PASSWORD_LOGIN_DISABLED — AUTH_MODE=production — sign in with Google instead (B-25). · `422` VALIDATION_FAILED — Request validation failed. · `423` ACCOUNT_LOCKED — Too many failed attempts — the account is temporarily locked. · `429` RATE_LIMITED — Login is limited to 5 attempts per minute per IP (TZ §6.5).
+**Xatolar:** `401` INVALID_CREDENTIALS — Email or password is incorrect. · `403` PASSWORD_LOGIN_DISABLED — AUTH_MODE=production — sign in with Google instead (B-25). · `422` VALIDATION_FAILED — Request validation failed. · `423` ACCOUNT_LOCKED — CODE-082 — 10 wrong passwords in a row lock the account for 15 minutes (`details.retryAfterSec`). Only a caller who send… · `429` RATE_LIMITED — Login is limited to 5 attempts per minute per IP (TZ §6.5).
 
 ---
 
@@ -434,6 +449,7 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 - **Auth:** Ochiq (token kerak emas)
 - **Ekran:** `{'id': 'web/sign-in', 'title': 'Sign in', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.3'}`
 - **operationId:** `AuthController_refresh` · original: _Rotates a refresh token (TZ §6.5 — rotated on every use)._
+- **Izoh (backend):** MG-32 — replaying a just-rotated token within REFRESH_REUSE_GRACE_SECONDS (default 60) returns the SAME successor pair (201). Later replay of a rotated token = 401 REFRESH_TOKEN_REUSED and only that token family is revoked; other devices stay signed in. A token revoked by logout/admin/password reset = 401 TOKEN_INVALID.
 
 **Body** (`application/json`):
 
@@ -456,7 +472,7 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 }
 ```
 
-**Xatolar:** `401` REFRESH_TOKEN_REUSED — This refresh token was already rotated — the whole session family is revoked (TZ §6.5). · `422` VALIDATION_FAILED — Request validation failed. · `429` RATE_LIMITED — Refresh is limited to 30 requests per minute per IP.
+**Xatolar:** `401` REFRESH_TOKEN_REUSED — This refresh token was already rotated (outside the grace window) — its session family is revoked; other sessions … · `422` VALIDATION_FAILED — Request validation failed. · `429` RATE_LIMITED — Refresh is limited to 30 requests per minute per IP.
 
 ---
 
@@ -483,7 +499,7 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 }
 ```
 
-**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `422` VALIDATION_FAILED — Request validation failed.
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — USER_CONTEXT_REQUIRED — an API key has no session to sign out of. · `422` VALIDATION_FAILED — Request validation failed.
 
 ---
 
@@ -542,68 +558,68 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 
 ### `POST /api/auth/password/reset-code`
 
-**Nima qiladi:** Web "Forgot password?" 1-qadam. Faqat back-office `User` (haydovchi emas). Email ACTIVE foydalanuvchiga tegishli bo'lsa, 6 xonali bir martalik kod emailga yuboriladi (bazada faqat HMAC, 15 daqiqa amal qiladi, 5 ta noto'g'ri urinish, yangi kod eskisini bekor qiladi). `AUTH_MODE=production` da `POST /auth/login` kabi 403 bilan rad etiladi.
-
-- **Auth:** Ochiq (token kerak emas) · **Throttle:** 5/daq/IP, bitta akkauntga 60 soniyada 1 kod
-- **operationId:** `AuthController_requestPasswordResetCode`
-
-**Body:** `{ "email": "sarah.chen@universal-logistics.example" }`
-
-**Javob `200`:**
-
-```json
-{
-  "success": true,
-  "email": "sarah.chen@universal-logistics.example",
-  "expiresInSec": 900,
-  "resendAfterSec": 60
-}
-```
-
-`code` maydoni faqat `DEV_ECHO_SECRETS=true` va `NODE_ENV!=production` bo'lganda qaytadi.
-
-**Xatolar:** `404` NOT_FOUND — No account found with this email (`details.email`). · `403` PASSWORD_LOGIN_DISABLED · `422` VALIDATION_FAILED · `429` RATE_LIMITED (`details.retryAfterSec` — resend cooldown) · `503` SERVICE_UNAVAILABLE — email yuborilmadi.
-
----
-
-### `POST /api/auth/password/reset-code/confirm`
-
-**Nima qiladi:** Web "Forgot password?" 2-qadam. Kodni tekshiradi, yangi parolni Argon2id bilan saqlaydi, kodni ishlatilgan deb belgilaydi va foydalanuvchining barcha refresh sessiyalarini bekor qiladi. Audit: `PASSWORD_RESET`.
-
-- **Auth:** Ochiq (token kerak emas) · **Throttle:** 10/daq/IP
-- **operationId:** `AuthController_confirmPasswordResetCode`
-
-**Body:** `{ "email": "…", "code": "123456", "newPassword": "8–128 belgi" }`
-
-**Javob `200`:** `{ "success": true }`
-
-**Xatolar:** `422` RESET_CODE_INVALID — `details.code`, `details.attemptsRemaining` · `422` RESET_CODE_EXPIRED — muddati o'tgan / ishlatilgan / 5 urinishdan keyin bloklangan · `422` VALIDATION_FAILED · `403` PASSWORD_LOGIN_DISABLED · `429` RATE_LIMITED.
-
----
-
-### `POST /api/auth/email/verify`
-
-**Nima qiladi:** `PATCH /users/:id { email }` dan keyingi email o'zgarishini tasdiqlaydi.
+**Nima qiladi:** Web "Forgot password?" step 1 — emails a 6-digit code to an ACTIVE back-office user.
 
 - **Auth:** Ochiq (token kerak emas)
 - **Ekran:** `{'id': 'web/sign-in', 'title': 'Sign in', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.3'}`
-- **operationId:** `AuthController_verifyEmailChange` · original: _B-84 — completes a `PATCH /users/:id { email }` re-verification._
+- **operationId:** `AuthController_requestPasswordResetCode` · original: _Web "Forgot password?" step 1 — emails a 6-digit code to an ACTIVE back-office user._
+- **Izoh (backend):** Back-office `User` accounts only (drivers use `/auth/driver/password/*`). CODE-081 — always the same 200 body, so the endpoint never reveals whether an account exists: an unknown, INVITED or DISABLED email gets no code; a repeat within 60 s keeps the live code and mails nothing; inside the `USER_EMAIL_CHANGE_HOLD_HOURS` hold after an email change no code is mailed and the org administrators get an in-app notice instead. The code is stored as an HMAC, expires in 15 minutes, allows 5 wrong guesses and replaces any earlier code. Refused with 403 PASSWORD_LOGIN_DISABLED when AUTH_MODE=production, exactly like `POST /auth/login`.
 
 **Body** (`application/json`):
 
 | Maydon | Turi | Majburiy | Cheklov | Izoh |
 |---|---|---|---|---|
-| `token` | string | ha | ≥ 1 belgi |  |
+| `email` | string (email) | ha | ≤ 254 belgi |  |
 
-**Javob `200`:** 
+**Javob `200`:** Same body whether or not a code was mailed (CODE-081). `code` is present only with DEV_ECHO_SECRETS=true outside production, and only when one was actually issued.
 
 ```json
 {
-  "success": true
+  "data": {
+    "success": true,
+    "email": "sarah.chen@universal-logistics.example",
+    "expiresInSec": 900,
+    "resendAfterSec": 60
+  },
+  "traceId": "01J8X3QK9Z0000000000000000",
+  "timestamp": "2026-10-08T15:41:00.000Z"
 }
 ```
 
-**Xatolar:** `401` TOKEN_INVALID — The verification link is invalid or expired. · `409` CONFLICT — Another user already has this email. · `422` VALIDATION_FAILED — Request validation failed.
+**Xatolar:** `403` PASSWORD_LOGIN_DISABLED — AUTH_MODE=production — password sign-in (and reset) is off; use Google. · `422` VALIDATION_FAILED — Request validation failed. · `429` RATE_LIMITED — 5 requests per minute per IP. · `503` SERVICE_UNAVAILABLE — We couldn't send the email right now.
+
+---
+
+### `POST /api/auth/password/reset-code/confirm`
+
+**Nima qiladi:** Web "Forgot password?" step 2 — verifies the emailed code and sets the new password.
+
+- **Auth:** Ochiq (token kerak emas)
+- **Ekran:** `{'id': 'web/sign-in', 'title': 'Sign in', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.3'}`
+- **operationId:** `AuthController_confirmPasswordResetCode` · original: _Web "Forgot password?" step 2 — verifies the emailed code and sets the new password._
+- **Izoh (backend):** On success the code is consumed, the password is re-hashed (Argon2id) and every refresh session of the user is revoked. Wrong code → 422 RESET_CODE_INVALID (`details.code`, `details.attemptsRemaining`); expired / used / locked after 5 wrong guesses → 422 RESET_CODE_EXPIRED. Password policy: 8–128 characters (422 VALIDATION_FAILED).
+
+**Body** (`application/json`):
+
+| Maydon | Turi | Majburiy | Cheklov | Izoh |
+|---|---|---|---|---|
+| `email` | string (email) | ha | ≤ 254 belgi |  |
+| `code` | string | ha | pattern `^\d{6}$` |  |
+| `newPassword` | string | ha | 8–128 belgi |  |
+
+**Javob `200`:** Password changed.
+
+```json
+{
+  "data": {
+    "success": true
+  },
+  "traceId": "01J8X3QK9Z0000000000000000",
+  "timestamp": "2026-10-08T15:41:00.000Z"
+}
+```
+
+**Xatolar:** `403` PASSWORD_LOGIN_DISABLED — AUTH_MODE=production — password sign-in (and reset) is off; use Google. · `422` RESET_CODE_INVALID — Incorrect code. 4 attempts left. · `429` RATE_LIMITED — 10 requests per minute per IP.
 
 ---
 
@@ -637,6 +653,143 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 
 ---
 
+### `POST /api/auth/email/verify`
+
+**Nima qiladi:** B-84 — confirms a `PATCH /users/:id { email }` change from the link mailed to the NEW address.
+
+- **Auth:** Ochiq (token kerak emas)
+- **operationId:** `UserEmailController_verify` · original: _B-84 — confirms a `PATCH /users/:id { email }` change from the link mailed to the NEW address._
+- **Izoh (backend):** Posted by the web page `/account/email/confirm`. The token is bound to the user, the pending address and the request time, so a newer request or a cancel invalidates it. Swaps `email`, starts the `USER_EMAIL_CHANGE_HOLD_HOURS` hold, unbinds the old Google identity and revokes every session. `alreadyVerified: true` on a repeat click (nothing written).
+
+**Body** (`application/json`):
+
+| Maydon | Turi | Majburiy | Cheklov | Izoh |
+|---|---|---|---|---|
+| `token` | string | ha | ≥ 1 belgi |  |
+
+**Javob `200`:** 
+
+```json
+{
+  "success": true,
+  "email": "new@example.com",
+  "alreadyVerified": false
+}
+```
+
+**Xatolar:** `401` TOKEN_INVALID — This confirmation link is no longer valid. · `409` EMAIL_TAKEN — A user with this email address already exists. · `422` VALIDATION_FAILED — Request validation failed. · `429` RATE_LIMITED — 10 requests per minute per IP.
+
+---
+
+### `POST /api/auth/email/cancel`
+
+**Nima qiladi:** B-84 — "This wasn't me" from the notice mailed to a web user's OLD address.
+
+- **Auth:** Ochiq (token kerak emas)
+- **operationId:** `UserEmailController_cancel` · original: _B-84 — "This wasn't me" from the notice mailed to a web user's OLD address._
+- **Izoh (backend):** Posted by the web page `/account/email/cancel`. Cancels a pending change (`result: CANCELLED`), or inside the hold window reverts a confirmed one and revokes every session (`result: REVERTED`).
+
+**Body** (`application/json`):
+
+| Maydon | Turi | Majburiy | Cheklov | Izoh |
+|---|---|---|---|---|
+| `token` | string | ha | ≥ 1 belgi |  |
+
+**Javob `200`:** 
+
+```json
+{
+  "success": true,
+  "result": "CANCELLED"
+}
+```
+
+**Xatolar:** `401` TOKEN_INVALID — This link can no longer cancel the change. Contact your administrator. · `409` EMAIL_TAKEN — A user with this email address already exists. · `422` VALIDATION_FAILED — Request validation failed. · `429` RATE_LIMITED — 10 requests per minute per IP.
+
+---
+
+### `POST /api/auth/driver/email/confirm`
+
+**Nima qiladi:** Confirms a driver email change from the link mailed to the NEW address.
+
+- **Auth:** Ochiq (token kerak emas)
+- **operationId:** `DriverEmailController_confirm` · original: _Confirms a driver email change from the link mailed to the NEW address._
+- **Izoh (backend):** Swaps `email` to the pending address, sets `emailVerifiedAt`, starts the reset hold and revokes every driver session.
+
+**Body** (`application/json`):
+
+| Maydon | Turi | Majburiy | Cheklov | Izoh |
+|---|---|---|---|---|
+| `token` | string | ha | 1–4096 belgi |  |
+
+**Javob `200`:** 
+
+```json
+{
+  "success": true,
+  "email": "new@example.com"
+}
+```
+
+**Xatolar:** `401` TOKEN_INVALID — This confirmation link is no longer valid. · `409` EMAIL_TAKEN — A driver with this email address already exists. · `422` VALIDATION_FAILED — Request validation failed. · `429` RATE_LIMITED — 10 requests per minute per IP.
+
+---
+
+### `POST /api/auth/driver/email/verify`
+
+**Nima qiladi:** B-29/B-31 — verifies `Driver.email` from the link mailed by `POST /drivers/:id/send-verification`.
+
+- **Auth:** Ochiq (token kerak emas)
+- **operationId:** `DriverEmailController_verify` · original: _B-29/B-31 — verifies `Driver.email` from the link mailed by `POST /drivers/:id/send-verification`._
+- **Izoh (backend):** Public: the driver id comes from the signed token, which is bound to the driver and the address it was sent to. Sets `emailVerifiedAt`; `alreadyVerified: true` on a repeat click (nothing written).
+
+**Body** (`application/json`):
+
+| Maydon | Turi | Majburiy | Cheklov | Izoh |
+|---|---|---|---|---|
+| `token` | string | ha | 1–4096 belgi |  |
+
+**Javob `200`:** 
+
+```json
+{
+  "success": true,
+  "email": "jsmith@example.com",
+  "alreadyVerified": false
+}
+```
+
+**Xatolar:** `401` TOKEN_EXPIRED — Token expired. · `422` VALIDATION_FAILED — Request validation failed. · `429` RATE_LIMITED — 10 requests per minute per IP.
+
+---
+
+### `POST /api/auth/driver/email/cancel`
+
+**Nima qiladi:** "This wasn't me" from the notice mailed to the OLD address.
+
+- **Auth:** Ochiq (token kerak emas)
+- **operationId:** `DriverEmailController_cancel` · original: _"This wasn't me" from the notice mailed to the OLD address._
+- **Izoh (backend):** Cancels a pending change (`result: CANCELLED`), or inside the hold window reverts a confirmed one and revokes every driver session (`result: REVERTED`).
+
+**Body** (`application/json`):
+
+| Maydon | Turi | Majburiy | Cheklov | Izoh |
+|---|---|---|---|---|
+| `token` | string | ha | 1–4096 belgi |  |
+
+**Javob `200`:** 
+
+```json
+{
+  "success": true,
+  "result": "CANCELLED"
+}
+```
+
+**Xatolar:** `401` TOKEN_INVALID — This link can no longer cancel the change. Contact your carrier. · `409` EMAIL_TAKEN — A driver with this email address already exists. · `422` VALIDATION_FAILED — Request validation failed. · `429` RATE_LIMITED — 10 requests per minute per IP.
+
+---
+
 <a id="bolim-carrier"></a>
 
 ## Kompaniya (carrier)
@@ -648,6 +801,7 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 - **Auth:** `Authorization: Bearer <access token>`
 - **Ekran:** `{'id': 'web/settings-company-profile', 'title': 'Settings · Company profile', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.22 (Settings sub-nav)'}`
 - **operationId:** `CarrierController_get` · original: _Gets the single-row carrier/company profile (TZ §5.1)._
+- **Izoh (backend):** pt30_pt40/tz.md §9.3: `virtualEldEnabled`, `virtualEldAvailable` (env VIRTUAL_ELD_ALLOWED; false -> hide the switch), `virtualEldUpdatedAt`, `virtualEldUpdatedBy: { id, name } | null` (back-office user who last flipped the switch).
 
 **Javob `200`:** 
 
@@ -657,7 +811,12 @@ Jami: **205 ta endpoint**, 37 bo'lim.
   "name": "Acme Trucking",
   "dotNumber": "1234567",
   "eldIdentifier": "OBK001",
-  "erodsMode": "TEST"
+  "erodsMode": "TEST",
+  "virtualEldEnabled": false,
+  "virtualEldAvailable": true,
+  "virtualEldUpdatedAt": null,
+  "virtualEldUpdatedById": null,
+  "virtualEldUpdatedBy": null
 }
 ```
 
@@ -672,6 +831,7 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 - **Auth:** `Authorization: Bearer <access token>`
 - **Ekran:** `{'id': 'web/settings-company-profile', 'title': 'Settings · Company profile', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.22 (Settings sub-nav)'}`
 - **operationId:** `CarrierController_update` · original: _Updates the carrier/company profile (Settings screens)._
+- **Izoh (backend):** `virtualEldEnabled` (pt30_pt40/tz.md §9) toggles Test PT30/40 (PT Emulator) mode: 409 `VIRTUAL_ELD_NOT_ALLOWED` when env `VIRTUAL_ELD_ALLOWED` is false; 409 `VIRTUAL_ELD_REQUIRES_TEST_ERODS` when it would be on together with `erodsMode=PRODUCTION` (either direction). A change is audited (`carrier.virtual_eld.enabled` / `.disabled`), pushed as `carrier.updated` on the `fleet` room and as `virtual_eld.changed { enabled }` on every active driver's `driver:{id}` room.
 
 **Body** (`application/json`):
 
@@ -681,7 +841,7 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 | `dotNumber` | string | yo'q | 1–20 belgi |  |
 | `mcNumber` | string | yo'q | ≤ 20 belgi |  |
 | `ein` | string | yo'q | ≤ 20 belgi |  |
-| `timezone` | string | yo'q | 1–60 belgi |  |
+| `timezone` | string | yo'q | 1–64 belgi |  |
 | `hosRuleset` | `US_70_8_PROPERTY` \| `US_60_7_PROPERTY` \| `US_70_8_PASSENGER` \| `US_60_7_PASSENGER` | yo'q |  |  |
 | `distanceUnit` | `MILES` \| `KILOMETERS` | yo'q |  |  |
 | `cycleRestart` | boolean | yo'q |  |  |
@@ -699,6 +859,7 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 | `eldIdentifier` | string | yo'q | pattern `^[A-Z0-9]{6}$` |  |
 | `eldRegistrationId` | string | yo'q | pattern `^[A-Z0-9]{4}$` |  |
 | `erodsMode` | `TEST` \| `PRODUCTION` | yo'q |  |  |
+| `virtualEldEnabled` | boolean | yo'q |  |  |
 
 **Javob `200`:** 
 
@@ -710,11 +871,19 @@ Jami: **205 ta endpoint**, 37 bo'lim.
   "timezone": "America/New_York",
   "eldIdentifier": "OBK001",
   "eldRegistrationId": null,
-  "erodsMode": "TEST"
+  "erodsMode": "TEST",
+  "virtualEldEnabled": true,
+  "virtualEldAvailable": true,
+  "virtualEldUpdatedAt": "2026-10-12T09:00:00.000Z",
+  "virtualEldUpdatedById": "usr_1",
+  "virtualEldUpdatedBy": {
+    "id": "usr_1",
+    "name": "Jane Admin"
+  }
 }
 ```
 
-**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `422` VALIDATION_FAILED — eldIdentifier must be exactly 6 characters (7.15), eldRegistrationId exactly 4 (7.17), from [A-Z0-9] (Appendix A).
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `409` Field-level conflict — one of: VIRTUAL_ELD_NOT_ALLOWED (details.virtualEldEnabled: "Virtual ELD is not allowed in this environment."); VI… · `422` VALIDATION_FAILED — eldIdentifier must be exactly 6 characters (7.15), eldRegistrationId exactly 4 (7.17), from [A-Z0-9] (Appendix A).
 
 ---
 
@@ -734,6 +903,51 @@ Jami: **205 ta endpoint**, 37 bo'lim.
   "eldIdentifier": "OBK001",
   "eldRegistrationId": null,
   "erodsMode": "TEST"
+}
+```
+
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `422` VALIDATION_FAILED — Request validation failed.
+
+---
+
+<a id="bolim-audit-log"></a>
+
+## Audit log
+
+### `GET /api/audit-log`
+
+**Nima qiladi:** Audit log yozuvlari, eng yangisi birinchi, cursor pagination.
+
+- **Auth:** `Authorization: Bearer <access token>`
+- **Ekran:** `{'id': 'web/settings-audit-log', 'title': 'Settings · Audit log', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.25'}`
+- **operationId:** `AuditController_list` · original: _Lists audit log entries, newest first, cursor-paginated (TZ §19)._
+
+**Parametrlar:**
+
+| Nomi | Joyi | Turi | Majburiy | Cheklov | Izoh |
+|---|---|---|---|---|---|
+| `objectType` | query | string | yo'q |  |  |
+| `objectId` | query | string | yo'q |  |  |
+| `actorId` | query | string | yo'q |  |  |
+| `limit` | query | string | yo'q |  |  |
+| `cursor` | query | string | yo'q |  |  |
+
+**Javob `200`:** 
+
+```json
+{
+  "items": [
+    {
+      "id": "42",
+      "actorType": "USER",
+      "actorName": "Sarah Chen",
+      "actorEmail": "sarah.chen@universal-logistics.com",
+      "action": "UPDATE",
+      "objectType": "Role",
+      "objectId": "role_1"
+    }
+  ],
+  "nextCursor": null
 }
 ```
 
@@ -822,7 +1036,7 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 | `permissions.drivers` | `NONE` \| `READ` \| `FULL` | ha |  |  |
 | `permissions.hos` | `NONE` \| `READ` \| `FULL` | ha |  |  |
 | `permissions.hosEdit` | `NONE` \| `READ` \| `FULL` | ha |  |  |
-| `permissions.hosCertifyOnBehalf` | `NONE` \| `READ` \| `FULL` | ha |  |  |
+| `permissions.hosCertifyOnBehalf` | `NONE` \| `READ` \| `FULL` | yo'q |  |  |
 | `permissions.dvir` | `NONE` \| `READ` \| `FULL` | ha |  |  |
 | `permissions.maintenance` | `NONE` \| `READ` \| `FULL` | ha |  |  |
 | `permissions.safety` | `NONE` \| `READ` \| `FULL` | ha |  |  |
@@ -921,7 +1135,7 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 | `permissions.drivers` | `NONE` \| `READ` \| `FULL` | ha |  |  |
 | `permissions.hos` | `NONE` \| `READ` \| `FULL` | ha |  |  |
 | `permissions.hosEdit` | `NONE` \| `READ` \| `FULL` | ha |  |  |
-| `permissions.hosCertifyOnBehalf` | `NONE` \| `READ` \| `FULL` | ha |  |  |
+| `permissions.hosCertifyOnBehalf` | `NONE` \| `READ` \| `FULL` | yo'q |  |  |
 | `permissions.dvir` | `NONE` \| `READ` \| `FULL` | ha |  |  |
 | `permissions.maintenance` | `NONE` \| `READ` \| `FULL` | ha |  |  |
 | `permissions.safety` | `NONE` \| `READ` \| `FULL` | ha |  |  |
@@ -1031,7 +1245,7 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 
 | Maydon | Turi | Majburiy | Cheklov | Izoh |
 |---|---|---|---|---|
-| `email` | string (email) | ha |  |  |
+| `email` | string (email) | ha | ≤ 254 belgi |  |
 | `firstName` | string | ha | 1–80 belgi |  |
 | `lastName` | string | ha | 1–80 belgi |  |
 | `jobTitle` | string | yo'q | ≤ 120 belgi |  |
@@ -1097,6 +1311,7 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 - **Auth:** `Authorization: Bearer <access token>`
 - **Ekran:** `{'id': 'web/settings-users', 'title': 'Settings · Users', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.22'}`
 - **operationId:** `UsersController_update` · original: _Updates a user, including role assignment (TZ §18 — audited as a role change)._
+- **Izoh (backend):** B-84 — a changed `email` (after trim + lower-case) is NOT written: it becomes `pendingEmail`, a confirm link is mailed to it (valid `USER_EMAIL_CHANGE_TTL`, killed by a newer request or a cancel) and a "this wasn't me" notice to the old address. It requires the ACTING user's `currentPassword` (or `reauthIdToken` for a Google-only account) — 401 REAUTH_REQUIRED / REAUTH_FAILED with `details.currentPassword`. 409 EMAIL_TAKEN (`details.email`) when another user has the address or a pending change to it; 409 EMAIL_CHANGE_ON_HOLD inside the hold window of the previous change. The response then carries `emailVerification: { pendingEmail, emailDelivered, verifyToken? }` (`verifyToken` only with DEV_ECHO_SECRETS).
 
 **Parametrlar:**
 
@@ -1114,8 +1329,10 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 | `phone` | string | yo'q |  |  |
 | `roleId` | string (uuid) | yo'q |  |  |
 | `status` | `INVITED` \| `ACTIVE` \| `DISABLED` | yo'q |  |  |
-| `email` | string (email) | yo'q |  |  |
+| `email` | string (email) | yo'q | ≤ 254 belgi |  |
 | `homeTerminalName` | string | yo'q | ≤ 120 belgi |  |
+| `currentPassword` | string | yo'q | 1–128 belgi |  |
+| `reauthIdToken` | string | yo'q | 1–4096 belgi |  |
 
 **Javob `200`:** 
 
@@ -1125,14 +1342,20 @@ Jami: **205 ta endpoint**, 37 bo'lim.
   "firstName": "Dana",
   "lastName": "Ford",
   "status": "ACTIVE",
+  "email": "dana.ford@example.com",
+  "pendingEmail": "dana@new.example.com",
   "role": {
     "key": "DISPATCHER",
     "name": "Dispatcher"
+  },
+  "emailVerification": {
+    "pendingEmail": "dana@new.example.com",
+    "emailDelivered": true
   }
 }
 ```
 
-**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `404` NOT_FOUND — User not found. · `409` ROLE_IMMUTABLE — The ADMIN system role cannot be reassigned away from the last administrator. · `422` VALIDATION_FAILED — Request validation failed.
+**Xatolar:** `401` REAUTH_FAILED — Password is incorrect. · `403` FORBIDDEN — Insufficient permissions for this action. · `404` NOT_FOUND — User not found. · `409` EMAIL_TAKEN — A user with this email address already exists. · `422` VALIDATION_FAILED — Request validation failed.
 
 ---
 
@@ -1185,6 +1408,62 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 ```
 
 **Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `404` NOT_FOUND — User not found. · `409` CONFLICT — User is not in INVITED status. · `422` VALIDATION_FAILED — Request validation failed.
+
+---
+
+### `POST /api/users/{id}/email-change/resend`
+
+**Nima qiladi:** B-84 — re-mails the confirm link of the pending email change (same request; the old-address cancel link stays valid).
+
+- **Auth:** `Authorization: Bearer <access token>`
+- **Ekran:** `{'id': 'web/settings-users', 'title': 'Settings · Users', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.22'}`
+- **operationId:** `UsersController_resendEmailChange` · original: _B-84 — re-mails the confirm link of the pending email change (same request; the old-address cancel link stays valid)._
+
+**Parametrlar:**
+
+| Nomi | Joyi | Turi | Majburiy | Cheklov | Izoh |
+|---|---|---|---|---|---|
+| `id` | path | string | ha |  |  |
+
+**Javob `200`:** 
+
+```json
+{
+  "pendingEmail": "new@example.com",
+  "emailedTo": "new@example.com",
+  "emailDelivered": true
+}
+```
+
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `404` EMAIL_CHANGE_NOT_PENDING — This user has no pending email change. · `422` VALIDATION_FAILED — Request validation failed.
+
+---
+
+### `DELETE /api/users/{id}/email-change`
+
+**Nima qiladi:** B-84 — cancels the pending email change; the current email stays and the emailed links stop working.
+
+- **Auth:** `Authorization: Bearer <access token>`
+- **Ekran:** `{'id': 'web/settings-users', 'title': 'Settings · Users', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.22'}`
+- **operationId:** `UsersController_cancelEmailChange` · original: _B-84 — cancels the pending email change; the current email stays and the emailed links stop working._
+
+**Parametrlar:**
+
+| Nomi | Joyi | Turi | Majburiy | Cheklov | Izoh |
+|---|---|---|---|---|---|
+| `id` | path | string | ha |  |  |
+
+**Javob `200`:** 
+
+```json
+{
+  "id": "usr_3",
+  "email": "dana.ford@example.com",
+  "pendingEmail": null
+}
+```
+
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `404` EMAIL_CHANGE_NOT_PENDING — This user has no pending email change. · `422` VALIDATION_FAILED — Request validation failed.
 
 ---
 
@@ -1433,51 +1712,6 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 
 ---
 
-<a id="bolim-audit-log"></a>
-
-## Audit log
-
-### `GET /api/audit-log`
-
-**Nima qiladi:** Audit log yozuvlari, eng yangisi birinchi, cursor pagination.
-
-- **Auth:** `Authorization: Bearer <access token>`
-- **Ekran:** `{'id': 'web/settings-audit-log', 'title': 'Settings · Audit log', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.25'}`
-- **operationId:** `AuditController_list` · original: _Lists audit log entries, newest first, cursor-paginated (TZ §19)._
-
-**Parametrlar:**
-
-| Nomi | Joyi | Turi | Majburiy | Cheklov | Izoh |
-|---|---|---|---|---|---|
-| `objectType` | query | string | yo'q |  |  |
-| `objectId` | query | string | yo'q |  |  |
-| `actorId` | query | string | yo'q |  |  |
-| `limit` | query | string | yo'q |  |  |
-| `cursor` | query | string | yo'q |  |  |
-
-**Javob `200`:** 
-
-```json
-{
-  "items": [
-    {
-      "id": "42",
-      "actorType": "USER",
-      "actorName": "Sarah Chen",
-      "actorEmail": "sarah.chen@universal-logistics.com",
-      "action": "UPDATE",
-      "objectType": "Role",
-      "objectId": "role_1"
-    }
-  ],
-  "nextCursor": null
-}
-```
-
-**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `422` VALIDATION_FAILED — Request validation failed.
-
----
-
 <a id="bolim-api-keys"></a>
 
 ## API kalitlari
@@ -1627,7 +1861,7 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 | `q` | query | string | yo'q | ≤ 200 belgi |  |
 | `sort` | query | string | yo'q | ≤ 60 belgi |  |
 | `limit` | query | integer | yo'q | 1–200, default `25` |  |
-| `page` | query | integer | yo'q | ≥ 1, default `1` |  |
+| `page` | query | integer | yo'q | 1–10000, default `1` |  |
 
 **Javob `200`:** 
 
@@ -1666,13 +1900,13 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 | `username` | string | ha | 3–40 belgi |  |
 | `firstName` | string | ha | 1–80 belgi |  |
 | `lastName` | string | ha | 1–80 belgi |  |
-| `email` | string (email) | yo'q |  |  |
+| `email` | string (email) yoki string | yo'q, null mumkin |  |  |
 | `phone` | string | yo'q | ≤ 30 belgi |  |
 | `cdlNumber` | string | ha | 1–40 belgi |  |
-| `cdlState` | string | ha | 2–10 belgi |  |
-| `homeTerminalName` | string | ha | 1–120 belgi |  |
-| `homeTerminalTimezone` | string | yo'q | 1–64 belgi, default `"America/New_York"` |  |
-| `hosRuleset` | `US_70_8_PROPERTY` \| `US_60_7_PROPERTY` \| `US_70_8_PASSENGER` \| `US_60_7_PASSENGER` | yo'q |  |  |
+| `cdlState` | string | ha |  |  |
+| `homeTerminalName` | string | yo'q | ≤ 120 belgi |  |
+| `homeTerminalTimezone` | string | yo'q | 1–64 belgi |  |
+| `hosRuleset` | `US_70_8_PROPERTY` \| `US_60_7_PROPERTY` \| `US_70_8_PASSENGER` \| `US_60_7_PASSENGER` | yo'q |  | UI-005 — optional. Omitted → the carrier's default HOS ruleset (POST /drivers and every row of POST /drivers/import). |
 | `fleetManagerId` | string (uuid) | yo'q |  |  |
 | `allowPersonalConveyance` | boolean | yo'q | default `false` |  |
 | `allowYardMove` | boolean | yo'q | default `false` |  |
@@ -1749,9 +1983,9 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 | `q` | query | string | yo'q | ≤ 200 belgi |  |
 | `sort` | query | string | yo'q | ≤ 60 belgi |  |
 | `limit` | query | integer | yo'q | 1–200, default `25` |  |
-| `page` | query | integer | yo'q | ≥ 1, default `1` |  |
+| `page` | query | integer | yo'q | 1–10000, default `1` |  |
 
-**Javob `200`:** 
+**Javob `200`:** UI-005/UI-015 (additive): items[].driver.hosRuleset 'US_70_8_PROPERTY'|'US_60_7_PROPERTY'|'US_70_8_PASSENGER'|'US_60_7_PASSENGER'; summary {total, withActiveViolations} over every live driver (filters / search / page ignored).
 
 ```json
 {
@@ -1769,7 +2003,8 @@ Jami: **205 ta endpoint**, 37 bo'lim.
         "allowPersonalConveyance": true,
         "allowYardMove": true,
         "shortHaulException": false,
-        "splitSleeperEnabled": false
+        "splitSleeperEnabled": false,
+        "hosRuleset": "US_70_8_PROPERTY"
       },
       "dutyStatus": "DRIVING",
       "unit": {
@@ -1782,13 +2017,19 @@ Jami: **205 ta endpoint**, 37 bo'lim.
         "cycleRemainingSec": 252000
       },
       "openViolations": 0,
-      "emailVerified": null
+      "emailVerified": null,
+      "isStale": false,
+      "staleSince": null
     }
   ],
   "page": 1,
   "limit": 25,
   "total": 1,
-  "totalPages": 1
+  "totalPages": 1,
+  "summary": {
+    "total": 57,
+    "withActiveViolations": 3
+  }
 }
 ```
 
@@ -1810,7 +2051,7 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 |---|---|---|---|---|---|
 | `id` | path | string | ha |  |  |
 
-**Javob `200`:** 
+**Javob `200`:** UI-005 (additive): hosRuleset — the ruleset every limit comes from (same enum as Driver.hosRuleset).
 
 ```json
 {
@@ -1825,11 +2066,53 @@ Jami: **205 ta endpoint**, 37 bo'lim.
   "breakLimitSec": 28800,
   "dutyStatus": "DRIVING",
   "statusSince": "2026-09-12T18:00:00.000Z",
-  "computedAt": "2026-09-12T20:00:00.000Z"
+  "computedAt": "2026-09-12T20:00:00.000Z",
+  "isStale": false,
+  "staleSince": null,
+  "hosRuleset": "US_70_8_PROPERTY"
 }
 ```
 
 **Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `404` DRIVER_NOT_FOUND — Driver not found. · `422` VALIDATION_FAILED — Request validation failed.
+
+---
+
+### `POST /api/drivers/{id}/hos/adverse-driving`
+
+**Nima qiladi:** BUG-001 — invokes adverse driving conditions (49 CFR §395.1(b)(1)) for one RODS day of a permitted driver, with the required annotation. Only that day gets the +2 h drive / shift extension.
+
+- **Auth:** `Authorization: Bearer <access token>`
+- **Ekran:** `{'id': 'web/drivers', 'title': 'Drivers', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.11'}`, `{'id': 'web/driver-add', 'title': 'Add driver', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.12'}`
+- **operationId:** `DriversController_invokeAdverseDriving` · original: _BUG-001 — invokes adverse driving conditions (49 CFR §395.1(b)(1)) for one RODS day of a permitted driver, with the required annotation. Only that day gets the +2 h drive / shift extension._
+
+**Parametrlar:**
+
+| Nomi | Joyi | Turi | Majburiy | Cheklov | Izoh |
+|---|---|---|---|---|---|
+| `id` | path | string | ha |  |  |
+
+**Body** (`application/json`):
+
+| Maydon | Turi | Majburiy | Cheklov | Izoh |
+|---|---|---|---|---|
+| `date` | string | yo'q | pattern `^\d{4}-\d{2}-\d{2}$` |  |
+| `annotation` | string | ha | 4–255 belgi |  |
+
+**Javob `200`:** 
+
+```json
+{
+  "id": "adv_1",
+  "driverId": "drv_1",
+  "date": "2026-09-12",
+  "annotation": "Unforeseen snow closure on I-80, dispatcher confirmed",
+  "invokedById": "usr_1",
+  "invokedByType": "user",
+  "createdAt": "2026-09-12T18:00:00.000Z"
+}
+```
+
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `404` DRIVER_NOT_FOUND — Driver not found. · `422` VALIDATION_FAILED — Adverse driving is not enabled for this driver.
 
 ---
 
@@ -1876,6 +2159,7 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 - **Auth:** `Authorization: Bearer <access token>`
 - **Ekran:** `{'id': 'web/drivers', 'title': 'Drivers', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.11'}`, `{'id': 'web/driver-add', 'title': 'Add driver', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.12'}`
 - **operationId:** `DriversController_update` · original: _Updates a driver profile, CDL, or exception flags._
+- **Izoh (backend):** A changed `email` (after trim + lower-case) is NOT written: it becomes `pendingEmail`, a confirm link is mailed to it and a "this wasn't me" notice to the old address. It requires the acting user's `currentPassword` (or `reauthIdToken` for a Google-only account) — 401 REAUTH_REQUIRED / REAUTH_FAILED with `details.currentPassword`. Refused with 409 EMAIL_CHANGE_ON_HOLD inside the hold window of the previous change. The response then carries `emailVerification: { pendingEmail, emailDelivered, verifyToken? }` (`verifyToken` only with DEV_ECHO_SECRETS).
 
 **Parametrlar:**
 
@@ -1889,12 +2173,12 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 |---|---|---|---|---|
 | `firstName` | string | yo'q | 1–80 belgi |  |
 | `lastName` | string | yo'q | 1–80 belgi |  |
-| `email` | string (email) | yo'q |  |  |
-| `phone` | string | yo'q | ≤ 30 belgi |  |
+| `email` | string (email) yoki string | yo'q, null mumkin |  |  |
+| `phone` | string | yo'q, null mumkin | ≤ 30 belgi |  |
 | `cdlNumber` | string | yo'q | 1–40 belgi |  |
-| `cdlState` | string | yo'q | 2–10 belgi |  |
-| `homeTerminalName` | string | yo'q | 1–120 belgi |  |
-| `homeTerminalTimezone` | string | yo'q | 1–64 belgi, default `"America/New_York"` |  |
+| `cdlState` | string | yo'q |  |  |
+| `homeTerminalName` | string | yo'q | ≤ 120 belgi |  |
+| `homeTerminalTimezone` | string | yo'q | 1–64 belgi |  |
 | `hosRuleset` | `US_70_8_PROPERTY` \| `US_60_7_PROPERTY` \| `US_70_8_PASSENGER` \| `US_60_7_PASSENGER` | yo'q |  |  |
 | `fleetManagerId` | string (uuid) | yo'q |  |  |
 | `allowPersonalConveyance` | boolean | yo'q | default `false` |  |
@@ -1903,9 +2187,11 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 | `shortHaulException` | boolean | yo'q | default `false` |  |
 | `splitSleeperEnabled` | boolean | yo'q | default `false` |  |
 | `eldExempt` | boolean | yo'q | default `false` |  |
-| `eldExemptReason` | string | yo'q | ≤ 200 belgi |  |
+| `eldExemptReason` | string | yo'q, null mumkin | ≤ 200 belgi |  |
 | `sendInvitation` | boolean | yo'q | default `true` |  |
 | `status` | `ACTIVE` \| `INACTIVE` \| `TERMINATED` | yo'q |  |  |
+| `currentPassword` | string | yo'q | 1–128 belgi |  |
+| `reauthIdToken` | string | yo'q | 1–4096 belgi |  |
 
 **Javob `200`:** 
 
@@ -1914,11 +2200,16 @@ Jami: **205 ta endpoint**, 37 bo'lim.
   "id": "drv_1",
   "username": "jsmith",
   "status": "ACTIVE",
-  "allowPersonalConveyance": false
+  "email": "old@example.com",
+  "pendingEmail": "new@example.com",
+  "emailVerification": {
+    "pendingEmail": "new@example.com",
+    "emailDelivered": true
+  }
 }
 ```
 
-**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `404` DRIVER_NOT_FOUND — Driver not found. · `409` Field-level conflict — one of: EMAIL_TAKEN (details.email: "A driver with this email address already exists."); PHONE_TAKEN (details.phon… · `422` VALIDATION_FAILED — Request validation failed.
+**Xatolar:** `401` REAUTH_FAILED — Password is incorrect. · `403` FORBIDDEN — Insufficient permissions for this action. · `404` DRIVER_NOT_FOUND — Driver not found. · `409` Field-level conflict — one of: EMAIL_TAKEN (details.email: "A driver with this email address already exists."); PHONE_TAKEN (details.phon… · `422` VALIDATION_FAILED — Request validation failed.
 
 ---
 
@@ -1946,7 +2237,7 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 }
 ```
 
-**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `404` DRIVER_NOT_FOUND — Driver not found. · `422` VALIDATION_FAILED — Request validation failed.
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `404` DRIVER_NOT_FOUND — Driver not found. · `409` CONFLICT — the driver still has open trips (DRAFT / PLANNED / ASSIGNED / IN_PROGRESS); details.openTrips [{id, number, status}] (max 20).… · `422` VALIDATION_FAILED — Request validation failed.
 
 ---
 
@@ -1966,13 +2257,13 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 | `drivers[].username` | string | ha | 3–40 belgi |  |
 | `drivers[].firstName` | string | ha | 1–80 belgi |  |
 | `drivers[].lastName` | string | ha | 1–80 belgi |  |
-| `drivers[].email` | string (email) | yo'q |  |  |
+| `drivers[].email` | string (email) yoki string | yo'q, null mumkin |  |  |
 | `drivers[].phone` | string | yo'q | ≤ 30 belgi |  |
 | `drivers[].cdlNumber` | string | ha | 1–40 belgi |  |
-| `drivers[].cdlState` | string | ha | 2–10 belgi |  |
-| `drivers[].homeTerminalName` | string | ha | 1–120 belgi |  |
-| `drivers[].homeTerminalTimezone` | string | yo'q | 1–64 belgi, default `"America/New_York"` |  |
-| `drivers[].hosRuleset` | `US_70_8_PROPERTY` \| `US_60_7_PROPERTY` \| `US_70_8_PASSENGER` \| `US_60_7_PASSENGER` | yo'q |  |  |
+| `drivers[].cdlState` | string | ha |  |  |
+| `drivers[].homeTerminalName` | string | yo'q | ≤ 120 belgi |  |
+| `drivers[].homeTerminalTimezone` | string | yo'q | 1–64 belgi |  |
+| `drivers[].hosRuleset` | `US_70_8_PROPERTY` \| `US_60_7_PROPERTY` \| `US_70_8_PASSENGER` \| `US_60_7_PASSENGER` | yo'q |  | UI-005 — optional. Omitted → the carrier's default HOS ruleset (POST /drivers and every row of POST /drivers/import). |
 | `drivers[].fleetManagerId` | string (uuid) | yo'q |  |  |
 | `drivers[].allowPersonalConveyance` | boolean | yo'q | default `false` |  |
 | `drivers[].allowYardMove` | boolean | yo'q | default `false` |  |
@@ -2004,6 +2295,62 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 
 ---
 
+### `POST /api/drivers/{id}/email-change/resend`
+
+**Nima qiladi:** Re-mails the confirm link of the pending driver email change (same request; the old-address cancel link stays valid).
+
+- **Auth:** `Authorization: Bearer <access token>`
+- **Ekran:** `{'id': 'web/drivers', 'title': 'Drivers', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.11'}`, `{'id': 'web/driver-add', 'title': 'Add driver', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.12'}`
+- **operationId:** `DriversController_resendEmailChange` · original: _Re-mails the confirm link of the pending driver email change (same request; the old-address cancel link stays valid)._
+
+**Parametrlar:**
+
+| Nomi | Joyi | Turi | Majburiy | Cheklov | Izoh |
+|---|---|---|---|---|---|
+| `id` | path | string | ha |  |  |
+
+**Javob `200`:** 
+
+```json
+{
+  "pendingEmail": "new@example.com",
+  "emailedTo": "new@example.com",
+  "emailDelivered": true
+}
+```
+
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `404` EMAIL_CHANGE_NOT_PENDING — This driver has no pending email change. · `422` VALIDATION_FAILED — Request validation failed.
+
+---
+
+### `DELETE /api/drivers/{id}/email-change`
+
+**Nima qiladi:** Cancels the pending driver email change; the current email stays.
+
+- **Auth:** `Authorization: Bearer <access token>`
+- **Ekran:** `{'id': 'web/drivers', 'title': 'Drivers', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.11'}`, `{'id': 'web/driver-add', 'title': 'Add driver', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.12'}`
+- **operationId:** `DriversController_cancelEmailChange` · original: _Cancels the pending driver email change; the current email stays._
+
+**Parametrlar:**
+
+| Nomi | Joyi | Turi | Majburiy | Cheklov | Izoh |
+|---|---|---|---|---|---|
+| `id` | path | string | ha |  |  |
+
+**Javob `200`:** 
+
+```json
+{
+  "id": "drv_1",
+  "email": "old@example.com",
+  "pendingEmail": null
+}
+```
+
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `404` EMAIL_CHANGE_NOT_PENDING — This driver has no pending email change. · `422` VALIDATION_FAILED — Request validation failed.
+
+---
+
 ### `POST /api/drivers/{id}/reset-password`
 
 **Nima qiladi:** Dispetcher tomonidan haydovchi ilova parolini tiklash (email yoki og'zaki aytiladigan bir martalik kod). Audit qilinadi.
@@ -2011,6 +2358,7 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 - **Auth:** `Authorization: Bearer <access token>`
 - **Ekran:** `{'id': 'web/drivers', 'title': 'Drivers', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.11'}`, `{'id': 'web/driver-add', 'title': 'Add driver', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.12'}`
 - **operationId:** `DriversController_resetPassword` · original: _B-81 — carrier-side reset of a driver-app password (email or a one-time code for the dispatcher to read out). Always audited._
+- **Izoh (backend):** Inside the hold window after a driver email change the code is NOT emailed to the new address: `emailedTo: null`, `code` for the dispatcher and `emailHoldUntil`.
 
 **Parametrlar:**
 
@@ -2192,73 +2540,29 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 
 ---
 
-<a id="bolim-transfers"></a>
+<a id="bolim-violations"></a>
 
-## eRODS transferlar
+## HOS violation'lar
 
-### `POST /api/transfers`
+### `GET /api/violations`
 
-**Nima qiladi:** eRODS transfer so'raydi: §395 Appendix A output faylini yaratadi, tekshiradi, saqlaydi va yuborishni navbatga qo'yadi. TEST rejimda FMCSA'ga yuborilmaydi.
-
-- **Auth:** `Authorization: Bearer <access token>`
-- **Ekran:** `{'id': 'web/send-logs-to-safety-official', 'title': 'Send logs to a safety official', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.16'}`, `{'id': 'web/reports-fmcsa-audit-pack', 'title': 'Reports · FMCSA / DOT audit pack', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.21'}`
-- **operationId:** `TransfersController_create` · original: _Requests an eRODS data transfer: generates the §395 Appendix A output file, validates it, stores it and queues the send step. In TEST mode the file is NOT sent to FMCSA._
-
-**Body** (`application/json`):
-
-| Maydon | Turi | Majburiy | Cheklov | Izoh |
-|---|---|---|---|---|
-| `driverId` | string (uuid) | ha |  |  |
-| `method` | `WEB_SERVICES` \| `EMAIL` | ha |  |  |
-| `rangeStart` | string (date-time) | ha |  |  |
-| `rangeEnd` | string (date-time) | ha |  |  |
-| `outputFileComment` | string | yo'q | ≤ 60 belgi, default `""` |  |
-| `recipient` | string | yo'q | ≤ 254 belgi |  |
-
-**Javob `200`:** 
-
-```json
-{
-  "transfer": {
-    "id": "trf_1",
-    "fileName": "SMITH38018.csv",
-    "status": "QUEUED",
-    "erodsMode": "TEST",
-    "fileSizeBytes": 2048
-  },
-  "warnings": [
-    {
-      "code": "ERODS_TEST_MODE",
-      "level": "warning",
-      "message": "eRODS is in TEST mode …"
-    }
-  ],
-  "counts": {
-    "header": 9,
-    "events": 42
-  }
-}
-```
-
-**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — dataTransfer = FULL is required — only ADMIN and FLEET_MANAGER may send the FMCSA package (§6.4, B-95). · `404` DRIVER_NOT_FOUND — Driver not found. · `422` TRANSFER_VALIDATION_FAILED — The generated output file failed Appendix A validation — nothing was sent.
-
----
-
-### `GET /api/transfers`
-
-**Nima qiladi:** Transferlar tarixi. `TEST_ONLY` — yaratilgan, lekin yuborilmagan fayllar.
+**Nima qiladi:** Flot HOS violation'lari (default status=OPEN), haydovchi ismi va unit bilan.
 
 - **Auth:** `Authorization: Bearer <access token>`
-- **Ekran:** `{'id': 'web/send-logs-to-safety-official', 'title': 'Send logs to a safety official', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.16'}`, `{'id': 'web/reports-fmcsa-audit-pack', 'title': 'Reports · FMCSA / DOT audit pack', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.21'}`
-- **operationId:** `TransfersController_list` · original: _Transfer history (§10). `TEST_ONLY` rows are files that were generated but never sent._
+- **Ekran:** `{'id': 'web/fleet-dashboard', 'title': 'Fleet Dashboard', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.5'}`, `{'id': 'web/hos-logs', 'title': 'Hours of Service · Driver log', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.13'}`
+- **operationId:** `ViolationsController_list` · original: _Fleet HOS violation list (default status=OPEN) with driver name and unit._
 
 **Parametrlar:**
 
 | Nomi | Joyi | Turi | Majburiy | Cheklov | Izoh |
 |---|---|---|---|---|---|
+| `window` | query | `24h` \| `7d` \| `30d` | yo'q |  |  |
+| `from` | query | string (date-time) | yo'q |  |  |
+| `to` | query | string (date-time) | yo'q |  |  |
 | `driverId` | query | string (uuid) | yo'q |  |  |
-| `status` | query | `QUEUED` \| `TEST_ONLY` \| `SENT` \| `ACCEPTED` \| `REJECTED` \| `FAILED` \| `ALL` | yo'q | default `"ALL"` |  |
-| `page` | query | integer | yo'q | ≥ 1, default `1` |  |
+| `type` | query | `DRIVING_11` \| `SHIFT_14` \| `BREAK_30` \| `CYCLE_70` \| `CYCLE_60` \| `FORM_MANNER` | yo'q |  |  |
+| `status` | query | `OPEN` \| `RESOLVED` \| `AUTO_CLEARED` \| `ALL` | yo'q | default `"OPEN"` |  |
+| `page` | query | integer | yo'q | 1–10000, default `1` |  |
 | `limit` | query | integer | yo'q | 1–200, default `25` |  |
 
 **Javob `200`:** 
@@ -2267,20 +2571,30 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 {
   "items": [
     {
-      "id": "trf_1",
-      "sentAt": "2026-09-02T13:14:00.000Z",
-      "method": "WEB_SERVICES",
-      "comment": "TERMINAL AUDIT 2025-09-02",
-      "periodFrom": "2026-07-01",
-      "periodTo": "2026-08-31",
-      "status": "ACCEPTED",
-      "sentById": "usr_1",
-      "fileName": "SMITH38018.csv"
+      "id": "vio_1",
+      "driverId": "drv_1",
+      "dailyLogId": "dl_1",
+      "logDate": "2026-09-14",
+      "type": "DRIVING_11",
+      "occurredAt": "2026-09-14T14:26:00.000Z",
+      "exceededBySec": 1560,
+      "detail": "Driving 11h26m",
+      "status": "OPEN",
+      "resolvedAt": null,
+      "resolvedById": null,
+      "resolutionNote": null,
+      "severity": "VIOLATION",
+      "driverName": "John Smith",
+      "vehicleId": "veh_1",
+      "unitNumber": "101",
+      "event": "11-hour driving limit exceeded",
+      "locationLabel": "1.04 mi W of Harrisburg, OH",
+      "date": "2026-09-14"
     }
   ],
+  "total": 1,
   "page": 1,
   "limit": 25,
-  "total": 1,
   "totalPages": 1
 }
 ```
@@ -2289,13 +2603,13 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 
 ---
 
-### `GET /api/transfers/{id}`
+### `POST /api/violations/{id}/resolve`
 
-**Nima qiladi:** Bitta transfer yozuvi.
+**Nima qiladi:** OPEN violation'ni 4–60 belgilik izoh bilan yopadi. Audit qilinadi; RODS yozuvlari o'zgarmaydi.
 
 - **Auth:** `Authorization: Bearer <access token>`
-- **Ekran:** `{'id': 'web/send-logs-to-safety-official', 'title': 'Send logs to a safety official', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.16'}`, `{'id': 'web/reports-fmcsa-audit-pack', 'title': 'Reports · FMCSA / DOT audit pack', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.21'}`
-- **operationId:** `TransfersController_get` · original: _One transfer record._
+- **Ekran:** `{'id': 'web/fleet-dashboard', 'title': 'Fleet Dashboard', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.5'}`, `{'id': 'web/hos-logs', 'title': 'Hours of Service · Driver log', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.13'}`
+- **operationId:** `ViolationsController_resolve` · original: _Resolves an OPEN violation with a 4-60 char note. Audited as VIOLATION_RESOLVED; RODS records are never changed._
 
 **Parametrlar:**
 
@@ -2303,50 +2617,24 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 |---|---|---|---|---|---|
 | `id` | path | string | ha |  |  |
 
-**Javob `200`:** 
+**Body** (`application/json`):
+
+| Maydon | Turi | Majburiy | Cheklov | Izoh |
+|---|---|---|---|---|
+| `resolutionNote` | string | ha | 4–60 belgi |  |
+
+**Javob `201`:** 
 
 ```json
 {
-  "id": "trf_1",
-  "method": "WEB_SERVICES",
-  "status": "ACCEPTED",
-  "erodsMode": "TEST",
-  "comment": "ROADSIDE INSPECTION 2026-09-10",
-  "fileName": "SMITH38018.csv",
-  "fileSizeBytes": 2048,
-  "counts": {
-    "header": 9,
-    "events": 42
-  },
-  "sentAt": "2026-09-11T15:41:00.000Z"
+  "id": "vio_1",
+  "status": "RESOLVED",
+  "resolvedAt": "2026-09-14T15:41:00.000Z",
+  "resolutionNote": "Adverse weather, dispatcher confirmed"
 }
 ```
 
-**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `404` NOT_FOUND — Transfer not found. · `422` VALIDATION_FAILED — Request validation failed.
-
----
-
-### `GET /api/transfers/{id}/download`
-
-**Nima qiladi:** Yaratilgan Appendix A faylini rasmiy fayl nomi bilan yuklab beradi (TEST rejimda ham ishlaydi).
-
-- **Auth:** `Authorization: Bearer <access token>`
-- **Ekran:** `{'id': 'web/send-logs-to-safety-official', 'title': 'Send logs to a safety official', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.16'}`, `{'id': 'web/reports-fmcsa-audit-pack', 'title': 'Reports · FMCSA / DOT audit pack', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.21'}`
-- **operationId:** `TransfersController_download` · original: _Downloads the generated Appendix A output file under its 4.8.2.2 file name. Works in TEST mode — that is how the file reaches an inspector until FMCSA registration completes._
-
-**Parametrlar:**
-
-| Nomi | Joyi | Turi | Majburiy | Cheklov | Izoh |
-|---|---|---|---|---|---|
-| `id` | path | string | ha |  |  |
-
-**Javob `200`:** The Appendix A CSV itself (text/csv), named per §4.8.2.2. Not wrapped in the success envelope.
-
-```json
-"Header,ONEB01,Universal Logistics Inc.,1234567\nUser,Smith,John,W8569238,OH\nCMV,101,1FUJGLDR8LLLL1234,993107\n"
-```
-
-**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — reportsTransfer is NONE for DISPATCHER and VIEWER — even the download is a 403 (§6.4). · `404` NOT_FOUND — Transfer not found. · `422` CHECKSUM_MISMATCH — The stored output file does not match its checksum — it is not trustworthy.
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `404` NOT_FOUND — Violation not found. · `409` CONFLICT — Only an OPEN violation can be resolved. · `422` VALIDATION_FAILED — Request validation failed.
 
 ---
 
@@ -2371,9 +2659,9 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 | `q` | query | string | yo'q | ≤ 200 belgi |  |
 | `sort` | query | string | yo'q | ≤ 60 belgi |  |
 | `limit` | query | integer | yo'q | 1–200, default `25` |  |
-| `page` | query | integer | yo'q | ≥ 1, default `1` |  |
+| `page` | query | integer | yo'q | 1–10000, default `1` |  |
 
-**Javob `200`:** 
+**Javob `200`:** UI-004 (additive): statusCounts {ACTIVE, INACTIVE, OUT_OF_SERVICE, total} over the whole fleet (list filters ignored; soft-deleted excluded).
 
 ```json
 {
@@ -2388,7 +2676,13 @@ Jami: **205 ta endpoint**, 37 bo'lim.
   "page": 1,
   "limit": 25,
   "total": 1,
-  "totalPages": 1
+  "totalPages": 1,
+  "statusCounts": {
+    "ACTIVE": 40,
+    "INACTIVE": 3,
+    "OUT_OF_SERVICE": 2,
+    "total": 45
+  }
 }
 ```
 
@@ -2410,16 +2704,16 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 |---|---|---|---|---|
 | `unitNumber` | string | ha | 1–40 belgi |  |
 | `vin` | string | ha |  |  |
-| `make` | string | yo'q | ≤ 60 belgi |  |
-| `model` | string | yo'q | ≤ 60 belgi |  |
-| `year` | integer | yo'q | 1900–2100 |  |
+| `make` | string | yo'q, null mumkin | ≤ 60 belgi |  |
+| `model` | string | yo'q, null mumkin | ≤ 60 belgi |  |
+| `year` | integer | yo'q, null mumkin | ≥ 1900 |  |
 | `licensePlate` | string | yo'q, null mumkin | ≤ 20 belgi |  |
-| `plateState` | string | yo'q, null mumkin | ≤ 10 belgi |  |
+| `plateState` | string | yo'q, null mumkin |  |  |
 | `fuelType` | `DIESEL` \| `GASOLINE` \| `CNG` \| `LNG` \| `ELECTRIC` | yo'q |  |  |
 | `sleeperBerth` | boolean | yo'q | default `false` |  |
-| `odometerMi` | integer | yo'q | ≥ 0, default `0` |  |
+| `odometerMi` | integer | yo'q | 0–10000000, default `0` |  |
 | `busType` | `J1939` \| `J1708` \| `OBD_II` | yo'q |  |  |
-| `notes` | string | yo'q | ≤ 500 belgi |  |
+| `notes` | string | yo'q, null mumkin | ≤ 500 belgi |  |
 | `groupId` | string (uuid) | yo'q, null mumkin |  |  |
 | `deviceId` | string | yo'q, null mumkin | ≤ 60 belgi |  |
 | `eldSerial` | string | yo'q, null mumkin | ≤ 60 belgi |  |
@@ -2525,16 +2819,16 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 |---|---|---|---|---|
 | `unitNumber` | string | yo'q | 1–40 belgi |  |
 | `vin` | string | yo'q |  |  |
-| `make` | string | yo'q | ≤ 60 belgi |  |
-| `model` | string | yo'q | ≤ 60 belgi |  |
-| `year` | integer | yo'q | 1900–2100 |  |
+| `make` | string | yo'q, null mumkin | ≤ 60 belgi |  |
+| `model` | string | yo'q, null mumkin | ≤ 60 belgi |  |
+| `year` | integer | yo'q, null mumkin | ≥ 1900 |  |
 | `licensePlate` | string | yo'q, null mumkin | ≤ 20 belgi |  |
-| `plateState` | string | yo'q, null mumkin | ≤ 10 belgi |  |
+| `plateState` | string | yo'q, null mumkin |  |  |
 | `fuelType` | `DIESEL` \| `GASOLINE` \| `CNG` \| `LNG` \| `ELECTRIC` | yo'q |  |  |
 | `sleeperBerth` | boolean | yo'q | default `false` |  |
-| `odometerMi` | integer | yo'q | ≥ 0, default `0` |  |
+| `odometerMi` | integer | yo'q | 0–10000000, default `0` |  |
 | `busType` | `J1939` \| `J1708` \| `OBD_II` | yo'q |  |  |
-| `notes` | string | yo'q | ≤ 500 belgi |  |
+| `notes` | string | yo'q, null mumkin | ≤ 500 belgi |  |
 | `groupId` | string (uuid) | yo'q, null mumkin |  |  |
 | `deviceId` | string | yo'q, null mumkin | ≤ 60 belgi |  |
 | `eldSerial` | string | yo'q, null mumkin | ≤ 60 belgi |  |
@@ -2580,7 +2874,7 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 }
 ```
 
-**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `404` VEHICLE_NOT_FOUND — Vehicle not found. · `422` VALIDATION_FAILED — Request validation failed.
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `404` VEHICLE_NOT_FOUND — Vehicle not found. · `409` CONFLICT — the unit still has open trips (DRAFT / PLANNED / ASSIGNED / IN_PROGRESS); details.openTrips [{id, number, status}] (max 20). R… · `422` VALIDATION_FAILED — Request validation failed.
 
 ---
 
@@ -2718,19 +3012,19 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 
 | Maydon | Turi | Majburiy | Cheklov | Izoh |
 |---|---|---|---|---|
-| `vehicles` | object[] | ha | 1–1000 ta |  |
+| `vehicles` | object[] | ha | 1–2000 ta |  |
 | `vehicles[].unitNumber` | string | ha | 1–40 belgi |  |
 | `vehicles[].vin` | string | ha |  |  |
-| `vehicles[].make` | string | yo'q | ≤ 60 belgi |  |
-| `vehicles[].model` | string | yo'q | ≤ 60 belgi |  |
-| `vehicles[].year` | integer | yo'q | 1900–2100 |  |
+| `vehicles[].make` | string | yo'q, null mumkin | ≤ 60 belgi |  |
+| `vehicles[].model` | string | yo'q, null mumkin | ≤ 60 belgi |  |
+| `vehicles[].year` | integer | yo'q, null mumkin | ≥ 1900 |  |
 | `vehicles[].licensePlate` | string | yo'q, null mumkin | ≤ 20 belgi |  |
-| `vehicles[].plateState` | string | yo'q, null mumkin | ≤ 10 belgi |  |
+| `vehicles[].plateState` | string | yo'q, null mumkin |  |  |
 | `vehicles[].fuelType` | `DIESEL` \| `GASOLINE` \| `CNG` \| `LNG` \| `ELECTRIC` | yo'q |  |  |
 | `vehicles[].sleeperBerth` | boolean | yo'q | default `false` |  |
-| `vehicles[].odometerMi` | integer | yo'q | ≥ 0, default `0` |  |
+| `vehicles[].odometerMi` | integer | yo'q | 0–10000000, default `0` |  |
 | `vehicles[].busType` | `J1939` \| `J1708` \| `OBD_II` | yo'q |  |  |
-| `vehicles[].notes` | string | yo'q | ≤ 500 belgi |  |
+| `vehicles[].notes` | string | yo'q, null mumkin | ≤ 500 belgi |  |
 | `vehicles[].groupId` | string (uuid) | yo'q, null mumkin |  |  |
 | `vehicles[].deviceSerial` | string | yo'q | ≤ 60 belgi |  |
 | `options` | object | yo'q |  |  |
@@ -2803,7 +3097,7 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 
 | Maydon | Turi | Majburiy | Cheklov | Izoh |
 |---|---|---|---|---|
-| `odometerMi` | integer | ha | ≥ 0 |  |
+| `odometerMi` | integer | ha | 0–10000000 |  |
 
 **Javob `201`:** New offset = dash reading − device reading (TZ §4.3 step 4); the change is audited.
 
@@ -2826,7 +3120,7 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 
 - **Auth:** `Authorization: Bearer <access token>`
 - **Ekran:** `{'id': 'web/vehicles', 'title': 'Vehicles', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.8'}`, `{'id': 'web/vehicle-add', 'title': 'Add vehicle', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.9'}`
-- **operationId:** `VehiclesController_assignDriver` · original: _Assigns a driver to this unit. Blocked while the unit is OUT_OF_SERVICE. Requires vehicles:FULL or trips:FULL (B-13)._
+- **operationId:** `VehiclesController_assignDriver` · original: _Assigns a driver to this unit. An occupied unit is MOVED to the new driver (previous holder auto-unassigned, notified via realtime + in-app + FCM, audited, D-153); a driver already on another unit gives it up. Blocked while the unit is OUT_OF_SERVICE. Requires vehicles:FULL or trips:FULL (B-13)._
 
 **Parametrlar:**
 
@@ -2852,7 +3146,7 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 }
 ```
 
-**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `404` VEHICLE_NOT_FOUND — Vehicle not found. · `409` VEHICLE_OUT_OF_SERVICE — Unit is OUT_OF_SERVICE — assign a driver only after the critical defect is closed. · `422` VALIDATION_FAILED — Request validation failed.
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `404` VEHICLE_NOT_FOUND — Vehicle not found; DRIVER_NOT_FOUND — Driver not found or deleted. · `409` One of: VEHICLE_OUT_OF_SERVICE — Unit is OUT_OF_SERVICE — assign a driver only after the critical defect is closed; CONFLICT (details.sta… · `422` VALIDATION_FAILED — Request validation failed.
 
 ---
 
@@ -2869,6 +3163,12 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 | Nomi | Joyi | Turi | Majburiy | Cheklov | Izoh |
 |---|---|---|---|---|---|
 | `id` | path | string | ha |  |  |
+
+**Body** (`application/json`):
+
+| Maydon | Turi | Majburiy | Cheklov | Izoh |
+|---|---|---|---|---|
+| `notify` | boolean | yo'q | default `true` |  |
 
 **Javob `201`:** 
 
@@ -2904,7 +3204,7 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 | `q` | query | string | yo'q | ≤ 200 belgi | Case-insensitive substring match on trailer number or VIN. |
 | `sort` | query | string | yo'q | ≤ 60 belgi | `number\|vin\|status` + `:asc\|:desc` (default `number:asc`). |
 | `limit` | query | integer | yo'q | 1–200, default `25` | Page size, 1–200 (default 25). |
-| `page` | query | integer | yo'q | ≥ 1, default `1` | 1-based page number (default 1). |
+| `page` | query | integer | yo'q | 1–10000, default `1` | 1-based page number (default 1). |
 
 **Javob `200`:** 
 
@@ -3527,7 +3827,7 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 
 - **Auth:** `Authorization: Bearer <access token>`
 - **Ekran:** `{'id': 'web/settings-alert-rules', 'title': 'Settings · Alert rules', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.22 (Settings sub-nav)'}`
-- **operationId:** `AlertRulesController_test` · original: _Sends a test notification through the rule's own channels to the caller. A disabled rule triggers nothing._
+- **operationId:** `AlertRulesController_test` · original: _Sends a test notification through the rule's own channels to the caller (EMAIL goes to the caller's own address). A disabled rule triggers nothing._
 
 **Parametrlar:**
 
@@ -3535,11 +3835,22 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 |---|---|---|---|---|---|
 | `id` | path | string | ha |  |  |
 
-**Javob `200`:** 
+**Javob `200`:** `triggered` = at least one channel sent/queued. `channels[]` is the per-channel outcome: status SENT | QUEUED | FAILED | SUPPRESSED, with `reason` (NO_EMAIL_ADDRESS, NO_MAIL_TRANSPORT, SMTP_SEND_FAILED, NO_WEBHOOK_CONFIGURED, CHANNEL_DISABLED) when not delivered.
 
 ```json
 {
-  "triggered": true
+  "triggered": true,
+  "channels": [
+    {
+      "channel": "IN_APP",
+      "status": "SENT"
+    },
+    {
+      "channel": "EMAIL",
+      "status": "FAILED",
+      "reason": "NO_MAIL_TRANSPORT"
+    }
+  ]
 }
 ```
 
@@ -3563,8 +3874,8 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 
 | Nomi | Joyi | Turi | Majburiy | Cheklov | Izoh |
 |---|---|---|---|---|---|
-| `category` | query | `VIOLATIONS` \| `MAINTENANCE` | yo'q |  |  |
-| `unreadOnly` | query | boolean | yo'q | default `false` |  |
+| `category` | query | `VIOLATIONS` \| `MAINTENANCE` \| `CONNECTIVITY` | yo'q |  |  |
+| `unreadOnly` | query | boolean yoki `true` \| `false` \| `1` \| `0` | yo'q |  |  |
 | `limit` | query | integer | yo'q | 1–200, default `25` |  |
 | `page` | query | integer | yo'q | ≥ 1, default `1` |  |
 
@@ -3708,7 +4019,7 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 | `email.enabled` | boolean | ha |  |  |
 | `webhook` | object | yo'q |  |  |
 | `webhook.enabled` | boolean | ha |  |  |
-| `webhook.url` | string (uri) | yo'q |  |  |
+| `webhook.url` | string | yo'q, null mumkin | ≤ 2048 belgi |  |
 
 **Javob `200`:** 
 
@@ -4021,6 +4332,7 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 | Nomi | Joyi | Turi | Majburiy | Cheklov | Izoh |
 |---|---|---|---|---|---|
 | `driverId` | path | string | ha |  |  |
+| `review` | query | `REPLACED_DEVICE` | yo'q |  | D-163 — only records a replaced device delivered late (`reviewReason`). With `date`: that RODS day; without `date`: every flagged record of the driver (max 500, `date` = null). Driver-entered ones carry recordStatus 3 and count toward nothing until a fleet manager re-enters them via the §395.30 edit flow. |
 | `date` | query | string | yo'q | pattern `^\d{4}-\d{2}-\d{2}$` |  |
 
 **Javob `200`:** Append-only audit trail: active (1), superseded (2), proposed (3) and rejected (4) records.
@@ -4210,7 +4522,7 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 
 - **Auth:** `Authorization: Bearer <access token>`
 - **Ekran:** `{'id': 'web/hos-logs', 'title': 'Hours of Service · Driver log', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.13'}`
-- **operationId:** `LogsController_certify` · original: _Certifies one or more RODS days (§9.2). A driver certifies their own log; a back-office user needs hosCertifyOnBehalf = FULL and the action is always audited._
+- **operationId:** `LogsController_certify` · original: _Certifies one or more RODS days (§9.2). CODE-029 — driver tokens only: a driver certifies their own log; any back-office user or API key gets 403 CERTIFY_DRIVER_ONLY (§395.8(e))._
 
 **Parametrlar:**
 
@@ -4227,7 +4539,7 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 | `driverId` | string (uuid) | yo'q |  |  |
 | `clientId` | string (uuid) | yo'q |  |  |
 
-**Javob `201`:** Certification is the driver signature; on-behalf certification is always written to the audit log.
+**Javob `201`:** Certification is the driver signature (driver token only).
 
 ```json
 {
@@ -4236,15 +4548,15 @@ Jami: **205 ta endpoint**, 37 bo'lim.
     {
       "date": "2026-09-10",
       "certifiedAt": "2026-09-11T15:41:00.000Z",
-      "certifiedBy": "usr_1",
-      "onBehalf": true,
+      "certifiedBy": "drv_1",
+      "onBehalf": false,
       "signatureCount": 1
     }
   ]
 }
 ```
 
-**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Certifying on behalf of a driver requires hosCertifyOnBehalf = FULL. · `404` DRIVER_NOT_FOUND — Driver not found. · `422` VALIDATION_FAILED — Request validation failed.
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` CERTIFY_DRIVER_ONLY — Only the driver can certify their log, in the driver app. · `404` DRIVER_NOT_FOUND — Driver not found. · `422` VALIDATION_FAILED — Request validation failed.
 
 ---
 
@@ -4369,7 +4681,7 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 | `driverIds` | string (uuid)[] | yo'q | ≤ 500 ta, default `[]` |  |
 | `userIds` | string (uuid)[] | yo'q | ≤ 500 ta, default `[]` |  |
 
-**Javob `201`:** 
+**Javob `201`:** Created. For type DIRECT an existing conversation between the two participants is returned instead of creating a duplicate.
 
 ```json
 {
@@ -4378,23 +4690,41 @@ Jami: **205 ta endpoint**, 37 bo'lim.
 }
 ```
 
-**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `422` VALIDATION_FAILED — Request validation failed.
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `422` VALIDATION_FAILED — wrong participant count for the conversation type (DIRECT needs exactly one other participant; at least one participa…
 
 ---
 
 ### `POST /api/conversations/attachments`
 
-**Nima qiladi:** MB-9 — chat ovozli xabar (AAC/M4A) yoki fayl (PNG/JPEG/PDF) yuklaydi, <= 10 MB.
+**Nima qiladi:** MB-9 — uploads a chat voice message (AAC/M4A) or file (PNG/JPEG/PDF), max 10 MB; returns the attachment id to pass as `attachmentId` to POST /conversations/:id/messages.
 
-- **Auth:** `Authorization: Bearer <access token>` · ruxsat `messaging` FULL · `multipart/form-data`
-- **Maydonlar:** `file` (majburiy), `kind` = `CHAT_AUDIO` | `CHAT_FILE` (majburiy), `durationSec` (ixtiyoriy, faqat CHAT_AUDIO).
-- Tur magic bytes bo'yicha tekshiriladi (e'lon qilingan Content-Type ishonchsiz). Kalit `chat/carrier/{userId}/{uuid}.{ext}`.
+- **Auth:** `Authorization: Bearer <access token>`
+- **Ekran:** `{'id': 'web/messages', 'title': 'Messages', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.5 (sidebar)'}`
+- **operationId:** `MessagingController_uploadAttachment` · original: _MB-9 — uploads a chat voice message (AAC/M4A) or file (PNG/JPEG/PDF), max 10 MB; returns the attachment id to pass as `attachmentId` to POST /conversations/:id/messages._
+- **Izoh (backend):** Type is verified from the file's magic bytes, not the declared Content-Type. Stored under `chat/carrier/{uploaderId}/`. Read back via `GET /attachments/:id/presign` (conversation participants only).
 
-**Javob `201`:** `{ "data": { "id": "att_1", "attachmentId": "att_1", "mimeType": "audio/mp4", "sizeBytes": 48211, "durationSec": 12, "kind": "CHAT_AUDIO" } }`
+**Body** (`multipart/form-data`):
 
-**Xatolar:** `413` FILE_TOO_LARGE · `422` UNSUPPORTED_FILE_TYPE (tur kind'ga mos emas yoki bayt e'londan farq qiladi) · `422` VALIDATION_FAILED (file yo'q/bo'sh).
+| Maydon | Turi | Majburiy | Cheklov | Izoh |
+|---|---|---|---|---|
+| `file` | string | ha |  |  |
+| `kind` | `CHAT_AUDIO` \| `CHAT_FILE` | ha |  |  |
+| `durationSec` | integer | yo'q |  | Voice-message length, CHAT_AUDIO only. |
 
-Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": "att_1" }` yuboring. Xabar ro'yxati/yuborish javobida endi `type` (`TEXT|AUDIO|IMAGE|FILE`) va `attachment` (`{id,url,mimeType,sizeBytes,durationSec}` | `null`) bor, realtime `message.new` ham shunday. Yuklab olish: `GET /api/attachments/{id}/presign` — suhbat ishtirokchisi (haydovchi yoki xodim) bo'lmagan hech kim ola olmaydi (`404 ATTACHMENT_NOT_FOUND`); xodim bo'lsa ham, ruxsatlari qancha keng bo'lmasin.
+**Javob `201`:** 
+
+```json
+{
+  "id": "att_1",
+  "attachmentId": "att_1",
+  "kind": "CHAT_AUDIO",
+  "mimeType": "audio/mp4",
+  "sizeBytes": 48211,
+  "durationSec": 12
+}
+```
+
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `422` VALIDATION_FAILED — Missing file, empty file or invalid kind.
 
 ---
 
@@ -4412,7 +4742,7 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 |---|---|---|---|---|---|
 | `id` | path | string | ha |  |  |
 | `limit` | query | integer | yo'q | 1–200, default `50` |  |
-| `page` | query | integer | yo'q | ≥ 1, default `1` |  |
+| `page` | query | integer | yo'q | 1–10000, default `1` |  |
 
 **Javob `200`:** 
 
@@ -4422,6 +4752,8 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
     {
       "id": "msg_1",
       "body": "On schedule.",
+      "type": "TEXT",
+      "attachment": null,
       "sentAt": "2026-09-11T15:00:00.000Z"
     }
   ],
@@ -4442,7 +4774,7 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 
 - **Auth:** `Authorization: Bearer <access token>`
 - **Ekran:** `{'id': 'web/messages', 'title': 'Messages', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.5 (sidebar)'}`
-- **operationId:** `MessagingController_sendMessage` · original: _Sends a message into a conversation._
+- **operationId:** `MessagingController_sendMessage` · original: _Sends a message into a conversation. MB-9: `body` may be empty when `attachmentId` (from POST /conversations/attachments) is given; the message carries `type` TEXT|AUDIO|IMAGE|FILE and `attachment{id,url,mimeType,sizeBytes,durationSec}`._
 
 **Parametrlar:**
 
@@ -4454,7 +4786,7 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 
 | Maydon | Turi | Majburiy | Cheklov | Izoh |
 |---|---|---|---|---|
-| `body` | string | ha | 1–2000 belgi |  |
+| `body` | string | yo'q | ≤ 2000 belgi, default `""` |  |
 | `attachmentId` | string | yo'q | ≤ 200 belgi |  |
 | `clientId` | string | yo'q | ≤ 100 belgi |  |
 
@@ -4469,6 +4801,52 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 ```
 
 **Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Not a participant of this conversation. · `404` NOT_FOUND — Conversation not found. · `422` VALIDATION_FAILED — Request validation failed.
+
+---
+
+### `POST /api/conversations/{id}/messages/audio`
+
+**Nima qiladi:** Sends a voice message into a conversation.
+
+- **Auth:** `Authorization: Bearer <access token>`
+- **Ekran:** `{'id': 'web/messages', 'title': 'Messages', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.5 (sidebar)'}`
+- **operationId:** `MessagingController_sendAudioMessage` · original: _Sends a voice message into a conversation._
+- **Izoh (backend):** Creates an AUDIO message (`type: "AUDIO"`, `body: "Voice message"` as a plain-text fallback) whose `attachment` carries the clip metadata `{ id, kind, mimeType, sizeBytes, durationMs }`; resolve it to a playable 15-minute URL with GET /attachments/:id/presign (any conversation participant may). Pushed as `message.new` like a text message.
+
+**Parametrlar:**
+
+| Nomi | Joyi | Turi | Majburiy | Cheklov | Izoh |
+|---|---|---|---|---|---|
+| `id` | path | string | ha |  |  |
+
+**Body** (`multipart/form-data`):
+
+| Maydon | Turi | Majburiy | Cheklov | Izoh |
+|---|---|---|---|---|
+| `file` | string | ha |  | The recorded clip: audio/webm, audio/ogg, audio/mp4 (m4a), audio/mpeg, audio/aac or audio/wav; max 10 MB. |
+| `durationMs` | integer | yo'q | 0–300000 | Clip length in milliseconds (max 5 min). |
+| `clientId` | string | yo'q | ≤ 100 belgi | Idempotency key — a retry with the same clientId returns the stored message. |
+
+**Javob `201`:** 
+
+```json
+{
+  "id": "msg_3",
+  "type": "AUDIO",
+  "body": "Voice message",
+  "attachmentId": "att_9",
+  "sentAt": "2026-10-13T10:00:00.000Z",
+  "attachment": {
+    "id": "att_9",
+    "kind": "AUDIO",
+    "mimeType": "audio/webm",
+    "sizeBytes": 48211,
+    "durationMs": 5300
+  }
+}
+```
+
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Not a participant of this conversation. · `404` NOT_FOUND — Conversation not found. · `422` FILE_TOO_LARGE — Voice messages must be under 10 MB.
 
 ---
 
@@ -4550,15 +4928,16 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 
 | Nomi | Joyi | Turi | Majburiy | Cheklov | Izoh |
 |---|---|---|---|---|---|
+| `virtual` | query | `true` \| `false` | yo'q |  | pt30_pt40/tz.md §9.3 — true: only PT Emulator (Virtual ELD) devices, false: only real PT30/PT40. Every row carries `isVirtual`. |
 | `vehicleId` | query | string (uuid) | yo'q |  | B-35 — join a single unit's device (device<->vehicle binding lives only on Device.vehicleId). |
 | `bleState` | query | `CONNECTED` \| `OUT_OF_RANGE` \| `DISCONNECTED` | yo'q |  |  |
 | `status` | query | `UNASSIGNED` \| `ASSIGNED` \| `FAULTY` \| `RETIRED` | yo'q |  |  |
 | `q` | query | string | yo'q | ≤ 200 belgi |  |
 | `sort` | query | string | yo'q | ≤ 60 belgi |  |
 | `limit` | query | integer | yo'q | 1–200, default `25` |  |
-| `page` | query | integer | yo'q | ≥ 1, default `1` |  |
+| `page` | query | integer | yo'q | 1–10000, default `1` |  |
 
-**Javob `200`:** 
+**Javob `200`:** UI-012 (additive): items[].connection 'CONNECTED'|'DISCONNECTED' is the EFFECTIVE link (stored bleState CONNECTED and lastSeenAt within 30 min). connectionCounts {total, connected, disconnected, offlineOver24h} over the whole inventory (RETIRED excluded; list filters ignored).
 
 ```json
 {
@@ -4567,6 +4946,7 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
       "id": "dev_1",
       "serial": "PT30_A86E",
       "model": "PT30",
+      "isVirtual": false,
       "bleState": "CONNECTED",
       "firmware": "L108",
       "firmwareOutdated": false,
@@ -4593,14 +4973,19 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
         "DRIVING_BRAKING": 450,
         "DRIVING_CORNERING": 0,
         "HSI_MODE": 1
-      }
+      },
+      "connection": "CONNECTED"
     }
   ],
   "page": 1,
   "limit": 25,
   "total": 1,
-  "totalPages": 1
-}
+  "totalPages": 1,
+  "connectionCounts": {
+    "total": 12,
+    "connected": 7,
+    "disconnected": 5,
+  …
 ```
 
 **Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `422` VALIDATION_FAILED — Request validation failed.
@@ -4644,7 +5029,7 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 }
 ```
 
-**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `409` CONFLICT — A device with this serial is already registered. · `422` VALIDATION_FAILED — Request validation failed.
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `409` CONFLICT — A device with this serial is already registered. · `422` VIRTUAL_SERIAL_RESERVED — Serials starting with "V" are reserved for virtual (PT Emulator) devices.
 
 ---
 
@@ -4663,11 +5048,35 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
   "devices": [
     {
       "serial": "PT30_A86E",
+      "isVirtual": false,
       "model": "PT30",
       "bleMac": "A4:C1:38:12:9F:6E",
       "firmwareVersion": "L108"
     }
   ]
+}
+```
+
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `422` VALIDATION_FAILED — Request validation failed.
+
+---
+
+### `GET /api/devices/counts`
+
+**Nima qiladi:** UI-012 — fleet-wide device connection counts (RETIRED excluded; list filters ignored). `connected` = stored CONNECTED and seen within 30 min.
+
+- **Auth:** `Authorization: Bearer <access token>`
+- **Ekran:** `{'id': 'web/settings-eld-devices', 'title': 'Settings · ELD devices', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.22 (Settings sub-nav); referenced again on p.28'}`
+- **operationId:** `DevicesController_counts` · original: _UI-012 — fleet-wide device connection counts (RETIRED excluded; list filters ignored). `connected` = stored CONNECTED and seen within 30 min._
+
+**Javob `200`:** 
+
+```json
+{
+  "total": 12,
+  "connected": 7,
+  "disconnected": 5,
+  "offlineOver24h": 2
 }
 ```
 
@@ -4696,6 +5105,7 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
   "id": "dev_1",
   "serial": "PT30_A86E",
   "model": "PT30",
+  "isVirtual": false,
   "status": "ASSIGNED",
   "vehicleId": "veh_1",
   "bleState": "CONNECTED",
@@ -4872,7 +5282,7 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 }
 ```
 
-**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `422` IMPORT_FAILED — One or more rows could not be imported.
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `422` VIRTUAL_SERIAL_RESERVED — A row has a "V…" serial (reserved for PT Emulator devices) — nothing was imported; `details.serials` lists them.
 
 ---
 
@@ -5029,7 +5439,7 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 | `driverId` | query | string (uuid) | yo'q |  |  |
 | `vehicleId` | query | string (uuid) | yo'q |  |  |
 | `limit` | query | integer | yo'q | 1–200, default `25` |  |
-| `page` | query | integer | yo'q | ≥ 1, default `1` |  |
+| `page` | query | integer | yo'q | 1–10000, default `1` |  |
 
 **Javob `200`:** 
 
@@ -5137,7 +5547,7 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 | `vehicleId` | query | string (uuid) | yo'q |  |  |
 | `from` | query | string (date-time) | yo'q |  |  |
 | `to` | query | string (date-time) | yo'q |  |  |
-| `page` | query | integer | yo'q | ≥ 1, default `1` |  |
+| `page` | query | integer | yo'q | 1–10000, default `1` |  |
 | `limit` | query | integer | yo'q | 1–200, default `25` |  |
 
 **Javob `200`:** 
@@ -5206,11 +5616,11 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 
 ### `POST /api/unidentified/{id}/assign`
 
-**Nima qiladi:** Segmentni haydovchiga biriktiradi (ASSIGNED, audit). `requireDriverConfirmation` bilan haydovchi tasdig'i so'raladi.
+**Nima qiladi:** Segmentni haydovchiga taklif qiladi (PENDING_CONFIRMATION). Yozuvlar haydovchi ilovada tasdiqlagandan keyingina uning logiga o'tadi (CODE-029).
 
 - **Auth:** `Authorization: Bearer <access token>`
 - **Ekran:** `{'id': 'web/hos-logs', 'title': 'Hours of Service · Driver log', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.13'}`, `{'id': 'web/fleet-dashboard', 'title': 'Fleet Dashboard', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.5'}`
-- **operationId:** `UnidentifiedController_assign` · original: _Assigns the segment to a driver: status ASSIGNED, assignedById/At set, recordOrigin stays 1, AuditLog entry UNIDENTIFIED_ASSIGNED. With requireDriverConfirmation = true (B-83) nothing is attributed yet: status PENDING_CONFIRMATION, the driver is asked in the app (AuditLog UNIDENTIFIED_CONFIRMATION_REQUESTED) and the records move to their log only when they confirm._
+- **operationId:** `UnidentifiedController_assign` · original: _CODE-029 — proposes the segment to a driver; nothing is attributed yet. Status PENDING_CONFIRMATION, the driver is asked in the app (AuditLog UNIDENTIFIED_CONFIRMATION_REQUESTED) and the records move to their log only when they confirm (POST /unidentified/:id/confirm, AuditLog UNIDENTIFIED_ASSIGNED). requireDriverConfirmation is optional and may only be true._
 
 **Parametrlar:**
 
@@ -5224,23 +5634,37 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 |---|---|---|---|---|
 | `driverId` | string (uuid) | ha |  |  |
 | `annotation` | string | yo'q | 4–60 belgi |  |
-| `requireDriverConfirmation` | boolean | yo'q |  |  |
+| `requireDriverConfirmation` | `True` | yo'q |  |  |
 
-**Javob `201`:** recordOrigin stays 1 forever (§23) and the assignment is audited as UNIDENTIFIED_ASSIGNED.
+**Javob `201`:** The segment after the request: status PENDING_CONFIRMATION, assignedDriverId = the driver asked to confirm.
 
 ```json
 {
-  "id": "seg_1",
-  "status": "ASSIGNED",
-  "driverId": "drv_1",
-  "assignedById": "usr_1",
-  "assignedAt": "2026-09-11T15:41:00.000Z",
-  "recordOrigin": 1,
-  "eventCount": 4
+  "data": {
+    "id": "6f1c2a0e-3d1b-4c55-9a51-2f0f6b1d9e10",
+    "vehicleId": "b3e0c1d2-8a4f-4f0e-9d7c-1a2b3c4d5e6f",
+    "startAt": "2026-09-10T12:30:00.000Z",
+    "endAt": "2026-09-10T13:00:00.000Z",
+    "durationSec": 1800,
+    "distanceMi": 21,
+    "status": "ASSIGNED",
+    "assignedDriverId": "drv_1",
+    "assignedById": "usr_1",
+    "assignedAt": "2026-09-11T15:41:00.000Z",
+    "annotation": "Unidentified driving assigned to johnsmith",
+    "confirmationRequestedAt": null,
+    "fromStoredEvents": true,
+    "eventIds": [
+      "7701",
+      "7702"
+    ]
+  },
+  "traceId": "01J8X3QK9Z0000000000000000",
+  "timestamp": "2026-10-08T15:41:00.000Z"
 }
 ```
 
-**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `404` NOT_FOUND — Unidentified segment not found. · `409` UNIDENTIFIED_ALREADY_ASSIGNED — This segment is already assigned to a driver. · `422` VALIDATION_FAILED — Request validation failed.
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `404` NOT_FOUND — Unidentified segment not found. · `409` UNIDENTIFIED_OVERLAPS_DRIVER_LOG — CODE-007 — the driver's own log already covers part of the segment (own duty-status records inside it,… · `422` VALIDATION_FAILED — Request validation failed.
 
 ---
 
@@ -5264,14 +5688,31 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 |---|---|---|---|---|
 | `annotation` | string | ha | 4–60 belgi |  |
 
-**Javob `201`:** Annotation is capped at 60 characters (Appendix A).
+**Javob `201`:** Annotation is capped at 60 characters (Appendix A). A PENDING segment becomes ANNOTATED.
 
 ```json
 {
-  "id": "seg_1",
-  "status": "ANNOTATED",
-  "annotation": "Yard move by shop tech",
-  "annotatedById": "usr_1"
+  "data": {
+    "id": "6f1c2a0e-3d1b-4c55-9a51-2f0f6b1d9e10",
+    "vehicleId": "b3e0c1d2-8a4f-4f0e-9d7c-1a2b3c4d5e6f",
+    "startAt": "2026-09-10T12:30:00.000Z",
+    "endAt": "2026-09-10T13:00:00.000Z",
+    "durationSec": 1800,
+    "distanceMi": 21,
+    "status": "ANNOTATED",
+    "assignedDriverId": null,
+    "assignedById": null,
+    "assignedAt": null,
+    "annotation": "Yard move by shop tech",
+    "confirmationRequestedAt": null,
+    "fromStoredEvents": true,
+    "eventIds": [
+      "7701",
+      "7702"
+    ]
+  },
+  "traceId": "01J8X3QK9Z0000000000000000",
+  "timestamp": "2026-10-08T15:41:00.000Z"
 }
 ```
 
@@ -5303,11 +5744,27 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 
 ```json
 {
-  "id": "seg_1",
-  "status": "REJECTED",
-  "driverId": null,
-  "recordOrigin": 4,
-  "eventCount": 4
+  "data": {
+    "id": "6f1c2a0e-3d1b-4c55-9a51-2f0f6b1d9e10",
+    "vehicleId": "b3e0c1d2-8a4f-4f0e-9d7c-1a2b3c4d5e6f",
+    "startAt": "2026-09-10T12:30:00.000Z",
+    "endAt": "2026-09-10T13:00:00.000Z",
+    "durationSec": 1800,
+    "distanceMi": 21,
+    "status": "REJECTED",
+    "assignedDriverId": null,
+    "assignedById": "usr_1",
+    "assignedAt": "2026-09-11T15:41:00.000Z",
+    "annotation": "Not this driver",
+    "confirmationRequestedAt": null,
+    "fromStoredEvents": true,
+    "eventIds": [
+      "7701",
+      "7702"
+    ]
+  },
+  "traceId": "01J8X3QK9Z0000000000000000",
+  "timestamp": "2026-10-08T15:41:00.000Z"
 }
 ```
 
@@ -5315,29 +5772,74 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 
 ---
 
-<a id="bolim-violations"></a>
+<a id="bolim-transfers"></a>
 
-## HOS violation'lar
+## eRODS transferlar
 
-### `GET /api/violations`
+### `POST /api/transfers`
 
-**Nima qiladi:** Flot HOS violation'lari (default status=OPEN), haydovchi ismi va unit bilan.
+**Nima qiladi:** eRODS transfer so'raydi: §395 Appendix A output faylini yaratadi, tekshiradi, saqlaydi va yuborishni navbatga qo'yadi. TEST rejimda FMCSA'ga yuborilmaydi.
 
 - **Auth:** `Authorization: Bearer <access token>`
-- **Ekran:** `{'id': 'web/fleet-dashboard', 'title': 'Fleet Dashboard', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.5'}`, `{'id': 'web/hos-logs', 'title': 'Hours of Service · Driver log', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.13'}`
-- **operationId:** `ViolationsController_list` · original: _Fleet HOS violation list (default status=OPEN) with driver name and unit._
+- **Ekran:** `{'id': 'web/send-logs-to-safety-official', 'title': 'Send logs to a safety official', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.16'}`, `{'id': 'web/reports-fmcsa-audit-pack', 'title': 'Reports · FMCSA / DOT audit pack', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.21'}`
+- **operationId:** `TransfersController_create` · original: _Requests an eRODS data transfer: generates the §395 Appendix A output file, validates it, stores it and queues the send step. In TEST mode the file is NOT sent to FMCSA._
+- **Izoh (backend):** B-172 — the range is counted in home-terminal-timezone days, at most 8 (inclusive). `rangeStart`/`rangeEnd` may be `YYYY-MM-DD` (that home-terminal RODS day) or an ISO instant (mapped to the home-terminal day it falls on); the file covers the driver's home-terminal midnight-to-midnight days, DST-aware.
+
+**Body** (`application/json`):
+
+| Maydon | Turi | Majburiy | Cheklov | Izoh |
+|---|---|---|---|---|
+| `driverId` | string (uuid) | ha |  |  |
+| `method` | `WEB_SERVICES` \| `EMAIL` | ha |  |  |
+| `rangeStart` | string | ha |  | RODS day `YYYY-MM-DD` (e.g. `2026-10-06`) or ISO date-time (e.g. `2026-10-06T06:00:00Z`). Days are counted in the driver's home-terminal timezone; at most 8 inclusive. |
+| `rangeEnd` | string | ha |  | RODS day `YYYY-MM-DD` (e.g. `2026-10-06`) or ISO date-time (e.g. `2026-10-06T06:00:00Z`). Days are counted in the driver's home-terminal timezone; at most 8 inclusive. |
+| `outputFileComment` | string | yo'q | ≤ 60 belgi, default `""` |  |
+| `recipient` | string | yo'q | ≤ 254 belgi |  |
+
+**Javob `200`:** 
+
+```json
+{
+  "transfer": {
+    "id": "trf_1",
+    "fileName": "SMITH38018.csv",
+    "status": "QUEUED",
+    "erodsMode": "TEST",
+    "fileSizeBytes": 2048
+  },
+  "warnings": [
+    {
+      "code": "ERODS_TEST_MODE",
+      "level": "warning",
+      "message": "eRODS is in TEST mode …"
+    }
+  ],
+  "counts": {
+    "header": 9,
+    "events": 42
+  }
+}
+```
+
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — dataTransfer = FULL is required — only ADMIN and FLEET_MANAGER may send the FMCSA package (§6.4, B-95). · `404` DRIVER_NOT_FOUND — Driver not found. · `422` Unprocessable — one of: RANGE_TOO_LARGE (Requested range is 9 days; §395.24 / Appendix A allows at most 8. The range is counted in home-t…
+
+---
+
+### `GET /api/transfers`
+
+**Nima qiladi:** Transferlar tarixi. `TEST_ONLY` — yaratilgan, lekin yuborilmagan fayllar.
+
+- **Auth:** `Authorization: Bearer <access token>`
+- **Ekran:** `{'id': 'web/send-logs-to-safety-official', 'title': 'Send logs to a safety official', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.16'}`, `{'id': 'web/reports-fmcsa-audit-pack', 'title': 'Reports · FMCSA / DOT audit pack', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.21'}`
+- **operationId:** `TransfersController_list` · original: _Transfer history (§10). `TEST_ONLY` rows are files that were generated but never sent._
 
 **Parametrlar:**
 
 | Nomi | Joyi | Turi | Majburiy | Cheklov | Izoh |
 |---|---|---|---|---|---|
-| `window` | query | `24h` \| `7d` \| `30d` | yo'q |  |  |
-| `from` | query | string (date-time) | yo'q |  |  |
-| `to` | query | string (date-time) | yo'q |  |  |
 | `driverId` | query | string (uuid) | yo'q |  |  |
-| `type` | query | `DRIVING_11` \| `SHIFT_14` \| `BREAK_30` \| `CYCLE_70` \| `CYCLE_60` \| `FORM_MANNER` | yo'q |  |  |
-| `status` | query | `OPEN` \| `RESOLVED` \| `AUTO_CLEARED` \| `ALL` | yo'q | default `"OPEN"` |  |
-| `page` | query | integer | yo'q | ≥ 1, default `1` |  |
+| `status` | query | `QUEUED` \| `TEST_ONLY` \| `SENT` \| `ACCEPTED` \| `REJECTED` \| `FAILED` \| `ALL` | yo'q | default `"ALL"` |  |
+| `page` | query | integer | yo'q | 1–10000, default `1` |  |
 | `limit` | query | integer | yo'q | 1–200, default `25` |  |
 
 **Javob `200`:** 
@@ -5346,30 +5848,20 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 {
   "items": [
     {
-      "id": "vio_1",
-      "driverId": "drv_1",
-      "dailyLogId": "dl_1",
-      "logDate": "2026-09-14",
-      "type": "DRIVING_11",
-      "occurredAt": "2026-09-14T14:26:00.000Z",
-      "exceededBySec": 1560,
-      "detail": "Driving 11h26m",
-      "status": "OPEN",
-      "resolvedAt": null,
-      "resolvedById": null,
-      "resolutionNote": null,
-      "severity": "VIOLATION",
-      "driverName": "John Smith",
-      "vehicleId": "veh_1",
-      "unitNumber": "101",
-      "event": "11-hour driving limit exceeded",
-      "locationLabel": "1.04 mi W of Harrisburg, OH",
-      "date": "2026-09-14"
+      "id": "trf_1",
+      "sentAt": "2026-09-02T13:14:00.000Z",
+      "method": "WEB_SERVICES",
+      "comment": "TERMINAL AUDIT 2025-09-02",
+      "periodFrom": "2026-07-01",
+      "periodTo": "2026-08-31",
+      "status": "ACCEPTED",
+      "sentById": "usr_1",
+      "fileName": "SMITH38018.csv"
     }
   ],
-  "total": 1,
   "page": 1,
   "limit": 25,
+  "total": 1,
   "totalPages": 1
 }
 ```
@@ -5378,13 +5870,13 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 
 ---
 
-### `POST /api/violations/{id}/resolve`
+### `GET /api/transfers/{id}`
 
-**Nima qiladi:** OPEN violation'ni 4–60 belgilik izoh bilan yopadi. Audit qilinadi; RODS yozuvlari o'zgarmaydi.
+**Nima qiladi:** Bitta transfer yozuvi.
 
 - **Auth:** `Authorization: Bearer <access token>`
-- **Ekran:** `{'id': 'web/fleet-dashboard', 'title': 'Fleet Dashboard', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.5'}`, `{'id': 'web/hos-logs', 'title': 'Hours of Service · Driver log', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.13'}`
-- **operationId:** `ViolationsController_resolve` · original: _Resolves an OPEN violation with a 4-60 char note. Audited as VIOLATION_RESOLVED; RODS records are never changed._
+- **Ekran:** `{'id': 'web/send-logs-to-safety-official', 'title': 'Send logs to a safety official', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.16'}`, `{'id': 'web/reports-fmcsa-audit-pack', 'title': 'Reports · FMCSA / DOT audit pack', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.21'}`
+- **operationId:** `TransfersController_get` · original: _One transfer record._
 
 **Parametrlar:**
 
@@ -5392,24 +5884,50 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 |---|---|---|---|---|---|
 | `id` | path | string | ha |  |  |
 
-**Body** (`application/json`):
-
-| Maydon | Turi | Majburiy | Cheklov | Izoh |
-|---|---|---|---|---|
-| `resolutionNote` | string | ha | 4–60 belgi |  |
-
-**Javob `201`:** 
+**Javob `200`:** 
 
 ```json
 {
-  "id": "vio_1",
-  "status": "RESOLVED",
-  "resolvedAt": "2026-09-14T15:41:00.000Z",
-  "resolutionNote": "Adverse weather, dispatcher confirmed"
+  "id": "trf_1",
+  "method": "WEB_SERVICES",
+  "status": "ACCEPTED",
+  "erodsMode": "TEST",
+  "comment": "ROADSIDE INSPECTION 2026-09-10",
+  "fileName": "SMITH38018.csv",
+  "fileSizeBytes": 2048,
+  "counts": {
+    "header": 9,
+    "events": 42
+  },
+  "sentAt": "2026-09-11T15:41:00.000Z"
 }
 ```
 
-**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `404` NOT_FOUND — Violation not found. · `409` CONFLICT — Only an OPEN violation can be resolved. · `422` VALIDATION_FAILED — Request validation failed.
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `404` NOT_FOUND — Transfer not found. · `422` VALIDATION_FAILED — Request validation failed.
+
+---
+
+### `GET /api/transfers/{id}/download`
+
+**Nima qiladi:** Yaratilgan Appendix A faylini rasmiy fayl nomi bilan yuklab beradi (TEST rejimda ham ishlaydi).
+
+- **Auth:** `Authorization: Bearer <access token>`
+- **Ekran:** `{'id': 'web/send-logs-to-safety-official', 'title': 'Send logs to a safety official', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.16'}`, `{'id': 'web/reports-fmcsa-audit-pack', 'title': 'Reports · FMCSA / DOT audit pack', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.21'}`
+- **operationId:** `TransfersController_download` · original: _Downloads the generated Appendix A output file under its 4.8.2.2 file name. Works in TEST mode — that is how the file reaches an inspector until FMCSA registration completes._
+
+**Parametrlar:**
+
+| Nomi | Joyi | Turi | Majburiy | Cheklov | Izoh |
+|---|---|---|---|---|---|
+| `id` | path | string | ha |  |  |
+
+**Javob `200`:** The Appendix A CSV itself (text/csv), named per §4.8.2.2. Not wrapped in the success envelope.
+
+```json
+"Header,ONEB01,Universal Logistics Inc.,1234567\nUser,Smith,John,W8569238,OH\nCMV,101,1FUJGLDR8LLLL1234,993107\n"
+```
+
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — reportsTransfer is NONE for DISPATCHER and VIEWER — even the download is a 403 (§6.4). · `404` NOT_FOUND — Transfer not found. · `422` CHECKSUM_MISMATCH — The stored output file does not match its checksum — it is not trustworthy.
 
 ---
 
@@ -5436,7 +5954,7 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 | `vehicleId` | query | string (uuid) | yo'q |  |  |
 | `sort` | query | string | yo'q | ≤ 60 belgi |  |
 | `limit` | query | integer | yo'q | 1–200, default `25` |  |
-| `page` | query | integer | yo'q | ≥ 1, default `1` |  |
+| `page` | query | integer | yo'q | 1–10000, default `1` |  |
 
 **Javob `200`:** 
 
@@ -5645,13 +6163,13 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 | Nomi | Joyi | Turi | Majburiy | Cheklov | Izoh |
 |---|---|---|---|---|---|
 | `assigneeId` | query | string (uuid) | yo'q |  |  |
-| `outOfService` | query | boolean | yo'q |  |  |
+| `outOfService` | query | boolean yoki `true` \| `false` \| `1` \| `0` | yo'q |  |  |
 | `severity` | query | `MINOR` \| `MAJOR` \| `CRITICAL` | yo'q |  |  |
 | `status` | query | `OPEN` \| `IN_PROGRESS` \| `REPAIRED` \| `DEFERRED` | yo'q |  |  |
 | `vehicleId` | query | string (uuid) | yo'q |  |  |
 | `sort` | query | string | yo'q | ≤ 60 belgi |  |
 | `limit` | query | integer | yo'q | 1–200, default `25` |  |
-| `page` | query | integer | yo'q | ≥ 1, default `1` |  |
+| `page` | query | integer | yo'q | 1–10000, default `1` |  |
 
 **Javob `200`:** 
 
@@ -5730,6 +6248,7 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 | `completedAt` | string (date-time) | yo'q |  |  |
 | `laborHours` | number | yo'q | 0–999 |  |
 | `partsCostUsd` | number | yo'q | 0–1000000 |  |
+| `workOrderId` | string (uuid) | yo'q, null mumkin |  |  |
 
 **Javob `200`:** 
 
@@ -5834,7 +6353,7 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 | `q` | query | string | yo'q | ≤ 200 belgi |  |
 | `sort` | query | string | yo'q | ≤ 60 belgi |  |
 | `limit` | query | integer | yo'q | 1–200, default `25` |  |
-| `page` | query | integer | yo'q | ≥ 1, default `1` |  |
+| `page` | query | integer | yo'q | 1–10000, default `1` |  |
 
 **Javob `200`:** 
 
@@ -5878,7 +6397,7 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 | `priority` | `LOW` \| `NORMAL` \| `HIGH` \| `URGENT` | yo'q |  |  |
 | `vendor` | string | yo'q | ≤ 120 belgi |  |
 | `costUsd` | number | yo'q | 0–1000000 |  |
-| `odometerMi` | integer | yo'q | ≥ 0 |  |
+| `odometerMi` | integer | yo'q | 0–9999999 |  |
 | `dueAt` | string (date-time) | yo'q |  |  |
 | `defectIds` | string (uuid)[] | yo'q | ≤ 50 ta |  |
 | `estimatedLaborHours` | number | yo'q | 0–999 |  |
@@ -5950,14 +6469,14 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 | Maydon | Turi | Majburiy | Cheklov | Izoh |
 |---|---|---|---|---|
 | `title` | string | yo'q | 1–200 belgi |  |
-| `description` | string | yo'q | ≤ 2000 belgi |  |
+| `description` | string | yo'q, null mumkin | ≤ 2000 belgi |  |
 | `priority` | `LOW` \| `NORMAL` \| `HIGH` \| `URGENT` | yo'q |  |  |
 | `status` | `OPEN` \| `IN_PROGRESS` | yo'q |  |  |
-| `vendor` | string | yo'q | ≤ 120 belgi |  |
-| `costUsd` | number | yo'q | 0–1000000 |  |
-| `odometerMi` | integer | yo'q | ≥ 0 |  |
+| `vendor` | string | yo'q, null mumkin | ≤ 120 belgi |  |
+| `costUsd` | number | yo'q, null mumkin | 0–1000000 |  |
+| `odometerMi` | integer | yo'q, null mumkin | 0–9999999 |  |
 | `dueAt` | string (date-time) | yo'q, null mumkin |  |  |
-| `estimatedLaborHours` | number | yo'q | 0–999 |  |
+| `estimatedLaborHours` | number | yo'q, null mumkin | 0–999 |  |
 | `keepOutOfService` | boolean | yo'q |  |  |
 | `notifyDriver` | boolean | yo'q |  |  |
 | `blockDispatchAssignment` | boolean | yo'q |  |  |
@@ -6075,12 +6594,12 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 
 | Nomi | Joyi | Turi | Majburiy | Cheklov | Izoh |
 |---|---|---|---|---|---|
-| `dueOnly` | query | boolean | yo'q |  | Only schedules currently DUE_SOON or OVERDUE. |
+| `dueOnly` | query | boolean yoki `true` \| `false` \| `1` \| `0` | yo'q |  | Only schedules currently DUE_SOON or OVERDUE. |
 | `status` | query | `OPEN` \| `COMPLETED` \| `CANCELLED` \| `REJECTED` | yo'q |  | M-40 — e.g. OPEN to find driver submissions awaiting review (submittedAt set). |
-| `enabled` | query | boolean | yo'q |  |  |
+| `enabled` | query | boolean yoki `true` \| `false` \| `1` \| `0` | yo'q |  |  |
 | `vehicleId` | query | string (uuid) | yo'q |  |  |
 | `limit` | query | integer | yo'q | 1–200, default `25` |  |
-| `page` | query | integer | yo'q | ≥ 1, default `1` |  |
+| `page` | query | integer | yo'q | 1–10000, default `1` |  |
 
 **Javob `200`:** 
 
@@ -6127,7 +6646,7 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 | `scheduleType` | string | yo'q | 1–40 belgi |  |
 | `intervalMi` | integer | yo'q | 1–2000000 |  |
 | `intervalDays` | integer | yo'q | 1–3660 |  |
-| `lastServiceMi` | integer | yo'q | ≥ 0 |  |
+| `lastServiceMi` | integer | yo'q | 0–10000000 |  |
 | `lastServiceAt` | string (date-time) | yo'q |  |  |
 | `enabled` | boolean | yo'q | default `true` |  |
 
@@ -6202,8 +6721,8 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 | `reviewNote` | string | yo'q, null mumkin | ≤ 500 belgi |  |
 | `intervalMi` | integer | yo'q, null mumkin | 1–2000000 |  |
 | `intervalDays` | integer | yo'q, null mumkin | 1–3660 |  |
-| `lastServiceMi` | integer | yo'q | ≥ 0 |  |
-| `lastServiceAt` | string (date-time) | yo'q |  |  |
+| `lastServiceMi` | integer | yo'q, null mumkin | 0–10000000 |  |
+| `lastServiceAt` | string (date-time) | yo'q, null mumkin |  |  |
 | `enabled` | boolean | yo'q |  |  |
 
 **Javob `200`:** 
@@ -6265,7 +6784,7 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 
 | Maydon | Turi | Majburiy | Cheklov | Izoh |
 |---|---|---|---|---|
-| `serviceOdometerMi` | integer | yo'q | ≥ 0 |  |
+| `serviceOdometerMi` | integer | yo'q | 0–10000000 |  |
 | `serviceAt` | string (date-time) | yo'q |  |  |
 
 **Javob `201`:** 
@@ -6303,7 +6822,7 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 | `q` | query | string | yo'q | ≤ 200 belgi |  |
 | `sort` | query | string | yo'q | ≤ 60 belgi |  |
 | `limit` | query | integer | yo'q | 1–200, default `25` |  |
-| `page` | query | integer | yo'q | ≥ 1, default `1` |  |
+| `page` | query | integer | yo'q | 1–10000, default `1` |  |
 
 **Javob `200`:** 
 
@@ -6521,7 +7040,7 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 |---|---|---|---|---|---|
 | `status` | query | `DRAFT` \| `PLANNED` \| `ASSIGNED` \| `IN_PROGRESS` \| `DELIVERED` \| `CANCELLED` | yo'q |  |  |
 | `limit` | query | integer | yo'q | 1–200, default `25` |  |
-| `page` | query | integer | yo'q | ≥ 1, default `1` |  |
+| `page` | query | integer | yo'q | 1–10000, default `1` |  |
 | `sort` | query | string | yo'q | ≤ 60 belgi |  |
 | `q` | query | string | yo'q | ≤ 200 belgi |  |
 | `driverId` | query | string (uuid) | yo'q |  |  |
@@ -6566,13 +7085,13 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 | `trailerId` | string (uuid) | yo'q |  |  |
 | `shippingDocument` | string | yo'q | ≤ 60 belgi |  |
 | `commodity` | string | yo'q | ≤ 120 belgi |  |
-| `weightLbs` | integer | yo'q | ≥ 0 |  |
-| `pieces` | integer | yo'q | ≥ 0 |  |
+| `weightLbs` | integer | yo'q | 0–1000000 |  |
+| `pieces` | integer | yo'q | 0–1000000 |  |
 | `plannedStartAt` | string (date-time) | yo'q |  |  |
 | `plannedEndAt` | string (date-time) | yo'q |  |  |
 | `notes` | string | yo'q | ≤ 500 belgi |  |
 | `stops` | object[] | yo'q | ≤ 50 ta |  |
-| `stops[].sequence` | integer | ha | ≥ 1 |  |
+| `stops[].sequence` | integer | ha | 1–1000 |  |
 | `stops[].type` | `PICKUP` \| `DELIVERY` \| `FUEL` \| `REST` \| `CHECKPOINT` | ha |  |  |
 | `stops[].name` | string | ha | 1–200 belgi |  |
 | `stops[].address` | string | yo'q | ≤ 300 belgi |  |
@@ -6583,7 +7102,7 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 | `distanceMi` | number | yo'q | >True–10000 |  |
 | `rateUsd` | number | yo'q | >True–1000000 |  |
 | `customer` | string | yo'q | ≤ 200 belgi |  |
-| `estimatedDriveSec` | integer | yo'q | ≥ >True |  |
+| `estimatedDriveSec` | integer | yo'q | >True–10000000 |  |
 | `draft` | boolean | yo'q | default `false` |  |
 
 **Javob `201`:** 
@@ -6596,7 +7115,7 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 }
 ```
 
-**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `409` Field-level conflict — one of: CONFLICT (details.number: "A trip with this number already exists."); TRIP_SCHEDULE_CONFLICT (details.vehi… · `422` TRAILER_NOT_FOUND — trailerId is unknown or names a deleted trailer.
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `409` Field-level conflict — one of: CONFLICT (details.number: "A trip with this number already exists."); TRIP_SCHEDULE_CONFLICT (details.vehi… · `422` One of: DRIVER_NOT_FOUND (details.driverId: "Driver not found." / "This driver has been deleted and cannot be assigned."); VEHICLE_NOT_FO…
 
 ---
 
@@ -6676,8 +7195,8 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 | `status` | `DRAFT` \| `PLANNED` \| `ASSIGNED` \| `IN_PROGRESS` \| `DELIVERED` \| `CANCELLED` | yo'q |  |  |
 | `shippingDocument` | string | yo'q | ≤ 60 belgi |  |
 | `commodity` | string | yo'q | ≤ 120 belgi |  |
-| `weightLbs` | integer | yo'q | ≥ 0 |  |
-| `pieces` | integer | yo'q | ≥ 0 |  |
+| `weightLbs` | integer | yo'q | 0–1000000 |  |
+| `pieces` | integer | yo'q | 0–1000000 |  |
 | `plannedStartAt` | string (date-time) | yo'q |  |  |
 | `plannedEndAt` | string (date-time) | yo'q |  |  |
 | `etaAt` | string (date-time) | yo'q |  |  |
@@ -6685,7 +7204,8 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 | `distanceMi` | number | yo'q | >True–10000 |  |
 | `rateUsd` | number | yo'q | >True–1000000 |  |
 | `customer` | string | yo'q | ≤ 200 belgi |  |
-| `estimatedDriveSec` | integer | yo'q | ≥ >True |  |
+| `estimatedDriveSec` | integer | yo'q | >True–10000000 |  |
+| `completedAt` | string (date-time) | yo'q |  |  |
 
 **Javob `200`:** 
 
@@ -6753,7 +7273,7 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 }
 ```
 
-**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `404` NOT_FOUND — Trip not found. · `409` Field-level conflict — one of: CONFLICT (details.status: "Only a planned or assigned trip can be (re)assigned."); TRIP_SCHEDULE_CONFLICT … · `422` TRAILER_NOT_FOUND — trailerId is unknown or names a deleted trailer.
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `404` NOT_FOUND — Trip not found. · `409` Field-level conflict — one of: CONFLICT (details.status: "Only a planned or assigned trip can be (re)assigned."); TRIP_SCHEDULE_CONFLICT … · `422` One of: DRIVER_NOT_FOUND (details.driverId: "Driver not found." / "This driver has been deleted and cannot be assigned."); VEHICLE_NOT_FO…
 
 ---
 
@@ -6763,7 +7283,8 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 
 - **Auth:** `Authorization: Bearer <access token>`
 - **Ekran:** `{'id': 'web/dispatch-trips', 'title': 'Dispatch & Trips', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.5 (sidebar)'}`
-- **operationId:** `TripsController_autoAssign` · original: _Greedily assigns every unassigned load to the next free ACTIVE driver._
+- **operationId:** `TripsController_autoAssign` · original: _Greedily assigns every unassigned load to a free ACTIVE driver (no HOS-hours check)._
+- **Izoh (backend):** Each load is assigned on its own (atomic per load). `skipped` = loads left unassigned because no driver was free for that time (or the load has no planned start / delivery time — `noSchedule`); `failed` = loads stopped by another error, each with its reason. The run never aborts half-way.
 
 **Javob `200`:** 
 
@@ -6775,7 +7296,9 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
       "driverId": "drv_1"
     }
   ],
-  "skipped": 0
+  "skipped": 1,
+  "noSchedule": 0,
+  "failed": []
 }
 ```
 
@@ -6800,15 +7323,15 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 | Nomi | Joyi | Turi | Majburiy | Cheklov | Izoh |
 |---|---|---|---|---|---|
 | `limit` | query | integer | yo'q | 1–200, default `25` |  |
-| `page` | query | integer | yo'q | ≥ 1, default `1` |  |
+| `page` | query | integer | yo'q | 1–10000, default `1` |  |
 | `sort` | query | string | yo'q | ≤ 60 belgi |  |
 | `q` | query | string | yo'q | ≤ 200 belgi |  |
 | `driverId` | query | string (uuid) | yo'q |  |  |
 | `vehicleId` | query | string (uuid) | yo'q |  |  |
 | `type` | query | `HARSH_BRAKING` \| `HARSH_ACCEL` \| `HARSH_TURN` \| `SPEEDING` \| `SEATBELT` | yo'q |  |  |
 | `status` | query | `NEW` \| `REVIEWED` \| `COACHED` \| `DISMISSED` | yo'q |  |  |
-| `from` | query | string (date-time) | yo'q |  |  |
-| `to` | query | string (date-time) | yo'q |  |  |
+| `from` | query | string | yo'q |  |  |
+| `to` | query | string | yo'q |  |  |
 
 **Javob `200`:** 
 
@@ -6826,6 +7349,43 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
   "limit": 25,
   "total": 1,
   "totalPages": 1
+}
+```
+
+**Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `422` VALIDATION_FAILED — Request validation failed.
+
+---
+
+### `GET /api/safety/summary`
+
+**Nima qiladi:** CODE-040 — Safety page KPIs: event counts over the rolling 30 days (`current`) and the 30 days before (`previous`): total, harsh (braking+accel+turn), speeding, seatbelt, coached, pendingCoaching (status NEW).
+
+- **Auth:** `Authorization: Bearer <access token>`
+- **Ekran:** `{'id': 'web/safety', 'title': 'Safety', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.19'}`
+- **operationId:** `SafetyController_summary` · original: _CODE-040 — Safety page KPIs: event counts over the rolling 30 days (`current`) and the 30 days before (`previous`): total, harsh (braking+accel+turn), speeding, seatbelt, coached, pendingCoaching (status NEW)._
+
+**Javob `200`:** 
+
+```json
+{
+  "from": "2026-09-14T12:00:00.000Z",
+  "to": "2026-10-14T12:00:00.000Z",
+  "current": {
+    "total": 742,
+    "harsh": 512,
+    "speeding": 220,
+    "seatbelt": 10,
+    "coached": 31,
+    "pendingCoaching": 640
+  },
+  "previous": {
+    "total": 690,
+    "harsh": 480,
+    "speeding": 200,
+    "seatbelt": 10,
+    "coached": 25,
+    "pendingCoaching": 0
+  }
 }
 ```
 
@@ -6851,7 +7411,7 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 
 | Maydon | Turi | Majburiy | Cheklov | Izoh |
 |---|---|---|---|---|
-| `status` | `NEW` \| `REVIEWED` \| `COACHED` \| `DISMISSED` | ha |  |  |
+| `status` | `REVIEWED` \| `DISMISSED` | ha |  |  |
 | `coachingNote` | string | yo'q | ≤ 1000 belgi |  |
 
 **Javob `200`:** 
@@ -6873,32 +7433,64 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 
 - **Auth:** `Authorization: Bearer <access token>`
 - **Ekran:** `{'id': 'web/safety', 'title': 'Safety', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.19'}`
-- **operationId:** `SafetyController_scorecard` · original: _Fleet safety score and per-driver ranking ("Driver scorecard", below-70 flagged). B-44: each row includes previousScore/trend vs. the prior period of the same length._
+- **operationId:** `SafetyController_scorecard` · original: _Fleet safety score and per-driver ranking ("Driver scorecard", below-70 flagged). D-141: returns the latest nightly-computed rolling 30-day period (or the one starting on `periodStart` / ending on `periodEnd`, YYYY-MM-DD). Drivers under `minMiles` have `score: null`, `rank: null`. `fleet.score` is the mile-weighted mean of scored drivers; `fleet.trend` and per-row `trend` compare with the previous period of the same length._
 
 **Parametrlar:**
 
 | Nomi | Joyi | Turi | Majburiy | Cheklov | Izoh |
 |---|---|---|---|---|---|
-| `periodStart` | query | string (date-time) | yo'q |  |  |
-| `periodEnd` | query | string (date-time) | yo'q |  |  |
+| `periodStart` | query | string | yo'q | pattern `^\d{4}-\d{2}-\d{2}$` |  |
+| `periodEnd` | query | string | yo'q | pattern `^\d{4}-\d{2}-\d{2}$` |  |
 
 **Javob `200`:** 
 
 ```json
 {
+  "periodStart": "2026-09-11",
+  "periodEnd": "2026-10-10",
+  "computedAt": "2026-10-11T10:30:02.000Z",
+  "minMiles": 100,
+  "fleet": {
+    "score": 88,
+    "previousScore": 85,
+    "trend": 3,
+    "scoredDrivers": 12,
+    "unscoredDrivers": 2,
+    "belowThresholdCount": 1,
+    "milesDriven": 48210
+  },
   "items": [
     {
+      "id": "dsc_1",
       "driverId": "drv_1",
-      "score": 68,
-      "harshCount": 4,
+      "periodStart": "2026-09-11",
+      "periodEnd": "2026-10-10",
+      "score": 96,
+      "scored": true,
+      "harshCount": 1,
+      "speedingCount": 0,
+      "seatbeltCount": 0,
+      "milesDriven": 5210,
+      "violationCount": 0,
       "rank": 1,
-      "previousScore": 74,
-      "trend": -6
-    }
-  ],
-  "periodStart": "2026-08-12",
-  "periodEnd": "2026-09-11"
-}
+      "previousScore": 92,
+      "trend": 4,
+      "computedAt": "2026-10-11T10:30:02.000Z"
+    },
+    {
+      "id": "dsc_2",
+      "driverId": "drv_2",
+      "periodStart": "2026-09-11",
+      "periodEnd": "2026-10-10",
+      "score": null,
+      "scored": false,
+      "harshCount": 0,
+      "speedingCount": 0,
+      "seatbeltCount": 0,
+      "milesDriven": 42,
+      "violationCount": 0,
+      "rank": null,
+  …
 ```
 
 **Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `422` VALIDATION_FAILED — Request validation failed.
@@ -6989,9 +7581,9 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 | `centerLon` | number | yo'q | -180–180 |  |
 | `radiusMi` | number | yo'q | >True–500 |  |
 | `radiusMeters` | number | yo'q | >True–500 |  |
-| `polygon` | object[] | yo'q | ≥ 3 ta |  |
-| `polygon[].lat` | number | ha |  |  |
-| `polygon[].lon` | number | ha |  |  |
+| `polygon` | object[] | yo'q | 3–500 ta |  |
+| `polygon[].lat` | number | ha | -90–90 |  |
+| `polygon[].lon` | number | ha | -180–180 |  |
 | `address` | string | yo'q | 1–300 belgi |  |
 | `category` | string | yo'q | ≤ 60 belgi |  |
 | `alertOnEnter` | boolean | yo'q | default `false` |  |
@@ -7075,9 +7667,9 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 | `centerLon` | number | yo'q | -180–180 |  |
 | `radiusMi` | number | yo'q | >True–500 |  |
 | `radiusMeters` | number | yo'q | >True–500 |  |
-| `polygon` | object[] | yo'q | ≥ 3 ta |  |
-| `polygon[].lat` | number | ha |  |  |
-| `polygon[].lon` | number | ha |  |  |
+| `polygon` | object[] | yo'q | 3–500 ta |  |
+| `polygon[].lat` | number | ha | -90–90 |  |
+| `polygon[].lon` | number | ha | -180–180 |  |
 | `address` | string | yo'q | 1–300 belgi |  |
 | `category` | string | yo'q | ≤ 60 belgi |  |
 | `alertOnEnter` | boolean | yo'q |  |  |
@@ -7180,7 +7772,7 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 - **Ekran:** `{'id': 'web/live-fleet', 'title': 'Live Fleet', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.7'}`, `{'id': 'web/fleet-dashboard', 'title': 'Fleet Dashboard', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.5'}`
 - **operationId:** `LiveFleetController_fleet` · original: _Current snapshot of every unit: last known position, speed, driver, duty status, HOS clocks, ELD link._
 
-**Javob `200`:** 
+**Javob `200`:** UI-003/UI-004 (additive): recordStatus 'ACTIVE'|'INACTIVE'|'OUT_OF_SERVICE' (stored Vehicle.status); connectivity 'NO_DEVICE'|'ELD_OFFLINE'|'ONLINE' (ELD_OFFLINE = silent > 30 min); isStale boolean (duty status past its plausibility cap, or a DRIVING/ON_DUTY unit whose ELD went silent); staleSince ISO string|null. dutyStatus semantics: a stale assigned D/ON unit reads ELD_OFFLINE; an OUT_OF_SERVICE/INACTIVE record reads INACTIVE. speedMph is null when telemetry is older than 30 min. QA LIVE-002 (additive): driverDutyStatus 'DRIVING'|'ON_DUTY'|'SLEEPER'|'OFF_DUTY'|null — the assigned driver's own HOS status (Drivers roster vocabulary), last known even when the unit reads ELD_OFFLINE/INACTIVE; null with no driver or no HOS state.
 
 ```json
 {
@@ -7202,7 +7794,12 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
       "driveRemainingSec": 0,
       "shiftEndsAt": "2026-09-12T15:59:34.000Z",
       "eldSerial": "PT30_A86E",
-      "bleState": "CONNECTED"
+      "bleState": "CONNECTED",
+      "driverDutyStatus": "DRIVING",
+      "recordStatus": "ACTIVE",
+      "connectivity": "ONLINE",
+      "isStale": false,
+      "staleSince": null
     }
   ],
   "generatedAt": "2026-09-12T15:39:10.000Z"
@@ -7223,9 +7820,9 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 
 - **Auth:** `Authorization: Bearer <access token>`
 - **Ekran:** `{'id': 'web/fleet-dashboard', 'title': 'Fleet Dashboard', 'source': 'eld.docs/web/OneBook-ELD-admin.pdf p.5'}`
-- **operationId:** `DashboardController_summary` · original: _One-call aggregate for the W-01 Fleet Dashboard: live fleet, 24h violations, pending unidentified driving, unread notification count, carrier basics, and vehicle counts._
+- **operationId:** `DashboardController_summary` · original: _One-call aggregate for the W-01 Fleet Dashboard: live fleet, open violations, pending unidentified driving, unread notification count, carrier basics, and vehicle counts._
 
-**Javob `200`:** 
+**Javob `200`:** UI-003/UI-004 (additive): recordStatus 'ACTIVE'|'INACTIVE'|'OUT_OF_SERVICE' (stored Vehicle.status); connectivity 'NO_DEVICE'|'ELD_OFFLINE'|'ONLINE' (ELD_OFFLINE = silent > 30 min); isStale boolean (duty status past its plausibility cap, or a DRIVING/ON_DUTY unit whose ELD went silent); staleSince ISO string|null. dutyStatus semantics: a stale assigned D/ON unit reads ELD_OFFLINE; an OUT_OF_SERVICE/INACTIVE record reads INACTIVE. speedMph is null when telemetry is older than 30 min. vehicles.inactive / vehicles.outOfService: fleet-wide record-status counts. liveFleet.counts.moving counts DRIVING units that are not stale. QA LIVE-002: liveFleet.counts.onDuty = assigned drivers whose HOS status (driverDutyStatus) is DRIVING/ON_DUTY/SLEEPER (the Drivers list definition); liveFleet.counts.driverDuty = assigned drivers per status + UNKNOWN, summing to assigned. QA LIVE-011: liveFleet.counts.offline = units with connectivity ELD_OFFLINE (paired ELD silent > 30 min).
 
 ```json
 {
@@ -7234,7 +7831,12 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
       {
         "vehicleId": "veh_1",
         "unitNumber": "101",
-        "dutyStatus": "DRIVING"
+        "dutyStatus": "DRIVING",
+        "driverDutyStatus": "DRIVING",
+        "recordStatus": "ACTIVE",
+        "connectivity": "ONLINE",
+        "isStale": false,
+        "staleSince": null
       }
     ],
     "generatedAt": "2026-09-16T15:39:10.000Z",
@@ -7243,7 +7845,15 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
       "onDuty": 30,
       "moving": 18,
       "idle": 5,
-      "offline": 2
+      "offline": 2,
+      "driverDuty": {
+        "assigned": 36,
+        "DRIVING": 18,
+        "ON_DUTY": 10,
+        "SLEEPER": 2,
+        "OFF_DUTY": 6,
+        "UNKNOWN": 0
+      }
     }
   },
   "violations": {
@@ -7259,20 +7869,7 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
   },
   "unidentified": {
     "total": 2,
-    "totalDurationSec": 3600
-  },
-  "notifications": {
-    "unreadCount": 4
-  },
-  "carrier": {
-    "id": "carrier",
-    "name": "Universal Logistics Inc.",
-    "timezone": "America/New_York"
-  },
-  "vehicles": {
-    "active": 40,
-    "total": 45
-  },
+    "totalDurationSec": 3600,
   …
 ```
 
@@ -7325,7 +7922,7 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 |---|---|---|---|---|---|
 | `type` | query | `IFTA` \| `ACTIVITY` \| `DVIR` \| `FMCSA_PACK` \| `RODS` \| `IDLE_FUEL` | yo'q |  |  |
 | `status` | query | `QUEUED` \| `RUNNING` \| `READY` \| `FAILED` | yo'q |  |  |
-| `page` | query | integer | yo'q | ≥ 1, default `1` |  |
+| `page` | query | integer | yo'q | 1–10000, default `1` |  |
 | `limit` | query | integer | yo'q | 1–200, default `25` |  |
 
 **Javob `200`:** 
@@ -7635,7 +8232,7 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 | `terminal` | query | string | yo'q | ≥ 1 belgi |  |
 | `status` | query | `ACTIVE` \| `INACTIVE` \| `TERMINATED` | yo'q |  |  |
 | `sort` | query | string | yo'q | default `"name:asc"`, pattern `^(name|days|offSec|sbSec|drivingSec|onSec|distanceMi|violations|certifiedDays):(asc|desc)$` |  |
-| `page` | query | integer | yo'q | ≥ 1, default `1` |  |
+| `page` | query | integer | yo'q | 1–10000, default `1` |  |
 | `limit` | query | integer | yo'q | 1–200, default `25` |  |
 
 **Javob `200`:** 
@@ -7811,5 +8408,35 @@ Keyin `POST /api/conversations/{id}/messages` ga `{ "body": "", "attachmentId": 
 ```
 
 **Xatolar:** `401` UNAUTHORIZED — Authentication required. · `403` FORBIDDEN — Insufficient permissions for this action. · `404` REPORT_NOT_FOUND — Report not found. · `409` REPORT_NOT_READY — Report is not ready for download yet. · `422` VALIDATION_FAILED — Request validation failed.
+
+---
+
+<a id="bolim-client-errors"></a>
+
+## client-errors
+
+### `POST /api/client-errors`
+
+**Nima qiladi:** Report client-side errors from the admin panel or the driver app (D-158).
+
+- **Auth:** `Authorization: Bearer <access token>`
+- **operationId:** `ClientErrorsController_report` · original: _Report client-side errors from the admin panel or the driver app (D-158)._
+- **Izoh (backend):** Public — works before login. A valid Bearer access token, if sent, tags the report with `user:<id>` / `driver:<id>`; an invalid or expired token is ignored (never 401). Body: one item or `{ errors: [...] }` (1..10), max 32 KB. Bearer tokens, JWTs, password/token values and email addresses are scrubbed, then the reports are forwarded asynchronously to the ops error channel. Always 202 once validated; delivery is best-effort.
+
+**Body** (`application/json`):
+
+**Javob `202`:** Accepted for asynchronous forwarding.
+
+```json
+{
+  "data": {
+    "accepted": 1
+  },
+  "traceId": "01J8X3QK9Z0000000000000000",
+  "timestamp": "2026-10-08T15:41:00.000Z"
+}
+```
+
+**Xatolar:** `413` PAYLOAD_TOO_LARGE — body over 32 KB. · `422` VALIDATION_FAILED — Request validation failed. · `429` RATE_LIMITED — Client error reports are limited to 30 requests per minute per IP.
 
 ---

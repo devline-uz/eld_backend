@@ -69,7 +69,7 @@ describe('PrincipalStateService', () => {
       const sessions = { isLineageLive: jest.fn().mockResolvedValue(true) };
       const events = { publish: jest.fn().mockResolvedValue(undefined) };
       const drivers = { findById: jest.fn().mockResolvedValue(driver) };
-      const driverSessions = { hasLiveSession: jest.fn().mockResolvedValue(hasLive) };
+      const driverSessions = { hasLiveSession: jest.fn().mockResolvedValue(hasLive), lineageState: jest.fn().mockResolvedValue({ live: hasLive, replaced: null }), replacementFor: jest.fn().mockResolvedValue(null) };
       let relayed: ((m: { room: string | string[]; event: string; payload: unknown }) => void) | undefined;
       const relay = { onRelayed: jest.fn((h: typeof relayed) => { relayed = h; return () => undefined; }) };
       const service = new PrincipalStateService(
@@ -120,6 +120,24 @@ describe('PrincipalStateService', () => {
       relay({ room: ['user:u1', 'driver:d1'], event: 'auth.revoked', payload: {} });
       await expect(service.resolveUser('u1', 's1')).resolves.toBeNull();
       await expect(service.resolveDriver('d1')).resolves.toBe(false);
+    });
+
+    it('MD-195: with a sid the check is per-session; a replaced sid is refused, never cached, and eviction keeps sockets', async () => {
+      const { service, driverSessions, events, relay } = buildFull();
+      await expect(service.resolveDriver('d1', 's1')).resolves.toBe(true);
+      expect(driverSessions.lineageState).toHaveBeenCalledWith('d1', 's1');
+      expect(driverSessions.hasLiveSession).not.toHaveBeenCalled();
+      driverSessions.lineageState.mockResolvedValue({ live: false, replaced: { byDeviceLabel: 'X', at: new Date() } });
+      await expect(service.resolveDriver('d1', 's1')).resolves.toBe(true); // still cached
+      await service.evictDriverSessions('d1');
+      await expect(service.resolveDriver('d1', 's1')).resolves.toBe(false);
+      expect(events.publish).toHaveBeenCalledWith('realtime.push', { room: 'driver:d1', event: 'auth.driver-session-evict', payload: {} });
+      expect(events.publish).not.toHaveBeenCalledWith('realtime.push', expect.objectContaining({ event: 'auth.revoked' }));
+      driverSessions.lineageState.mockResolvedValue({ live: true, replaced: null });
+      await expect(service.resolveDriver('d1', 's1')).resolves.toBe(true);
+      driverSessions.lineageState.mockResolvedValue({ live: false, replaced: null });
+      relay({ room: 'driver:d1', event: 'auth.driver-session-evict', payload: {} });
+      await expect(service.resolveDriver('d1', 's1')).resolves.toBe(false);
     });
 
     it('ignores other relayed events', async () => {

@@ -84,7 +84,7 @@ export class MobileCoDriverService {
     // login 401 — the caller's own session is fine and the app must not treat it as expired.
     let tokens: AccessTokenPair;
     try {
-      tokens = await this.auth.loginDriver(coDriver.username, dto.coDriverPassword, meta);
+      tokens = await this.auth.loginDriver(coDriver.username, dto.coDriverPassword, meta, dto.device);
     } catch (err) {
       if (err instanceof AppException && err.code === ERROR_CODES.INVALID_CREDENTIALS) {
         throw new AppException(ERROR_CODES.CO_DRIVER_PASSWORD_INVALID, 'The co-driver password is incorrect.', 422);

@@ -89,3 +89,81 @@ describe('RealtimeGateway typing relay', () => {
     expect(emit).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('RealtimeGateway session.replaced (single-device)', () => {
+  function build() {
+    let relay: ((p: RealtimePushPayload) => void) | undefined;
+    const pubsub = { onRelayed: jest.fn((h: (p: RealtimePushPayload) => void) => ((relay = h), () => undefined)) };
+    const emit = jest.fn();
+    const to = jest.fn(() => ({ emit }));
+    const disconnectSockets = jest.fn();
+    const inRoom = jest.fn(() => ({ disconnectSockets }));
+    const verify = jest.fn();
+    const rooms = { mayJoin: jest.fn(async () => true) };
+    const gateway = new RealtimeGateway({ verifyAccessToken: verify }, pubsub as never, rooms as never);
+    gateway.server = { to, in: inRoom } as never;
+    gateway.onModuleInit();
+    return { gateway, relay: (p: RealtimePushPayload) => relay!(p), to, emit, inRoom, disconnectSockets, verify, rooms };
+  }
+  const payload = { byDeviceLabel: 'phone', at: '2026-10-15T10:00:00.000Z', deviceId: 'old', byDeviceId: 'new' };
+
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
+
+  it('emits to session:<sid> then disconnects only that room', () => {
+    const { relay, to, emit, inRoom, disconnectSockets } = build();
+    relay({ room: 'session:s1', event: 'session.replaced', payload });
+    expect(to).toHaveBeenCalledWith(['session:s1']);
+    expect(emit).toHaveBeenCalledWith('session.replaced', payload);
+    expect(disconnectSockets).not.toHaveBeenCalled();
+    jest.advanceTimersByTime(300);
+    expect(inRoom).toHaveBeenCalledWith(['session:s1']);
+    expect(disconnectSockets).toHaveBeenCalledWith(true);
+  });
+
+  it('never broadcasts session.replaced to a driver room', () => {
+    const { relay, to, emit, inRoom } = build();
+    relay({ room: 'driver:d1', event: 'session.replaced', payload });
+    relay({ room: ['driver:d1', 'session:s1'], event: 'session.replaced', payload });
+    jest.advanceTimersByTime(300);
+    expect(to).toHaveBeenCalledTimes(1);
+    expect(to).toHaveBeenCalledWith(['session:s1']);
+    expect(emit).toHaveBeenCalledTimes(1);
+    expect(inRoom).toHaveBeenCalledTimes(1);
+  });
+
+  it('a driver socket with sid joins driver:<id> and session:<sid>; a user socket does not', async () => {
+    const { gateway, verify } = build();
+    const join = jest.fn();
+    verify.mockResolvedValueOnce({ id: 'd1', type: 'driver', sessionId: 's1' });
+    await gateway.handleConnection({ handshake: { auth: { token: 't' } }, data: {}, join, disconnect: jest.fn() } as never);
+    expect(join).toHaveBeenCalledWith('driver:d1');
+    expect(join).toHaveBeenCalledWith('session:s1');
+    const join2 = jest.fn();
+    verify.mockResolvedValueOnce({ id: 'u1', type: 'user', sessionId: 's9' });
+    await gateway.handleConnection({ handshake: { auth: { token: 't' } }, data: {}, join: join2, disconnect: jest.fn() } as never);
+    expect(join2).not.toHaveBeenCalledWith('session:s9');
+  });
+
+  it('refuses the handshake when token verification rejects (revoked session)', async () => {
+    const { gateway, verify } = build();
+    const disconnect = jest.fn();
+    const join = jest.fn();
+    verify.mockRejectedValueOnce(new Error('SESSION_REPLACED'));
+    await gateway.handleConnection({ handshake: { auth: { token: 't' } }, data: {}, join, disconnect } as never);
+    expect(disconnect).toHaveBeenCalledWith(true);
+    expect(join).not.toHaveBeenCalled();
+  });
+
+  it('clients cannot subscribe to or leave session:* rooms', async () => {
+    const { gateway, rooms } = build();
+    const join = jest.fn();
+    const leave = jest.fn();
+    const socket = { data: { user: { id: 'd1', type: 'driver' } }, join, leave } as never;
+    await expect(gateway.onSubscribe(socket, 'session:s1')).resolves.toEqual({ ok: false });
+    expect(rooms.mayJoin).not.toHaveBeenCalled();
+    expect(join).not.toHaveBeenCalled();
+    await expect(gateway.onUnsubscribe(socket, 'session:s1')).resolves.toEqual({ ok: false });
+    expect(leave).not.toHaveBeenCalled();
+  });
+});

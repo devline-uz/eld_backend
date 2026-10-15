@@ -1499,3 +1499,121 @@ describe('W-08 — the record table and the grid read the same RODS day', () => 
     expect(to.getTime() - from.getTime()).toBe(86_400_000);
   });
 });
+
+// D-163 — offline records a REPLACED device delivers after the driver logs in on it again.
+describe('D-163 — late /mobile/sync records from a replaced device are stored inert for review', () => {
+  const REPLACED_AT = new Date('2026-06-01T13:00:00Z');
+  const LOGIN_AT = new Date('2026-06-01T20:00:00Z');
+  const context = {
+    deviceId: 'dev-A',
+    loginAt: LOGIN_AT,
+    replaced: [{ revokedAt: REPLACED_AT, deviceLabel: 'Pixel 7' }],
+  };
+  const driverOnA = { id: DRIVER, type: 'driver' as const, sessionId: 'sess-A2' };
+
+  function buildWithReview() {
+    const base = build();
+    const replacedDevice = { contextFor: jest.fn(async () => context) };
+    const service = new LogsService(
+      base.repo as unknown as LogsRepository,
+      base.writer as unknown as RodsEventWriter,
+      base.audit as unknown as AuditRepository,
+      base.events as unknown as EventBusService,
+      base.hosQueue as never,
+      base.alertQueue as never,
+      replacedDevice as never,
+    );
+    return { ...base, service, replacedDevice };
+  }
+
+  it('keeps an entry that overlaps driving, as recordStatus 3, voiding nothing and queueing no recalc', async () => {
+    const { service, repo, writer, audit, hosQueue, replacedDevice } = buildWithReview();
+    repo.events = [evt({ id: 1n, at: '2026-06-01T12:00:00Z', code: 3 }), evt({ id: 2n, at: '2026-06-01T16:00:00Z', code: 4 })];
+
+    const result = await service.createLogEntry(
+      DRIVER,
+      { status: 'OFF', startAt: new Date('2026-06-01T14:00:00Z'), endAt: new Date('2026-06-01T15:00:00Z'), annotation: 'Rest on old phone' },
+      driverOnA,
+      { occurredAt: new Date('2026-06-01T14:00:00Z') },
+    );
+
+    expect(replacedDevice.contextFor).toHaveBeenCalledWith(DRIVER, 'sess-A2');
+    expect(result).toMatchObject({ recordStatus: 3, applied: false, recertificationRequired: false, reviewReason: 'REPLACED_DEVICE', reviewDeviceLabel: 'Pixel 7' });
+    expect(writer.rows.length).toBeGreaterThan(0);
+    expect(writer.rows.every((row) => row.recordStatus === 3)).toBe(true);
+    expect(writer.calls[0].ctx.review).toEqual({ reviewReason: 'REPLACED_DEVICE', reviewDeviceLabel: 'Pixel 7' });
+    expect(repo.invalidated).toEqual([]);
+    expect(hosQueue.add).not.toHaveBeenCalled();
+    expect(audit.insert).toHaveBeenCalledWith(expect.objectContaining({ action: 'LOG_REPLACED_DEVICE_RECORD' }));
+  });
+
+  it('a correction retires nothing: no Inactive-Changed marker, no neutralizer', async () => {
+    const { service, repo, writer } = buildWithReview();
+    repo.events = [evt({ id: 1n, at: '2026-06-01T10:00:00Z', code: 1 }), evt({ id: 2n, at: '2026-06-01T14:00:00Z', code: 4 })];
+
+    await service.createLogEntry(
+      DRIVER,
+      { status: 'SB', startAt: new Date('2026-06-01T14:00:00Z'), annotation: 'Was in the sleeper', originalEventId: '2' },
+      driverOnA,
+      { occurredAt: new Date('2026-06-01T15:00:00Z') },
+    );
+
+    expect(writer.rows.some((row) => row.kind === 'INACTIVE_MARKER' || row.kind === 'NEUTRALIZE')).toBe(false);
+    expect(writer.rows.find((row) => row.kind === 'NEW_ACTIVE')).toMatchObject({ recordStatus: 3, supersedesId: 2n });
+  });
+
+  it('still refuses manual driving (content rule, not an overlap)', async () => {
+    const { service } = buildWithReview();
+    await expect(
+      service.createLogEntry(
+        DRIVER,
+        { status: 'D' as never, startAt: new Date('2026-06-01T14:00:00Z'), annotation: 'Drove on old phone' },
+        driverOnA,
+        { occurredAt: new Date('2026-06-01T14:00:00Z') },
+      ),
+    ).rejects.toMatchObject({ code: 'DRIVING_TIME_IMMUTABLE' });
+  });
+
+  it('a change made after the re-login is a normal active self-edit', async () => {
+    const { service, repo, writer } = buildWithReview();
+    repo.events = [evt({ id: 1n, at: '2026-06-01T12:00:00Z', code: 1 })];
+    const result = await service.createLogEntry(
+      DRIVER,
+      { status: 'ON', startAt: new Date('2026-06-01T20:30:00Z'), endAt: new Date('2026-06-01T20:45:00Z'), annotation: 'Fuel stop paperwork' },
+      driverOnA,
+      { occurredAt: new Date('2026-06-01T20:30:00Z') },
+    );
+    expect(result).toMatchObject({ recordStatus: 1, applied: true });
+    expect(writer.rows[0]).toMatchObject({ recordStatus: 1 });
+    expect(writer.calls[0].ctx.review).toBeNull();
+  });
+
+  it('a review row pointing at an original does not block a carrier proposal on it', async () => {
+    const { service, repo, writer } = buildWithReview();
+    repo.events = [
+      evt({ id: 1n, at: '2026-06-01T12:00:00Z', code: 4 }),
+      evt({ id: 2n, at: '2026-06-01T14:00:00Z', code: 1 }),
+      { ...evt({ id: 3n, at: '2026-06-01T12:00:00Z', code: 2, recordStatus: 3, recordOrigin: 2, supersedesId: 1n }), reviewReason: 'REPLACED_DEVICE' } as FakeEvent,
+    ];
+    await service.createEditRequest(
+      DRIVER,
+      { originalEventId: '1', proposedStatus: 'SB', proposedStart: new Date('2026-06-01T12:00:00Z'), proposedEnd: new Date('2026-06-01T14:00:00Z'), reason: 'Per old phone' },
+      carrier,
+    );
+    expect(writer.rows[0]).toMatchObject({ recordStatus: 3, recordOrigin: 3 });
+  });
+
+  it('GET events?review=REPLACED_DEVICE keeps only flagged records and exposes the label', async () => {
+    const { service, repo } = build();
+    repo.events = [
+      evt({ id: 1n, at: '2026-06-01T12:00:00Z', code: 1 }),
+      { ...evt({ id: 2n, at: '2026-06-01T14:00:00Z', code: 4, recordStatus: 3, recordOrigin: 2 }), reviewReason: 'REPLACED_DEVICE', reviewDeviceLabel: 'Pixel 7' } as FakeEvent,
+    ];
+    const all = await service.getEvents(DRIVER, '2026-06-01', new Date('2026-06-02T12:00:00Z'));
+    expect(all.events).toHaveLength(2);
+    expect(all.events[0]).toMatchObject({ reviewReason: null, reviewDeviceLabel: null });
+    const flagged = await service.getEvents(DRIVER, '2026-06-01', new Date('2026-06-02T12:00:00Z'), 'REPLACED_DEVICE');
+    expect(flagged.events).toHaveLength(1);
+    expect(flagged.events[0]).toMatchObject({ id: '2', recordStatus: 3, reviewReason: 'REPLACED_DEVICE', reviewDeviceLabel: 'Pixel 7' });
+  });
+});

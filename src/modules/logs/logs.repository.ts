@@ -54,6 +54,18 @@ export class LogsRepository extends BaseRepository<
     });
   }
 
+  /** D-163 — the driver's flagged records (index `driverId, reviewReason, eventDateTime`). */
+  async findReviewEvents(driverId: string, reviewReason: string, take: number): Promise<EldEvent[]> {
+    // B-180 — the cap keeps the NEWEST flagged records (the ones still awaiting review), returned
+    // oldest first; an ascending `take` hid every record past the 500th.
+    const rows = await this.prisma.eldEvent.findMany({
+      where: { driverId, reviewReason },
+      orderBy: [{ eventDateTime: 'desc' }, { eventSequenceId: 'desc' }],
+      take,
+    });
+    return rows.reverse();
+  }
+
   /** MB-10 — the originals the listed edit requests point at. */
   findEventsByIds(ids: bigint[]): Promise<EldEvent[]> {
     if (!ids.length) return Promise.resolve([]);
@@ -86,6 +98,8 @@ export class LogsRepository extends BaseRepository<
       where: {
         driverId,
         recordStatus: 3,
+        // D-163 — replaced-device review rows are recordStatus 3 too, but no carrier proposal.
+        reviewReason: null,
         ...(from && to ? { eventDateTime: { gte: from, lte: to } } : {}),
       },
       orderBy: [{ eventDateTime: 'asc' }, { eventSequenceId: 'asc' }],

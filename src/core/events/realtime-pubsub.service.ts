@@ -12,7 +12,7 @@ export function realtimeChannel(queuePrefix: string, redisDb: number): string {
 }
 
 /** Same room grammar `RealtimeGateway` accepts from clients (TZ §12.4). */
-const RELAY_ROOM_PATTERN = /^(fleet|violations|vehicle:[\w-]+|driver:[\w-]+|user:[\w-]+|conversation:[\w-]+)$/;
+const RELAY_ROOM_PATTERN = /^(fleet|violations|vehicle:[\w-]+|driver:[\w-]+|user:[\w-]+|conversation:[\w-]+|session:[\w-]+)$/;
 const RELAY_EVENT_PATTERN = /^[\w.:-]{1,100}$/;
 /** Upper bound on the rooms one multi-room push may name (a conversation's participants plus
  * its own room) — anything larger is a malformed/hostile relay message, not a real fan-out. */

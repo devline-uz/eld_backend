@@ -251,6 +251,32 @@ describe('buildSnapshot — segment routing (tz.md §10.2)', () => {
     ]);
   });
 
+  // D-163 — a driver-entered record a replaced device delivered late is stored inert (status 3).
+  it('renders a replaced-device review record with its Appendix A record status 3 and keeps the file valid', () => {
+    const snap = snapshot({
+      events: [
+        event({ eventSequenceId: 1, eventDateTime: new Date('2026-09-08T10:00:00Z') }),
+        event({
+          eventSequenceId: 2,
+          eventCode: 1,
+          recordStatus: 3,
+          recordOrigin: 2,
+          eventDateTime: new Date('2026-09-08T11:00:00Z'),
+          annotation: 'Rest on old phone',
+          latitude: 40.5,
+          reviewReason: 'REPLACED_DEVICE',
+          reviewDeviceLabel: 'Pixel 7',
+        }),
+      ],
+    });
+    const csv = buildOutputFile(snap).csv;
+    const row = csv.split('\r\n').find((line) => line.startsWith('0002,'));
+    expect(row?.split(',').slice(1, 5)).toEqual(['3', '2', '1', '1']);
+    expect(validateOutputFile(csv).issues).toEqual([]);
+    // 4.8.2.1.6 header line 6 is the latest ACTIVE record — the inert one never becomes "current".
+    expect(snap.current).toMatchObject({ latitude: 41.318511 });
+  });
+
   it('fills header line 6 from the latest active record', () => {
     const snap = snapshot({
       events: [

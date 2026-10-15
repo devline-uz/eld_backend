@@ -121,7 +121,7 @@ describe('TokenService', () => {
         REDIS_URL: 'redis://localhost:6379',
         JWT_SECRET: 'unit-test-secret-at-least-32-characters-long',
       });
-      const principals = { resolveUser: jest.fn().mockResolvedValue(live), resolveDriver: jest.fn().mockResolvedValue(driverLive) };
+      const principals = { resolveUser: jest.fn().mockResolvedValue(live), resolveDriver: jest.fn().mockResolvedValue(driverLive), driverReplacement: jest.fn().mockResolvedValue(null) };
       const moduleRef = await Test.createTestingModule({
         providers: [
           TokenService,
@@ -151,10 +151,22 @@ describe('TokenService', () => {
       await expect(svc.verifyAccessToken(token)).rejects.toMatchObject({ code: 'TOKEN_INVALID', status: 401 });
     });
 
+    it('MD-195: a refused driver token whose session was replaced -> 401 SESSION_REPLACED with details', async () => {
+      const { svc, principals } = await withPrincipals(null, false);
+      const at = new Date('2026-10-15T09:00:00Z');
+      principals.driverReplacement.mockResolvedValue({ byDeviceLabel: 'Pixel tablet', at });
+      await expect(svc.verifyAccessToken(svc.signDriverAccessToken({ id: 'drv_1', sessionId: 's9' }))).rejects.toMatchObject({
+        code: 'SESSION_REPLACED',
+        status: 401,
+        details: { byDeviceLabel: 'Pixel tablet', at: at.toISOString() },
+      });
+      expect(principals.resolveDriver).toHaveBeenCalledWith('drv_1', 's9');
+    });
+
     it('a live driver token passes the driver check, never the user one', async () => {
       const { svc, principals } = await withPrincipals(null);
       await expect(svc.verifyAccessToken(svc.signDriverAccessToken({ id: 'drv_1' }))).resolves.toMatchObject({ type: 'driver' });
-      expect(principals.resolveDriver).toHaveBeenCalledWith('drv_1');
+      expect(principals.resolveDriver).toHaveBeenCalledWith('drv_1', undefined);
       expect(principals.resolveUser).not.toHaveBeenCalled();
     });
 

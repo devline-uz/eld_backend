@@ -19,6 +19,12 @@ interface AuthedSocket extends Socket {
   data: { user?: ContextUser; typing?: Map<string, { isTyping: boolean; at: number }> };
 }
 
+/** Single-device rule — published by the auth module for the revoked session's private room. */
+export const SESSION_REPLACED_EVENT = 'session.replaced';
+const SESSION_ROOM_PREFIX = 'session:';
+/** Grace so the `session.replaced` frame is flushed before the transport is closed. */
+const SESSION_REPLACED_DISCONNECT_DELAY_MS = 250;
+
 /** Same typing state re-sent inside this window is ignored. */
 const TYPING_DEDUPE_MS = 2000;
 
@@ -67,6 +73,21 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
         this.server?.in(payload.room).disconnectSockets(true);
         return;
       }
+      if (payload.event === SESSION_REPLACED_EVENT) {
+        // Only ever the revoked session's private `session:<sid>` room. A driver can have another
+        // device in `driver:<id>` (the one that just logged in) — it must never see this event
+        // nor be dropped, so any other target room is refused.
+        const rooms = Array.isArray(payload.room) ? payload.room : [payload.room];
+        const sessionRooms = rooms.filter((r) => r.startsWith(SESSION_ROOM_PREFIX));
+        if (sessionRooms.length !== rooms.length) {
+          this.logger.warn({ rooms }, 'session.replaced refused: target must be session:<sid> rooms only.');
+          if (sessionRooms.length === 0) return;
+        }
+        this.server?.to(sessionRooms).emit(payload.event, payload.payload);
+        const timer = setTimeout(() => this.server?.in(sessionRooms).disconnectSockets(true), SESSION_REPLACED_DISCONNECT_DELAY_MS);
+        timer.unref?.();
+        return;
+      }
       this.server?.to(payload.room).emit(payload.event, payload.payload);
     });
   }
@@ -85,6 +106,9 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       // pushes (HOS updates, alerts, messages) reach it without an explicit subscribe call.
       const ownRoom = user.type === 'driver' ? `driver:${user.id}` : `user:${user.id}`;
       await socket.join(ownRoom);
+      // Server-side only: the revoked-session notice (`session.replaced`) is addressed to this
+      // exact session, so the driver's other device in `driver:<id>` is never touched.
+      if (user.type === 'driver' && user.sessionId) await socket.join(`${SESSION_ROOM_PREFIX}${user.sessionId}`);
     } catch (err) {
       this.logger.warn({ err }, 'WebSocket auth failed — disconnecting.');
       socket.disconnect(true);
@@ -138,6 +162,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
 
   @SubscribeMessage('unsubscribe')
   async onUnsubscribe(@ConnectedSocket() socket: AuthedSocket, @MessageBody() room: string): Promise<{ ok: boolean }> {
+    if (typeof room === 'string' && room.startsWith(SESSION_ROOM_PREFIX)) return { ok: false };
     await socket.leave(room);
     return { ok: true };
   }

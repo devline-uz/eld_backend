@@ -145,6 +145,10 @@ export type SyncChangeDto = z.infer<typeof SyncChangeDto>;
 export const SyncBacklogDto = z.object({
   days: z.number().min(0).max(3650),
   bytes: z.number().int().min(0),
+  /** Single-device (MD-196): unsent queue records plus ELD events not yet accepted by `/ingest/events`. */
+  pendingCount: z.number().int().min(0).max(10_000_000).optional(),
+  /** Oldest of those pending records. */
+  oldestPendingAt: isoDateTime.optional(),
 });
 export type SyncBacklogDto = z.infer<typeof SyncBacklogDto>;
 

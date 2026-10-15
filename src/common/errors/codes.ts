@@ -53,6 +53,12 @@ export const ERROR_CODES = {
   /** Driver app — the driver was set INACTIVE / TERMINATED / deleted, or every app session was
    * revoked. 401 on any driver request and on refresh; the app must sign out (no retry). */
   DRIVER_DISABLED: 'DRIVER_DISABLED',
+  /** MD-195 — another device signed in to this driver account. 401 `details: { byDeviceLabel, at }`;
+   * final for the app (no refresh retry). */
+  SESSION_REPLACED: 'SESSION_REPLACED',
+  /** MD-195 — login refused: another device of this account reported motion in the last 2 min.
+   * 409 `details: { byDeviceLabel, lastSeenAt }`; there is no force flag. */
+  DRIVING_ON_OTHER_DEVICE: 'DRIVING_ON_OTHER_DEVICE',
 
   // --- fleet (TZ §5.3, §5.4) ----------------------------------------------
   DRIVER_NOT_FOUND: 'DRIVER_NOT_FOUND',
@@ -113,6 +119,10 @@ export const ERROR_CODES = {
   EVENT_OUT_OF_RANGE: 'EVENT_OUT_OF_RANGE',
   BATCH_TOO_LARGE: 'BATCH_TOO_LARGE',
   UNKNOWN_DEVICE: 'UNKNOWN_DEVICE',
+  /** D-164 — 503 + `Retry-After` on `/ingest/*`: the device<->unit pairing or the driver<->unit
+   * assignment the payload claims is not visible yet, and nothing conflicts with it (the unit is
+   * free, the device is not paired elsewhere). Transient: the app retries, never quarantines. */
+  INGEST_ASSIGNMENT_PENDING: 'INGEST_ASSIGNMENT_PENDING',
 
   // --- HOS / RODS (TZ §8, §9) ---------------------------------------------
   DRIVING_TIME_IMMUTABLE: 'DRIVING_TIME_IMMUTABLE',

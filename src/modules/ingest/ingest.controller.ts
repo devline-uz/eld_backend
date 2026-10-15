@@ -6,7 +6,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { DriverGuard } from '../../common/guards/driver.guard';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
-import { apiError, ApiStandardErrors } from '../../common/errors/api-error-responses.decorator';
+import { ApiErrorSpec, ApiStandardErrors } from '../../common/errors/api-error-responses.decorator';
 import { FigmaScreen } from '../../common/decorators/figma-screen.decorator';
 import { zodBody } from '../../common/pipes/zod-validation.pipe';
 import { DeviceEventsResult, DeviceEventsService } from './device-events.service';
@@ -19,6 +19,8 @@ import {
   MAX_BATCH_BYTES,
 } from './dto/ingest.dto';
 import { IngestEventsResult, IngestService } from './ingest.service';
+import { SessionActivityService } from './session-activity.service';
+import type { ContextUser } from '../../core/context/request-context';
 
 /**
  * TZ §7.1 — the ingest endpoints (§7.1 four + SDK 6.11 `device-events`). Every one of them is called by the mobile APP with a
@@ -40,6 +42,53 @@ import { IngestEventsResult, IngestService } from './ingest.service';
  * misbehaving device can no longer spend the whole carrier NAT's budget. Do not add a named
  * `ingest` override to `@Throttle()` here — the limit is intentionally configured centrally.
  */
+/**
+ * D-164 — the app's retry contract (backend-tasks 2026-10-15 §2.10), documented on every route:
+ * 5xx / 408 / 429 / 401 are retried with backoff honouring `Retry-After`; every other 4xx is
+ * permanent (quarantine); 400/413/422 make the app split the batch to find the bad row.
+ */
+const INGEST_FORBIDDEN: ApiErrorSpec = {
+  status: 403,
+  code: ERROR_CODES.FORBIDDEN,
+  message: 'Driver is not associated with this unit: it is assigned to another driver.',
+  details: { deviceSerial: 'PT30_A86E', vehicleId: '0b6f1c2e-0000-4000-8000-000000000201', reason: 'UNIT_ASSIGNED_TO_ANOTHER_DRIVER' },
+  description:
+    'PERMANENT refusal (the app quarantines). `FORBIDDEN` with `details.reason` one of DEVICE_PAIRED_ELSEWHERE, ' +
+    'UNIT_HAS_OTHER_DEVICE, UNIT_ASSIGNED_TO_ANOTHER_DRIVER, DRIVER_ASSIGNED_TO_ANOTHER_UNIT, DRIVER_LEFT_UNIT ' +
+    '(logout from the unit > 10 min ago); `DRIVER_CONTEXT_REQUIRED` (not a driver token); `VIRTUAL_ELD_DISABLED`.',
+};
+const INGEST_VALIDATION: ApiErrorSpec = {
+  status: 422,
+  code: ERROR_CODES.VALIDATION_FAILED,
+  message: 'Request validation failed.',
+  details: { issues: [{ path: 'batch.17.eventDateTime', code: 'invalid_date', message: 'Invalid date' }] },
+  description:
+    'Schema violation — the only reason a row is ever rejected. `details.issues[].path` names the bad row ' +
+    '(`batch.N.*` / `points.N.*` / `events.N.*`); a path without an index (e.g. `batch` over 500 rows) is a whole-batch ' +
+    'shape error. Never used for business or transient conditions.',
+};
+const INGEST_TOO_LARGE: ApiErrorSpec = {
+  status: 413, code: ERROR_CODES.PAYLOAD_TOO_LARGE, message: 'Ingest batch exceeds the 1 MB limit.', details: { bytes: 1400000, limit: 1048576 },
+};
+const INGEST_RATE_LIMITED: ApiErrorSpec = {
+  status: 429,
+  code: ERROR_CODES.RATE_LIMITED,
+  message: 'Ingest rate limit exceeded for this driver (300 requests per 60s).',
+  details: { scope: 'driver', limit: 300, windowSec: 60, retryAfterSec: 12 },
+  description: 'Transient — always carries a `Retry-After` header (seconds, = `details.retryAfterSec`).',
+};
+const INGEST_UNAVAILABLE: ApiErrorSpec = {
+  status: 503,
+  code: ERROR_CODES.INGEST_ASSIGNMENT_PENDING,
+  message: 'The unit assignment is not visible yet — retry after the Retry-After delay.',
+  details: { deviceSerial: 'PT30_A86E', vehicleId: '0b6f1c2e-0000-4000-8000-000000000201', pending: ['DRIVER_ASSIGNMENT'], retryAfterSec: 30 },
+  description:
+    'Transient — always carries a `Retry-After` header. `INGEST_ASSIGNMENT_PENDING`: the claimed device pairing / ' +
+    'driver assignment is not visible yet and nothing conflicts with it (`details.pending`); `SERVICE_UNAVAILABLE`: ' +
+    'overload (DB pool / transaction wait exhausted). Nothing was stored; resend the same batch.',
+};
+const INGEST_ERRORS = [INGEST_FORBIDDEN, INGEST_VALIDATION, INGEST_RATE_LIMITED, INGEST_UNAVAILABLE];
+
 @ApiTags('ingest')
 @ApiBearerAuth()
 @UseGuards(DriverGuard)
@@ -49,6 +98,7 @@ export class IngestController {
   constructor(
     private readonly ingest: IngestService,
     private readonly deviceEvents: DeviceEventsService,
+    private readonly activity: SessionActivityService,
   ) {}
 
   @Post('events')
@@ -94,21 +144,18 @@ export class IngestController {
       },
     },
   })
-  @ApiStandardErrors({
-    errors: [
-      apiError.forbidden('DRIVER_CONTEXT_REQUIRED — ingest accepts a driver token only.'),
-      apiError.unprocessable(ERROR_CODES.VALIDATION_FAILED, 'Schema violation — the only reason an event is ever rejected.'),
-      { status: 413, code: ERROR_CODES.PAYLOAD_TOO_LARGE, message: 'Ingest batch exceeds the 1 MB limit.', details: { bytes: 1400000, limit: 1048576 } },
-    ],
-  })
+  @ApiStandardErrors({ errors: [...INGEST_ERRORS, INGEST_TOO_LARGE] })
   async events(
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
     @Body(zodBody(IngestEventsDto)) dto: IngestEventsDto,
     @CurrentUser('id') driverId: string,
+    @CurrentUser() actor?: ContextUser,
   ): Promise<IngestEventsResult> {
     assertPayloadSize(req);
     const result = await this.ingest.ingestEvents(dto, driverId);
+    // D-161 — a fresh Driving duty-status event (eventType 1, code 3) counts as motion.
+    await this.activity.noteMotion(actor, dto.batch.map((e) => ({ at: e.eventDateTime, moving: e.eventType === 1 && e.eventCode === 3 })));
     // B-165 — informational warnings (CHECKSUM_MISSING) alone keep the plain 200.
     if (result.warnings.some((w) => !w.informational)) res.status(202);
     return result;
@@ -142,14 +189,18 @@ export class IngestController {
     },
   })
   @ApiOkResponse({ description: 'Virtual Dashboard points; the app already downsampled to 1/60 s (§7.5).', schema: { example: { accepted: 60, duplicates: 0, denserThanContract: 0 } } })
-  @ApiStandardErrors({ errors: [apiError.forbidden('DRIVER_CONTEXT_REQUIRED — ingest accepts a driver token only.')] })
-  telemetry(
+  @ApiStandardErrors({ errors: [...INGEST_ERRORS, INGEST_TOO_LARGE] })
+  async telemetry(
     @Req() req: Request,
     @Body(zodBody(IngestTelemetryDto)) dto: IngestTelemetryDto,
     @CurrentUser('id') driverId: string,
+    @CurrentUser() actor?: ContextUser,
   ) {
     assertPayloadSize(req);
-    return this.ingest.ingestTelemetry(dto, driverId);
+    const result = await this.ingest.ingestTelemetry(dto, driverId);
+    // D-161 — single-device rule: a fresh point with speed > 0 marks the session as moving.
+    await this.activity.noteMotion(actor, dto.points.map((p) => ({ at: p.time, moving: (p.speedKmh ?? 0) > 0 })));
+    return result;
   }
 
   @Post('device-events')
@@ -174,19 +225,18 @@ export class IngestController {
     },
   })
   @ApiOkResponse({ description: 'Duplicates (same device + occurredAt + seq) are counted, not re-inserted.', schema: { example: { received: 2, stored: 2, duplicates: 0, safetyEvents: 1 } } })
-  @ApiStandardErrors({
-    errors: [
-      apiError.forbidden('DRIVER_CONTEXT_REQUIRED — ingest accepts a driver token only; or the device/unit is not yours.'),
-      { status: 413, code: ERROR_CODES.PAYLOAD_TOO_LARGE, message: 'Ingest batch exceeds the 1 MB limit.', details: { bytes: 1400000, limit: 1048576 } },
-    ],
-  })
-  deviceEventsUpload(
+  @ApiStandardErrors({ errors: [...INGEST_ERRORS, INGEST_TOO_LARGE] })
+  async deviceEventsUpload(
     @Req() req: Request,
     @Body(zodBody(IngestDeviceEventsDto)) dto: IngestDeviceEventsDto,
     @CurrentUser('id') driverId: string,
+    @CurrentUser() actor?: ContextUser,
   ): Promise<DeviceEventsResult> {
     assertPayloadSize(req);
-    return this.deviceEvents.ingestDeviceEvents(dto, driverId);
+    const result = await this.deviceEvents.ingestDeviceEvents(dto, driverId);
+    // D-161 — a fresh raw device event with speed > 0 marks the session as moving.
+    await this.activity.noteMotion(actor, dto.events.map((e) => ({ at: e.occurredAt, moving: (e.speedKmh ?? 0) > 0 })));
+    return result;
   }
 
   @Post('ble-state')
@@ -200,7 +250,7 @@ export class IngestController {
   @FigmaScreen('web/settings-eld-devices')
   @ApiBody({ schema: { example: { deviceSerial: 'PT30_A86E', state: 'CONNECTED', at: '2026-10-10T12:00:00Z', connectionType: 'USB', deviceTime: '2026-10-10T12:00:01Z' } } })
   @ApiOkResponse({ description: 'BLE transition recorded; > 30 min unconnected raises alert.eld_disconnected.', schema: { example: { bleState: 'CONNECTED', connectionType: 'USB', disconnectedAlert: false, clockDriftSec: 1 } } })
-  @ApiStandardErrors({ errors: [apiError.forbidden('DRIVER_CONTEXT_REQUIRED — ingest accepts a driver token only.')] })
+  @ApiStandardErrors({ errors: INGEST_ERRORS })
   bleState(
     @Body(zodBody(IngestBleStateDto)) dto: IngestBleStateDto,
     @CurrentUser('id') driverId: string,
@@ -238,7 +288,7 @@ export class IngestController {
       },
     },
   })
-  @ApiStandardErrors({ errors: [apiError.forbidden('DRIVER_CONTEXT_REQUIRED — ingest accepts a driver token only.')] })
+  @ApiStandardErrors({ errors: INGEST_ERRORS })
   deviceStatus(
     @Body(zodBody(IngestDeviceStatusDto)) dto: IngestDeviceStatusDto,
     @CurrentUser('id') driverId: string,

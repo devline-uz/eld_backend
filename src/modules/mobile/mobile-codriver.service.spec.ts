@@ -5,6 +5,7 @@ import type { AuditRepository } from '../audit/audit.repository';
 import type { AuthService } from '../auth/auth.service';
 import { MobileCoDriverController } from './mobile-codriver.controller';
 import { MobileCoDriverService } from './mobile-codriver.service';
+import { CoDriverSwitchDto } from './dto/mobile-fleet-ops.dto';
 import { MobileFleetOpsRepository } from './mobile-fleet-ops.repository';
 import type { RodsLoginRecorder } from '../logs/rods-login-recorder';
 import type { MobileTripService } from './mobile-trip.service';
@@ -56,7 +57,7 @@ describe('MobileCoDriverService (MB-3)', () => {
 
     const result = await service.switch('drv_1', { coDriverPassword: 'secret' }, ACTOR, META);
 
-    expect(auth.loginDriver).toHaveBeenCalledWith('jdoe', 'secret', META);
+    expect(auth.loginDriver).toHaveBeenCalledWith('jdoe', 'secret', META, undefined);
     expect(result).toEqual({ accessToken: 'a', refreshToken: 'b', tokenType: 'Bearer' });
     // B-0xx — one transactional repo call: pairing mirrored AND assignedVehicleId moves to the new primary.
     expect(repo.switchSeats).toHaveBeenCalledWith({
@@ -68,6 +69,29 @@ describe('MobileCoDriverService (MB-3)', () => {
       vehicleId: 'veh_1',
     });
     expect(audit.insert).toHaveBeenCalledWith(expect.objectContaining({ action: 'CO_DRIVER_SWITCHED' }));
+  });
+
+  it('D-161: forwards the optional `device` as the 4th loginDriver arg and returns replacedDevice', async () => {
+    const { service, mobileRepo, auth } = build();
+    mobileRepo.findActivePairing.mockResolvedValue(PAIRING);
+    mobileRepo.findDriver.mockResolvedValue({ id: 'drv_2', username: 'jdoe' });
+    const replacedDevice = { label: 'Old tablet', lastSeenAt: '2026-10-15T10:00:00.000Z', pendingCount: 3, inMotion: false as const };
+    auth.loginDriver.mockResolvedValue({ accessToken: 'a', refreshToken: 'b', tokenType: 'Bearer', driverId: 'drv_2', replacedDevice });
+    const device = { deviceId: '0b6f1c2e-0000-4000-8000-000000000001', deviceLabel: 'Cab tablet', platform: 'android', formFactor: 'tablet' as const, appVersion: '1.4.0' };
+
+    const result = await service.switch('drv_1', { coDriverPassword: 'secret', device }, ACTOR, META);
+
+    expect(auth.loginDriver).toHaveBeenCalledWith('jdoe', 'secret', META, device);
+    expect(result).toMatchObject({ replacedDevice });
+  });
+
+  it('D-161: CoDriverSwitchDto accepts the auth device schema and rejects a bad one', () => {
+    const device = { deviceId: '0b6f1c2e-0000-4000-8000-000000000001', deviceLabel: 'Cab tablet', platform: 'android', formFactor: 'tablet', appVersion: '1.4.0' };
+    expect(CoDriverSwitchDto.safeParse({ coDriverPassword: 'x', device }).success).toBe(true);
+    expect(CoDriverSwitchDto.safeParse({ coDriverPassword: 'x' }).success).toBe(true);
+    expect(CoDriverSwitchDto.safeParse({ coDriverPassword: 'x', device: { ...device, deviceId: 'nope' } }).success).toBe(false);
+    expect(CoDriverSwitchDto.safeParse({ coDriverPassword: 'x', device: { ...device, formFactor: 'watch' } }).success).toBe(false);
+    expect(CoDriverSwitchDto.safeParse({ coDriverPassword: 'x', device: { ...device, deviceLabel: 'x'.repeat(65) } }).success).toBe(false);
   });
 
   it('B-0xx: switch emits bootstrap.changed to BOTH drivers; switching back is symmetric', async () => {

@@ -45,6 +45,6 @@ import { PasswordResetCodeRepository } from './repositories/password-reset-code.
     PasswordResetCodeService,
     PasswordResetCodeRepository,
   ],
-  exports: [TokenService, AuthService, TokenVerifier, PrincipalStateService],
+  exports: [TokenService, AuthService, TokenVerifier, PrincipalStateService, DriverSessionRepository],
 })
 export class AuthModule {}

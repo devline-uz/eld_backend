@@ -98,6 +98,8 @@ describe('TZ §6.5 — per-driver ingest rate limit (B-033)', () => {
       limit: INGEST_LIMIT_PER_DRIVER_PER_MIN,
       windowSec: 60,
     });
+    // D-164 — AllExceptionsFilter turns this into the `Retry-After` header (the app honours it).
+    expect(Number(exception.details?.retryAfterSec)).toBeGreaterThan(0);
 
     // The whole point of B-033: the noisy device's budget is its own, not the fleet's.
     expect(await hit(guard, ingestContext('drv_quiet'))).toBe('ok');

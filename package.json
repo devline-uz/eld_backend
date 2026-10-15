@@ -35,6 +35,7 @@
     "db:test:lockdown": "docker exec -i onebook-postgres psql -U postgres -d onebook_eld_test < scripts/bootstrap-test-db.sql",
     "openapi:gen": "ts-node -r tsconfig-paths/register scripts/generate-openapi.ts",
     "virtual-eld:purge": "ts-node scripts/virtual-eld-purge.ts",
+    "qa:two-device-driver": "ts-node scripts/create-two-device-test-driver.ts",
     "sim:drivers": "ts-node -T scripts/sim-drivers.ts",
     "sim:test": "jest -c scripts/sim/jest.config.js --maxWorkers=2",
     "sim:typecheck": "tsc -p scripts/sim/tsconfig.json"

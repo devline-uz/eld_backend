@@ -34,7 +34,10 @@ export class MobileSyncController {
       '`log_entry`, and only if the two drivers shared one unit at `occurredAt` (a co-driver pairing on it, or both ' +
       'logged in to it per their ELD login records, eventType 5); otherwise ' +
       'that change alone is rejected with `SYNC_DELEGATION_NOT_ALLOWED`. Delegated changes are audited ' +
-      '(`SYNC_DELEGATED_CHANGE`); certification and DVIR are never delegated.',
+      '(`SYNC_DELEGATED_CHANGE`); certification and DVIR are never delegated.\n\n' +
+      'Optional `backlog` example: `{ "days": 2.5, "bytes": 18432, "pendingCount": 12, "oldestPendingAt": "2026-09-11T08:00:00.000Z" }` — ' +
+      '`days`/`bytes` drive `alert.sync_backlog`; `pendingCount` (unsent queue records + ELD events `/ingest/events` has not accepted) ' +
+      'and `oldestPendingAt` are stored on the caller\'s session and shown to the next device that signs in.',
   })
   @ApiEnvelopeResponse(SyncResponse, {
     example: {

@@ -8,7 +8,7 @@ import { DriverGuard } from '../../common/guards/driver.guard';
 import { zodBody } from '../../common/pipes/zod-validation.pipe';
 import { ApiEnvelopeResponse } from '../../common/swagger/api-envelope';
 import type { ContextUser } from '../../core/context/request-context';
-import { TokenPairResponse } from '../auth/dto/auth.responses';
+import { DriverLoginResponse } from '../auth/dto/auth.responses';
 import { AuthService } from '../auth/auth.service';
 import { CoDriverSwitchDto } from './dto/mobile-fleet-ops.dto';
 import { CoDriverLeaveResponse, CoDriverPairingResponse } from './dto/mobile.responses';
@@ -44,13 +44,15 @@ export class MobileCoDriverController {
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post('switch')
   @ApiOperation({ summary: 'S-11/S-18/S-19 — hands the driver seat to the paired co-driver; returns the CO-DRIVER\'s own token pair.',
-    description: 'D-155 — the CALLER\'s own session family (from the access token `sid`) is revoked atomically with the seat swap; their other devices stay signed in. The app must drop the old tokens and MUST NOT call /auth/logout with them (harmless if it does: 200 {success:true}, no further effect). Optional `clientId`: a replay (within REFRESH_REUSE_GRACE_SECONDS, same password) returns the first pair; later replay = 409 CONFLICT, sign in as the co-driver. A stale caller token (session already revoked) without a replaying clientId = 401 TOKEN_INVALID.',
+    description: 'D-155 — the CALLER\'s own session family (from the access token `sid`) is revoked atomically with the seat swap; their other devices stay signed in. The app must drop the old tokens and MUST NOT call /auth/logout with them (harmless if it does: 200 {success:true}, no further effect). Optional `clientId`: a replay (within REFRESH_REUSE_GRACE_SECONDS, same password) returns the first pair; later replay = 409 CONFLICT, sign in as the co-driver. A stale caller token (session already revoked) without a replaying clientId = 401 TOKEN_INVALID. ' +
+      'MD-195 / D-161 — optional `device {deviceId uuid, deviceLabel ≤64, platform, formFactor phone|tablet, appVersion}` (same schema as POST /auth/login/driver) makes this the co-driver\'s only signed-in device: their sessions on other devices end as REPLACED and the response carries `replacedDevice`; 409 DRIVING_ON_OTHER_DEVICE if another device of the co-driver reported motion in the last 2 minutes. Without `device` the legacy behaviour applies.',
   })
-  @ApiEnvelopeResponse(TokenPairResponse, { status: 201, example: { accessToken: 'eyJ...', refreshToken: 'a1b2...', tokenType: 'Bearer' } })
+  @ApiEnvelopeResponse(DriverLoginResponse, { status: 201, example: { accessToken: 'eyJ...', refreshToken: 'a1b2...', tokenType: 'Bearer', driverId: 'drv_2', replacedDevice: null } })
   @ApiStandardErrors({
     errors: [
       apiError.notFound(ERROR_CODES.NOT_FOUND, 'No active co-driver pairing for this driver.'),
       apiError.unprocessable(ERROR_CODES.CO_DRIVER_PASSWORD_INVALID, 'The co-driver password is incorrect.'),
+      { status: 409, code: ERROR_CODES.DRIVING_ON_OTHER_DEVICE, message: 'MD-195 — only with `device`: another device of the co-driver reported motion in the last 2 minutes (`details: { byDeviceLabel, lastSeenAt }`).' },
     ],
   })
   switch(@Body(zodBody(CoDriverSwitchDto)) dto: CoDriverSwitchDto, @CurrentUser() actor: ContextUser, @Req() req: Request) {

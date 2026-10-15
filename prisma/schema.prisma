@@ -78,29 +78,29 @@ model Carrier {
 // ---------------------------------------------------------------------------
 
 model User {
-  id           String       @id @default(uuid())
+  id               String       @id @default(uuid())
   /// Stored trimmed + lower-cased and looked up case-insensitively (`src/common/email/email-lookup.ts`).
   /// Also unique on `lower(email)` via the expression index `User_email_lower_key` (migration
   /// 20261014120000_user_email_lowercase) — not representable here; see custom-indexes.ts.
-  email        String       @unique
-  passwordHash String?
-  googleUid    String?      @unique
-  authProvider AuthProvider @default(PASSWORD)
-  firstName    String
-  lastName     String
-  jobTitle     String?
-  phone        String?
-  roleId       String
-  status       UserStatus   @default(INVITED)
-  lastActiveAt DateTime?
+  email            String       @unique
+  passwordHash     String?
+  googleUid        String?      @unique
+  authProvider     AuthProvider @default(PASSWORD)
+  firstName        String
+  lastName         String
+  jobTitle         String?
+  phone            String?
+  roleId           String
+  status           UserStatus   @default(INVITED)
+  lastActiveAt     DateTime?
   /// CODE-082 — consecutive wrong passwords; reset on success / password reset.
-  failedLoginCount Int       @default(0)
+  failedLoginCount Int          @default(0)
   /// CODE-082 — password login refused (423 ACCOUNT_LOCKED) until then; only revealed to a caller
   /// who supplies the right password, so it is no account-enumeration oracle.
   lockedUntil      DateTime?
-  invitedById  String?
-  invitedAt    DateTime?
-  createdAt    DateTime     @default(now())
+  invitedById      String?
+  invitedAt        DateTime?
+  createdAt        DateTime     @default(now())
 
   /// §20 B-51 — profile avatar (S3/MinIO object key, presigned on read).
   avatarKey        String?
@@ -218,24 +218,39 @@ model PasswordResetCode {
 /// Driver-side refresh-token session (tz §6.1: driver JWT access 24h / refresh 90d).
 /// Mirrors `Session` — not in the §5.2 tz.md snippet (which only shows the User side).
 model DriverSession {
-  id          String    @id @default(uuid())
-  driverId    String
-  refreshHash String
-  userAgent   String?
-  ip          String?
-  deviceLabel String?
-  appVersion  String?
-  lastSeenAt  DateTime  @default(now())
-  expiresAt   DateTime
-  revokedAt   DateTime?
+  id                    String    @id @default(uuid())
+  driverId              String
+  refreshHash           String
+  userAgent             String?
+  ip                    String?
+  deviceLabel           String?
+  appVersion            String?
+  lastSeenAt            DateTime  @default(now())
+  expiresAt             DateTime
+  revokedAt             DateTime?
   /// MG-32 — see `Session.familyId`.
-  familyId    String?
+  familyId              String?
   /// MG-32 — see `Session.rotatedAt`.
-  rotatedAt   DateTime?
-  driver      Driver    @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  rotatedAt             DateTime?
+  /// MD-195 — stable per-install device id sent by the app at login (null for legacy logins).
+  deviceId              String?
+  platform              String?
+  /// 'phone' | 'tablet'
+  formFactor            String?
+  createdAt             DateTime  @default(now())
+  /// 'REPLACED' when a login from another device ended this session (single-device rule).
+  revokedReason         String?
+  replacedByDeviceId    String?
+  replacedByDeviceLabel String?
+  /// Last time telemetry showed the vehicle moving under this session (2 min window blocks a takeover).
+  lastMotionAt          DateTime?
+  pendingCount          Int?
+  oldestPendingAt       DateTime?
+  driver                Driver    @relation(fields: [driverId], references: [id], onDelete: Cascade)
 
   @@index([driverId, revokedAt])
   @@index([familyId])
+  @@index([driverId, deviceId])
 }
 
 // ---------------------------------------------------------------------------
@@ -243,18 +258,18 @@ model DriverSession {
 // ---------------------------------------------------------------------------
 
 model Driver {
-  id              String       @id @default(uuid())
+  id                        String       @id @default(uuid())
   /// Unique among LIVE rows only (`deletedAt IS NULL`) — enforced by the partial unique index
   /// `Driver_username_live_key` in migration 20260927090000_soft_delete_partial_uniques.
-  username        String
-  passwordHash    String
-  firstName       String
-  lastName        String
+  username                  String
+  passwordHash              String
+  firstName                 String
+  lastName                  String
   /// §20 B-29/B-30/B-31 — unique among LIVE rows so a driver's Google-auth email can't collide;
   /// enforced by the partial unique index `Driver_email_live_key` (WHERE "deletedAt" IS NULL) in
   /// migration 20260927090000_soft_delete_partial_uniques. NULLs stay distinct.
-  email           String?
-  emailVerifiedAt DateTime?
+  email                     String?
+  emailVerifiedAt           DateTime?
   /// Driver email change (web `PATCH /drivers/:id { email }`) — the requested address is held here
   /// until its owner confirms the link mailed to it; `email` is never written directly.
   pendingEmail              String?
@@ -265,10 +280,10 @@ model Driver {
   emailChangedAt            DateTime?
   /// The address before the last confirmed change; the old-address "this wasn't me" link reverts to it.
   previousEmail             String?
-  phone           String?
-  cdlNumber       String
-  cdlState        String
-  status          DriverStatus @default(ACTIVE)
+  phone                     String?
+  cdlNumber                 String
+  cdlState                  String
+  status                    DriverStatus @default(ACTIVE)
 
   // RODS day boundary follows THIS timezone, never Carrier.timezone.
   homeTerminalName     String
@@ -627,6 +642,14 @@ model EldEvent {
   receivedAt         DateTime @default(now())
   uploadedByDriverId String?
 
+  /// D-163 — 'REPLACED_DEVICE' when a replaced device (single-device rule, D-159) delivered this
+  /// record late: it was recorded after that device's session was REPLACED and before the driver
+  /// logged in on it again. Set once at INSERT (append-only). Driver-entered duty / PC-YM records
+  /// so flagged are stored with recordStatus 3 (inert) until a fleet manager acts via §395.30.
+  reviewReason      String?
+  /// D-163 — `DriverSession.deviceLabel` of the replaced device the record came from.
+  reviewDeviceLabel String?
+
   checksum  String
   createdAt DateTime @default(now())
 
@@ -650,6 +673,7 @@ model EldEvent {
   @@index([driverId, eventDateTime])
   @@index([vehicleId, eventDateTime])
   @@index([recordStatus, eventDateTime])
+  @@index([driverId, reviewReason, eventDateTime])
 }
 
 /// §5.5 "Event Sequence ID" — the monotonic 1..65535 counter is allocated at ingest, once,

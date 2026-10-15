@@ -91,6 +91,40 @@ export class IngestRepository extends BaseRepository<
     return last?.eventCode === LOGIN_CODE.LOGIN;
   }
 
+  /**
+   * D-164 — fresh (uncached) re-read of the association state, used only after the fast check
+   * failed, to tell a real refusal (403) from "not visible yet" (503 + Retry-After).
+   */
+  async findAssociationState(
+    driverId: string,
+    vehicleId: string,
+  ): Promise<{
+    holder: { id: string; status: string } | null;
+    driverAssignedVehicleId: string | null;
+    pairedDeviceId: string | null;
+    lastSession: { eventCode: number; eventDateTime: Date } | null;
+  }> {
+    const [holder, driver, paired, lastSession] = await Promise.all([
+      this.prisma.driver.findFirst({
+        where: { assignedVehicleId: vehicleId, deletedAt: null },
+        select: { id: true, status: true },
+      }),
+      this.prisma.driver.findUnique({ where: { id: driverId }, select: { assignedVehicleId: true } }),
+      this.prisma.device.findFirst({ where: { vehicleId }, select: { id: true } }),
+      this.prisma.eldEvent.findFirst({
+        where: { vehicleId, driverId, eventType: EVENT_TYPE.LOGIN_LOGOUT },
+        orderBy: [{ eventDateTime: 'desc' }, { id: 'desc' }],
+        select: { eventCode: true, eventDateTime: true },
+      }),
+    ]);
+    return {
+      holder: holder ? { id: holder.id, status: String(holder.status) } : null,
+      driverAssignedVehicleId: driver?.assignedVehicleId ?? null,
+      pairedDeviceId: paired?.id ?? null,
+      lastSession,
+    };
+  }
+
   // --- idempotency ---------------------------------------------------------
 
   /** §7.3 rule 1 — duplicates by `uuid` are dropped, the response still says 200 OK. */

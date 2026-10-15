@@ -5,7 +5,7 @@ import { ERROR_CODES } from '../../common/errors/codes';
 import type { ContextUser } from '../../core/context/request-context';
 import type { EventBusService } from '../../core/events/event-bus.service';
 import type { LogsService } from '../logs/logs.service';
-import type { SyncChangeDto, SyncRequestDto } from './dto/mobile.dto';
+import { SyncRequestDto as SyncRequestSchema, type SyncChangeDto, type SyncRequestDto } from './dto/mobile.dto';
 import type { MobileDvirService } from './mobile-dvir.service';
 import { MobileSyncService } from './mobile-sync.service';
 import type { MobileRepository } from './mobile.repository';
@@ -207,6 +207,20 @@ describe('MobileSyncService', () => {
     expect(alertQueue.add).toHaveBeenCalledWith('alert.sync_backlog', { driverId: 'drv_1', days: 31, bytes: 0 });
   });
 
+  it('single-device — pendingCount/oldestPendingAt are stored on the caller session (best-effort)', async () => {
+    const setBacklog = jest.fn().mockResolvedValue(undefined);
+    const svc = new MobileSyncService(repo as never, logs as never, dvir as never, signatures as never, events as never, alertQueue as never, undefined, { setBacklog } as never);
+    const at = new Date('2026-09-11T08:00:00.000Z');
+    await svc.sync('drv_1', { changes: [], backlog: { days: 1, bytes: 10, pendingCount: 12, oldestPendingAt: at } }, { ...actor, sessionId: 'sess_1' }, NOW);
+    expect(setBacklog).toHaveBeenCalledWith('sess_1', 12, at);
+    setBacklog.mockClear();
+    await svc.sync('drv_1', { changes: [], backlog: { days: 1, bytes: 10 } }, { ...actor, sessionId: 'sess_1' }, NOW);
+    await svc.sync('drv_1', { changes: [], backlog: { days: 1, bytes: 10, pendingCount: 3 } }, actor, NOW);
+    expect(setBacklog).not.toHaveBeenCalled();
+    setBacklog.mockRejectedValueOnce(new Error('db'));
+    await expect(svc.sync('drv_1', { changes: [], backlog: { days: 1, bytes: 10, pendingCount: 3 } }, { ...actor, sessionId: 'sess_1' }, NOW)).resolves.toBeDefined();
+  });
+
   it('MB-11 — a backlog within thresholds raises nothing', async () => {
     await service.sync('drv_1', { changes: [], backlog: { days: 1, bytes: 100 } }, actor, NOW);
     expect(events.publish).not.toHaveBeenCalledWith('alert.sync_backlog', expect.anything());
@@ -244,7 +258,7 @@ describe('MobileSyncService', () => {
       const result = await service.sync('drv_1', { changes: [change({ driverId: CO })] }, actor, NOW);
       expect(result.accepted).toEqual(['client-1']);
       expect(fullRepo.findPairingCovering).toHaveBeenCalledWith('drv_1', CO, NOW);
-      expect(logs.createLogEntry).toHaveBeenCalledWith(CO, expect.anything(), actor);
+      expect(logs.createLogEntry).toHaveBeenCalledWith(CO, expect.anything(), actor, { occurredAt: expect.any(Date) as unknown });
       expect(audit.insert).toHaveBeenCalledWith(
         expect.objectContaining({ action: 'SYNC_DELEGATED_CHANGE', actorId: 'drv_1', objectId: CO }),
       );
@@ -261,7 +275,7 @@ describe('MobileSyncService', () => {
       expect(result.rejected).toEqual([expect.objectContaining({ clientId: 'client-1', code: ERROR_CODES.SYNC_DELEGATION_NOT_ALLOWED })]);
       expect(result.accepted).toEqual(['client-2']);
       expect(logs.createLogEntry).toHaveBeenCalledTimes(1);
-      expect(logs.createLogEntry).toHaveBeenCalledWith('drv_1', expect.anything(), actor);
+      expect(logs.createLogEntry).toHaveBeenCalledWith('drv_1', expect.anything(), actor, { occurredAt: expect.any(Date) as unknown });
     });
 
     it('rejects an unknown / inactive driver and never delegates certification', async () => {
@@ -365,7 +379,18 @@ describe('MobileSyncService', () => {
     it('driverId equal to the caller is the ordinary path (no pairing lookup)', async () => {
       await service.sync('drv_1', { changes: [change({ driverId: 'drv_1' })] }, actor, NOW);
       expect(fullRepo.findPairingCovering).not.toHaveBeenCalled();
-      expect(logs.createLogEntry).toHaveBeenCalledWith('drv_1', expect.anything(), actor);
+      expect(logs.createLogEntry).toHaveBeenCalledWith('drv_1', expect.anything(), actor, { occurredAt: expect.any(Date) as unknown });
     });
+  });
+});
+
+describe('SyncBacklogDto', () => {
+  it('accepts optional pendingCount/oldestPendingAt and rejects negative/non-int/bad date', () => {
+    const ok = SyncRequestSchema.safeParse({ changes: [], backlog: { days: 1, bytes: 2, pendingCount: 5, oldestPendingAt: '2026-09-11T08:00:00Z' } });
+    expect(ok.success && ok.data.backlog?.oldestPendingAt).toEqual(new Date('2026-09-11T08:00:00Z'));
+    expect(SyncRequestSchema.safeParse({ changes: [], backlog: { days: 1, bytes: 2 } }).success).toBe(true);
+    for (const bad of [{ pendingCount: -1 }, { pendingCount: 1.5 }, { oldestPendingAt: 'yesterday' }]) {
+      expect(SyncRequestSchema.safeParse({ changes: [], backlog: { days: 1, bytes: 2, ...bad } }).success).toBe(false);
+    }
   });
 });

@@ -7,9 +7,26 @@ export const LoginDto = z.object({
 });
 export type LoginDto = z.infer<typeof LoginDto>;
 
+/** B-177 — device strings are echoed to the other device's UI and into the audit log: no control,
+ * format (bidi override, zero-width) or line/paragraph-separator characters. */
+const NO_CONTROL_CHARS = /^[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}]*$/u;
+const deviceText = (max: number) =>
+  z.string().trim().min(1).max(max).regex(NO_CONTROL_CHARS, 'Must not contain control or formatting characters.');
+
+/** MD-195 — identity of the installed app; optional so older app builds keep working. */
+export const DeviceInfoDto = z.object({
+  deviceId: z.string().uuid(),
+  deviceLabel: deviceText(64),
+  platform: deviceText(32),
+  formFactor: z.enum(['phone', 'tablet']),
+  appVersion: deviceText(32),
+});
+export type DeviceInfoDto = z.infer<typeof DeviceInfoDto>;
+
 export const DriverLoginDto = z.object({
   username: z.string().min(1),
   password: z.string().min(1),
+  device: DeviceInfoDto.optional(),
 });
 export type DriverLoginDto = z.infer<typeof DriverLoginDto>;
 

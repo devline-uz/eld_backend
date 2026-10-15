@@ -10,6 +10,18 @@ export class TokenPairResponse {
 /** `POST /auth/login/driver` — MB-9: `driverId` names the app's per-driver offline DB file. */
 export class DriverLoginResponse extends TokenPairResponse {
   @ApiProperty({ type: String }) driverId!: string;
+  @ApiPropertyOptional({
+    type: 'object',
+    nullable: true,
+    description: 'MD-195 — present when `device` was sent: the other device this login signed out (null if none). `inMotion` is always false (a moving device blocks the login with 409 DRIVING_ON_OTHER_DEVICE).',
+    properties: {
+      label: { type: 'string' },
+      lastSeenAt: { type: 'string', format: 'date-time', nullable: true },
+      pendingCount: { type: 'integer', nullable: true },
+      inMotion: { type: 'boolean', example: false },
+    },
+  })
+  replacedDevice?: { label: string; lastSeenAt: string | null; pendingCount: number | null; inMotion: false } | null;
 }
 
 /**

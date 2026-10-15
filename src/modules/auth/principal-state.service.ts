@@ -3,7 +3,7 @@ import { withRetiredKeysCleared, type PermissionMatrix } from '../../common/deco
 import { EventBusService } from '../../core/events/event-bus.service';
 import { RealtimePubSubService } from '../../core/events/realtime-pubsub.service';
 import { DriverAuthRepository } from './repositories/driver-auth.repository';
-import { DriverSessionRepository } from './repositories/driver-session.repository';
+import { DriverSessionRepository, type ReplacementInfo } from './repositories/driver-session.repository';
 import { SessionRepository } from './repositories/session.repository';
 import { UserAuthRepository } from './repositories/user-auth.repository';
 
@@ -17,6 +17,9 @@ const MAX_ENTRIES = 5_000;
 
 /** Realtime event pushed to `user:{id}`; `RealtimeGateway` disconnects the matching sockets. */
 export const AUTH_REVOKED_EVENT = 'auth.revoked';
+
+/** MD-195 — relayed to `driver:{id}`: drop this driver's cached per-session liveness (sockets stay). */
+export const DRIVER_SESSION_EVICT_EVENT = 'auth.driver-session-evict';
 
 /** `driver:{id}` / `user:{id}` — the identity rooms an `auth.revoked` relay message may name. */
 const IDENTITY_ROOM = /^(user|driver):([\w-]+)$/;
@@ -53,13 +56,13 @@ export class PrincipalStateService implements OnModuleInit, OnModuleDestroy {
 
   onModuleInit(): void {
     this.unsubscribeRelay = this.relay?.onRelayed((message) => {
-      if (message.event !== AUTH_REVOKED_EVENT) return;
+      if (message.event !== AUTH_REVOKED_EVENT && message.event !== DRIVER_SESSION_EVICT_EVENT) return;
       const rooms = Array.isArray(message.room) ? message.room : [message.room];
       for (const room of rooms) {
         const match = IDENTITY_ROOM.exec(room);
         if (!match) continue;
         if (match[1] === 'user') this.evictUser(match[2]);
-        else this.driverCache.delete(match[2]);
+        else this.evictDriver(match[2]);
       }
     });
   }
@@ -89,31 +92,60 @@ export class PrincipalStateService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Driver (mobile) access tokens carry no session id; they are honoured only while the driver is
-   * ACTIVE, not deleted, and still has at least one live (unrevoked, unexpired) app session — so
-   * disabling the driver (which revokes every session) or a "log out everywhere" ends them at once.
+   * Driver (mobile) access tokens are honoured only while the driver is ACTIVE, not deleted, and
+   * the token's own session (`sid`) lineage is live — MD-195: a takeover from another device ends
+   * only that device's family. Tokens without `sid` keep the old "any live app session" rule.
+   * Disabling the driver (which revokes every session) or "log out everywhere" ends them at once.
    */
-  async resolveDriver(driverId: string): Promise<boolean> {
+  async resolveDriver(driverId: string, sessionId?: string): Promise<boolean> {
     if (!this.drivers || !this.driverSessions) return true;
-    const hit = this.driverCache.get(driverId);
+    const key = `${driverId}|${sessionId ?? ''}`;
+    const hit = this.driverCache.get(key);
     if (hit && Date.now() - hit.at < PRINCIPAL_STATE_TTL_MS) return hit.live;
     const [driver, sessionLive] = await Promise.all([
       this.drivers.findById(driverId),
-      this.driverSessions.hasLiveSession(driverId),
+      sessionId
+        ? this.driverSessions.lineageState(driverId, sessionId).then((s) => s.live)
+        : this.driverSessions.hasLiveSession(driverId),
     ]);
     const live = !!driver && driver.status === 'ACTIVE' && !driver.deletedAt && sessionLive;
     // Only a pass is cached: a refusal must not outlive a fresh login or a re-activation (which
     // any replica may serve), and a cut-off driver's retries are rare enough to hit the DB.
     if (!live) return false;
     if (this.driverCache.size >= MAX_ENTRIES) this.driverCache.clear();
-    this.driverCache.set(driverId, { at: Date.now(), live });
+    this.driverCache.set(key, { at: Date.now(), live });
     return live;
+  }
+
+  /** MD-195 — why a refused driver token was refused: a takeover (never cached), or null. */
+  async driverReplacement(driverId: string, sessionId: string | undefined): Promise<ReplacementInfo | null> {
+    if (!sessionId || !this.driverSessions) return null;
+    return this.driverSessions.replacementFor(driverId, sessionId);
+  }
+
+  /**
+   * MD-195 — a takeover ended some of this driver's sessions: forget cached liveness here and on
+   * every replica, WITHOUT dropping sockets (the new device's socket must stay connected).
+   */
+  async evictDriverSessions(driverId: string): Promise<void> {
+    this.evictDriver(driverId);
+    try {
+      await this.events.publish('realtime.push', { room: `driver:${driverId}`, event: DRIVER_SESSION_EVICT_EVENT, payload: {} });
+    } catch (err) {
+      this.logger.error({ err, driverId }, 'Failed to broadcast driver session eviction; other replicas catch up within the cache TTL');
+    }
+  }
+
+  private evictDriver(driverId: string): void {
+    for (const key of this.driverCache.keys()) {
+      if (key.startsWith(`${driverId}|`)) this.driverCache.delete(key);
+    }
   }
 
   /** Critical driver change (disabled, terminated, deleted, sessions revoked): evict here, on
    * every other replica (relay) and drop the driver's sockets. Never throws. */
   async invalidateDriver(driverId: string): Promise<void> {
-    this.driverCache.delete(driverId);
+    this.evictDriver(driverId);
     await this.publishRevoked(`driver:${driverId}`);
   }
 

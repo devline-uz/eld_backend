@@ -174,7 +174,8 @@ export class MobileRepository extends BaseRepository<
    */
   async countPendingEditRequests(driverId: string): Promise<number> {
     const requests = await this.prisma.eldEvent.findMany({
-      where: { driverId, recordStatus: 3 },
+      // D-163 — replaced-device review rows (reviewReason set) are not carrier proposals.
+      where: { driverId, recordStatus: 3, reviewReason: null },
       select: { id: true },
     });
     if (!requests.length) return 0;
