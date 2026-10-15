@@ -358,6 +358,14 @@ describe('VehiclesService', () => {
       expect(vehiclesRepo.countByStatus).toHaveBeenCalledWith();
     });
 
+    it('CODE-085 — getView adds the paired ELD serial (no `devices` permission needed)', async () => {
+      vehiclesRepo.findById.mockResolvedValue(makeVehicle() as never);
+      vehiclesRepo.findDeviceByVehicleId.mockResolvedValue({ serial: 'PT30_D3ED' } as never);
+      await expect(service.getView('veh_1')).resolves.toMatchObject({ eldSerial: 'PT30_D3ED' });
+      vehiclesRepo.findDeviceByVehicleId.mockResolvedValue(null);
+      await expect(service.getView('veh_1')).resolves.toMatchObject({ eldSerial: null });
+    });
+
     it('get throws VEHICLE_NOT_FOUND when missing', async () => {
       vehiclesRepo.findById.mockResolvedValue(null);
       await expect(service.get('missing')).rejects.toThrow(AppException);
@@ -899,11 +907,24 @@ describe('VehiclesService', () => {
         { id: 'dvir_1', type: 'PRE_TRIP', submittedAt: new Date('2026-09-24T12:00:00.000Z'), vehicleCondition: 'SATISFACTORY', notes: null, driver: { firstName: 'John', lastName: 'Smith' } },
       ] as never);
 
-      const items = await service.activities('veh_1');
+      const items = await service.activities('veh_1', { id: 'usr_1', type: 'user', permissions: { vehicles: 'READ', dvir: 'READ' } } as never);
 
       expect(items).toHaveLength(2);
       expect(items[0].id).toBe('dvir_dvir_1'); // newer DVIR row first
       expect(items[1].id).toBe('audit_1');
+    });
+
+    it('CODE-085 — leaves DVIR rows out for a caller without dvir READ (default DISPATCHER)', async () => {
+      vehiclesRepo.findById.mockResolvedValue(makeVehicle() as never);
+      vehiclesRepo.findAuditRows.mockResolvedValue([
+        { id: 1n, actorId: 'usr_1', actorType: 'USER', action: 'UPDATE', detail: null, before: null, after: {}, createdAt: new Date('2026-09-24T10:00:00.000Z') },
+      ] as never);
+      vehiclesRepo.findDvirRows.mockClear();
+
+      const items = await service.activities('veh_1', { id: 'usr_2', type: 'user', permissions: { vehicles: 'READ', dvir: 'NONE' } } as never);
+
+      expect(items.map((i) => i.source)).toEqual(['AUDIT']);
+      expect(vehiclesRepo.findDvirRows).not.toHaveBeenCalled();
     });
   });
 

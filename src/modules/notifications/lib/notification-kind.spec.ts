@@ -1,5 +1,5 @@
 import { NotificationKind } from '@prisma/client';
-import { deriveNotificationBody, deriveNotificationCategory, deriveNotificationKind, deriveObjectRef } from './notification-kind';
+import { deriveNotificationBody, deriveNotificationCategory, deriveNotificationKind, deriveObjectRef, effectiveNotificationCategory } from './notification-kind';
 
 describe('deriveNotificationKind', () => {
   it.each([
@@ -68,13 +68,24 @@ describe('deriveNotificationCategory (§20 B-57)', () => {
     [NotificationKind.CERTIFY, 'VIOLATIONS'],
     [NotificationKind.UNIDENTIFIED, 'VIOLATIONS'],
     [NotificationKind.MAINTENANCE, 'MAINTENANCE'],
-    [NotificationKind.DEVICE, 'MAINTENANCE'],
+    [NotificationKind.DEVICE, 'CONNECTIVITY'],
     [NotificationKind.EDIT_REQUEST, undefined],
     [NotificationKind.MESSAGE, undefined],
     [NotificationKind.TRIP, undefined],
     [NotificationKind.OTHER, undefined],
   ])('%s -> %s', (kind, expected) => {
     expect(deriveNotificationCategory(kind)).toBe(expected);
+  });
+});
+
+describe('effectiveNotificationCategory (ELD connectivity segment)', () => {
+  it('reads an old DEVICE row filed under MAINTENANCE as CONNECTIVITY', () => {
+    expect(effectiveNotificationCategory({ kind: NotificationKind.DEVICE, category: 'MAINTENANCE' })).toBe('CONNECTIVITY');
+  });
+  it('leaves every other row alone', () => {
+    expect(effectiveNotificationCategory({ kind: NotificationKind.MAINTENANCE, category: 'MAINTENANCE' })).toBe('MAINTENANCE');
+    expect(effectiveNotificationCategory({ kind: NotificationKind.VIOLATION, category: 'VIOLATIONS' })).toBe('VIOLATIONS');
+    expect(effectiveNotificationCategory({ kind: null, category: null })).toBeNull();
   });
 });
 

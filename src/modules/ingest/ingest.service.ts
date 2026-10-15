@@ -26,6 +26,7 @@ import {
 import { VirtualEldPolicy } from '../carrier/virtual-eld.policy';
 import { telemetryCoords } from '../telemetry/telemetry.mapper';
 import { TelemetryService } from '../telemetry/telemetry.service';
+import { headersToVoid, voidingInstantsByDriver } from './certification-void';
 import { computeChecksum, verifyChecksum } from './checksum';
 import {
   clockDriftSec,
@@ -365,6 +366,9 @@ export class IngestService {
       // §7.4 rule 3 — device-stored (or live) driving nobody owns becomes a segment.
       const unidentifiedSegmentIds = await this.createUnidentifiedSegments(tx, ctx, all);
 
+      // B-123 (certify option b) — a fresh duty record on an already-certified day voids it.
+      const voidedDays = await this.voidCertifiedDays(tx, prepared);
+
       // §4.3 — keep the vehicle's device odometer / calibration current.
       const vehicleUpdate: Prisma.VehicleUpdateInput = {};
       if (lastRawKm !== null) vehicleUpdate.deviceOdometerMi = kmToMi(lastRawKm);
@@ -385,6 +389,7 @@ export class IngestService {
         prepared: all,
         unidentifiedSegmentIds,
         odometerAnomalySeen,
+        voidedDays,
       };
     });
 
@@ -422,6 +427,12 @@ export class IngestService {
         segmentId,
         vehicleId: ctx.vehicle.id,
       });
+    }
+
+    for (const [driverId, dates] of result.voidedDays) {
+      // Same signal the edit paths send (`LogsService.recordLogChange`), so the app refreshes the
+      // certification status and shows "re-certify".
+      await this.events.publish('log.changed', { driverId, dates });
     }
 
     if (result.accepted > 0) {
@@ -949,6 +960,43 @@ export class IngestService {
         locationPrecisionMi: 1,
       },
     };
+  }
+
+  /**
+   * B-123 — void the certification of every certified RODS day that just received a fresh
+   * duty-status / intermediate / PC-YM record of its driver (see `certification-void.ts`).
+   * Returns the voided day keys per driver.
+   */
+  private async voidCertifiedDays(tx: IngestTx, fresh: PreparedEvent[]): Promise<Map<string, string[]>> {
+    const voided = new Map<string, string[]>();
+    const byDriver = voidingInstantsByDriver(
+      fresh.map((item) => ({
+        driverId: item.row.driverId,
+        eventType: item.row.eventType,
+        recordStatus: item.row.recordStatus,
+        at: item.row.eventDateTime as Date,
+        unidentified: item.unidentified,
+      })),
+    );
+    const DAY_MS = 86_400_000;
+    for (const [driverId, instants] of byDriver) {
+      const times = instants.map((at) => at.getTime());
+      // UTC calendar dates around the span; the zone check in `headersToVoid` is exact.
+      const from = new Date(Math.floor(Math.min(...times) / DAY_MS) * DAY_MS - DAY_MS);
+      const to = new Date(Math.floor(Math.max(...times) / DAY_MS) * DAY_MS + DAY_MS);
+      const headers = await this.repo.findCertifiedHeaders(tx, driverId, from, to);
+      const hit = headersToVoid(headers, instants);
+      if (!hit.length) continue;
+      await this.repo.voidCertifications(
+        tx,
+        hit.map((header) => header.id),
+      );
+      voided.set(
+        driverId,
+        hit.map((header) => header.logDate.toISOString().slice(0, 10)).sort(),
+      );
+    }
+    return voided;
   }
 
   /** §7.3 rule 10 — recalculation is queued per affected driver, keyed on `eventDateTime`. */

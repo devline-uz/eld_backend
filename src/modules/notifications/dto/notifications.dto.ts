@@ -50,7 +50,7 @@ export const UpdateAlertRuleDto = CreateAlertRuleDto.partial().omit({ key: true 
 export type UpdateAlertRuleDto = z.infer<typeof UpdateAlertRuleDto>;
 
 /** §20 B-57 — the two segments the notifications panel renders. */
-export const NotificationCategoryEnum = z.enum(['VIOLATIONS', 'MAINTENANCE']);
+export const NotificationCategoryEnum = z.enum(['VIOLATIONS', 'MAINTENANCE', 'CONNECTIVITY']);
 
 export const NotificationListQueryDto = z.object({
   page: z.coerce.number().int().min(1).default(1),

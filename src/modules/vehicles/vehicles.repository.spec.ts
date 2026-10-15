@@ -46,7 +46,7 @@ describe('VehiclesRepository', () => {
   });
 
   it('list builds a status + free-text filter and paginates', async () => {
-    vehicle.findMany.mockResolvedValue([{ id: 'v1' }]);
+    vehicle.findMany.mockResolvedValue([{ id: 'v1', device: { serial: 'PT30_D3ED' } }, { id: 'v2', device: null }]);
     vehicle.count.mockResolvedValue(1);
     const result = await repo.list({ status: 'ACTIVE', q: 'ford' }, 2, 10, { unitNumber: 'asc' });
     expect(vehicle.findMany).toHaveBeenCalledWith(
@@ -62,7 +62,8 @@ describe('VehiclesRepository', () => {
         { device: { serial: { contains: 'ford', mode: 'insensitive' } } },
       ]),
     );
-    expect(result).toEqual({ items: [{ id: 'v1' }], total: 1 });
+    // CODE-085 — the paired serial is flattened onto the row; the relation itself is not returned.
+    expect(result).toEqual({ items: [{ id: 'v1', eldSerial: 'PT30_D3ED' }, { id: 'v2', eldSerial: null }], total: 1 });
   });
 
   it('BE-014 — list escapes LIKE wildcards so `%` / `_` search literally', async () => {

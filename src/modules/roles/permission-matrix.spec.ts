@@ -28,6 +28,13 @@ describe('DEFAULT_ROLE_MATRIX (TZ §6.4 — 22-key matrix, all 4 roles)', () => 
     expect(DEFAULT_ROLE_MATRIX.DISPATCHER.reportsTransfer).toBe('NONE');
   });
 
+  it('CODE-085: DISPATCHER has no dvir / maintenance / safety / devices access', () => {
+    const d = DEFAULT_ROLE_MATRIX.DISPATCHER;
+    expect([d.dvir, d.maintenance, d.safety, d.devices]).toEqual(['NONE', 'NONE', 'NONE', 'NONE']);
+    // It keeps the reports it uses (Activity) — the DVIR report additionally needs `dvir`.
+    expect(d.reports).toBe('READ');
+  });
+
   it('tz.md correction 2: trips is FULL for DISPATCHER', () => {
     expect(DEFAULT_ROLE_MATRIX.DISPATCHER.trips).toBe('FULL');
   });

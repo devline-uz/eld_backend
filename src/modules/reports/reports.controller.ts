@@ -90,8 +90,12 @@ export class ReportsController {
   @ApiOperation({ summary: 'Updates a report schedule (e.g. toggle `enabled`, change `cron`).' })
   @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.REPORT_SCHEDULE_NOT_FOUND, 'Report schedule not found.')] })
   @ApiOkResponse({ schema: { example: { id: 'sch_1', enabled: false } } })
-  updateSchedule(@Param('id') id: string, @Body(zodBody(UpdateReportScheduleDto)) dto: UpdateReportScheduleDto) {
-    return this.reports.updateSchedule(id, dto);
+  updateSchedule(
+    @Param('id') id: string,
+    @Body(zodBody(UpdateReportScheduleDto)) dto: UpdateReportScheduleDto,
+    @CurrentUser() actor: ContextUser,
+  ) {
+    return this.reports.updateSchedule(id, dto, actor);
   }
 
   @Delete('schedules/:id')
