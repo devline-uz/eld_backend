@@ -168,8 +168,11 @@ export class ReportsService {
     });
   }
 
-  async listSchedules(): Promise<ReportSchedule[]> {
-    return this.schedules.listAll();
+  async listSchedules(actor?: ContextUser): Promise<ReportSchedule[]> {
+    const all = await this.schedules.listAll();
+    // BE-08 / CODE-085 — schedules of a type the caller may not open (DVIR / FMCSA_PACK / SAFETY
+    // without `dvir` / `reportsTransfer` / `safety` READ) are not listed, like `list()`.
+    return actor ? all.filter((schedule) => mayAccessReportType(actor, schedule.reportType)) : all;
   }
 
   async updateSchedule(id: string, dto: UpdateReportScheduleDto, actor: ContextUser): Promise<ReportSchedule> {
@@ -209,9 +212,11 @@ export class ReportsService {
     );
   }
 
-  async deleteSchedule(id: string): Promise<void> {
+  async deleteSchedule(id: string, actor?: ContextUser): Promise<void> {
     const existing = await this.schedules.findById({ id });
     if (!existing) throw AppException.notFound('Report schedule not found.');
+    // BE-08 / CODE-085 — the same type gate as create / update.
+    if (actor) assertMayAccessReportType(actor, existing.reportType);
     await this.schedules.delete({ id });
   }
 

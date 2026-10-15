@@ -14,6 +14,12 @@ function isUniqueViolation(err: unknown): boolean {
 
 const numberTaken = (number: string): AppException => AppException.conflict(`Trailer "${number}" already exists.`, { number });
 
+type OpenTrip = { id: string; number: string; status: string };
+
+/** BE-06 — same 409 (CONFLICT + details.openTrips) as a unit / driver with open trips. */
+const hasOpenTrips = (openTrips: OpenTrip[], suffix: string): AppException =>
+  AppException.conflict(`This trailer still has open trips (${openTrips.map((t) => t.number).join(', ')}). Reassign or cancel them ${suffix}.`, { openTrips });
+
 /** TZ §5.3 — "Vehicles: units, VIN, trailer" deliverable. Trailers are simple enough (no
  * odometer/device) to not need a dedicated permission key; gated by `vehicles` (same as units).
  *
@@ -53,15 +59,19 @@ export class TrailersService {
       const clash = await this.trailers.findByNumber(dto.number);
       if (clash && clash.id !== id) throw numberTaken(dto.number);
     }
+    const data = {
+      ...(dto.number !== undefined && { number: dto.number }),
+      ...(dto.vin !== undefined && { vin: dto.vin }),
+      ...(dto.status !== undefined && { status: dto.status }),
+    };
+    // BE-06 — taking the trailer out of service (INACTIVE / OUT_OF_SERVICE) must not leave it on
+    // open trips: same rule and 409 as a unit (CODE-011), checked under the trailer's schedule lock.
+    const leavesService = dto.status !== undefined && dto.status !== 'ACTIVE' && dto.status !== current.status;
     try {
-      return await this.trailers.update(
-        { id },
-        {
-          ...(dto.number !== undefined && { number: dto.number }),
-          ...(dto.vin !== undefined && { vin: dto.vin }),
-          ...(dto.status !== undefined && { status: dto.status }),
-        },
-      );
+      if (!leavesService) return await this.trailers.update({ id }, data);
+      const result = await this.trailers.updateUnlessBooked(id, data);
+      if (!result.updated) throw hasOpenTrips(result.openTrips, 'before changing its status');
+      return result.updated;
     } catch (err) {
       if (isUniqueViolation(err) && dto.number !== undefined) throw numberTaken(dto.number);
       throw err;
@@ -70,10 +80,13 @@ export class TrailersService {
 
   /** Soft delete — never a hard `DELETE` (DVIRs hold an FK to the trailer and trips keep its id).
    * Mirrors `VehiclesService.remove`: status flips to INACTIVE and `deletedAt` is stamped. A second
-   * delete of the same trailer is a 404. */
+   * delete of the same trailer is a 404. BE-06 — a trailer still on open trips is a 409 (checked
+   * under its trip-schedule lock, like a unit, CODE-062). */
   async remove(id: string): Promise<Trailer> {
     await this.get(id);
-    return this.trailers.update({ id }, { status: 'INACTIVE', deletedAt: new Date() });
+    const result = await this.trailers.updateUnlessBooked(id, { status: 'INACTIVE', deletedAt: new Date() });
+    if (!result.updated) throw hasOpenTrips(result.openTrips, 'first');
+    return result.updated;
   }
 
   async exportAll(): Promise<CreateTrailerDto[]> {

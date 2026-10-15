@@ -43,14 +43,18 @@ export type ConversationWithMeta = Conversation & {
 export class MessagingRepository {
   constructor(private readonly prisma: PrismaService) {}
 
-  async listForActor(actor: Participant): Promise<ConversationWithMeta[]> {
+  /** BE-24 — at most `page.take` conversations, newest activity first (`id` breaks ties so the
+   * `cursor` — the last id of the previous page — pages stably). */
+  async listForActor(actor: Participant, page: { take?: number; cursor?: string } = {}): Promise<ConversationWithMeta[]> {
     const conversations = await this.prisma.conversation.findMany({
       where: {
         participants: {
           some: actor.userId ? { userId: actor.userId } : { driverId: actor.driverId },
         },
       },
-      orderBy: { lastMessageAt: 'desc' },
+      orderBy: [{ lastMessageAt: 'desc' }, { id: 'desc' }],
+      ...(page.take !== undefined && { take: page.take }),
+      ...(page.cursor && { cursor: { id: page.cursor }, skip: 1 }),
       include: { participants: true },
     });
     if (!conversations.length) return [];

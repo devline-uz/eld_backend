@@ -68,3 +68,44 @@ describe('TripsRepository — schedule candidate pre-filter (BE-002)', () => {
     expect(args.where).toMatchObject({ driverId: 'drv_1', id: { not: 'trp_self' } });
   });
 });
+
+describe('TripsRepository — update moves the endpoint stops (FE-15)', () => {
+  function build() {
+    const tx = {
+      trip: { update: jest.fn(async () => ({ id: 'trp_1' })) },
+      tripStop: {
+        findFirst: jest.fn(async (args: { where: { type: string } }) => ({ id: args.where.type === 'PICKUP' ? 'stop_first' : 'stop_last' })),
+        update: jest.fn(async () => ({})),
+      },
+    };
+    const prisma = { trip: tx.trip, $transaction: jest.fn(async (work: (t: unknown) => unknown) => work(tx)) };
+    return { repo: new TripsRepository(prisma as never), prisma, tx };
+  }
+
+  it('sets the first PICKUP and last DELIVERY scheduledAt in one transaction', async () => {
+    const { repo, prisma, tx } = build();
+    const pickupAt = at(22, 8);
+    const deliveryAt = at(23, 8);
+    await repo.update({ id: 'trp_1' }, { plannedStartAt: pickupAt, plannedEndAt: deliveryAt }, undefined, { pickupAt, deliveryAt });
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(tx.tripStop.findFirst).toHaveBeenCalledWith({ where: { tripId: 'trp_1', type: 'PICKUP' }, orderBy: { sequence: 'asc' }, select: { id: true } });
+    expect(tx.tripStop.findFirst).toHaveBeenCalledWith({ where: { tripId: 'trp_1', type: 'DELIVERY' }, orderBy: { sequence: 'desc' }, select: { id: true } });
+    expect(tx.tripStop.update).toHaveBeenCalledWith({ where: { id: 'stop_first' }, data: { scheduledAt: pickupAt } });
+    expect(tx.tripStop.update).toHaveBeenCalledWith({ where: { id: 'stop_last' }, data: { scheduledAt: deliveryAt } });
+  });
+
+  it('only moves the delivery stop when only the end changed, using the outer transaction', async () => {
+    const { repo, prisma, tx } = build();
+    await repo.update({ id: 'trp_1' }, {}, tx as never, { deliveryAt: at(23) });
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(tx.tripStop.update).toHaveBeenCalledTimes(1);
+    expect(tx.tripStop.update).toHaveBeenCalledWith({ where: { id: 'stop_last' }, data: { scheduledAt: at(23) } });
+  });
+
+  it('skips a route without that stop', async () => {
+    const { repo, tx } = build();
+    tx.tripStop.findFirst.mockResolvedValueOnce(null as never);
+    await repo.update({ id: 'trp_1' }, {}, tx as never, { pickupAt: at(22) });
+    expect(tx.tripStop.update).not.toHaveBeenCalled();
+  });
+});

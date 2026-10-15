@@ -38,3 +38,19 @@ describe('MessagingRepository.createConversation (LIVE-026 — one 1:1 thread pe
     expect(prisma.conversation.create).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('MessagingRepository.listForActor — bounded page (BE-24)', () => {
+  it('takes one page, newest first with an id tie-breaker, after the cursor', async () => {
+    const findMany = jest.fn(async () => []);
+    const repo = new MessagingRepository({ conversation: { findMany } } as never);
+    await repo.listForActor({ userId: 'usr_1' }, { take: 51, cursor: 'cnv_9' });
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orderBy: [{ lastMessageAt: 'desc' }, { id: 'desc' }],
+        take: 51,
+        cursor: { id: 'cnv_9' },
+        skip: 1,
+      }),
+    );
+  });
+});

@@ -13,17 +13,20 @@ export const RepairStatusEnum = z.enum(['NOT_REQUIRED', 'PENDING', 'REPAIRED', '
 
 // --- DVIR (web read + mechanic sign-off) ------------------------------------------------
 
-export const DvirListQueryDto = z.object({
-  page: z.coerce.number().int().min(1).max(MAX_LIST_PAGE).default(1),
-  limit: z.coerce.number().int().min(1).max(200).default(25),
-  sort: z.string().max(60).optional(),
-  vehicleId: z.string().uuid().optional(),
-  driverId: z.string().uuid().optional(),
-  repairStatus: RepairStatusEnum.optional(),
-  /** §20 B-47. */
-  from: z.string().date().optional(),
-  to: z.string().date().optional(),
-});
+export const DvirListQueryDto = z
+  .object({
+    page: z.coerce.number().int().min(1).max(MAX_LIST_PAGE).default(1),
+    limit: z.coerce.number().int().min(1).max(200).default(25),
+    sort: z.string().max(60).optional(),
+    vehicleId: z.string().uuid().optional(),
+    driverId: z.string().uuid().optional(),
+    repairStatus: RepairStatusEnum.optional(),
+    /** §20 B-47 — carrier calendar days (BE-19, same as `/dvir/compliance`). */
+    from: z.string().date().optional(),
+    to: z.string().date().optional(),
+  })
+  // BE-19 — an inverted range is refused, like `/dvir/compliance`, instead of silently listing nothing.
+  .refine((v) => !v.from || !v.to || v.from <= v.to, { message: '`from` must not be after `to`', path: ['to'] });
 export type DvirListQueryDto = z.infer<typeof DvirListQueryDto>;
 
 /** §20 B-47 — `GET /dvir/compliance`: "expected vs submitted pre-trip DVIRs" for the active

@@ -60,3 +60,5 @@ export const VIN_TAKEN_MESSAGE = 'A unit with this VIN already exists.';
 export const ELD_SERIAL_TAKEN_MESSAGE = 'This ELD serial is already assigned to another unit.';
 export const LICENSE_PLATE_TAKEN_MESSAGE = 'This license plate is already registered for this state.';
 export const ELD_SERIAL_UNKNOWN_MESSAGE = 'No ELD device with this serial is registered.';
+/** FE-12 — a retired device stays in the inventory for its history but is never paired again. */
+export const ELD_DEVICE_RETIRED_MESSAGE = 'This ELD device is retired and cannot be paired to a unit.';

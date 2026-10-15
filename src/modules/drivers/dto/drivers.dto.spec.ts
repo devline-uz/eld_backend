@@ -1,4 +1,4 @@
-import { CreateDriverDto, DriverListQueryDto, ImportDriversDto, UpdateDriverDto } from './drivers.dto';
+import { CreateDriverDto, DriverListQueryDto, ImportDriversDto, InvokeAdverseDrivingDto, UpdateDriverDto } from './drivers.dto';
 
 const base = { username: 'jsmith', firstName: 'John', lastName: 'Smith', cdlNumber: 'D1234567', cdlState: 'OH' };
 
@@ -46,5 +46,22 @@ describe('CreateDriverDto / UpdateDriverDto (BE-007 / BE-015 / BE-017)', () => {
     // A blank CSV email cell must not 422 the whole import body.
     const rows = ImportDriversDto.parse({ drivers: [{ ...base, email: '' }, { ...base, username: 'jdoe', email: ' J@B.co ' }] });
     expect(rows.drivers.map((r) => r.email)).toEqual(['', 'J@B.co']);
+  });
+});
+
+describe('InvokeAdverseDrivingDto — BE-10', () => {
+  it('refuses an impossible calendar date instead of rolling it over (422, not 500)', () => {
+    expect(InvokeAdverseDrivingDto.safeParse({ date: '2025-13-01', annotation: 'Snow storm on I-80' }).success).toBe(false);
+    expect(InvokeAdverseDrivingDto.safeParse({ date: '2026-02-30', annotation: 'Snow storm on I-80' }).success).toBe(false);
+    expect(InvokeAdverseDrivingDto.safeParse({ date: '2026-02-28', annotation: 'Snow storm on I-80' }).success).toBe(true);
+  });
+});
+
+describe('ImportDriversDto — BE-09', () => {
+  it('applies no create-time defaults to an import row (an UPDATE row must keep omitted settings)', () => {
+    const [row] = ImportDriversDto.parse({ drivers: [base] }).drivers;
+    expect(row.homeTerminalTimezone).toBeUndefined();
+    expect(row.splitSleeperEnabled).toBeUndefined();
+    expect(row.allowPersonalConveyance).toBeUndefined();
   });
 });

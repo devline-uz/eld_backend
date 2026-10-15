@@ -630,6 +630,20 @@ describe('VehiclesService', () => {
       expect(vehiclesRepo.saveWithDevice).not.toHaveBeenCalled();
     });
 
+    it('FE-12 — a RETIRED device cannot be paired on create or update (409 DEVICE_RETIRED on eldSerial)', async () => {
+      const RETIRED = {
+        code: 'DEVICE_RETIRED',
+        status: 409,
+        details: { eldSerial: 'This ELD device is retired and cannot be paired to a unit.' },
+      };
+      vehiclesRepo.findDeviceForPairing.mockResolvedValue(device({ status: 'RETIRED' }) as never);
+      await expect(service.create({ ...base, deviceId: 'PT30_1C4F' } as never)).rejects.toMatchObject(RETIRED);
+      vehiclesRepo.findById.mockResolvedValue(makeVehicle() as never);
+      await expect(service.update('veh_1', { deviceId: 'PT30_1C4F' })).rejects.toMatchObject(RETIRED);
+      expect(vehiclesRepo.saveWithDevice).not.toHaveBeenCalled();
+      expect(vehiclesRepo.create).not.toHaveBeenCalled();
+    });
+
     it('a device left on a soft-deleted unit is free to pair', async () => {
       vehiclesRepo.findDeviceForPairing.mockResolvedValue(
         device({ vehicleId: 'veh_old', vehicle: { id: 'veh_old', deletedAt: new Date() } }) as never,

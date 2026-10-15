@@ -8,7 +8,7 @@ import { PushService } from '../../core/firebase/push.service';
 import { EventBusService } from '../../core/events/event-bus.service';
 import type { ContextUser } from '../../core/context/request-context';
 import { STORAGE_PORT, StoragePort } from '../../core/storage/storage.port';
-import { BroadcastMessageDto, CreateConversationDto, SendAudioMessageDto, SendMessageDto } from './dto/messaging.dto';
+import { BroadcastMessageDto, CONVERSATIONS_PAGE_MAX, CreateConversationDto, SendAudioMessageDto, SendMessageDto } from './dto/messaging.dto';
 import {
   ChatAttachmentsService,
   ChatAttachmentView,
@@ -91,9 +91,13 @@ export class MessagingService {
     @Inject(STORAGE_PORT) private readonly storage: StoragePort,
   ) {}
 
-  async listConversations(actor: ContextUser) {
-    const items = await this.repo.listForActor(toParticipant(actor));
-    return { items };
+  /** BE-24 — one bounded page (`limit`, default and max `CONVERSATIONS_PAGE_MAX`); `nextCursor` is
+   * the id to pass as `cursor` for the next page, `null` on the last one. */
+  async listConversations(actor: ContextUser, query: { limit?: number; cursor?: string } = {}) {
+    const limit = query.limit ?? CONVERSATIONS_PAGE_MAX;
+    const rows = await this.repo.listForActor(toParticipant(actor), { take: limit + 1, cursor: query.cursor });
+    const items = rows.slice(0, limit);
+    return { items, nextCursor: rows.length > limit ? items[items.length - 1].id : null };
   }
 
   /**

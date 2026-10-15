@@ -1,4 +1,4 @@
-import { AlertRulesRepository, NotificationsRepository } from './notifications.repository';
+import { AlertDeliveryRepository, AlertRulesRepository, NotificationsRepository } from './notifications.repository';
 
 function buildRepo(rows: Array<Record<string, unknown>>) {
   const prisma = {
@@ -49,8 +49,30 @@ describe('AlertRulesRepository.findByEvent (TZ §20 B-86 — mutedUntil)', () =>
       { id: 'within_30', enabled: true, conditions: [{ event: 'hos.break_due', params: { minutes: 30 } }] },
       { id: 'within_60', enabled: true, conditions: [{ event: 'hos.break_due', params: { minutes: 60 } }] },
     ]);
-    const result = await repo.findByEvent('alert.break_due', { minutesUntilBreak: 29 });
-    expect(result.map((r) => r.id)).toEqual(['within_30']);
+    // BE-12 — every step at or under the threshold matches; `AlertProcessor` delivers once per break.
+    expect((await repo.findByEvent('alert.break_due', { minutesUntilBreak: 29 })).map((r) => r.id)).toEqual(['within_30', 'within_60']);
+    expect((await repo.findByEvent('alert.break_due', { minutesUntilBreak: 45 })).map((r) => r.id)).toEqual(['within_60']);
+  });
+});
+
+describe('AlertDeliveryRepository.existsForBreakEpisode — BE-12', () => {
+  it('looks for any delivery of the rule to the recipient for that driver and break deadline', async () => {
+    const findFirst = jest.fn().mockResolvedValueOnce({ id: 'del_1' }).mockResolvedValueOnce(null);
+    const repo = new AlertDeliveryRepository({ alertDelivery: { findFirst } } as never);
+    const episode = { driverId: 'drv_1', nextBreakDueAt: '2025-01-15T03:00:00.000Z' };
+    await expect(repo.existsForBreakEpisode('alr_1', 'user:u1', episode)).resolves.toBe(true);
+    await expect(repo.existsForBreakEpisode('alr_1', 'user:u1', episode)).resolves.toBe(false);
+    expect(findFirst).toHaveBeenCalledWith({
+      where: {
+        alertRuleId: 'alr_1',
+        recipient: 'user:u1',
+        AND: [
+          { payload: { path: ['driverId'], equals: 'drv_1' } },
+          { payload: { path: ['nextBreakDueAt'], equals: '2025-01-15T03:00:00.000Z' } },
+        ],
+      },
+      select: { id: true },
+    });
   });
 });
 

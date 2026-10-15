@@ -26,18 +26,27 @@ describe('VehiclesRepository', () => {
   });
 
   it('findByUnitNumber queries live units by unitNumber, ignoring the display # and case (B-97)', async () => {
-    vehicle.findFirst.mockResolvedValue({ id: 'v1' });
+    vehicle.findMany.mockResolvedValue([{ id: 'v1', unitNumber: '#101A' }]);
     const result = await repo.findByUnitNumber(' #101a ');
-    expect(vehicle.findFirst).toHaveBeenCalledWith({
+    expect(vehicle.findMany).toHaveBeenCalledWith({
       where: {
         deletedAt: null,
         OR: [
-          { unitNumber: { equals: '101a', mode: 'insensitive' } },
-          { unitNumber: { equals: '#101a', mode: 'insensitive' } },
+          { unitNumber: { equals: '101A', mode: 'insensitive' } },
+          { unitNumber: { endsWith: '#101A', mode: 'insensitive' } },
         ],
       },
     });
-    expect(result).toEqual({ id: 'v1' });
+    expect(result).toEqual({ id: 'v1', unitNumber: '#101A' });
+  });
+
+  it('BE-22 — findByUnitNumber strips every leading # (like the canonical DB index)', async () => {
+    vehicle.findMany.mockResolvedValue([{ id: 'v7', unitNumber: '7' }, { id: 'vx', unitNumber: 'X#7' }]);
+    expect(await repo.findByUnitNumber('##7')).toEqual({ id: 'v7', unitNumber: '7' });
+    vehicle.findMany.mockResolvedValue([{ id: 'v77', unitNumber: '##7' }]);
+    expect(await repo.findByUnitNumber('7')).toEqual({ id: 'v77', unitNumber: '##7' });
+    vehicle.findMany.mockResolvedValue([{ id: 'vx', unitNumber: 'X#7' }]);
+    expect(await repo.findByUnitNumber('7')).toBeNull();
   });
 
   it('findByVin queries live (non-deleted) units by vin, case-insensitively', async () => {

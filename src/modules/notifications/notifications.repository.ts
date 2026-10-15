@@ -98,6 +98,25 @@ export class AlertDeliveryRepository {
     });
   }
 
+  /**
+   * BE-12 — whether this rule already produced a delivery row (any status) to this recipient for
+   * this driver's break deadline: a "break due within M" rule is delivered once per break.
+   */
+  async existsForBreakEpisode(alertRuleId: string, recipient: string, episode: { driverId: string; nextBreakDueAt: string }): Promise<boolean> {
+    const row = await this.prisma.alertDelivery.findFirst({
+      where: {
+        alertRuleId,
+        recipient,
+        AND: [
+          { payload: { path: ['driverId'], equals: episode.driverId } },
+          { payload: { path: ['nextBreakDueAt'], equals: episode.nextBreakDueAt } },
+        ],
+      },
+      select: { id: true },
+    });
+    return row !== null;
+  }
+
   markSent(id: string) {
     return this.prisma.alertDelivery.update({ where: { id }, data: { status: 'SENT', sentAt: new Date(), attempts: { increment: 1 } } });
   }

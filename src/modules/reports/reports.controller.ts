@@ -65,8 +65,8 @@ export class ReportsController {
   @ApiOperation({ summary: 'Lists report schedules (TZ §15 report scheduler — cron definitions persisted in the DB).' })
   @ApiOkResponse({ schema: { example: { items: [{ id: 'sch_1', reportType: 'ACTIVITY', cron: '0 6 * * 1', enabled: true, nextRunAt: '2026-09-14T06:00:00.000Z' }] } } })
   @ApiStandardErrors()
-  async listSchedules() {
-    return { items: await this.reports.listSchedules() };
+  async listSchedules(@CurrentUser() actor: ContextUser) {
+    return { items: await this.reports.listSchedules(actor) };
   }
 
   @Post('schedules')
@@ -111,8 +111,8 @@ export class ReportsController {
   })
   // 204 has no body; the explicit `example: null` marks "empty on purpose" for the OpenAPI example gate (B-141).
   @ApiResponse({ status: 204, description: 'Deleted.', content: { 'application/json': { example: null } } })
-  async deleteSchedule(@Param('id') id: string): Promise<void> {
-    await this.reports.deleteSchedule(id);
+  async deleteSchedule(@Param('id') id: string, @CurrentUser() actor: ContextUser): Promise<void> {
+    await this.reports.deleteSchedule(id, actor);
   }
 
   @Get('ifta')
@@ -318,14 +318,17 @@ export class ReportsController {
   })
   async file(
     @Param('id') id: string,
-    @Res({ passthrough: true }) res: Response,
+    @Res() res: Response,
     @CurrentUser() actor: ContextUser,
-  ): Promise<Buffer> {
+  ): Promise<void> {
     const { fileName, contentType, body } = await this.reports.file(id, actor);
     res.setHeader('Content-Type', contentType);
     res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
     res.setHeader('Cache-Control', 'no-store');
-    // Returning a Buffer opts out of the success envelope (TransformInterceptor).
-    return body;
+    // BE-05 (same class as B-108 / dvir-admin getPdf): with `@Res({ passthrough: true })` +
+    // `return body`, Nest's Express adapter JSON-serialised the Buffer (it is an object) into
+    // `{"type":"Buffer","data":[...]}`. Writing the response directly bypasses both the adapter
+    // re-serialisation and the success envelope, so the real CSV/PDF bytes are sent.
+    res.send(body);
   }
 }

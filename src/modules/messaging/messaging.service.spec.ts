@@ -558,3 +558,25 @@ describe('MessagingService — driver disable', () => {
     });
   });
 });
+
+describe('MessagingService — GET /conversations is paged (BE-24)', () => {
+  const USER = { id: 'usr_1', type: 'user' as const };
+  const rows = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `cnv_${i}` }));
+
+  it('returns at most `limit` items and the next cursor when more exist', async () => {
+    const { service, repo } = buildService();
+    repo.listForActor.mockResolvedValueOnce(rows(3) as never);
+    const page = await service.listConversations(USER, { limit: 2 });
+    expect(repo.listForActor).toHaveBeenCalledWith(expect.anything(), { take: 3, cursor: undefined });
+    expect(page).toEqual({ items: [{ id: 'cnv_0' }, { id: 'cnv_1' }], nextCursor: 'cnv_1' });
+  });
+
+  it('the last page has no cursor; the default page is bounded at 500', async () => {
+    const { service, repo } = buildService();
+    repo.listForActor.mockResolvedValueOnce(rows(2) as never);
+    expect(await service.listConversations(USER as never, { limit: 2, cursor: 'cnv_x' })).toEqual({ items: rows(2), nextCursor: null });
+    repo.listForActor.mockResolvedValueOnce([] as never);
+    await service.listConversations(USER);
+    expect(repo.listForActor).toHaveBeenLastCalledWith(expect.anything(), { take: 501, cursor: undefined });
+  });
+});

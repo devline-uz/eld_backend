@@ -125,3 +125,21 @@ describe('B-96 — report shortcut ?format=CSV|PDF query DTOs', () => {
     expect(DvirReportQueryDto.safeParse({ from: '1900-01-01', to: '2999-12-31', format: 'PDF' }).success).toBe(false);
   });
 });
+
+describe('BE-10 — impossible calendar dates are a validation error (422), not a 500', () => {
+  it.each([
+    ['ActivitySummaryQueryDto', ActivitySummaryQueryDto],
+    ['ActivityReportQueryDto', ActivityReportQueryDto],
+    ['ActivityReportParamsDto', ActivityReportParamsDto],
+    ['DvirReportParamsDto', DvirReportParamsDto],
+    ['FmcsaPackParamsDto', FmcsaPackParamsDto],
+  ] as const)('%s refuses 2026-02-30 and 2025-13-01', (_name, schema) => {
+    expect((schema as { safeParse: (v: unknown) => { success: boolean } }).safeParse({ from: '2026-02-30', to: '2026-03-05' }).success).toBe(false);
+    expect((schema as { safeParse: (v: unknown) => { success: boolean } }).safeParse({ from: '2025-12-01', to: '2025-13-01' }).success).toBe(false);
+  });
+
+  it('a leap day is a real date', () => {
+    expect(ActivitySummaryQueryDto.safeParse({ from: '2028-02-29', to: '2028-03-05' }).success).toBe(true);
+    expect(ActivitySummaryQueryDto.safeParse({ from: '2026-02-29', to: '2026-03-05' }).success).toBe(false);
+  });
+});

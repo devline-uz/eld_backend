@@ -249,6 +249,12 @@ describe('DriverRosterService.clocks', () => {
     await expect(service.clocks('nope')).rejects.toBeInstanceOf(AppException);
   });
 
+  it('BE-16 — a soft-deleted driver is a 404 DRIVER_NOT_FOUND', async () => {
+    const { service: hos } = makeHos([]);
+    const service = new DriverRosterService(makeDriversRepo([makeDriver({ deletedAt: new Date('2026-09-01T00:00:00Z') })]) as unknown as DriversRepository, hos);
+    await expect(service.clocks('drv_1')).rejects.toMatchObject({ code: 'DRIVER_NOT_FOUND', status: 404 });
+  });
+
   it('returns the B-2 shape with limits for a driver with no events', async () => {
     const NOW = new Date('2026-09-12T15:00:00Z');
     const { service: hos } = makeHos([]);
@@ -428,5 +434,16 @@ describe('DriverRosterService.invokeAdverseDriving (BUG-001)', () => {
     await expect(service.invokeAdverseDriving('nope', { annotation: 'Fog bank' }, actor, NOW)).rejects.toBeInstanceOf(AppException);
     const permitted = new DriverRosterService(makeDriversRepo([makeDriver({ adverseDrivingEnabled: true })]) as unknown as DriversRepository, makeHos([]).service);
     await expect(permitted.invokeAdverseDriving('drv_1', { annotation: 'Fog bank', date: '2026-09-13' }, actor, NOW)).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+  });
+});
+
+describe('DriverRosterService.invokeAdverseDriving — soft-deleted driver (BE-16)', () => {
+  it('is a 404 and writes nothing', async () => {
+    const drivers = makeDriversRepo([makeDriver({ adverseDrivingEnabled: true, deletedAt: new Date('2026-09-01T00:00:00Z') })]);
+    const service = new DriverRosterService(drivers as unknown as DriversRepository, makeHos([]).service);
+    await expect(
+      service.invokeAdverseDriving('drv_1', { annotation: 'Fog bank' }, { id: 'usr_1', type: 'user' } as never, new Date('2026-09-12T15:00:00Z')),
+    ).rejects.toMatchObject({ code: 'DRIVER_NOT_FOUND', status: 404 });
+    expect(drivers.upsertAdverseInvocation).not.toHaveBeenCalled();
   });
 });

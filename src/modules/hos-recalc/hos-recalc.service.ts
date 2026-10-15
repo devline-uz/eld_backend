@@ -3,6 +3,7 @@ import { Injectable, Logger, Optional } from '@nestjs/common';
 import type { HosViolation } from '@prisma/client';
 import type { Queue } from 'bullmq';
 import { DateTime } from 'luxon';
+import { isValidIanaTimezone } from '../../common/dto/timezone.dto';
 import { QUEUES } from '../../core/queue/queue.constants';
 import { computeHos } from '../hos/engine/compute-hos';
 import { addDays, dayEnd, dayKey, dayStart } from '../hos/engine/timezone';
@@ -48,6 +49,12 @@ export const RECALC_LOOKBACK_DAYS = 9;
  * at most 25 × 2 001 slim rows, whatever the fleet or `EldEvent` table size.
  */
 export const HOS_BATCH_CHUNK_SIZE = 25;
+
+/**
+ * LV-01 — chunks whose reads run in parallel. Two keeps one batch call at ≤ 4 pooled connections
+ * (2 queries per chunk) and the in-memory bound at 2 × the B-055 chunk bound.
+ */
+export const HOS_BATCH_CONCURRENCY = 2;
 
 /**
  * B-055 — duty-status + PC/YM records a single driver may have inside one ~10-day window before
@@ -177,8 +184,9 @@ export class HosRecalcService {
     }
 
     if (!data.silent && Math.abs(Date.now() - now.getTime()) <= LIVE_RECALC_TOLERANCE_MS) {
-      await this.raiseViolationAlerts(driver, alertable, now);
-      await this.raiseBreakDue(driver, state);
+      const officeZone = await this.officeZone(driver);
+      await this.raiseViolationAlerts(driver, alertable, now, officeZone);
+      await this.raiseBreakDue(driver, state, officeZone);
     }
 
     this.logger.log({ driverId: driver.id, days: days.length, upserted, autoCleared, refreshed }, 'hos.recalc done');
@@ -190,11 +198,11 @@ export class HosRecalcService {
    * violation row (`jobId` = row id, retained {@link ALERT_JOB_RETAIN_SEC} — longer than the 24 h
    * alert window), so a retried or repeated recalculation never re-alerts.
    */
-  private async raiseViolationAlerts(driver: DriverHosRow, alertable: HosViolation[], now: Date): Promise<void> {
+  private async raiseViolationAlerts(driver: DriverHosRow, alertable: HosViolation[], now: Date, officeZone: string): Promise<void> {
     for (const violation of alertable) {
       if (now.getTime() - violation.occurredAt.getTime() > HOS_ALERT_MAX_AGE_MS) continue;
       const label = VIOLATION_LABEL[violation.type] ?? violation.type;
-      const at = DateTime.fromJSDate(violation.occurredAt, { zone: driver.homeTerminalTimezone }).toFormat('MMM d, HH:mm ZZZZ');
+      const at = DateTime.fromJSDate(violation.occurredAt, { zone: officeZone }).toFormat('MMM d, HH:mm ZZZZ');
       await this.enqueueAlert(
         HOS_VIOLATION_ALERT,
         {
@@ -214,28 +222,50 @@ export class HosRecalcService {
 
   /**
    * `hos.break_due` — the 30-minute break countdown of a driver who is DRIVING. The open-driving
-   * sweep re-runs this every 5 minutes; each 5-minute step of one break is raised once, and the
-   * rule's "within N minutes" (`conditionParamsMatch`) picks the step that crosses N.
+   * sweep re-runs this every 5 minutes; each 5-minute step of one break is raised once, the rule's
+   * "within N minutes" (`conditionParamsMatch`) matches every step at or under N, and
+   * `AlertProcessor` delivers it once per (driver, break deadline) — BE-12.
    */
-  private async raiseBreakDue(driver: DriverHosRow, state: HosState): Promise<void> {
+  private async raiseBreakDue(driver: DriverHosRow, state: HosState, officeZone: string): Promise<void> {
     if (state.currentStatus !== 'D' || !state.nextBreakDueAt) return;
     if (state.breakRemainingSec <= 0) return;
     const minutesUntilBreak = Math.ceil(state.breakRemainingSec / 60);
     if (minutesUntilBreak > BREAK_DUE_HORIZON_MIN) return;
     const step = Math.ceil(minutesUntilBreak / BREAK_DUE_STEP_MIN);
     const deadlineMs = stableBreakDeadlineMs(state.statusSince, state.nextBreakDueAt);
-    const at = DateTime.fromJSDate(state.nextBreakDueAt, { zone: driver.homeTerminalTimezone }).toFormat('HH:mm ZZZZ');
+    const at = DateTime.fromJSDate(state.nextBreakDueAt, { zone: officeZone }).toFormat('HH:mm ZZZZ');
     await this.enqueueAlert(
       HOS_BREAK_DUE_ALERT,
       {
         driverId: driver.id,
         minutesUntilBreak,
-        nextBreakDueAt: state.nextBreakDueAt.toISOString(),
+        // BE-12 — the stable deadline: `AlertProcessor` dedupes a rule per (driver, nextBreakDueAt).
+        nextBreakDueAt: new Date(deadlineMs).toISOString(),
         title: '30-minute break due',
         message: `${driver.firstName} ${driver.lastName} needs a 30-minute break in ${minutesUntilBreak} min (by ${at}).`,
       },
       `hos-break-due-${driver.id}-${deadlineMs}-${step}`,
     );
+  }
+
+  /**
+   * FE-01 — the zone alert TEXT is written in. The sentence lands verbatim in the web toast / bell,
+   * the email and the webhook, all read by the office, so it uses the carrier (Settings) time zone
+   * with its abbreviation — the zone the web header shows — like the stale-status alert
+   * (`DriverRosterService.formatForOffice`). The payload keeps the ISO instant (`occurredAt` /
+   * `nextBreakDueAt`) for per-recipient formatting. Falls back to the driver's home terminal, then UTC.
+   */
+  private async officeZone(driver: DriverHosRow): Promise<string> {
+    let carrierZone: string | null = null;
+    try {
+      carrierZone = await this.repo.carrierTimezone();
+    } catch (err) {
+      this.logger.warn({ err, driverId: driver.id }, 'Carrier time zone unreadable — HOS alert text falls back to the home terminal');
+    }
+    for (const candidate of [carrierZone, driver.homeTerminalTimezone]) {
+      if (candidate && isValidIanaTimezone(candidate)) return candidate;
+    }
+    return 'UTC';
   }
 
   /** Never fails the recalculation: the HOS rows are what matter; an alert lost to a Redis blip is logged. */
@@ -333,9 +363,22 @@ export class HosRecalcService {
    * level and left out of the map, which every caller already treats as "clocks unavailable".
    */
   async computeCurrentStates(drivers: DriverHosRow[], now: Date = new Date()): Promise<Map<string, HosState>> {
-    const result = new Map<string, HosState>();
+    const chunks: DriverHosRow[][] = [];
     for (let offset = 0; offset < drivers.length; offset += HOS_BATCH_CHUNK_SIZE) {
-      await this.computeChunk(drivers.slice(offset, offset + HOS_BATCH_CHUNK_SIZE), now, result);
+      chunks.push(drivers.slice(offset, offset + HOS_BATCH_CHUNK_SIZE));
+    }
+    // LV-01 — up to HOS_BATCH_CONCURRENCY chunks read at once (a 77-driver fleet was 4 serial
+    // round-trip pairs); each keeps its own map so the merged order stays the input order.
+    const result = new Map<string, HosState>();
+    for (let i = 0; i < chunks.length; i += HOS_BATCH_CONCURRENCY) {
+      const parts = await Promise.all(
+        chunks.slice(i, i + HOS_BATCH_CONCURRENCY).map(async (chunk) => {
+          const part = new Map<string, HosState>();
+          await this.computeChunk(chunk, now, part);
+          return part;
+        }),
+      );
+      for (const part of parts) for (const [id, state] of part) result.set(id, state);
     }
     return result;
   }

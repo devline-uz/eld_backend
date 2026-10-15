@@ -29,6 +29,16 @@ describe('DriversRepository', () => {
     expect(driver.findFirst).toHaveBeenCalledWith({ where: { username: 'johnsmith', deletedAt: null } });
   });
 
+  it('BE-20 — findByUsername prefers the exact username, then matches case-insensitively (literal)', async () => {
+    driver.findFirst.mockResolvedValueOnce({ id: 'exact' });
+    expect(await repo.findByUsername('JDoe')).toEqual({ id: 'exact' });
+    expect(driver.findFirst).toHaveBeenCalledTimes(1);
+
+    driver.findFirst.mockResolvedValueOnce(null).mockResolvedValueOnce({ id: 'ci' });
+    expect(await repo.findByUsername('j_doe')).toEqual({ id: 'ci' });
+    expect(driver.findFirst).toHaveBeenLastCalledWith({ where: { username: { equals: 'j\\_doe', mode: 'insensitive' }, deletedAt: null } });
+  });
+
   it('findByEmail queries live (non-deleted) drivers by email, case-insensitively (B-100)', async () => {
     await repo.findByEmail('a@b.co');
     expect(driver.findFirst).toHaveBeenCalledWith({ where: { email: { equals: 'a@b.co', mode: 'insensitive' }, deletedAt: null } });

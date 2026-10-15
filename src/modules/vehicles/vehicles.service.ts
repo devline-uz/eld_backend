@@ -19,6 +19,7 @@ import { TRANSACTIONAL_MAIL, TransactionalMailPort } from '../../core/mail/mail.
 import { UsersRepository } from '../users/users.repository';
 import { buildVehicleHistories, HistoryPoint, VehicleHistoriesResponse } from './lib/vehicle-histories';
 import {
+  ELD_DEVICE_RETIRED_MESSAGE,
   ELD_SERIAL_TAKEN_MESSAGE,
   ELD_SERIAL_UNKNOWN_MESSAGE,
   LICENSE_PLATE_TAKEN_MESSAGE,
@@ -252,6 +253,10 @@ export class VehiclesService {
       });
     }
     if (vehicleId && device.vehicleId === vehicleId) return undefined;
+    // FE-12 — a retired device is out of the inventory: it can never be paired again.
+    if (device.status === 'RETIRED') {
+      throw new AppException(ERROR_CODES.DEVICE_RETIRED, ELD_DEVICE_RETIRED_MESSAGE, 409, { eldSerial: ELD_DEVICE_RETIRED_MESSAGE });
+    }
     if (device.vehicle && !device.vehicle.deletedAt) throw eldSerialTaken();
     return { deviceId: device.id };
   }
@@ -778,6 +783,7 @@ export class VehiclesService {
     if (!normalized) return { warning: ELD_SERIAL_UNKNOWN_MESSAGE };
     const device = await this.vehicles.findDeviceForPairing(normalized);
     if (!device) return { warning: `${ELD_SERIAL_UNKNOWN_MESSAGE} (${normalized})` };
+    if (device.status === 'RETIRED' && device.vehicleId !== vehicleId) return { warning: `${ELD_DEVICE_RETIRED_MESSAGE} (${normalized})` };
     const heldByLiveUnit = device.vehicleId !== null && device.vehicleId !== vehicleId && !device.vehicle?.deletedAt;
     if (heldByLiveUnit) return { warning: `${ELD_SERIAL_TAKEN_MESSAGE} (${normalized})` };
     return { deviceId: device.id };

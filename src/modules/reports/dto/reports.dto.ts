@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { MAX_LIST_PAGE } from '../../../common/dto/list-query.dto';
+import { CalendarDaySchema } from '../../../common/dto/calendar-day.dto';
 import { isKnownJurisdiction } from '../lib/jurisdiction';
 
 /** TZ §11.6 / §15 — the report kinds v1 ships. `SAFETY`/`UNIDENTIFIED` exist on the
@@ -102,8 +103,8 @@ function boundedRange<T extends z.ZodType<{ from: string; to: string }>>(schema:
 }
 
 const ActivityReportParamsShape = z.object({
-  from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  from: CalendarDaySchema,
+  to: CalendarDaySchema,
   driverId: z.string().uuid().optional(),
 });
 export const ActivityReportParamsDto = boundedRange(ActivityReportParamsShape, MAX_REPORT_RANGE_DAYS);
@@ -141,8 +142,8 @@ export const ACTIVITY_SUMMARY_GROUP_BY = ['driver', 'vehicleGroup'] as const;
  */
 export const ActivitySummaryQueryDto = boundedRange(
   z.object({
-    from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-    to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    from: CalendarDaySchema,
+    to: CalendarDaySchema,
     driverId: z.string().uuid().optional(),
     terminal: z.string().min(1).optional(),
     status: z.enum(['ACTIVE', 'INACTIVE', 'TERMINATED']).optional(),
@@ -164,8 +165,8 @@ export const ActivitySummaryQueryDto = boundedRange(
 export type ActivitySummaryQueryDto = z.infer<typeof ActivitySummaryQueryDto>;
 
 const DvirReportParamsShape = z.object({
-  from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  from: CalendarDaySchema,
+  to: CalendarDaySchema,
   vehicleId: z.string().uuid().optional(),
 });
 export const DvirReportParamsDto = boundedRange(DvirReportParamsShape, MAX_REPORT_RANGE_DAYS);
@@ -184,8 +185,8 @@ export type FmcsaPackSection = (typeof FMCSA_PACK_SECTIONS)[number];
 
 export const FmcsaPackParamsDto = boundedRange(
   z.object({
-    from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-    to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    from: CalendarDaySchema,
+    to: CalendarDaySchema,
     driverId: z.string().uuid().optional(),
     vehicleId: z.string().uuid().optional(),
     include: z.array(z.enum(FMCSA_PACK_SECTIONS)).min(1).optional(),
@@ -197,8 +198,8 @@ export type FmcsaPackParamsDto = z.infer<typeof FmcsaPackParamsDto>;
 /** B-14 — RODS: printable 8-day (or any bounded range) log sheets, one per driver per day. */
 export const RodsReportParamsDto = boundedRange(
   z.object({
-    from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-    to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    from: CalendarDaySchema,
+    to: CalendarDaySchema,
     driverId: z.string().uuid().optional(),
   }),
   MAX_FMCSA_PACK_RANGE_DAYS,
@@ -209,8 +210,8 @@ export type RodsReportParamsDto = z.infer<typeof RodsReportParamsDto>;
  * range cap since it can span a whole fleet. */
 export const IdleFuelReportParamsDto = boundedRange(
   z.object({
-    from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-    to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    from: CalendarDaySchema,
+    to: CalendarDaySchema,
     driverId: z.string().uuid().optional(),
     vehicleId: z.string().uuid().optional(),
   }),

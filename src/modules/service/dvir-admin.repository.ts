@@ -68,6 +68,14 @@ export class DvirAdminRepository extends BaseRepository<
     return carrier?.timezone ?? 'America/New_York';
   }
 
+  /** BE-18 — a check-then-write step made atomic: the row is written only while `guard` still
+   * holds (e.g. "not signed off yet"), so of two concurrent writes exactly one lands. `null` when
+   * the guard no longer matched (or the row is gone). */
+  async updateIf(id: string, guard: Prisma.DvirWhereInput, data: Prisma.DvirUpdateManyMutationInput): Promise<Dvir | null> {
+    const { count } = await this.prisma.dvir.updateMany({ where: { ...guard, id }, data });
+    return count === 0 ? null : this.prisma.dvir.findUnique({ where: { id } });
+  }
+
   submittedPreTrips(from: Date, to: Date): Promise<Array<{ vehicleId: string; submittedAt: Date }>> {
     return this.prisma.dvir.findMany({
       where: { type: 'PRE_TRIP', submittedAt: { gte: from, lte: to } },

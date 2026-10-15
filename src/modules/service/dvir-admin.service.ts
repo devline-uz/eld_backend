@@ -22,13 +22,16 @@ export class DvirAdminService {
 
   async list(query: DvirListQueryDto): Promise<OffsetPage<Dvir>> {
     const orderBy = parseSort(query.sort, SORTABLE_FIELDS, { submittedAt: 'desc' });
+    // BE-19 — `from` / `to` are the carrier's calendar days, like `/dvir/compliance` (CODE-074): a
+    // 7 PM Denver pre-trip is listed under its local day, not the next UTC one.
+    const timezone = query.from || query.to ? await this.repo.carrierTimezone() : null;
     const { items, total } = await this.repo.list(
       {
         vehicleId: query.vehicleId,
         driverId: query.driverId,
         repairStatus: query.repairStatus,
-        from: query.from ? new Date(`${query.from}T00:00:00.000Z`) : undefined,
-        to: query.to ? new Date(`${query.to}T23:59:59.999Z`) : undefined,
+        from: timezone && query.from ? dayStart(timezone, query.from) : undefined,
+        to: timezone && query.to ? new Date(dayEnd(timezone, query.to).getTime() - 1) : undefined,
       },
       query.page,
       query.limit,
@@ -110,10 +113,14 @@ export class DvirAdminService {
     }
     const blocked = signOffBlockReason(dvir.defects, dto.repairStatus);
     if (blocked) throw new AppException(ERROR_CODES.VALIDATION_FAILED, blocked, 422, { repairStatus: blocked });
-    return this.repo.update(
-      { id },
+    // BE-18 — guarded on "still unsigned": a concurrent second sign-off is a 409, never an overwrite.
+    const signed = await this.repo.updateIf(
+      id,
+      { mechanicSignedAt: null },
       { mechanicName: dto.mechanicName, mechanicNote: dto.mechanicNote ?? null, mechanicSignedAt: new Date(), repairStatus: dto.repairStatus },
     );
+    if (!signed) throw new AppException(ERROR_CODES.DVIR_ALREADY_SIGNED, 'This DVIR is already signed off.', 409, { id });
+    return signed;
   }
 
   /**
@@ -136,7 +143,15 @@ export class DvirAdminService {
     if (reviewedAt.getTime() > now.getTime() + FUTURE_SKEW_MS) message = 'Review time cannot be in the future.';
     else if (earliest && reviewedAt.getTime() < earliest.getTime()) message = 'Review time cannot be before the DVIR or its sign-off.';
     if (message) throw new AppException(ERROR_CODES.VALIDATION_FAILED, message, 422, { reviewedAt: message });
-    return this.repo.update({ id }, { nextDriverReviewedAt: reviewedAt });
+    // BE-18 — guarded on "not reviewed yet" (and, with defects, "still signed off"): of two
+    // concurrent reviews exactly one lands, the other is a 409.
+    const reviewed = await this.repo.updateIf(
+      id,
+      { nextDriverReviewedAt: null, ...(dvir.defects.length > 0 && { mechanicSignedAt: { not: null } }) },
+      { nextDriverReviewedAt: reviewedAt },
+    );
+    if (!reviewed) throw new AppException(ERROR_CODES.CONFLICT, 'This DVIR was already reviewed by the next driver.', 409, { id });
+    return reviewed;
   }
 }
 

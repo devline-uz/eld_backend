@@ -1,5 +1,6 @@
 /** TZ §8.4 — recalculation is idempotent and never duplicates a violation. */
-import { HOS_BATCH_CHUNK_SIZE, HOS_BATCH_MAX_EVENTS_PER_DRIVER, HOS_BREAK_DUE_ALERT, HOS_VIOLATION_ALERT, HosRecalcService, RECALC_LOOKBACK_DAYS, stableBreakDeadlineMs } from './hos-recalc.service';
+import { DateTime } from 'luxon';
+import { HOS_BATCH_CHUNK_SIZE, HOS_BATCH_CONCURRENCY, HOS_BATCH_MAX_EVENTS_PER_DRIVER, HOS_BREAK_DUE_ALERT, HOS_VIOLATION_ALERT, HosRecalcService, RECALC_LOOKBACK_DAYS, stableBreakDeadlineMs } from './hos-recalc.service';
 import type { HosRecalcRepository } from './hos-recalc.repository';
 
 const H = 3600;
@@ -36,6 +37,9 @@ class FakeRepo {
   dailyFlagUpdates: Array<{ logDate: string; count: number }> = [];
 
   findDriver = jest.fn(async () => this.driver);
+  /** FE-01 — `Carrier.timezone` (the office zone alert text is written in). */
+  carrierZone: string | null = null;
+  carrierTimezone = jest.fn(async () => this.carrierZone);
   findEvents = jest.fn(async (_id: string, from: Date, to: Date) => this.events.filter((e) => e.eventDateTime >= from && e.eventDateTime <= to));
   findDailyLogs = jest.fn(async (_id: string, from: Date, to: Date) => this.dailyLogs.filter((l) => l.logDate >= from && l.logDate <= to));
   /** Batched reads: every fake row belongs to the fake driver, the rest are "other drivers". */
@@ -529,6 +533,23 @@ describe('HosRecalcService', () => {
       expect(repo.findEventsForDrivers.mock.calls.map(([w]) => w.length)).toEqual([HOS_BATCH_CHUNK_SIZE, HOS_BATCH_CHUNK_SIZE, 1]);
     });
 
+    it('LV-01: reads up to HOS_BATCH_CONCURRENCY chunks in parallel and keeps the input order', async () => {
+      const drivers = Array.from({ length: HOS_BATCH_CHUNK_SIZE * 2 + 1 }, (_, i) => base(`d${i}`, 'America/New_York'));
+      const original = repo.findEventsForDrivers.getMockImplementation()!;
+      let inFlight = 0;
+      let peak = 0;
+      repo.findEventsForDrivers.mockImplementation(async (...args: Parameters<typeof original>) => {
+        inFlight += 1;
+        peak = Math.max(peak, inFlight);
+        await new Promise((resolve) => setImmediate(resolve));
+        inFlight -= 1;
+        return original(...args);
+      });
+      const batch = await service.computeCurrentStates(drivers as never[], NOW);
+      expect(peak).toBe(HOS_BATCH_CONCURRENCY);
+      expect([...batch.keys()]).toEqual(drivers.map((d) => d.id));
+    });
+
     const flood = (driverId: string, count: number): Row[] =>
       Array.from({ length: count }, (_, i) => at(driverId, new Date(NOW.getTime() - (count - i) * 60_000).toISOString(), i % 2 ? 1 : 4, i + 1));
 
@@ -664,6 +685,28 @@ describe('HosRecalcService — HOS alerts (hos.violation / hos.break_due)', () =
     }
   });
 
+  it('FE-01 — violation text is in the CARRIER zone (not the home terminal), with the ISO instant in the payload', async () => {
+    repo.carrierZone = 'America/Denver'; // driver home terminal: America/New_York
+    repo.events = OVER_LIMIT_DAY;
+    await service.recalculate({ driverId: 'driver-1', fromDate: '2025-01-14' }, NOW);
+    const jobs = violationJobs();
+    expect(jobs.length).toBeGreaterThan(0);
+    for (const [, payload] of jobs) {
+      const occurredAt = String(payload.occurredAt);
+      expect(occurredAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+      const expected = DateTime.fromISO(occurredAt, { zone: 'America/Denver' }).toFormat('MMM d, HH:mm');
+      expect(payload.message).toContain(`at ${expected} MST.`);
+      expect(payload.message).not.toContain('EST');
+    }
+  });
+
+  it('FE-01 — falls back to the home terminal when the carrier zone is unset or invalid', async () => {
+    repo.carrierZone = 'Not/AZone';
+    repo.events = OVER_LIMIT_DAY;
+    await service.recalculate({ driverId: 'driver-1', fromDate: '2025-01-14' }, NOW);
+    for (const [, payload] of violationJobs()) expect(payload.message).toContain(' EST.');
+  });
+
   it('a repeated recalculation re-offers only the same job ids (BullMQ drops a duplicate jobId)', async () => {
     repo.events = OVER_LIMIT_DAY;
     await service.recalculate({ driverId: 'driver-1', fromDate: '2025-01-14' }, NOW);
@@ -719,6 +762,17 @@ describe('HosRecalcService — HOS alerts (hos.violation / hos.break_due)', () =
     const [, payload, opts] = jobs[0];
     expect(payload.minutesUntilBreak).toBe(20);
     expect(opts.jobId).toBe(`hos-break-due-driver-1-${Date.parse('2025-01-15T03:00:00Z')}-4`);
+  });
+
+  it('FE-01 — break-due text is in the carrier zone; nextBreakDueAt stays ISO', async () => {
+    repo.carrierZone = 'America/Denver';
+    repo.events = [duty('2025-01-14T19:00:00Z', 3, 1)];
+    const at = new Date('2025-01-15T02:40:00Z');
+    jest.setSystemTime(at);
+    await service.recalculate({ driverId: 'driver-1', fromDate: '2025-01-14' }, at);
+    const [, payload] = jobsNamed(HOS_BREAK_DUE_ALERT)[0];
+    expect(payload.nextBreakDueAt).toBe('2025-01-15T03:00:00.000Z');
+    expect(payload.message).toContain('(by 20:00 MST)');
   });
 
   it('break-due job id is stable across recalcs a few seconds apart (sub-second drift of now)', async () => {

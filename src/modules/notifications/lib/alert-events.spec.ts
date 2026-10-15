@@ -1,4 +1,4 @@
-import { conditionParamsMatch, ruleEventsFor } from './alert-events';
+import { breakDueEpisode, conditionParamsMatch, ruleEventsFor } from './alert-events';
 
 describe('ruleEventsFor (LIVE-027 — editor rules match the worker job names)', () => {
   it('keeps the job name itself (system rules are keyed on it)', () => {
@@ -29,16 +29,32 @@ describe('ruleEventsFor (LIVE-027 — editor rules match the worker job names)',
 describe('conditionParamsMatch (editor `params.minutes`)', () => {
   const now = new Date('2026-10-14T12:00:00Z');
 
-  it('break due "within 30": fires on the step that crosses 30, not on every sweep', () => {
+  it('break due "within 30": matches every step at or under 30 (the processor dedupes per break)', () => {
     const rule = { event: 'hos.break_due', params: { minutes: 30 } };
+    expect(conditionParamsMatch(rule, { minutesUntilBreak: 30 }, now)).toBe(true);
     expect(conditionParamsMatch(rule, { minutesUntilBreak: 28 }, now)).toBe(true);
-    expect(conditionParamsMatch(rule, { minutesUntilBreak: 23 }, now)).toBe(false);
+    expect(conditionParamsMatch(rule, { minutesUntilBreak: 31 }, now)).toBe(false);
     expect(conditionParamsMatch(rule, { minutesUntilBreak: 45 }, now)).toBe(false);
+  });
+
+  it('BE-12 — samples straddling the 5-minute window (31 min, then 25 min) still match', () => {
+    const rule = { event: 'hos.break_due', params: { minutes: 30 } };
+    expect(conditionParamsMatch(rule, { minutesUntilBreak: 31 }, now)).toBe(false);
+    expect(conditionParamsMatch(rule, { minutesUntilBreak: 25 }, now)).toBe(true);
+    expect(conditionParamsMatch(rule, { minutesUntilBreak: 23 }, now)).toBe(true);
   });
 
   it('break due without minutes means within 30', () => {
     expect(conditionParamsMatch({ event: 'hos.break_due' }, { minutesUntilBreak: 26 }, now)).toBe(true);
-    expect(conditionParamsMatch({ event: 'hos.break_due' }, { minutesUntilBreak: 15 }, now)).toBe(false);
+    expect(conditionParamsMatch({ event: 'hos.break_due' }, { minutesUntilBreak: 15 }, now)).toBe(true);
+    expect(conditionParamsMatch({ event: 'hos.break_due' }, { minutesUntilBreak: 35 }, now)).toBe(false);
+  });
+
+  it('breakDueEpisode keys a break-due job on (driver, deadline); null for other jobs', () => {
+    const payload = { driverId: 'drv_1', nextBreakDueAt: '2025-01-15T03:00:00.000Z', minutesUntilBreak: 25 };
+    expect(breakDueEpisode('alert.break_due', payload)).toEqual({ driverId: 'drv_1', nextBreakDueAt: '2025-01-15T03:00:00.000Z' });
+    expect(breakDueEpisode('alert.hos_violation', payload)).toBeNull();
+    expect(breakDueEpisode('alert.break_due', { driverId: 'drv_1' })).toBeNull();
   });
 
   it('device offline "for 60": compares lastSeenAt with now', () => {

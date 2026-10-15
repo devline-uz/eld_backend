@@ -2,6 +2,7 @@ import { AppException } from '../../common/errors/app.exception';
 import { DvirAdminRepository } from './dvir-admin.repository';
 import { DvirAdminService } from './dvir-admin.service';
 import { DvirPdfBuilder } from './dvir-pdf.builder';
+import { DvirListQueryDto } from './dto/service.dto';
 
 /** Typed matchers — a bare `expect.any()` is `any` to the linter. */
 const ANY_STRING: unknown = expect.any(String);
@@ -9,7 +10,7 @@ const ANY_DATE: unknown = expect.any(Date);
 
 describe('DvirAdminService (TZ §5.10 / B-47 compliance)', () => {
   let repo: jest.Mocked<
-    Pick<DvirAdminRepository, 'list' | 'findWithDefects' | 'findById' | 'update' | 'findForPdf' | 'activeVehicles' | 'submittedPreTrips' | 'carrierTimezone'>
+    Pick<DvirAdminRepository, 'list' | 'findWithDefects' | 'findById' | 'update' | 'updateIf' | 'findForPdf' | 'activeVehicles' | 'submittedPreTrips' | 'carrierTimezone'>
   >;
   let pdf: jest.Mocked<Pick<DvirPdfBuilder, 'build'>>;
   let service: DvirAdminService;
@@ -20,6 +21,7 @@ describe('DvirAdminService (TZ §5.10 / B-47 compliance)', () => {
       findWithDefects: jest.fn(),
       findById: jest.fn(),
       update: jest.fn(),
+      updateIf: jest.fn().mockImplementation(async (id: string) => ({ id })),
       findForPdf: jest.fn(),
       activeVehicles: jest.fn(),
       submittedPreTrips: jest.fn(),
@@ -110,6 +112,30 @@ describe('DvirAdminService (TZ §5.10 / B-47 compliance)', () => {
     });
   });
 
+  describe('list — carrier calendar days (BE-19)', () => {
+    it('filters `from` / `to` on the carrier day, not the UTC day', async () => {
+      repo.carrierTimezone.mockResolvedValue('America/Denver');
+      repo.list.mockResolvedValue({ items: [], total: 0 });
+      await service.list({ page: 1, limit: 25, from: '2026-10-14', to: '2026-10-14' });
+      const [filter] = repo.list.mock.calls[0];
+      expect(filter.from).toEqual(new Date('2026-10-14T06:00:00.000Z'));
+      expect(filter.to).toEqual(new Date('2026-10-15T05:59:59.999Z'));
+    });
+
+    it('does not read the carrier zone without a date filter', async () => {
+      repo.list.mockResolvedValue({ items: [], total: 0 });
+      await service.list({ page: 1, limit: 25 });
+      expect(repo.carrierTimezone).not.toHaveBeenCalled();
+      expect(repo.list.mock.calls[0][0]).toMatchObject({ from: undefined, to: undefined });
+    });
+
+    it('the query DTO refuses from > to', () => {
+      expect(DvirListQueryDto.safeParse({ from: '2026-10-15', to: '2026-10-14' }).success).toBe(false);
+      expect(DvirListQueryDto.safeParse({ from: '2026-10-14', to: '2026-10-14' }).success).toBe(true);
+      expect(DvirListQueryDto.safeParse({ from: '2026-10-14' }).success).toBe(true);
+    });
+  });
+
   describe('mechanicSignOff (QA CODE-035)', () => {
     const dto = { mechanicName: 'Joe', repairStatus: 'REPAIRED' as const };
     const dvir = (over: Record<string, unknown> = {}) => ({ id: 'dvir_1', mechanicSignedAt: null, defects: [{ status: 'REPAIRED' }], ...over });
@@ -117,13 +143,13 @@ describe('DvirAdminService (TZ §5.10 / B-47 compliance)', () => {
     it('signs a DVIR whose defects are all resolved', async () => {
       repo.findWithDefects.mockResolvedValue(dvir() as never);
       await service.mechanicSignOff('dvir_1', dto);
-      expect(repo.update).toHaveBeenCalledWith({ id: 'dvir_1' }, expect.objectContaining({ repairStatus: 'REPAIRED', mechanicSignedAt: ANY_DATE }));
+      expect(repo.updateIf).toHaveBeenCalledWith('dvir_1', { mechanicSignedAt: null }, expect.objectContaining({ repairStatus: 'REPAIRED', mechanicSignedAt: ANY_DATE }));
     });
 
     it('refuses a second sign-off (409 DVIR_ALREADY_SIGNED)', async () => {
       repo.findWithDefects.mockResolvedValue(dvir({ mechanicSignedAt: new Date() }) as never);
       await expect(service.mechanicSignOff('dvir_1', dto)).rejects.toMatchObject({ status: 409, code: 'DVIR_ALREADY_SIGNED' });
-      expect(repo.update).not.toHaveBeenCalled();
+      expect(repo.updateIf).not.toHaveBeenCalled();
     });
 
     it.each([
@@ -137,13 +163,13 @@ describe('DvirAdminService (TZ §5.10 / B-47 compliance)', () => {
         status: 422,
         details: { repairStatus: ANY_STRING },
       });
-      expect(repo.update).not.toHaveBeenCalled();
+      expect(repo.updateIf).not.toHaveBeenCalled();
     });
 
     it('allows DEFERRED / NOT_REQUIRED while defects are still open', async () => {
       repo.findWithDefects.mockResolvedValue(dvir({ defects: [{ status: 'OPEN' }] }) as never);
       await service.mechanicSignOff('dvir_1', { mechanicName: 'Joe', repairStatus: 'DEFERRED' });
-      expect(repo.update).toHaveBeenCalled();
+      expect(repo.updateIf).toHaveBeenCalled();
     });
   });
 
@@ -161,18 +187,25 @@ describe('DvirAdminService (TZ §5.10 / B-47 compliance)', () => {
     it('records the review after the sign-off', async () => {
       repo.findWithDefects.mockResolvedValue(dvir() as never);
       await service.nextDriverReview('dvir_1', { reviewedAt: '2026-10-01T12:00:00.000Z' });
-      expect(repo.update).toHaveBeenCalledWith({ id: 'dvir_1' }, { nextDriverReviewedAt: new Date('2026-10-01T12:00:00.000Z') });
+      expect(repo.updateIf).toHaveBeenCalledWith('dvir_1', { nextDriverReviewedAt: null, mechanicSignedAt: { not: null } }, { nextDriverReviewedAt: new Date('2026-10-01T12:00:00.000Z') });
     });
 
     it('allows a defect-free DVIR to be reviewed without a sign-off', async () => {
       repo.findWithDefects.mockResolvedValue(dvir({ mechanicSignedAt: null, defects: [] }) as never);
       await service.nextDriverReview('dvir_1', {});
-      expect(repo.update).toHaveBeenCalled();
+      expect(repo.updateIf).toHaveBeenCalled();
     });
 
     it('refuses a review before the mechanic sign-off when defects were listed', async () => {
       repo.findWithDefects.mockResolvedValue(dvir({ mechanicSignedAt: null }) as never);
       await expect(service.nextDriverReview('dvir_1', {})).rejects.toMatchObject({ status: 409 });
+    });
+
+    it('BE-18 — a review that loses the race to a concurrent one is a 409, not an overwrite', async () => {
+      repo.findWithDefects.mockResolvedValue(dvir({ mechanicSignedAt: null, defects: [] }) as never);
+      repo.updateIf.mockResolvedValueOnce(null);
+      await expect(service.nextDriverReview('dvir_1', {})).rejects.toMatchObject({ status: 409 });
+      expect(repo.updateIf).toHaveBeenCalledWith('dvir_1', { nextDriverReviewedAt: null }, expect.anything());
     });
 
     it('refuses a second review', async () => {
@@ -189,8 +222,20 @@ describe('DvirAdminService (TZ §5.10 / B-47 compliance)', () => {
         status: 422,
         details: { reviewedAt: ANY_STRING },
       });
-      expect(repo.update).not.toHaveBeenCalled();
+      expect(repo.updateIf).not.toHaveBeenCalled();
     });
   });
 });
 
+
+describe('DvirAdminRepository.updateIf (BE-18)', () => {
+  it('writes only while the guard holds and returns null when it no longer does', async () => {
+    const dvir = { updateMany: jest.fn().mockResolvedValueOnce({ count: 1 }).mockResolvedValueOnce({ count: 0 }), findUnique: jest.fn().mockResolvedValue({ id: 'dvir_1' }) };
+    const repo = new DvirAdminRepository({ dvir } as never);
+    const data = { mechanicName: 'Joe' };
+    expect(await repo.updateIf('dvir_1', { mechanicSignedAt: null }, data)).toEqual({ id: 'dvir_1' });
+    expect(dvir.updateMany).toHaveBeenCalledWith({ where: { mechanicSignedAt: null, id: 'dvir_1' }, data });
+    expect(await repo.updateIf('dvir_1', { mechanicSignedAt: null }, data)).toBeNull();
+    expect(dvir.findUnique).toHaveBeenCalledTimes(1);
+  });
+});
