@@ -292,6 +292,24 @@ describe('ReportsService (TZ §15)', () => {
       schedules.findById.mockResolvedValueOnce(activity as never);
       await expect(service.updateSchedule('sch_1', { enabled: false }, noDvir)).resolves.toMatchObject({ id: 'sch_1' });
     });
+
+    it('BE-08 — listSchedules() hides DVIR / FMCSA_PACK / SAFETY schedules the caller may not open', async () => {
+      const { service, schedules } = build();
+      const rows = ['ACTIVITY', 'DVIR', 'FMCSA_PACK', 'SAFETY', 'IFTA'].map((reportType, i) => ({ id: `sch_${i}`, reportType }));
+      schedules.listAll.mockResolvedValue(rows as never);
+      expect((await service.listSchedules(noDvir)).map((s) => s.reportType)).toEqual(['ACTIVITY', 'IFTA']);
+      expect((await service.listSchedules(actor)).map((s) => s.reportType)).toEqual(['ACTIVITY', 'DVIR', 'FMCSA_PACK', 'SAFETY', 'IFTA']);
+    });
+
+    it('BE-08 — deleteSchedule() of an FMCSA_PACK schedule needs reportsTransfer READ', async () => {
+      const { service, schedules } = build();
+      schedules.findById.mockResolvedValueOnce({ id: 'sch_9', reportType: 'FMCSA_PACK' } as never);
+      await expect(service.deleteSchedule('sch_9', noDvir)).rejects.toMatchObject({ status: 403 });
+      expect(schedules.delete).not.toHaveBeenCalled();
+      schedules.findById.mockResolvedValueOnce({ id: 'sch_9', reportType: 'FMCSA_PACK' } as never);
+      await service.deleteSchedule('sch_9', actor);
+      expect(schedules.delete).toHaveBeenCalledWith({ id: 'sch_9' });
+    });
   });
 
   describe('CODE-015 — schedule params validated like generate()', () => {

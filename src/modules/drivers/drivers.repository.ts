@@ -97,9 +97,14 @@ export class DriversRepository extends BaseRepository<
 
   /** Live (not soft-deleted) driver only — `username` is unique among live rows via a partial
    * unique index (migration 20260927090000_soft_delete_partial_uniques), so a deleted driver's
-   * username is free for reuse. */
-  findByUsername(username: string): Promise<Driver | null> {
-    return this.prisma.driver.findFirst({ where: { username, deletedAt: null } });
+   * username is free for reuse. BE-20 — usernames are compared case-insensitively (literal, like
+   * unit numbers): an exact match first (so a legacy `JDoe` / `jdoe` pair still resolves each
+   * row), then a case-insensitive one. The DB index still compares the raw value. */
+  async findByUsername(username: string): Promise<Driver | null> {
+    return (
+      (await this.prisma.driver.findFirst({ where: { username, deletedAt: null } })) ??
+      (await this.prisma.driver.findFirst({ where: { username: equalsInsensitive(username), deletedAt: null } }))
+    );
   }
 
   /** §20 B-29/B-30 — `Driver.email` is unique among live rows (partial unique index); checked

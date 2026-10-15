@@ -5,9 +5,17 @@ import { findAdverseInvokedToday } from '../drivers/lib/adverse-driving';
 import type { LatestLocatedEvent, LatestTelemetry } from './live-fleet.mapper';
 
 /**
+ * LV-01 — first-pass lookback for the "latest row per vehicle" probes. A unit that reported in
+ * the last two days (every unit on the road) is answered from the newest monthly partition(s);
+ * only the rest pay for the unbounded probe. Changing it never changes the result, only the cost.
+ */
+export const RECENT_WINDOW_MS = 2 * 24 * 60 * 60 * 1000;
+
+/**
  * Reads for `GET /live/fleet`. Constant query count for the whole fleet (no N+1, tz.md §19):
  * one vehicle scan with its device + assigned driver, one LATERAL "latest fix per vehicle" on
- * `TelemetryPoint`, one on located `EldEvent`s, one "latest status/PC-YM record per driver".
+ * `TelemetryPoint`, one on located `EldEvent`s (each + one fallback pass only for units silent
+ * for 2 days, LV-01), one "latest status/PC-YM record per driver".
  * The LATERAL `LIMIT 1` probes ride the `(vehicleId, time)` / `(vehicleId, eventDateTime)` indexes.
  */
 @Injectable()
@@ -41,9 +49,27 @@ export class LiveFleetRepository {
    * Latest telemetry point per vehicle (speed / engine state), plus the latest point that carried
    * a GPS fix — PT SDK 6.11 points may have none, and a fix-less newest point must not blank the
    * map pin. Both probes ignore anything dated after `until` (device clock ahead).
+   *
+   * LV-01 — two passes with an identical result: first inside `[until - RECENT_WINDOW_MS, until]`,
+   * which lets Postgres prune the monthly `TelemetryPoint` partitions to the current one or two
+   * (an unbounded `ORDER BY time DESC LIMIT 1` probes EVERY partition, DEFAULT included, per
+   * vehicle); then, only for the vehicles missing a row or a fix in that window, unbounded. The
+   * fix probe rides `TelemetryPoint_vehicleId_time_fix_idx` (partial, fix rows only) instead of
+   * walking — with a heap fetch per row — over every fix-less point of the vehicle.
    */
   async latestTelemetry(vehicleIds: string[], until: Date): Promise<Map<string, LatestTelemetry>> {
     if (!vehicleIds.length) return new Map();
+    const since = new Date(until.getTime() - RECENT_WINDOW_MS);
+    const recent = await this.telemetryProbe(vehicleIds, until, since);
+    const result = new Map<string, LatestTelemetry>();
+    for (const [vehicleId, row] of recent) if (row.fixTime) result.set(vehicleId, row);
+    const missing = vehicleIds.filter((id) => !result.has(id));
+    if (missing.length) for (const [vehicleId, row] of await this.telemetryProbe(missing, until, null)) result.set(vehicleId, row);
+    return result;
+  }
+
+  private async telemetryProbe(vehicleIds: string[], until: Date, since: Date | null): Promise<Map<string, LatestTelemetry>> {
+    const from = since ? Prisma.sql`AND "time" >= ${since}` : Prisma.empty;
     const rows = await this.prisma.$queryRaw<Array<LatestTelemetry & { vehicleId: string }>>(Prisma.sql`
       SELECT v.id AS "vehicleId", t."time", p."time" AS "fixTime",
              p.latitude::float8 AS latitude, p.longitude::float8 AS longitude,
@@ -52,23 +78,34 @@ export class LiveFleetRepository {
       CROSS JOIN LATERAL (
         SELECT "time", "speedMph", "headingDeg", "odometerMi", "engineOn"
         FROM "TelemetryPoint"
-        WHERE "vehicleId" = v.id AND "time" <= ${until}
+        WHERE "vehicleId" = v.id AND "time" <= ${until} ${from}
         ORDER BY "time" DESC
         LIMIT 1
       ) t
       LEFT JOIN LATERAL (
         SELECT "time", latitude, longitude
         FROM "TelemetryPoint"
-        WHERE "vehicleId" = v.id AND "time" <= ${until} AND latitude IS NOT NULL AND longitude IS NOT NULL
+        WHERE "vehicleId" = v.id AND "time" <= ${until} ${from} AND latitude IS NOT NULL AND longitude IS NOT NULL
         ORDER BY "time" DESC
         LIMIT 1
       ) p ON true`);
     return new Map(rows.map(({ vehicleId, ...row }) => [vehicleId, row]));
   }
 
-  /** Latest active, located RODS record per vehicle — carries the §7 `locationName`. */
+  /**
+   * Latest active, located RODS record per vehicle — carries the §7 `locationName`. LV-01: same
+   * recent-window-then-unbounded two passes as `latestTelemetry` (monthly `EldEvent` partitions).
+   */
   async latestLocatedEvents(vehicleIds: string[], until: Date): Promise<Map<string, LatestLocatedEvent>> {
     if (!vehicleIds.length) return new Map();
+    const result = await this.locatedProbe(vehicleIds, until, new Date(until.getTime() - RECENT_WINDOW_MS));
+    const missing = vehicleIds.filter((id) => !result.has(id));
+    if (missing.length) for (const [vehicleId, row] of await this.locatedProbe(missing, until, null)) result.set(vehicleId, row);
+    return result;
+  }
+
+  private async locatedProbe(vehicleIds: string[], until: Date, since: Date | null): Promise<Map<string, LatestLocatedEvent>> {
+    const from = since ? Prisma.sql`AND "eventDateTime" >= ${since}` : Prisma.empty;
     const rows = await this.prisma.$queryRaw<Array<LatestLocatedEvent & { vehicleId: string }>>(Prisma.sql`
       SELECT v.id AS "vehicleId", e."eventDateTime", e.latitude::float8 AS latitude,
              e.longitude::float8 AS longitude, e."locationName"
@@ -77,7 +114,7 @@ export class LiveFleetRepository {
         SELECT "eventDateTime", latitude, longitude, "locationName"
         FROM "EldEvent"
         WHERE "vehicleId" = v.id AND "recordStatus" = 1 AND latitude IS NOT NULL
-          AND longitude IS NOT NULL AND "eventDateTime" <= ${until}
+          AND longitude IS NOT NULL AND "eventDateTime" <= ${until} ${from}
         ORDER BY "eventDateTime" DESC
         LIMIT 1
       ) e`);

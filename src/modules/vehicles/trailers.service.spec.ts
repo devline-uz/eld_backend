@@ -7,7 +7,7 @@ function makeTrailer(overrides: Partial<Record<string, unknown>> = {}) {
 }
 
 describe('TrailersService', () => {
-  let repo: jest.Mocked<Pick<TrailersRepository, 'list' | 'listAll' | 'findById' | 'findByNumber' | 'create' | 'update' | 'delete'>>;
+  let repo: jest.Mocked<Pick<TrailersRepository, 'list' | 'listAll' | 'findById' | 'findByNumber' | 'create' | 'update' | 'delete' | 'updateUnlessBooked'>>;
   let service: TrailersService;
 
   beforeEach(() => {
@@ -19,6 +19,7 @@ describe('TrailersService', () => {
       create: jest.fn(),
       update: jest.fn(),
       delete: jest.fn(),
+      updateUnlessBooked: jest.fn(),
     };
     service = new TrailersService(repo as unknown as TrailersRepository);
   });
@@ -117,21 +118,59 @@ describe('TrailersService', () => {
     });
   });
 
+  describe('update — BE-06 status change out of service', () => {
+    const openTrips = [{ id: 'trp_1', number: 'TRP-1001', status: 'IN_PROGRESS' }];
+
+    it.each(['OUT_OF_SERVICE', 'INACTIVE'])('%s with open trips is a 409 and writes nothing', async (status) => {
+      repo.findById.mockResolvedValue(makeTrailer() as never);
+      repo.updateUnlessBooked.mockResolvedValue({ updated: null, openTrips });
+      await expect(service.update('tr_1', { status } as never)).rejects.toMatchObject({ status: 409 });
+      expect(repo.updateUnlessBooked).toHaveBeenCalledWith('tr_1', { status });
+      expect(repo.update).not.toHaveBeenCalled();
+    });
+
+    it('out of service without open trips is written under the lock', async () => {
+      repo.findById.mockResolvedValue(makeTrailer() as never);
+      repo.updateUnlessBooked.mockResolvedValue({ updated: makeTrailer({ status: 'OUT_OF_SERVICE' }), openTrips: [] } as never);
+      await expect(service.update('tr_1', { status: 'OUT_OF_SERVICE' } as never)).resolves.toMatchObject({ status: 'OUT_OF_SERVICE' });
+    });
+
+    it('back to ACTIVE (or no status change) needs no open-trip check', async () => {
+      repo.findById.mockResolvedValue(makeTrailer({ status: 'OUT_OF_SERVICE' }) as never);
+      repo.update.mockResolvedValue(makeTrailer() as never);
+      await service.update('tr_1', { status: 'ACTIVE' } as never);
+      await service.update('tr_1', { status: 'OUT_OF_SERVICE', vin: 'V2' } as never);
+      expect(repo.updateUnlessBooked).not.toHaveBeenCalled();
+    });
+  });
+
   describe('remove', () => {
     it('throws when trailer missing', async () => {
       repo.findById.mockResolvedValue(null);
       await expect(service.remove('missing')).rejects.toThrow(AppException);
     });
 
-    it('soft-deletes (stamps deletedAt, never a hard delete)', async () => {
+    it('soft-deletes (stamps deletedAt, never a hard delete) under the trailer schedule lock', async () => {
       repo.findById.mockResolvedValue(makeTrailer() as never);
-      repo.update.mockResolvedValue(makeTrailer({ deletedAt: new Date() }) as never);
+      repo.updateUnlessBooked.mockResolvedValue({ updated: makeTrailer({ deletedAt: new Date() }), openTrips: [] } as never);
       await service.remove('tr_1');
-      const [where, data] = repo.update.mock.calls[0] as [unknown, { status: string; deletedAt: Date }];
-      expect(where).toEqual({ id: 'tr_1' });
+      const [id, data] = repo.updateUnlessBooked.mock.calls[0] as unknown as [string, { status: string; deletedAt: Date }];
+      expect(id).toBe('tr_1');
       expect(data.status).toBe('INACTIVE');
       expect(data.deletedAt).toBeInstanceOf(Date);
+      expect(repo.update).not.toHaveBeenCalled();
       expect(repo.delete).not.toHaveBeenCalled();
+    });
+
+    it('BE-06: 409 with details.openTrips when the trailer is still on open trips', async () => {
+      repo.findById.mockResolvedValue(makeTrailer() as never);
+      const openTrips = [{ id: 'trp_1', number: 'TRP-1001', status: 'ASSIGNED' }];
+      repo.updateUnlessBooked.mockResolvedValue({ updated: null, openTrips });
+      const err = await service.remove('tr_1').catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(AppException);
+      expect(err).toMatchObject({ status: 409 });
+      expect((err as AppException).getResponse()).toMatchObject({ details: { openTrips } });
+      expect(String((err as AppException).message)).toContain('TRP-1001');
     });
 
     it('404s when the trailer is already deleted', async () => {

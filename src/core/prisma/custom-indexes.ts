@@ -94,6 +94,18 @@ export const CUSTOM_INDEXES: readonly CustomIndex[] = [
     migration: '20261014210000_user_lockout_role_name_unique',
     why: 'role display name unique ignoring case and surrounding spaces (CODE-087, expression index)',
   },
+  {
+    name: 'TelemetryPoint_vehicleId_time_fix_idx',
+    table: 'TelemetryPoint',
+    migration: '20261015090000_live_fleet_latest_row_indexes',
+    why: 'latest telemetry point WITH a GPS fix per vehicle for GET /live/fleet (LV-01, partial index)',
+  },
+  {
+    name: 'EldEvent_driverId_eventDateTime_duty_idx',
+    table: 'EldEvent',
+    migration: '20261015090000_live_fleet_latest_row_indexes',
+    why: 'duty-status / PC-YM records (eventType 1, 3) per driver for the batched HOS clocks (LV-01, partial index)',
+  },
 ];
 
 export const CUSTOM_INDEX_NAMES: ReadonlySet<string> = new Set(CUSTOM_INDEXES.map((i) => i.name));

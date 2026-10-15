@@ -8,6 +8,7 @@ import { TRANSACTIONAL_MAIL, TransactionalMailPort } from '../core/mail/mail.por
 import { QUEUES } from '../core/queue/queue.constants';
 import { PrismaService } from '../core/prisma/prisma.service';
 import { AlertDeliveryRepository, AlertRulesRepository } from '../modules/notifications/notifications.repository';
+import { breakDueEpisode } from '../modules/notifications/lib/alert-events';
 import { evaluateAlertPolicy, startOfLocalDay } from '../modules/notifications/lib/alert-policy';
 import {
   deriveNotificationBody,
@@ -140,6 +141,10 @@ export class AlertProcessor extends WorkerHost {
     eventName: string,
   ): Promise<void> {
     const recipientKey = `${recipient.kind}:${recipient.id}`;
+    // BE-12 — a break-due rule matches every 5-minute step at or under its threshold; deliver it
+    // once per (rule, recipient, driver, break deadline) — the first step that matched wins.
+    const episode = breakDueEpisode(eventName, payload);
+    if (episode && (await this.deliveries.existsForBreakEpisode(rule.id, recipientKey, episode))) return;
     const zone = await this.resolveZone(recipient);
     const now = new Date();
     const throttle = rule.throttle as { perDriverPerDay?: number; cooldownMin?: number } | null | undefined;

@@ -5,6 +5,7 @@ import { ERROR_CODES } from '../../common/errors/codes';
 import { OffsetPage, parseSort, toOffsetPage } from '../../common/dto/list-query.dto';
 import { isReservedVirtualSerial } from '../carrier/virtual-eld.policy';
 import { ELD_OFFLINE_AFTER_MS, isEldOffline } from '../live/live-fleet.mapper';
+import { ELD_DEVICE_RETIRED_MESSAGE } from '../vehicles/lib/vehicle-uniques';
 import { VehiclesRepository } from '../vehicles/vehicles.repository';
 import {
   CreateDeviceDto,
@@ -188,6 +189,10 @@ export class DevicesService {
   /** Hard rule — one device per unit (`@@unique([vehicleId])` in the schema is the backstop). */
   async pair(id: string, dto: PairDeviceDto): Promise<DeviceView> {
     const device = await this.getRaw(id);
+    // FE-12 — a retired device stays in the inventory for its history but is never paired again.
+    if (device.status === 'RETIRED') {
+      throw new AppException(ERROR_CODES.DEVICE_RETIRED, ELD_DEVICE_RETIRED_MESSAGE, 409);
+    }
     const vehicle = await this.vehicles.findById({ id: dto.vehicleId });
     // BE-019 — a soft-deleted unit cannot take a device (web `POST /devices/:id/pair` only).
     if (!vehicle || vehicle.deletedAt) throw new AppException(ERROR_CODES.VEHICLE_NOT_FOUND, 'Vehicle not found.', 404);

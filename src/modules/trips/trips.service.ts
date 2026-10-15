@@ -372,15 +372,19 @@ export class TripsService {
     // CODE-024 — the write is guarded on the status read above, so a concurrent move (the driver
     // starting the trip, another dispatcher cancelling it) is a 409, never silently overwritten.
     const guard = { id, status: trip.status };
+    // FE-15 — an edited pickup / delivery window also moves the first PICKUP / last DELIVERY stop.
+    const stopTimes = timesChanged ? { pickupAt: dto.plannedStartAt, deliveryAt: dto.plannedEndAt } : undefined;
     const updated = await this.mapUpdateError(
       id,
       trip.status,
       checkWindow && this.hasHolder(holders) && (timesChanged || publishing || assigning || starting) && UNIT_SCHEDULED_STATUSES.includes(nextStatus)
         ? this.withScheduleLocks(holders, async (db) => {
             await this.assertHoldersFree(holders, checkWindow, id, db);
-            return this.repo.update(guard, data, db);
+            return stopTimes ? this.repo.update(guard, data, db, stopTimes) : this.repo.update(guard, data, db);
           })
-        : this.repo.update(guard, data),
+        : stopTimes
+          ? this.repo.update(guard, data, undefined, stopTimes)
+          : this.repo.update(guard, data),
     );
     if (nextStatus !== trip.status) {
       await this.publishStatusChanged(updated.id, updated.status, updated.etaAt);
@@ -581,7 +585,13 @@ export class TripsService {
       await this.assertDriverAssignable(holders.driverId, db);
       await this.assertDriverFree(holders.driverId, window, excludeTripId, db);
     }
-    if (holders.trailerId) await this.assertTrailerFree(holders.trailerId, window, excludeTripId, db);
+    if (holders.trailerId) {
+      // BE-06 — trailer delete / out-of-service takes `trip-trailer:<id>` and re-checks open trips
+      // (`TrailersRepository.updateUnlessBooked`); re-read the trailer under that same lock so a
+      // write that committed first is refused with the pre-check's 422 / 409.
+      await this.assertTrailerAssignable(holders.trailerId, db);
+      await this.assertTrailerFree(holders.trailerId, window, excludeTripId, db);
+    }
   }
 
   /**
@@ -672,8 +682,8 @@ export class TripsService {
 
   /** `Trip.trailerId` has no FK, so an unknown id would otherwise be stored silently; a
    * soft-deleted trailer stays readable on old trips but cannot be put on a trip anymore. */
-  private async assertTrailerAssignable(trailerId: string): Promise<void> {
-    const trailer = await this.repo.findTrailer(trailerId);
+  private async assertTrailerAssignable(trailerId: string, db?: Prisma.TransactionClient): Promise<void> {
+    const trailer = await this.repo.findTrailer(trailerId, db);
     if (!trailer) {
       throw new AppException(ERROR_CODES.TRAILER_NOT_FOUND, 'Trailer not found.', 422, { trailerId: 'Trailer not found.' });
     }

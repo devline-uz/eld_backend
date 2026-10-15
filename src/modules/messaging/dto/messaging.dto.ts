@@ -3,6 +3,18 @@ import { MESSAGE_AUDIO_MAX_DURATION_MS } from '../message-audio';
 
 export const ConversationTypeEnum = z.enum(['DIRECT', 'GROUP', 'BROADCAST']);
 
+/** BE-24 — the largest `GET /conversations` page (also the default, so a client that never pages
+ * keeps seeing its newest 500 conversations; a broadcast creates one conversation per driver). */
+export const CONVERSATIONS_PAGE_MAX = 500;
+
+/** BE-24 — `GET /conversations?limit&cursor`: newest activity first; `cursor` is the `nextCursor`
+ * (a conversation id) of the previous page. */
+export const ConversationListQueryDto = z.object({
+  limit: z.coerce.number().int().min(1).max(CONVERSATIONS_PAGE_MAX).default(CONVERSATIONS_PAGE_MAX),
+  cursor: z.string().uuid().optional(),
+});
+export type ConversationListQueryDto = z.infer<typeof ConversationListQueryDto>;
+
 /** TZ §11.5 `POST /conversations` — "Messages" sidebar entry / "Message — chatni ochadi". */
 export const CreateConversationDto = z.object({
   type: ConversationTypeEnum.default('DIRECT'),

@@ -30,11 +30,24 @@ export function ruleEventsFor(jobName: string, payload: Record<string, unknown> 
 /**
  * `hos-recalc` re-reads a still-driving driver every 5 minutes (`hos-open-driving` sweep) and
  * raises `alert.break_due` once per 5-minute step of the countdown. A rule "break due within M
- * minutes" fires on the ONE step that crosses M, so it is delivered once per break, not every sweep.
+ * minutes" matches every step at or under M (BE-12 — the recalc samples are not guaranteed to land
+ * inside one 5-minute window, so matching only the step that crosses M could skip the alert), and
+ * `AlertProcessor` delivers it once per break ({@link breakDueEpisode}), not every sweep.
  */
 export const BREAK_DUE_STEP_MIN = 5;
 /** The editor rule without `params.minutes` (and the system default) means "within 30 minutes". */
 export const BREAK_DUE_DEFAULT_MIN = 30;
+
+/**
+ * BE-12 — the break a `alert.break_*` job is about: (driver, break deadline). `AlertProcessor`
+ * delivers a rule to a recipient once per episode, whichever step crossed the threshold first.
+ * Null for any other job, or a payload without both keys (nothing to dedupe on).
+ */
+export function breakDueEpisode(jobName: string, payload: Record<string, unknown>): { driverId: string; nextBreakDueAt: string } | null {
+  if (!jobName.startsWith('alert.break_')) return null;
+  const { driverId, nextBreakDueAt } = payload;
+  return typeof driverId === 'string' && typeof nextBreakDueAt === 'string' ? { driverId, nextBreakDueAt } : null;
+}
 
 export interface RuleCondition {
   event: string;
@@ -56,7 +69,7 @@ export function conditionParamsMatch(condition: RuleCondition, payload: Record<s
     const left = num(payload.minutesUntilBreak);
     if (left === undefined) return true;
     const threshold = minutes ?? BREAK_DUE_DEFAULT_MIN;
-    return left <= threshold && left > threshold - BREAK_DUE_STEP_MIN;
+    return left <= threshold;
   }
   if (minutes === undefined) return true;
   if (condition.event === 'device.offline') {

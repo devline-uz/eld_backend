@@ -170,8 +170,20 @@ describe('TripsService — trailer must be live (soft-deleted trailers)', () => 
   it('create stores a live trailerId', async () => {
     const { service, repo } = buildService();
     await service.create({ number: 'TRP-11', trailerId: TRL, plannedStartAt: new Date('2026-10-10T10:00:00Z'), plannedEndAt: new Date('2026-10-10T18:00:00Z'), draft: false }, 'usr_1');
-    expect(repo.findTrailer).toHaveBeenCalledWith(TRL);
+    expect(repo.findTrailer).toHaveBeenCalledWith(TRL, undefined);
     expect((repo.createWithStops.mock.calls[0][0] as Record<string, unknown>).trailerId).toBe(TRL);
+  });
+
+  it('BE-06 — re-reads the trailer under its schedule lock: a delete that won the race is a 422, nothing written', async () => {
+    const { service, repo } = buildService();
+    repo.findTrailer
+      .mockResolvedValueOnce({ id: TRL, status: 'ACTIVE', deletedAt: null })
+      .mockResolvedValueOnce({ id: TRL, status: 'INACTIVE', deletedAt: new Date('2026-10-01T00:00:00Z') });
+    await expect(
+      service.create({ number: 'TRP-15', trailerId: TRL, plannedStartAt: new Date('2026-10-10T10:00:00Z'), plannedEndAt: new Date('2026-10-10T18:00:00Z'), draft: false }, 'usr_1'),
+    ).rejects.toMatchObject({ code: 'TRAILER_NOT_FOUND', status: 422 });
+    expect(repo.findTrailer).toHaveBeenLastCalledWith(TRL, 'tx');
+    expect(repo.createWithStops).not.toHaveBeenCalled();
   });
 
   it('create rejects a soft-deleted trailerId with 422 TRAILER_NOT_FOUND and writes nothing', async () => {
@@ -391,7 +403,7 @@ describe('TripsService — unit schedule overlap (web panel)', () => {
     repo.findUnitScheduleCandidates.mockResolvedValueOnce([other({ id: 'trp_1', number: 'TRP-1' })]);
     await service.update('trp_1', { plannedEndAt: at(16) });
     expect(repo.findUnitScheduleCandidates).toHaveBeenCalledWith(VEH, { start: at(10), end: at(16) }, 'trp_1', 'tx');
-    expect(repo.update).toHaveBeenCalledWith(expect.objectContaining({ id: 'trp_1' }), expect.anything(), 'tx');
+    expect(repo.update).toHaveBeenCalledWith(expect.objectContaining({ id: 'trp_1' }), expect.anything(), 'tx', { pickupAt: undefined, deliveryAt: at(16) });
   });
 
   it('update rejects a moved range that overlaps another trip on the unit', async () => {
@@ -641,7 +653,7 @@ describe('TripsService — driver and trailer overlap (TRIP_SCHEDULE_CONFLICT)',
       repo[finder].mockResolvedValueOnce([other({ id: 'trp_1', number: 'TRP-1' })]);
       await service.update('trp_1', { plannedEndAt: at(16) });
       expect(repo[finder]).toHaveBeenCalledWith(ID, { start: at(10), end: at(16) }, 'trp_1', 'tx');
-      expect(repo.update).toHaveBeenCalledWith(expect.objectContaining({ id: 'trp_1' }), expect.anything(), 'tx');
+      expect(repo.update).toHaveBeenCalledWith(expect.objectContaining({ id: 'trp_1' }), expect.anything(), 'tx', { pickupAt: undefined, deliveryAt: at(16) });
     });
 
     it('update rejects a moved range that overlaps another trip', async () => {
@@ -1177,5 +1189,32 @@ describe('TripsService — status-guarded writes (CODE-024)', () => {
     repo.withDriverScheduleLock.mockRejectedValueOnce(gone());
     repo.findById.mockResolvedValueOnce(trip).mockResolvedValueOnce({ ...trip, status: 'IN_PROGRESS' });
     await expect(service.assign('trp_1', { driverId: DRV, notify: false })).rejects.toMatchObject({ code: 'CONFLICT', status: 409 });
+  });
+});
+
+describe('TripsService — edited window moves the endpoint stops (FE-15)', () => {
+  const base = { id: 'trp_1', status: 'PLANNED', driverId: null, vehicleId: null, trailerId: null, etaAt: null, plannedStartAt: new Date('2026-10-20T08:00:00Z'), plannedEndAt: new Date('2026-10-21T08:00:00Z') };
+
+  it('passes the new planned start / end as the pickup / delivery stop times', async () => {
+    const { service, repo } = buildService(base);
+    const pickupAt = new Date('2026-10-22T08:00:00Z');
+    const deliveryAt = new Date('2026-10-23T08:00:00Z');
+    await service.update('trp_1', { plannedStartAt: pickupAt, plannedEndAt: deliveryAt });
+    expect((repo.update.mock.calls[0] as unknown[])[3]).toEqual({ pickupAt, deliveryAt });
+  });
+
+  it('moves only the pickup when only the start changes, inside the schedule-lock transaction', async () => {
+    const { service, repo } = buildService({ ...base, vehicleId: 'veh_1' });
+    const pickupAt = new Date('2026-10-20T10:00:00Z');
+    await service.update('trp_1', { plannedStartAt: pickupAt });
+    const [, , db, stopTimes] = repo.update.mock.calls[0] as unknown[];
+    expect(db).toBe('tx');
+    expect(stopTimes).toEqual({ pickupAt, deliveryAt: undefined });
+  });
+
+  it('does not touch stops when the window is not edited', async () => {
+    const { service, repo } = buildService(base);
+    await service.update('trp_1', { notes: 'x' });
+    expect((repo.update.mock.calls[0] as unknown[])[3]).toBeUndefined();
   });
 });

@@ -83,6 +83,12 @@ export class HosRecalcRepository extends BaseRepository<
     return this.prisma.driver.findUnique({ where: { id: driverId } });
   }
 
+  /** FE-01 — the carrier (office) time zone HOS alert text is written in; null when unset. */
+  async carrierTimezone(): Promise<string | null> {
+    const carrier = await this.prisma.carrier.findFirst({ select: { timezone: true } });
+    return carrier?.timezone ?? null;
+  }
+
   /**
    * §5.5 — the engine input, ordered; the partition key (`eventDateTime`) drives the scan.
    * CODE-006 — active records PLUS the "Inactive — Changed" markers (`recordStatus = 2`): a record

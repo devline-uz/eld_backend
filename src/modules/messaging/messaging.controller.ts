@@ -31,6 +31,7 @@ import type { ContextUser } from '../../core/context/request-context';
 import { AppException } from '../../common/errors/app.exception';
 import {
   BroadcastMessageDto,
+  ConversationListQueryDto,
   CreateConversationDto,
   SendAudioMessageDto,
   SendMessageDto,
@@ -58,17 +59,20 @@ export class MessagingController {
 
   @Get('conversations')
   @Perm('messaging', 'READ')
-  @ApiOperation({ summary: "Lists the caller's conversations." })
+  @ApiQuery({ name: 'limit', required: false, description: 'BE-24 — page size, 1..500 (default 500).' })
+  @ApiQuery({ name: 'cursor', required: false, description: 'BE-24 — `nextCursor` of the previous page.' })
+  @ApiOperation({ summary: "Lists the caller's conversations, newest activity first, one bounded page (BE-24)." })
   @ApiOkResponse({
     schema: {
       example: {
         items: [{ id: 'cnv_1', type: 'DIRECT', lastMessageAt: '2026-09-11T15:00:00.000Z' }],
+        nextCursor: null,
       },
     },
   })
   @ApiStandardErrors()
-  listConversations(@CurrentUser() actor: ContextUser) {
-    return this.messaging.listConversations(actor);
+  listConversations(@CurrentUser() actor: ContextUser, @Query(zodBody(ConversationListQueryDto)) query: ConversationListQueryDto) {
+    return this.messaging.listConversations(actor, query);
   }
 
   @Post('conversations')

@@ -10,11 +10,11 @@ describe('DashboardService — reuses each feature module\'s own service via Pro
   const liveFleet = {
     snapshot: jest.fn().mockResolvedValue({
       items: [
-        { vehicleId: 'veh_1', dutyStatus: 'DRIVING', driverId: 'drv_1', driverDutyStatus: 'DRIVING', connectivity: 'ONLINE' },
-        { vehicleId: 'veh_2', dutyStatus: 'ON_DUTY', driverId: 'drv_2', driverDutyStatus: 'ON_DUTY', connectivity: 'ONLINE' },
-        { vehicleId: 'veh_3', dutyStatus: 'IDLE', driverId: 'drv_3', driverDutyStatus: 'ON_DUTY', connectivity: 'ONLINE' },
-        { vehicleId: 'veh_4', dutyStatus: 'ELD_OFFLINE', driverId: null, driverDutyStatus: null, connectivity: 'ELD_OFFLINE' },
-        { vehicleId: 'veh_5', dutyStatus: 'DRIVING', isStale: true, driverId: 'drv_5', driverDutyStatus: 'DRIVING', connectivity: 'ONLINE' },
+        { vehicleId: 'veh_1', dutyStatus: 'DRIVING', driverId: 'drv_1', driverDutyStatus: 'DRIVING', connectivity: 'ONLINE', recordStatus: 'ACTIVE' },
+        { vehicleId: 'veh_2', dutyStatus: 'ON_DUTY', driverId: 'drv_2', driverDutyStatus: 'ON_DUTY', connectivity: 'ONLINE', recordStatus: 'ACTIVE' },
+        { vehicleId: 'veh_3', dutyStatus: 'IDLE', driverId: 'drv_3', driverDutyStatus: 'ON_DUTY', connectivity: 'ONLINE', recordStatus: 'ACTIVE' },
+        { vehicleId: 'veh_4', dutyStatus: 'ELD_OFFLINE', driverId: null, driverDutyStatus: null, connectivity: 'ELD_OFFLINE', recordStatus: 'ACTIVE' },
+        { vehicleId: 'veh_5', dutyStatus: 'DRIVING', isStale: true, driverId: 'drv_5', driverDutyStatus: 'DRIVING', connectivity: 'ONLINE', recordStatus: 'ACTIVE' },
       ],
       generatedAt: '2026-09-16T15:39:10.000Z',
     }),
@@ -100,21 +100,23 @@ describe('DashboardService — reuses each feature module\'s own service via Pro
     liveFleet.snapshot.mockResolvedValueOnce({
       items: [
         // The live repro: on-duty / driving drivers whose ELD is stale or whose unit is out of service.
-        { vehicleId: 'v1', driverId: 'd1', dutyStatus: 'ELD_OFFLINE', isStale: true, driverDutyStatus: 'DRIVING', connectivity: 'ELD_OFFLINE' },
-        { vehicleId: 'v2', driverId: 'd2', dutyStatus: 'ELD_OFFLINE', isStale: true, driverDutyStatus: 'ON_DUTY', connectivity: 'ELD_OFFLINE' },
-        { vehicleId: 'v3', driverId: 'd3', dutyStatus: 'INACTIVE', driverDutyStatus: 'ON_DUTY', connectivity: 'ELD_OFFLINE' },
+        { vehicleId: 'v1', driverId: 'd1', dutyStatus: 'ELD_OFFLINE', isStale: true, driverDutyStatus: 'DRIVING', connectivity: 'ELD_OFFLINE', recordStatus: 'ACTIVE' },
+        { vehicleId: 'v2', driverId: 'd2', dutyStatus: 'ELD_OFFLINE', isStale: true, driverDutyStatus: 'ON_DUTY', connectivity: 'ELD_OFFLINE', recordStatus: 'ACTIVE' },
+        // BE-04 — an out-of-service unit with a silent ELD is not counted as "ELD offline".
+        { vehicleId: 'v3', driverId: 'd3', dutyStatus: 'INACTIVE', driverDutyStatus: 'ON_DUTY', connectivity: 'ELD_OFFLINE', recordStatus: 'OUT_OF_SERVICE' },
+        { vehicleId: 'v12', driverId: null, dutyStatus: 'INACTIVE', driverDutyStatus: null, connectivity: 'ELD_OFFLINE', recordStatus: 'INACTIVE' },
         // Live markers derived from ON / OFF: idle + yard move are on duty, PC is off duty.
-        { vehicleId: 'v4', driverId: 'd4', dutyStatus: 'IDLE', driverDutyStatus: 'ON_DUTY', connectivity: 'ONLINE' },
-        { vehicleId: 'v5', driverId: 'd5', dutyStatus: 'YARD_MOVE', driverDutyStatus: 'ON_DUTY', connectivity: 'ONLINE' },
-        { vehicleId: 'v6', driverId: 'd6', dutyStatus: 'PERSONAL_CONVEYANCE', driverDutyStatus: 'OFF_DUTY', connectivity: 'ONLINE' },
+        { vehicleId: 'v4', driverId: 'd4', dutyStatus: 'IDLE', driverDutyStatus: 'ON_DUTY', connectivity: 'ONLINE', recordStatus: 'ACTIVE' },
+        { vehicleId: 'v5', driverId: 'd5', dutyStatus: 'YARD_MOVE', driverDutyStatus: 'ON_DUTY', connectivity: 'ONLINE', recordStatus: 'ACTIVE' },
+        { vehicleId: 'v6', driverId: 'd6', dutyStatus: 'PERSONAL_CONVEYANCE', driverDutyStatus: 'OFF_DUTY', connectivity: 'ONLINE', recordStatus: 'ACTIVE' },
         // Off duty with a silent ELD: still off duty, but its ELD IS offline.
-        { vehicleId: 'v7', driverId: 'd7', dutyStatus: 'OFF_DUTY', driverDutyStatus: 'OFF_DUTY', connectivity: 'ELD_OFFLINE' },
-        { vehicleId: 'v8', driverId: 'd8', dutyStatus: 'SLEEPER', driverDutyStatus: 'SLEEPER', connectivity: 'ONLINE' },
+        { vehicleId: 'v7', driverId: 'd7', dutyStatus: 'OFF_DUTY', driverDutyStatus: 'OFF_DUTY', connectivity: 'ELD_OFFLINE', recordStatus: 'ACTIVE' },
+        { vehicleId: 'v8', driverId: 'd8', dutyStatus: 'SLEEPER', driverDutyStatus: 'SLEEPER', connectivity: 'ONLINE', recordStatus: 'ACTIVE' },
         // HOS state unavailable -> UNKNOWN slice, never silently dropped.
-        { vehicleId: 'v9', driverId: 'd9', dutyStatus: 'OFF_DUTY', driverDutyStatus: null, connectivity: 'ONLINE' },
+        { vehicleId: 'v9', driverId: 'd9', dutyStatus: 'OFF_DUTY', driverDutyStatus: null, connectivity: 'ONLINE', recordStatus: 'ACTIVE' },
         // No driver: not a driver, but its silent ELD still counts as offline.
-        { vehicleId: 'v10', driverId: null, dutyStatus: 'ELD_OFFLINE', driverDutyStatus: null, connectivity: 'ELD_OFFLINE' },
-        { vehicleId: 'v11', driverId: null, dutyStatus: 'INACTIVE', driverDutyStatus: null, connectivity: 'NO_DEVICE' },
+        { vehicleId: 'v10', driverId: null, dutyStatus: 'ELD_OFFLINE', driverDutyStatus: null, connectivity: 'ELD_OFFLINE', recordStatus: 'ACTIVE' },
+        { vehicleId: 'v11', driverId: null, dutyStatus: 'INACTIVE', driverDutyStatus: null, connectivity: 'NO_DEVICE', recordStatus: 'INACTIVE' },
       ],
       generatedAt: '2026-09-16T15:39:10.000Z',
     });
@@ -126,7 +128,8 @@ describe('DashboardService — reuses each feature module\'s own service via Pro
     expect(counts.driverDuty).toEqual({ assigned: 9, DRIVING: 1, ON_DUTY: 4, SLEEPER: 1, OFF_DUTY: 2, UNKNOWN: 1 });
     const { assigned, ...slices } = counts.driverDuty;
     expect(Object.values(slices).reduce((a, b) => a + b, 0)).toBe(assigned);
-    expect(counts.offline).toBe(5);
+    // v1, v2, v7, v10 — ACTIVE units only (v3 OUT_OF_SERVICE and v12 INACTIVE are left out).
+    expect(counts.offline).toBe(4);
   });
 
   it('countDriverDuty skips units without a driver and always sums to `assigned`', () => {

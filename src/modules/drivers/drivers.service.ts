@@ -23,6 +23,8 @@ import {
   DRIVER_DOCUMENT_CONTENT_TYPES,
   CreateDriverDto,
   DriverListQueryDto,
+  IMPORT_CREATE_DEFAULTS,
+  ImportDriverRowDto,
   ImportDriversDto,
   ImportDriversOptionsDto,
   UpdateDriverDto,
@@ -44,6 +46,15 @@ export type DriverView = Omit<Driver, 'passwordHash'>;
 const DRIVER_DOCUMENT_UPLOAD_TTL_SEC = 15 * 60;
 
 const SORTABLE_FIELDS = ['username', 'firstName', 'lastName', 'cdlNumber', 'status', 'registeredAt'] as const;
+
+/** BE-09 — a NEW import row takes `CreateDriverDto`'s defaults for the settings it omits (an UPDATE row never does). */
+function withCreateDefaults(row: ImportDriverRowDto): CreateDriverDto {
+  const out: Record<string, unknown> = { ...row };
+  for (const [key, value] of Object.entries(IMPORT_CREATE_DEFAULTS)) {
+    if (out[key] === undefined) out[key] = value;
+  }
+  return out as CreateDriverDto;
+}
 
 const DEFAULT_IMPORT_OPTIONS: ImportDriversOptionsDto = {
   duplicateStrategy: 'UPDATE',
@@ -186,10 +197,18 @@ export class DriversService {
     if (values.username !== undefined) {
       const existing = await this.drivers.findByUsername(values.username);
       if (existing && existing.id !== exceptDriverId) throw driverConflict('username');
+      // BE-20 — a username that is another driver's email would make login by email ambiguous.
+      if (values.username.includes('@')) {
+        const byEmail = await this.drivers.findByEmail(values.username);
+        if (byEmail && byEmail.id !== exceptDriverId) throw driverConflict('username');
+      }
     }
     if (values.email) {
       const existing = await this.drivers.findByEmail(values.email);
       if (existing && existing.id !== exceptDriverId) throw driverConflict('email');
+      // BE-20 — nor may an email be another driver's username.
+      const byUsername = await this.drivers.findByUsername(values.email);
+      if (byUsername && byUsername.id !== exceptDriverId) throw driverConflict('email');
       // Another driver's still-valid pending change has reserved this address.
       if (await this.drivers.findLiveIdByPendingEmail(values.email, this.emailChange.pendingCutoff(), exceptDriverId)) {
         throw driverConflict('email');
@@ -378,7 +397,7 @@ export class DriversService {
 
   /**
    * §20 B-69 — `options` actually change the result: `duplicateStrategy` picks SKIP / UPDATE /
-   * CREATE per row, `defaultHomeTerminalName` backfills a missing `homeTerminalName`,
+   * CREATE per row, `defaultHomeTerminalName` backfills a missing `homeTerminalName` on newly-created rows,
    * `applyDefaultExemptions` turns on the standard HOS exception set for newly-created rows,
    * `sendInvitations` fans out one invite per newly-created row. No `options` = prior behavior
    * (upsert by `username`, no invitations).
@@ -389,7 +408,7 @@ export class DriversService {
     // UI-005 — read once per import; only NEW rows without a ruleset take it.
     let carrierRuleset: Promise<HosRuleset | undefined> | null = null;
     for (let index = 0; index < dto.drivers.length; index += 1) {
-      const row = this.applyImportDefaults(dto.drivers[index], options);
+      const row = dto.drivers[index];
       try {
         const existing = await this.drivers.findByUsername(row.username.trim());
         if (existing) {
@@ -426,7 +445,8 @@ export class DriversService {
           if (leaving) await this.cutOffAppAccess(existing.id);
           summary.updated += 1;
         } else {
-          const data = this.normalizeCreate(row);
+          // BE-09 — the import options fill in NEW rows only; an UPDATE row keeps what it omits.
+          const data = this.normalizeCreate(withCreateDefaults(this.applyImportDefaults(row, options)));
           // The username was just looked up (no live driver has it) — check the rest.
           await this.assertUniquesAvailable({ ...data, username: undefined });
           await this.assertVehicleAssignable(row.assignedVehicleId);
@@ -449,7 +469,7 @@ export class DriversService {
     return summary;
   }
 
-  private applyImportDefaults(row: CreateDriverDto, options: ImportDriversOptionsDto): CreateDriverDto {
+  private applyImportDefaults(row: ImportDriverRowDto, options: ImportDriversOptionsDto): ImportDriverRowDto {
     return {
       ...row,
       homeTerminalName: row.homeTerminalName || options.defaultHomeTerminalName || row.homeTerminalName,

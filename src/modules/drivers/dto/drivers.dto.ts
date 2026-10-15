@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { CalendarDaySchema } from '../../../common/dto/calendar-day.dto';
 import { MAX_LIST_PAGE } from '../../../common/dto/list-query.dto';
 import { RegionCodeSchema } from '../../../common/dto/region-code.dto';
 import { IanaTimezoneSchema } from '../../../common/dto/timezone.dto';
@@ -120,8 +121,38 @@ export const ImportDriversOptionsDto = z.object({
 });
 export type ImportDriversOptionsDto = z.infer<typeof ImportDriversOptionsDto>;
 
+/**
+ * BE-09 — an import row is a `CreateDriverDto` WITHOUT the create-time defaults: a re-imported
+ * (UPDATE) row must leave the settings it omits unchanged, not reset them to `false` /
+ * America/New_York (which moves the RODS day boundary and changes HOS results). A NEW row gets
+ * {@link IMPORT_CREATE_DEFAULTS} — the very defaults `CreateDriverDto` applies — in the service.
+ */
+export const ImportDriverRowDto = CreateDriverDto.extend({
+  homeTerminalTimezone: IanaTimezoneSchema.optional(),
+  allowPersonalConveyance: z.boolean().optional(),
+  allowYardMove: z.boolean().optional(),
+  adverseDrivingEnabled: z.boolean().optional(),
+  shortHaulException: z.boolean().optional(),
+  splitSleeperEnabled: z.boolean().optional(),
+  eldExempt: z.boolean().optional(),
+  sendInvitation: z.boolean().optional(),
+});
+export type ImportDriverRowDto = z.infer<typeof ImportDriverRowDto>;
+
+/** BE-09 — `CreateDriverDto`'s own defaults for the keys an import row may omit (single source). */
+export const IMPORT_CREATE_DEFAULTS = CreateDriverDto.pick({
+  homeTerminalTimezone: true,
+  allowPersonalConveyance: true,
+  allowYardMove: true,
+  adverseDrivingEnabled: true,
+  shortHaulException: true,
+  splitSleeperEnabled: true,
+  eldExempt: true,
+  sendInvitation: true,
+}).parse({});
+
 export const ImportDriversDto = z.object({
-  drivers: z.array(CreateDriverDto).min(1).max(1000),
+  drivers: z.array(ImportDriverRowDto).min(1).max(1000),
   options: ImportDriversOptionsDto.optional(),
 });
 export type ImportDriversDto = z.infer<typeof ImportDriversDto>;
@@ -159,7 +190,7 @@ export type VerifyDriverEmailDto = z.infer<typeof VerifyDriverEmailDto>;
 /** BUG-001 — `POST /drivers/:id/hos/adverse-driving`: invoke §395.1(b)(1) for one RODS day. */
 export const InvokeAdverseDrivingDto = z.object({
   /** RODS day (home-terminal timezone); defaults to the driver's current day. */
-  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD').optional(),
+  date: CalendarDaySchema.optional(),
   /** §395.1(b)(1) — the required note describing the adverse conditions encountered. */
   annotation: z.string().trim().min(4).max(255),
 });

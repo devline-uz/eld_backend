@@ -77,6 +77,10 @@ export const ERROR_CODES = {
   VEHICLE_GROUP_NOT_FOUND: 'VEHICLE_GROUP_NOT_FOUND',
   DEVICE_NOT_FOUND: 'DEVICE_NOT_FOUND',
   DEVICE_ALREADY_PAIRED: 'DEVICE_ALREADY_PAIRED',
+  /** FE-12 — a RETIRED device cannot be paired to a unit (`POST /devices/:id/pair`, or the
+   * `deviceId` serial on `POST /vehicles` / `PATCH /vehicles/:id`). 409; the vehicle form gets
+   * `details: { eldSerial }`. */
+  DEVICE_RETIRED: 'DEVICE_RETIRED',
   /** MG-BLE-1/2 — `POST /mobile/device/mac`: the device already has a different BLE MAC on record
    * (or the reported MAC belongs to another device). 409; back office is alerted
    * (`alert.device_mac_mismatch`) and the attempt is audited. Pairing stays back-office only. */

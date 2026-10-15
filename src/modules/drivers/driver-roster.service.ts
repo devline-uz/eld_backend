@@ -182,7 +182,8 @@ export class DriverRosterService {
 
   async clocks(driverId: string, now: Date = new Date()): Promise<DriverHosClocks> {
     const row = await this.drivers.findById({ id: driverId });
-    if (!row) throw new AppException(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.', 404);
+    // BE-16 — a soft-deleted driver is gone for the web panel.
+    if (!row || row.deletedAt) throw new AppException(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.', 404);
     // BUG-001 — `adverseDrivingEnabled` is the permission; the limits grow only on an invoked day.
     const [driver] = withEffectiveAdverse([row], await this.drivers.findAdverseInvokedToday([row], now));
     const states = await this.hos.computeCurrentStates(this.hosComputable([driver]), now);
@@ -221,7 +222,8 @@ export class DriverRosterService {
    */
   async invokeAdverseDriving(driverId: string, dto: InvokeAdverseDrivingDto, actor: ContextUser | undefined, now: Date = new Date()) {
     const driver = await this.drivers.findById({ id: driverId });
-    if (!driver) throw new AppException(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.', 404);
+    // BE-16 — never write an invocation for a soft-deleted driver.
+    if (!driver || driver.deletedAt) throw new AppException(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.', 404);
     if (!driver.adverseDrivingEnabled) {
       throw AppException.unprocessable(ERROR_CODES.VALIDATION_FAILED, 'Adverse driving is not enabled for this driver.', {
         adverseDrivingEnabled: 'Enable the adverse driving exception on the driver first.',

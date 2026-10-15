@@ -108,6 +108,20 @@ describe('Drivers lookups are literal', () => {
     expect(await auth.findByUsernameOrEmail('j_hn@x.com')).toBeNull();
     expect((await auth.findByUsernameOrEmail('john'))?.id).toBe('d1');
   });
+
+  it('BE-20 — admin username lookups are case-insensitive but literal; an exact username wins', async () => {
+    const rows = [
+      { id: 'd1', username: 'JDoe', email: 'other@x.com', deletedAt: null },
+      { id: 'd2', username: 'jdoe', email: null, deletedAt: null },
+      { id: 'd3', username: 'mary', email: 'jdoe2@x.com', deletedAt: null },
+      { id: 'd4', username: 'jdoe2@x.com', email: null, deletedAt: null },
+    ];
+    const drivers = new DriversRepository({ driver: fakeLikeTable(rows) } as never);
+    expect((await drivers.findByUsername('JDOE'))?.id).toBe('d1');
+    expect((await drivers.findByUsername('jdoe'))?.id).toBe('d2');
+    expect((await drivers.findByUsername('MARY'))?.id).toBe('d3');
+    expect(await drivers.findByUsername('m_ry')).toBeNull();
+  });
 });
 
 describe('Users email lookups are literal', () => {

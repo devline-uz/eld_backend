@@ -201,6 +201,21 @@ describe('HosStateService.submit', () => {
     });
   });
 
+  it('BE-11 — alerts once per drift episode, and again only after a clean comparison', async () => {
+    const { service, alertQueue, sentry, events } = build();
+    const drifting = dto({ state: { ...dto().state, shiftRemainingSec: 0 } });
+    await service.submit('driver-1', drifting, NOW);
+    await service.submit('driver-1', drifting, NOW);
+    await service.submit('driver-1', drifting, NOW);
+    expect(alertQueue.add).toHaveBeenCalledTimes(1);
+    expect(sentry.capture).toHaveBeenCalledTimes(1);
+    expect(events.publish).toHaveBeenCalledTimes(1);
+    await service.submit('driver-1', dto(), NOW); // clean — the episode ends
+    await service.submit('driver-1', drifting, NOW); // a new episode
+    expect(alertQueue.add).toHaveBeenCalledTimes(2);
+    expect(sentry.capture).toHaveBeenCalledTimes(2);
+  });
+
   it('still reports Sentry when the alert queue is unreachable', async () => {
     const { service, alertQueue, sentry } = build();
     alertQueue.add.mockRejectedValueOnce(new Error('redis down'));

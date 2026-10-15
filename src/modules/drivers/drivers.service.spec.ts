@@ -554,6 +554,22 @@ describe('DriversService', () => {
       await expect(service.create({ ...baseDto, cdlNumber: 'w 856-9238' })).rejects.toMatchObject(TAKEN.cdlNumber);
     });
 
+    it('BE-20 — a username that is another driver\'s email, or an email that is another driver\'s username, is a 409', async () => {
+      repo.findByEmail.mockImplementation(async (email) => (email === 'jane@x.com' ? (makeDriver({ id: 'drv_2' }) as never) : null));
+      await expect(service.create({ ...baseDto, username: 'jane@x.com' })).rejects.toMatchObject(TAKEN.username);
+      repo.findByEmail.mockResolvedValue(null);
+      repo.findByUsername.mockImplementation(async (username) => (username === 'bob@x.com' ? (makeDriver({ id: 'drv_3' }) as never) : null));
+      await expect(service.create({ ...baseDto, email: 'Bob@X.com' })).rejects.toMatchObject(TAKEN.email);
+      await expect(service.update('drv_1', { email: 'bob@x.com' })).rejects.toMatchObject(TAKEN.email);
+      expect(repo.create).not.toHaveBeenCalled();
+    });
+
+    it('BE-20 — the driver\'s own username as its email is fine', async () => {
+      repo.findByUsername.mockImplementation(async (username) => (username === 'bob@x.com' ? (makeDriver({ id: 'drv_1' }) as never) : null));
+      // Past the uniqueness checks, the email change stops at its own re-auth gate — not EMAIL_TAKEN.
+      await expect(service.update('drv_1', { email: 'bob@x.com' })).rejects.toMatchObject({ code: 'REAUTH_REQUIRED' });
+    });
+
     it('normalises email (trim + lower-case) before the check and the write', async () => {
       await service.create({ ...baseDto, email: ' JSmith@Example.com ' });
       expect(repo.findByEmail).toHaveBeenCalledWith('jsmith@example.com');
@@ -869,6 +885,39 @@ describe('DriversService', () => {
       expect(summary).toEqual({ imported: 1, updated: 1, skipped: 0, failed: [] });
     });
 
+    it('BE-09 — re-importing an existing driver leaves omitted HOS settings / timezone unchanged', async () => {
+      repo.findByUsername.mockResolvedValue(makeDriver({ splitSleeperEnabled: true, homeTerminalTimezone: 'America/Denver' }) as never);
+      repo.update.mockResolvedValue(makeDriver() as never);
+      const dto = ImportDriversDto.parse({ drivers: [{ username: 'jsmith', firstName: 'A', lastName: 'B', cdlNumber: 'X1', cdlState: 'CO' }] });
+
+      const summary = await service.importMany(dto);
+
+      expect(summary.updated).toBe(1);
+      const updateArg = repo.update.mock.calls[0][1] as Record<string, unknown>;
+      expect(updateArg).toMatchObject({ firstName: 'A', lastName: 'B', cdlNumber: 'X1', cdlState: 'CO' });
+      for (const key of ['homeTerminalTimezone', 'allowPersonalConveyance', 'allowYardMove', 'adverseDrivingEnabled', 'shortHaulException', 'splitSleeperEnabled', 'eldExempt']) {
+        expect(updateArg).not.toHaveProperty(key);
+      }
+    });
+
+    it('BE-09 — a NEW import row without settings still gets the create defaults', async () => {
+      repo.findByUsername.mockResolvedValue(null);
+      repo.create.mockResolvedValue(makeDriver() as never);
+      const dto = ImportDriversDto.parse({ drivers: [{ username: 'newone', firstName: 'A', lastName: 'B', cdlNumber: 'X1', cdlState: 'CO' }] });
+
+      await service.importMany(dto);
+
+      expect(repo.create.mock.calls[0][0]).toMatchObject({
+        homeTerminalTimezone: 'America/New_York',
+        allowPersonalConveyance: false,
+        allowYardMove: false,
+        adverseDrivingEnabled: false,
+        shortHaulException: false,
+        splitSleeperEnabled: false,
+        eldExempt: false,
+      });
+    });
+
     it('collects per-row failures instead of aborting the whole batch', async () => {
       repo.findByUsername.mockRejectedValue(new Error('db down'));
 
@@ -911,6 +960,49 @@ describe('DriversService', () => {
       expect(summary.failed).toHaveLength(1);
       expect(repo.update).not.toHaveBeenCalled();
       expect(repo.create).not.toHaveBeenCalled();
+    });
+
+    it('BE-09 — applyDefaultExemptions / defaultHomeTerminalName leave an UPDATE row alone', async () => {
+      repo.findByUsername.mockResolvedValue(makeDriver({ allowPersonalConveyance: false, allowYardMove: false, homeTerminalName: 'Denver Yard' }) as never);
+      repo.update.mockResolvedValue(makeDriver() as never);
+      const dto = ImportDriversDto.parse({
+        drivers: [{ username: 'jsmith', firstName: 'A', lastName: 'B', cdlNumber: 'X1', cdlState: 'CO' }],
+        options: { duplicateStrategy: 'UPDATE', applyDefaultExemptions: true, defaultHomeTerminalName: 'Main Terminal' },
+      });
+
+      const summary = await service.importMany(dto);
+
+      expect(summary.updated).toBe(1);
+      const updateArg = repo.update.mock.calls[0][1] as Record<string, unknown>;
+      expect(updateArg).not.toHaveProperty('allowPersonalConveyance');
+      expect(updateArg).not.toHaveProperty('allowYardMove');
+      expect(updateArg).not.toHaveProperty('homeTerminalName');
+    });
+
+    it('BE-09 — an UPDATE row that names its terminal still updates it', async () => {
+      repo.findByUsername.mockResolvedValue(makeDriver({ homeTerminalName: 'Denver Yard' }) as never);
+      repo.update.mockResolvedValue(makeDriver() as never);
+      const dto = ImportDriversDto.parse({
+        drivers: [{ username: 'jsmith', firstName: 'A', lastName: 'B', cdlNumber: 'X1', cdlState: 'CO', homeTerminalName: 'Reno Yard' }],
+        options: { defaultHomeTerminalName: 'Main Terminal' },
+      });
+
+      await service.importMany(dto);
+
+      expect(repo.update.mock.calls[0][1]).toMatchObject({ homeTerminalName: 'Reno Yard' });
+    });
+
+    it('BE-09 — defaultHomeTerminalName still backfills a NEW row', async () => {
+      repo.findByUsername.mockResolvedValue(null);
+      repo.create.mockResolvedValue(makeDriver() as never);
+      const dto = ImportDriversDto.parse({
+        drivers: [{ username: 'newone', firstName: 'A', lastName: 'B', cdlNumber: 'X1', cdlState: 'CO' }],
+        options: { defaultHomeTerminalName: 'Main Terminal' },
+      });
+
+      await service.importMany(dto);
+
+      expect(repo.create.mock.calls[0][0]).toMatchObject({ homeTerminalName: 'Main Terminal' });
     });
 
     it('B-69 applyDefaultExemptions turns on the standard exception set for new rows', async () => {

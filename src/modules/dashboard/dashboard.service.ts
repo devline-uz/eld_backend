@@ -105,10 +105,11 @@ export class DashboardService {
       // UI-003 — a stale / silent unit is never "moving" (the mapper already reads it ELD_OFFLINE).
       moving: units.filter((u) => u.dutyStatus === 'DRIVING' && !u.isStale).length,
       idle: units.filter((u) => u.dutyStatus === 'IDLE').length,
-      // QA LIVE-011 — units whose paired ELD has been silent > 30 min (`connectivity`, the same
-      // `ELD_OFFLINE_AFTER_MS` line Settings › ELD devices uses), whatever the driver's status or the
-      // unit's record status. It used to count only the units whose duty marker read ELD_OFFLINE.
-      offline: units.filter((u) => u.connectivity === 'ELD_OFFLINE').length,
+      // QA LIVE-011 / BE-04 — ACTIVE units whose paired ELD has been silent > 30 min, or never heard
+      // (`connectivity === 'ELD_OFFLINE'`, exactly `/live/fleet` for an ACTIVE unit), whatever the
+      // driver's status. INACTIVE / OUT_OF_SERVICE units (read INACTIVE on the map) and deleted ones
+      // (never in the snapshot) are not "offline": they are not expected to report.
+      offline: units.filter((u) => u.recordStatus === 'ACTIVE' && u.connectivity === 'ELD_OFFLINE').length,
       // QA LIVE-002 — the duty donut's slices (assigned drivers by HOS status, + UNKNOWN).
       driverDuty,
     };

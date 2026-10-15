@@ -249,6 +249,14 @@ describe('DevicesService', () => {
       );
     });
 
+    it('FE-12 — rejects pairing a RETIRED device with 409 DEVICE_RETIRED', async () => {
+      devicesRepo.findById.mockResolvedValue(makeDevice({ status: 'RETIRED' }) as never);
+      vehiclesRepo.findById.mockResolvedValue({ id: 'veh_1' } as never);
+      devicesRepo.findByVehicleId.mockResolvedValue(null);
+      await expect(service.pair('dev_1', { vehicleId: 'veh_1' })).rejects.toMatchObject({ code: 'DEVICE_RETIRED', status: 409 });
+      expect(devicesRepo.update).not.toHaveBeenCalled();
+    });
+
     it('BE-019 — rejects pairing to a soft-deleted unit', async () => {
       devicesRepo.findById.mockResolvedValue(makeDevice() as never);
       vehiclesRepo.findById.mockResolvedValue({ id: 'veh_1', deletedAt: new Date() } as never);

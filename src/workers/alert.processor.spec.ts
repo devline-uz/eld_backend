@@ -8,6 +8,7 @@ function buildProcessor(overrides: {
   user?: { email: string; status: string } | null;
   driver?: { email: string | null; status: string; deletedAt: Date | null; homeTerminalTimezone?: string } | null;
   mailResult?: { delivered: boolean; reference: string };
+  breakEpisodeDelivered?: boolean;
 } = {}) {
   const created: unknown[] = [];
   const sentIds: string[] = [];
@@ -22,6 +23,7 @@ function buildProcessor(overrides: {
     }),
     countToday: jest.fn(async () => overrides.deliveriesTodayCount ?? 0),
     lastDelivered: jest.fn(async () => overrides.lastDelivered ?? null),
+    existsForBreakEpisode: jest.fn(async () => overrides.breakEpisodeDelivered ?? false),
     markSent: jest.fn(async (id: string) => sentIds.push(id)),
     markSuppressed: jest.fn(async (id: string, reason: string) => suppressed.push({ id, reason })),
     markFailed: jest.fn(async () => undefined),
@@ -82,6 +84,26 @@ describe('AlertProcessor', () => {
     expect(prisma.notification.create).toHaveBeenCalledTimes(1);
     expect(deliveries.create).toHaveBeenCalledTimes(1);
     expect(sentIds).toHaveLength(1);
+  });
+
+  it('BE-12 — delivers a break-due rule once per (driver, break deadline)', async () => {
+    const payload = { driverId: 'drv_1', minutesUntilBreak: 25, nextBreakDueAt: '2025-01-15T03:00:00.000Z' };
+    const first = buildProcessor({ rulesFound: [baseRule] });
+    await first.processor.process({ name: 'alert.break_due', data: payload } as never);
+    expect(first.deliveries.existsForBreakEpisode).toHaveBeenCalledWith('alr_1', 'driver:drv_1', { driverId: 'drv_1', nextBreakDueAt: '2025-01-15T03:00:00.000Z' });
+    expect(first.sentIds).toHaveLength(1);
+
+    const repeat = buildProcessor({ rulesFound: [baseRule], breakEpisodeDelivered: true });
+    await repeat.processor.process({ name: 'alert.break_due', data: { ...payload, minutesUntilBreak: 20 } } as never);
+    expect(repeat.deliveries.create).not.toHaveBeenCalled();
+    expect(repeat.prisma.notification.create).not.toHaveBeenCalled();
+  });
+
+  it('BE-12 — other alerts never consult the break-episode dedupe', async () => {
+    const { processor, deliveries } = buildProcessor({ rulesFound: [baseRule], breakEpisodeDelivered: true });
+    await processor.process({ name: 'alert.odometer_anomaly', data: { driverId: 'drv_1' } } as never);
+    expect(deliveries.existsForBreakEpisode).not.toHaveBeenCalled();
+    expect(deliveries.create).toHaveBeenCalledTimes(1);
   });
 
   it('never dispatches an SMS channel even if one were somehow on the rule (defence in depth)', async () => {

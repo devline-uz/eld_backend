@@ -237,7 +237,10 @@ export class HosStateService {
       driftAlerted: comparison.drift,
     });
 
-    if (comparison.drift) {
+    // BE-11 — one alert per drift EPISODE: `driftAlerted` (sticky across snapshot posts, cleared by
+    // the first clean comparison) is the episode flag, so a drift that persists across the app's
+    // 5-minute posts / the nightly sweep is raised on the transition only, not on every comparison.
+    if (comparison.drift && !snapshot.driftAlerted) {
       await this.raiseDriftAlert(snapshot, comparison, now);
     }
 

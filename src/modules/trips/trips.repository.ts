@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { Driver, Prisma, Trailer, Trip, Vehicle } from '@prisma/client';
+import type { Driver, Prisma, StopType, Trailer, Trip, Vehicle } from '@prisma/client';
 import { BaseRepository, ModelDelegate } from '../../core/prisma/base.repository';
 import { PrismaService } from '../../core/prisma/prisma.service';
 import { containsInsensitive } from '../../common/text/insensitive';
@@ -8,6 +8,12 @@ export interface TripListFilter {
   status?: Trip['status'];
   driverId?: string;
   q?: string;
+}
+
+/** FE-15 — the new scheduled times for the route's first PICKUP / last DELIVERY stop. */
+export interface TripEndpointStopTimes {
+  pickupAt?: Date;
+  deliveryAt?: Date;
 }
 
 /** CODE-060 — `GET /trips/unassigned-loads` returns at most this many loads (soonest first). */
@@ -67,8 +73,11 @@ export class TripsRepository extends BaseRepository<
   }
 
   /** Any trailer row, live or soft-deleted — the service decides (a deleted one is not assignable). */
-  findTrailer(id: string): Promise<{ id: string; status: Trailer['status']; deletedAt: Date | null } | null> {
-    return this.prisma.trailer.findUnique({ where: { id }, select: { id: true, status: true, deletedAt: true } });
+  findTrailer(
+    id: string,
+    db: Prisma.TransactionClient = this.prisma,
+  ): Promise<{ id: string; status: Trailer['status']; deletedAt: Date | null } | null> {
+    return db.trailer.findUnique({ where: { id }, select: { id: true, status: true, deletedAt: true } });
   }
 
   /** BE-001 — the driver a trip write names (live or soft-deleted); the service decides. */
@@ -133,9 +142,39 @@ export class TripsRepository extends BaseRepository<
     });
   }
 
-  /** Base `update`, optionally inside the unit-schedule transaction (`withUnitScheduleLock`). */
-  override update(where: Prisma.TripWhereUniqueInput, data: Prisma.TripUpdateInput, db?: Prisma.TransactionClient): Promise<Trip> {
-    return db ? db.trip.update({ where, data }) : super.update(where, data);
+  /**
+   * Base `update`, optionally inside the unit-schedule transaction (`withUnitScheduleLock`).
+   * FE-15 — with `stopTimes`, the route's first PICKUP stop takes `pickupAt` and its last DELIVERY
+   * stop takes `deliveryAt` (each only when given) in the same transaction, so an edited pickup /
+   * delivery window reaches the stops the board ETA and the driver app read.
+   */
+  override update(
+    where: Prisma.TripWhereUniqueInput,
+    data: Prisma.TripUpdateInput,
+    db?: Prisma.TransactionClient,
+    stopTimes?: TripEndpointStopTimes,
+  ): Promise<Trip> {
+    if (!stopTimes || (!stopTimes.pickupAt && !stopTimes.deliveryAt)) {
+      return db ? db.trip.update({ where, data }) : super.update(where, data);
+    }
+    const work = async (tx: Prisma.TransactionClient) => {
+      const updated = await tx.trip.update({ where, data });
+      await this.moveEndpointStops(updated.id, stopTimes, tx);
+      return updated;
+    };
+    return db ? work(db) : this.prisma.$transaction(work);
+  }
+
+  private async moveEndpointStops(tripId: string, times: TripEndpointStopTimes, tx: Prisma.TransactionClient): Promise<void> {
+    const endpoints: Array<[StopType, 'asc' | 'desc', Date | undefined]> = [
+      ['PICKUP', 'asc', times.pickupAt],
+      ['DELIVERY', 'desc', times.deliveryAt],
+    ];
+    for (const [type, order, scheduledAt] of endpoints) {
+      if (!scheduledAt) continue;
+      const stop = await tx.tripStop.findFirst({ where: { tripId, type }, orderBy: { sequence: order }, select: { id: true } });
+      if (stop) await tx.tripStop.update({ where: { id: stop.id }, data: { scheduledAt } });
+    }
   }
 
   /**

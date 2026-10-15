@@ -2,8 +2,9 @@ import { Injectable } from '@nestjs/common';
 import type { Prisma, Vehicle } from '@prisma/client';
 import { BaseRepository, ModelDelegate } from '../../core/prisma/base.repository';
 import { PrismaService } from '../../core/prisma/prisma.service';
-import { containsInsensitive, equalsInsensitive } from '../../common/text/insensitive';
+import { containsInsensitive, endsWithInsensitive, equalsInsensitive } from '../../common/text/insensitive';
 import { outOfServiceHoldingDefectsWhere } from './lib/out-of-service-defects';
+import { canonicalUnitNumber } from './lib/vehicle-uniques';
 
 export interface VehicleListFilter {
   status?: Vehicle['status'];
@@ -68,18 +69,22 @@ export class VehiclesRepository extends BaseRepository<
   /** Live (not soft-deleted) unit only — `unitNumber` is unique among live rows via a partial
    * unique index (migration 20260927090000_soft_delete_partial_uniques), so a deleted unit's
    * number is free for reuse. Compared like the web does (B-97): trimmed, without the display
-   * `#`, case-insensitively — `#101`, `101` and ` 101 ` are the same unit number. */
-  findByUnitNumber(unitNumber: string): Promise<Vehicle | null> {
-    const key = unitNumber.trim().replace(/^#/, '');
-    return this.prisma.vehicle.findFirst({
+   * `#`, case-insensitively — `#101`, `101` and ` 101 ` are the same unit number.
+   * BE-22 — every leading `#` is dropped (`canonicalUnitNumber`, the key of the DB index
+   * `Vehicle_unitNumber_canonical_live_key`), so `##7` finds unit `7` and `7` finds a stored `##7`:
+   * the SQL narrows to the bare key or values ending in `#key`, the canonical compare decides. */
+  async findByUnitNumber(unitNumber: string): Promise<Vehicle | null> {
+    const key = canonicalUnitNumber(unitNumber);
+    const candidates = await this.prisma.vehicle.findMany({
       where: {
         deletedAt: null,
         OR: [
           { unitNumber: equalsInsensitive(key) },
-          { unitNumber: equalsInsensitive(`#${key}`) },
+          { unitNumber: endsWithInsensitive(`#${key}`) },
         ],
       },
     });
+    return candidates.find((v) => canonicalUnitNumber(v.unitNumber) === key) ?? null;
   }
 
   /** Live (not soft-deleted) unit only — see `findByUnitNumber`. VINs are stored upper-cased (the
@@ -269,6 +274,8 @@ export class VehiclesRepository extends BaseRepository<
         const claimed = await tx.device.updateMany({
           where: {
             id: deviceId,
+            // FE-12 — a device retired between the service's check and this claim is not taken.
+            status: { not: 'RETIRED' },
             OR: [{ vehicleId: null }, { vehicleId: vehicle.id }, { vehicle: { deletedAt: { not: null } } }],
           },
           data: { vehicleId: vehicle.id, status: 'ASSIGNED', pairedAt: new Date() },
