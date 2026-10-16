@@ -116,6 +116,20 @@ describe('DevicesService', () => {
       await expect(service.create({ serial: 'PT30_A86E', model: 'PT30' } as never)).rejects.toThrow(AppException);
     });
 
+    it('re-activates a RETIRED device with the same serial instead of refusing it', async () => {
+      devicesRepo.findBySerial.mockResolvedValue(makeDevice({ status: 'RETIRED' }) as never);
+      devicesRepo.update.mockResolvedValue(makeDevice({ model: 'PT40' }) as never);
+
+      const view = await service.create(CreateDeviceDto.parse({ serial: 'pt30_a86e', model: 'PT40' }));
+
+      expect(devicesRepo.create).not.toHaveBeenCalled();
+      expect(devicesRepo.update).toHaveBeenCalledWith(
+        { id: 'dev_1' },
+        expect.objectContaining({ serial: 'PT30_A86E', status: 'UNASSIGNED', model: 'PT40', pairedAt: null }),
+      );
+      expect(view.status).toBe('UNASSIGNED');
+    });
+
     it('creates when unique', async () => {
       devicesRepo.findBySerial.mockResolvedValue(null);
       devicesRepo.create.mockResolvedValue(makeDevice() as never);

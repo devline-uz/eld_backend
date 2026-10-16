@@ -126,6 +126,34 @@ export class DevicesService {
     const serial = normalizeDeviceSerial(dto.serial);
     if (isReservedVirtualSerial(serial)) throw virtualSerialReserved([{ index: 0, serial }]);
     const existing = await this.devices.findBySerial(serial);
+    // A retired (deleted) device no longer holds its serial: registering it again re-activates the
+    // same row as a fresh inventory device. The row is reused instead of inserting a second one so
+    // its ELD event history stays attached (soft delete — see `remove`).
+    if (existing?.status === 'RETIRED') {
+      const revived = await this.devices.update(
+        { id: existing.id },
+        {
+          serial,
+          status: 'UNASSIGNED',
+          vehicle: { disconnect: true },
+          pairedAt: null,
+          bleMacAddress: dto.bleMacAddress ?? null,
+          model: dto.model,
+          firmware: dto.firmware ?? null,
+          periodicConnectedSec: dto.periodicConnectedSec ?? 30,
+          periodicDisconnectedMin: dto.periodicDisconnectedMin ?? 30,
+          periodicNoBleSec: dto.periodicNoBleSec ?? 30,
+          harshAccelMg: dto.harshAccelMg ?? 0,
+          harshBrakeMg: dto.harshBrakeMg ?? 0,
+          harshCornerMg: dto.harshCornerMg ?? 0,
+          autoFirmware: dto.autoFirmware ?? true,
+          shareDiagnostics: dto.shareDiagnostics ?? true,
+          bleState: 'DISCONNECTED',
+          storedEventsCount: 0,
+        },
+      );
+      return toDeviceView(revived);
+    }
     if (existing) throw AppException.conflict(`Device "${serial}" already registered.`);
     const created = await this.devices.create({
       serial,
