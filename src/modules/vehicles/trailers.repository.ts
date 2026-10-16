@@ -40,7 +40,8 @@ export class TrailersRepository extends BaseRepository<
    * unique index `Trailer_number_live_key` (migration 20261007110000_trailer_soft_delete), so a
    * deleted trailer's number is free for reuse. BE-07 — compared trimmed and case-insensitively
    * (literal, like unit numbers), so `tr-01` is the same trailer as `TR-01`. The DB index still
-   * compares the raw value, so this pre-check is the guard (no case-insensitive index yet). */
+   * compares the raw value; B3-06 adds `Trailer_number_upper_live_key` (migration 20261016090000) so a
+   * racing create is a P2002 -> 409 too. */
   findByNumber(number: string): Promise<Trailer | null> {
     return this.prisma.trailer.findFirst({ where: { number: equalsInsensitive(number.trim()), deletedAt: null } });
   }

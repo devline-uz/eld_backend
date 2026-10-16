@@ -128,6 +128,10 @@ export class WorkOrdersRepository extends BaseRepository<
     for (let attempt = 1; ; attempt++) {
       try {
         return await this.prisma.$transaction(async (tx) => {
+          // B3-08 — serialise numbering: `MAX(number)+1` raced (10 parallel creates exhausted the
+          // retries below). The lock is released at commit, so the next create sees this row.
+          // `$executeRawUnsafe` — pg_advisory_xact_lock() returns void, which `$queryRaw` cannot map.
+          await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`, 'work-order-number');
           const number = await nextWorkOrderNumber(tx);
           const workOrder = await tx.workOrder.create({ data: { ...data, number } });
           if (defectIds.length) {

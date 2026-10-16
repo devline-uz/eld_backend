@@ -76,6 +76,19 @@ async function seedEvent(at: string, code: number, sequenceId: number, miles?: n
   return row!.id;
 }
 
+/**
+ * B3-05 — carrier proposals must fall inside the 6-month RODS window measured from "now"; the
+ * fixture day is fixed (2026-06-01), so `Date` is pinned (timers stay real) to keep the suite
+ * from expiring as wall-clock time moves on.
+ */
+beforeAll(() => {
+  jest.useFakeTimers({
+    now: new Date('2026-10-16T12:00:00Z'),
+    doNotFake: ['nextTick', 'setImmediate', 'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'clearImmediate', 'queueMicrotask', 'hrtime', 'performance'],
+  });
+});
+afterAll(() => jest.useRealTimers());
+
 beforeAll(async () => {
   const vehicle = await prisma.vehicle.create({
     data: { unitNumber: `RODS-${tag}`, vin: `VIN${tag}${tag}`.slice(0, 17), odometerMi: 1000 },

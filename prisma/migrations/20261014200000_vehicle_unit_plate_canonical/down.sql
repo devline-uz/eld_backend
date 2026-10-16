@@ -1,4 +1,7 @@
--- Reverts 20261014200000_vehicle_unit_plate_canonical. Drops the canonical unit-number index only.
--- Plate normalisation (upper-case, no spaces/dashes, '' -> NULL) is one-way data and is NOT undone;
--- original spellings were not kept. "Vehicle_unitNumber_live_key" stays.
-DROP INDEX "Vehicle_unitNumber_canonical_live_key";
+-- DOWN migration for 20261014200000_vehicle_unit_plate_canonical
+-- (runner: scripts/migrate-updown-dev.sh — dev database only).
+--
+-- Drops the canonical unit-number index. The UP also normalised stored plates (upper-cased,
+-- spaces / dashes removed, '' -> NULL); that is not undone (the original spellings are not kept).
+-- custom-index: drop Vehicle_unitNumber_canonical_live_key
+DROP INDEX IF EXISTS "Vehicle_unitNumber_canonical_live_key";

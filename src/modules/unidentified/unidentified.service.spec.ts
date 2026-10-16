@@ -11,7 +11,7 @@ import type { AuditRepository } from '../audit/audit.repository';
 import type { EventBusService } from '../../core/events/event-bus.service';
 import type { LogsService } from '../logs/logs.service';
 import { buildRodsDay, type RodsEvent } from '../logs/rods';
-import { AssignUnidentifiedDto } from './dto/unidentified.dto';
+import { AssignUnidentifiedDto, UnidentifiedListQueryDto } from './dto/unidentified.dto';
 import { UnidentifiedService } from './unidentified.service';
 import type { UnidentifiedRepository } from './unidentified.repository';
 
@@ -642,5 +642,18 @@ describe('CODE-007 — the segment ends where it ends and never overlaps the dri
     ).rejects.toMatchObject({ code: 'UNIDENTIFIED_OVERLAPS_DRIVER_LOG' });
     expect(ctx.repo.updateSegment).not.toHaveBeenCalled();
     expect(ctx.events.publish).not.toHaveBeenCalled();
+  });
+});
+
+describe('UnidentifiedListQueryDto — B3-14 date filters', () => {
+  it('rejects from > to and an impossible calendar day; keeps valid days and instants', () => {
+    expect(UnidentifiedListQueryDto.safeParse({ from: '2026-10-10', to: '2026-10-01' }).success).toBe(false);
+    expect(UnidentifiedListQueryDto.safeParse({ from: '2026-02-30' }).success).toBe(false);
+    expect(UnidentifiedListQueryDto.safeParse({ to: '2026-13-01T00:00:00Z' }).success).toBe(false);
+    expect(UnidentifiedListQueryDto.safeParse({ from: 'garbage' }).success).toBe(false);
+    const ok = UnidentifiedListQueryDto.parse({ from: '2026-10-01', to: '2026-10-10T12:00:00.000Z' });
+    expect(ok.from).toEqual(new Date('2026-10-01T00:00:00Z'));
+    expect(ok.to).toEqual(new Date('2026-10-10T12:00:00Z'));
+    expect(UnidentifiedListQueryDto.safeParse({ from: '2026-10-01', to: '2026-10-01' }).success).toBe(true);
   });
 });

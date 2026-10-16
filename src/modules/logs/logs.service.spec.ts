@@ -77,10 +77,14 @@ class FakeRepo {
   invalidated: string[] = [];
 
   findDriver = jest.fn(async () => this.driver);
+  /** BE-01 — `AdverseDrivingInvocation` days. */
+  adverseDays: string[] = [];
+  findAdverseInvokedDays = jest.fn(async (_driver: unknown, from: string, to: string) => this.adverseDays.filter((d) => d >= from && d <= to));
   findEvents = jest.fn(async (_id: string, from: Date, to: Date) =>
     this.events.filter((e) => e.eventDateTime >= from && e.eventDateTime <= to),
   );
   findEventById = jest.fn(async (id: bigint) => this.events.find((e) => e.id === id) ?? null);
+  findFirstEventAt = jest.fn(async () => (this.events.length ? new Date(Math.min(...this.events.map((e) => e.eventDateTime.getTime()))) : null));
   findSupersedingEvents = jest.fn(async (ids: bigint[]) =>
     this.events.filter((e) => e.supersedesId !== null && ids.includes(e.supersedesId)),
   );
@@ -162,6 +166,19 @@ class FakeWriter {
     return this.calls.flatMap((call) => call.rows);
   }
 }
+
+/**
+ * B3-05 — carrier proposals must fall inside the 6-month RODS window measured from "now"; the
+ * fixtures below are fixed mid-2026 dates, so the clock is pinned (Date only — timers stay real)
+ * to keep the spec from expiring as wall-clock time moves on.
+ */
+beforeAll(() => {
+  jest.useFakeTimers({
+    now: new Date('2026-10-16T12:00:00Z'),
+    doNotFake: ['nextTick', 'setImmediate', 'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'clearImmediate', 'queueMicrotask', 'hrtime', 'performance'],
+  });
+});
+afterAll(() => jest.useRealTimers());
 
 function build() {
   const repo = new FakeRepo();
@@ -985,6 +1002,54 @@ describe('QA CODE-028 — carrier edit requests are validated against the record
   });
 });
 
+describe('B3-05 — carrier proposals have a lower time bound (driver creation, RODS 6-month window)', () => {
+  const MONTH = 30 * 24 * 3_600_000;
+  const proposal = { status: 'ON' as const, annotation: 'Pre-trip inspection at the yard' };
+
+  it('refuses a proposed record older than the 6-month RODS window (422 EDIT_OUTSIDE_WINDOW)', async () => {
+    const { service, writer } = build();
+    await expect(
+      service.proposeEvent(DRIVER, { ...proposal, eventDateTime: new Date('2019-01-01T00:00:00Z') }, carrier),
+    ).rejects.toMatchObject({ code: 'EDIT_OUTSIDE_WINDOW', status: 422, details: { eventDateTime: ANY_STRING } });
+    expect(writer.rows).toEqual([]);
+  });
+
+  it('refuses a proposed record from before the driver was created', async () => {
+    const { service, repo, writer } = build();
+    repo.driver = { ...repo.driver, registeredAt: new Date(Date.now() - 2 * 24 * 3_600_000) };
+    repo.events = [];
+    await expect(
+      service.proposeEvent(DRIVER, { ...proposal, eventDateTime: new Date(Date.now() - 3 * 24 * 3_600_000) }, carrier),
+    ).rejects.toMatchObject({ code: 'EDIT_OUTSIDE_WINDOW', status: 422, details: { eventDateTime: ANY_STRING } });
+    expect(writer.rows).toEqual([]);
+  });
+
+  it('allows a time before registeredAt when the driver already has history from then (imported / seeded logs)', async () => {
+    const { service, repo } = build();
+    repo.driver = { ...repo.driver, registeredAt: new Date(Date.now() - 2 * 24 * 3_600_000) };
+    repo.events = [evt({ id: 1n, at: new Date(Date.now() - 10 * 24 * 3_600_000).toISOString(), code: 1 })];
+    const at = new Date(Date.now() - 4 * 24 * 3_600_000);
+    await expect(service.proposeEvent(DRIVER, { ...proposal, eventDateTime: at }, carrier)).resolves.toMatchObject({ status: 'PENDING' });
+  });
+
+  it('refuses an edit request whose proposed start is outside the window', async () => {
+    const { service, repo, writer } = build();
+    const old = new Date(Date.now() - 7 * MONTH);
+    repo.events = [evt({ id: 1n, at: old.toISOString(), code: 4 })];
+    await expect(
+      service.createEditRequest(DRIVER, { originalEventId: '1', proposedStatus: 'SB', proposedStart: old, reason: 'Was in the sleeper' }, carrier),
+    ).rejects.toMatchObject({ code: 'EDIT_OUTSIDE_WINDOW', status: 422, details: { proposedStart: ANY_STRING } });
+    expect(writer.rows).toEqual([]);
+  });
+
+  it('still accepts a proposal inside the window', async () => {
+    const { service, repo } = build();
+    repo.events = [];
+    const at = new Date(Date.now() - 5 * 24 * 3_600_000);
+    await expect(service.proposeEvent(DRIVER, { ...proposal, eventDateTime: at }, carrier)).resolves.toMatchObject({ status: 'PENDING' });
+  });
+});
+
 describe('QA CODE-027 — getEvents reports the effective record status', () => {
   it('retired originals read 2, pending proposals 3, rejected 4, accepted 2 — the stored status is unchanged', async () => {
     const { service, repo } = build();
@@ -1481,6 +1546,22 @@ describe('W-08 — the record table and the grid read the same RODS day', () => 
 
     expect(view.summary.drivingSec).toBe(86400);
     expect(view.ongoingViolations.map((v) => v.type).sort()).toEqual(['BREAK_30', 'DRIVING_11', 'SHIFT_14']);
+  });
+
+  it('BE-01 — getDayView applies the 13 h adverse limit only when adverse driving was invoked on the day driven', async () => {
+    const { service, repo } = build();
+    // Permitted; 12 h of driving from 12:00 EDT on 2026-10-09, still under way at 00:00 on the 10th.
+    repo.driver = { ...repo.driver, hosRuleset: 'US_70_8_PROPERTY', adverseDrivingEnabled: true };
+    repo.events = [evt({ id: 1n, at: '2026-10-09T04:00:00Z', code: 1 }), evt({ id: 2n, at: '2026-10-09T16:00:00Z', code: 3 })];
+    const now = new Date('2026-10-11T10:00:00Z');
+
+    // Only permitted (invoked on another day): the 11 h limit is still broken.
+    repo.adverseDays = ['2026-10-10'];
+    expect((await service.getDayView(DRIVER, '2026-10-10', now)).ongoingViolations.map((v) => v.type).sort()).toEqual(['BREAK_30', 'DRIVING_11']);
+
+    // Invoked on the 9th, the day it was driven: 12 h is within the 13 h limit.
+    repo.adverseDays = ['2026-10-09'];
+    expect((await service.getDayView(DRIVER, '2026-10-10', now)).ongoingViolations.map((v) => v.type)).toEqual(['BREAK_30']);
   });
 
   it('getDayView reports nothing on a legal day', async () => {

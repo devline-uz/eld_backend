@@ -133,7 +133,8 @@ export class ActiveViolationsService {
   private async sync(row: OpenDrivingRow, now: Date): Promise<Date | null> {
     let capAt: Date | null = null;
     try {
-      let current = await this.hos.computeCurrentState(row.driverId, now);
+      // BE-01 — the same per-day adverse limits `recalculate` files with, not the permission flag.
+      let current = await this.hos.computeCurrentState(row.driverId, now, { perDayAdverse: true });
       if (!current || current.state.currentStatus !== 'D') return null;
       // BUG-002 — an ELD that stopped reporting is not a driver still driving: nothing is filed
       // AFTER the cap. UI-002a — what the driver crossed BEFORE it (11 h, 14 h, 30-min break) is
@@ -141,7 +142,7 @@ export class ActiveViolationsService {
       capAt = staleStatusCapAt(current.state.currentStatus, current.state.statusSince, now);
       const at = capAt ?? now;
       if (capAt) {
-        current = await this.hos.computeCurrentState(row.driverId, capAt);
+        current = await this.hos.computeCurrentState(row.driverId, capAt, { perDayAdverse: true });
         if (!current) return capAt;
       }
       const { state, timezone } = current;

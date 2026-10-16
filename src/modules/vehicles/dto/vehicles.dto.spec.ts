@@ -1,4 +1,5 @@
 import {
+  AssignDriverDto,
   CalibrateOdometerDto,
   CreateTrailerDto,
   CreateVehicleDto,
@@ -101,5 +102,26 @@ describe('BE-007 / BE-008 / BE-015 / BE-017 — bounds, trimming and plate state
     expect(UpdateVehicleDto.parse({ plateState: null }).plateState).toBeNull();
     expect(CreateVehicleDto.safeParse({ ...base, vin: VIN, plateState: 'ZZZZZ' }).success).toBe(false);
     expect(CreateVehicleDto.safeParse({ ...base, vin: VIN, plateState: 'ZZ' }).success).toBe(false);
+  });
+});
+
+describe('AssignDriverDto — B3-12 effectiveAt is not supported', () => {
+  const driverId = '7c9e6679-7425-40de-944b-e07fc1f90ae7';
+  it('assigns immediately: a body without effectiveAt is accepted', () => {
+    expect(AssignDriverDto.parse({ driverId })).toEqual({ driverId, notify: true });
+  });
+
+  it('rejects any effectiveAt (a scheduled assignment used to be silently applied now)', () => {
+    const result = AssignDriverDto.safeParse({ driverId, effectiveAt: '2026-11-01T08:00:00.000Z' });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]).toMatchObject({ path: ['effectiveAt'] });
+  });
+});
+
+describe('list search `q` — L3-06 trimmed server-side', () => {
+  it('trims q on vehicles and trailers (" 101 " finds unit 101; whitespace-only = no filter)', () => {
+    expect(VehicleListQueryDto.parse({ q: ' 101 ' }).q).toBe('101');
+    expect(TrailerListQueryDto.parse({ q: '\tTR-9 ' }).q).toBe('TR-9');
+    expect(VehicleListQueryDto.parse({ q: '   ' }).q).toBe('');
   });
 });

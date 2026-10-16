@@ -27,6 +27,26 @@ describe('custom (hand-written) indexes guard', () => {
     });
   });
 
+  describe('B3-06 — case-insensitive live keys for driver username and trailer number', () => {
+    const names = ['Driver_username_lower_live_key', 'Trailer_number_upper_live_key'];
+
+    it.each(names)('%s is registered', (name) => {
+      expect(CUSTOM_INDEXES.map((i) => i.name)).toContain(name);
+    });
+
+    it('the migration refuses existing case-variant duplicates before creating the indexes', () => {
+      const entry = CUSTOM_INDEXES.find((i) => i.name === names[0]);
+      const found = migrations.find((m) => m.name === entry?.migration);
+      expect(found).toBeDefined();
+      const sql = found!.sql;
+      expect(sql).toMatch(/RAISE EXCEPTION/);
+      expect(sql).not.toMatch(/^\s*(DELETE|UPDATE)\b/im);
+      expect(sql.indexOf('RAISE EXCEPTION')).toBeLessThan(sql.indexOf('CREATE UNIQUE INDEX'));
+      expect(sql).toMatch(/lower\(btrim\("username"\)\)\)\s*WHERE "deletedAt" IS NULL/);
+      expect(sql).toMatch(/upper\(btrim\("number"\)\)\)\s*WHERE "deletedAt" IS NULL/);
+    });
+  });
+
   describe('customIndexTouchedBy', () => {
     it.each([
       ['DROP INDEX "Vehicle_vin_live_key";', { name: 'Vehicle_vin_live_key', kind: 'drop' }],

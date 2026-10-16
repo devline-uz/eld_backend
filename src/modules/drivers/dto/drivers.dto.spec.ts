@@ -18,6 +18,22 @@ describe('CreateDriverDto / UpdateDriverDto (BE-007 / BE-015 / BE-017)', () => {
     expect(UpdateDriverDto.safeParse({ cdlState: 'XX' }).success).toBe(false);
   });
 
+  it('B3-11 phone: digits with an optional leading +, spaces, dashes, parentheses; blank = no phone', () => {
+    for (const ok of ['+1-614-555-0110', '+998901234567', '(614) 555-0100', '+1 614 555 0100', '6145550100', '', '  ']) {
+      expect(CreateDriverDto.safeParse({ ...base, phone: ok }).success).toBe(true);
+      expect(UpdateDriverDto.safeParse({ phone: ok }).success).toBe(true);
+    }
+    expect(UpdateDriverDto.safeParse({ phone: null }).success).toBe(true);
+    for (const bad of ['abc', '614.555.0100', '555-01', '1+614 555 0100', '+1 614 555 0100 ext 5', '1234567890123456']) {
+      expect(CreateDriverDto.safeParse({ ...base, phone: bad }).success).toBe(false);
+      expect(UpdateDriverDto.safeParse({ phone: bad }).success).toBe(false);
+    }
+  });
+
+  it('L3-06 trims the list search q (drivers and the roster)', () => {
+    expect(DriverListQueryDto.parse({ q: ' smith ' }).q).toBe('smith');
+  });
+
   it('caps the list page', () => {
     expect(DriverListQueryDto.safeParse({ page: '99999999999' }).success).toBe(false);
     expect(DriverListQueryDto.parse({ page: '10000' }).page).toBe(10_000);

@@ -12,6 +12,10 @@
  */
 export const EVENT_RETENTION_MONTHS = 24;
 
+/** TZ §5.5/§23 "RODS 6 oy" · 49 CFR §395.8(k)(1) — the FMCSA RODS retention minimum. B3-05 uses it
+ * as the oldest point a carrier may propose a §395.30 edit for (TZ §9.1 defines no other window). */
+export const RODS_RETENTION_MONTHS = 6;
+
 /** TZ §18/§23 — AuditLog rows must survive at least 24 months before they may be purged. */
 export const AUDIT_RETENTION_MONTHS = 24;
 

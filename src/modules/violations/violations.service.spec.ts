@@ -158,3 +158,13 @@ describe('ViolationsService.resolve', () => {
     expect(audit.insert).not.toHaveBeenCalled();
   });
 });
+
+describe('ViolationListQueryDto — B3-14 calendar days', () => {
+  it('refuses 2026-02-30 as not a calendar date (it used to roll over to 03-02 and fail the from<=to check)', () => {
+    const result = ViolationListQueryDto.safeParse({ from: '2026-02-30', to: '2026-03-01' });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues).toEqual([expect.objectContaining({ path: ['from'], message: 'Not a calendar date' })]);
+    expect(ViolationListQueryDto.safeParse({ from: '2026-02-28', to: '2026-03-01' }).success).toBe(true);
+    expect(ViolationListQueryDto.safeParse({ from: '2026-03-02', to: '2026-03-01' }).success).toBe(false);
+  });
+});

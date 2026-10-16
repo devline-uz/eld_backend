@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { QueryBoolean } from '../../../common/dto/query-bool';
 import { outboundUrlProblem } from '../../../common/net/outbound-url';
+import { normalizeRecipientRoles } from '../lib/alert-recipients';
 
 /** TZ §14 — `SMS` stays in the enum for a migration-free v2 add, but the API rejects it now. */
 export const AlertChannelEnum = z.enum(['IN_APP', 'EMAIL', 'SMS', 'WEBHOOK']);
@@ -23,7 +24,8 @@ const ConditionDto = z.object({
 });
 
 const RecipientsDto = z.object({
-  roles: z.array(z.string()).optional(),
+  /** F3-01 — role keys; a legacy display label ("Fleet managers") is stored as its key. */
+  roles: z.array(z.string()).transform(normalizeRecipientRoles).optional(),
   userIds: z.array(z.string().uuid()).optional(),
   driverIds: z.array(z.string().uuid()).optional(),
   /** true = the alert's own subject (driver on the triggering event) is also notified. */

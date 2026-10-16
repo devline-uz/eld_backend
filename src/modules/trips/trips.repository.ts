@@ -26,14 +26,45 @@ const NAME_JOIN = {
   vehicle: { select: { id: true, unitNumber: true } },
 } as const;
 
+/**
+ * F3-10 — `GET /trips?q=`: the web board's search ("Search trip, driver, city…") matches the trip
+ * number, shipping document, driver first / last name (or "First Last" across both) and the name
+ * or address of a PICKUP / DELIVERY stop. Case-insensitive; `%` `_` `\` match literally
+ * (`containsInsensitive` escapes them). `undefined` for a blank `q`.
+ * Perf: leading-wildcard ILIKE never uses a b-tree index, so this is a scan of the (fleet-sized)
+ * trip list plus EXISTS probes on `Driver` (PK) and `TripStop` (`tripId, sequence` unique index).
+ */
+export function tripSearchFilter(q: string | undefined): Prisma.TripWhereInput | undefined {
+  const term = q?.trim();
+  if (!term) return undefined;
+  const match = containsInsensitive(term);
+  const OR: Prisma.TripWhereInput[] = [
+    { number: match },
+    { shippingDocument: match },
+    { driver: { is: { OR: [{ firstName: match }, { lastName: match }] } } },
+    { stops: { some: { type: { in: ['PICKUP', 'DELIVERY'] }, OR: [{ name: match }, { address: match }] } } },
+  ];
+  const [first, ...rest] = term.split(/\s+/);
+  if (rest.length > 0) {
+    OR.push({ driver: { is: { firstName: containsInsensitive(first), lastName: containsInsensitive(rest.join(' ')) } } });
+  }
+  return { OR };
+}
+
 /** BE-002 — the per-status `OR` branches of the schedule-candidate pre-filter (exported for the spec). */
 export function scheduleCandidateFilters(window: { start: Date; end: Date | null }): Prisma.TripWhereInput[] {
   const { start, end } = window;
   return [
     {
-      status: { in: ['DRAFT', 'PLANNED', 'ASSIGNED'] },
+      status: { in: ['PLANNED', 'ASSIGNED'] },
       plannedStartAt: end ? { not: null, lt: end } : { not: null },
       OR: [{ plannedEndAt: null }, { plannedEndAt: { gt: start } }],
+    },
+    // B3-07 — an open-ended draft reserves nothing (`occupancyOf`).
+    {
+      status: 'DRAFT',
+      plannedStartAt: end ? { not: null, lt: end } : { not: null },
+      plannedEndAt: { gt: start },
     },
     { status: 'IN_PROGRESS' },
     {
@@ -100,12 +131,7 @@ export class TripsRepository extends BaseRepository<
     const where: Prisma.TripWhereInput = {
       ...(filter.status && { status: filter.status }),
       ...(filter.driverId && { driverId: filter.driverId }),
-      ...(filter.q && {
-        OR: [
-          { number: containsInsensitive(filter.q) },
-          { shippingDocument: containsInsensitive(filter.q) },
-        ],
-      }),
+      ...tripSearchFilter(filter.q),
     };
     const [items, total] = await Promise.all([
       this.prisma.trip.findMany({ where, orderBy, skip: (page - 1) * limit, take: limit, include: { stops: true, ...NAME_JOIN } }),
@@ -280,7 +306,8 @@ export class TripsRepository extends BaseRepository<
   /**
    * BE-002 — a status-aware pre-filter mirroring `occupancyOf` (trip-schedule.ts), so only trips
    * that can really overlap `window` come back and nothing has to be truncated:
-   *  - DRAFT/PLANNED/ASSIGNED: planned start set, `plannedStartAt < end`, planned end open or `> start`;
+   *  - PLANNED/ASSIGNED: planned start set, `plannedStartAt < end`, planned end open or `> start`;
+ *  - DRAFT: the same, but only with a planned end (B3-07 — an open-ended draft reserves nothing);
    *  - IN_PROGRESS: always (its occupancy stretches to "now");
    *  - DELIVERED: `completedAt ?? plannedEndAt > start` and `startedAt ?? plannedStartAt < end` —
    *    an old delivered trip with no planned end is no longer treated as open-ended.

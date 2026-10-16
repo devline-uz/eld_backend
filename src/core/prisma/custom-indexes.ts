@@ -106,6 +106,18 @@ export const CUSTOM_INDEXES: readonly CustomIndex[] = [
     migration: '20261015090000_live_fleet_latest_row_indexes',
     why: 'duty-status / PC-YM records (eventType 1, 3) per driver for the batched HOS clocks (LV-01, partial index)',
   },
+  {
+    name: 'Driver_username_lower_live_key',
+    table: 'Driver',
+    migration: '20261016090000_driver_username_trailer_number_ci_unique',
+    why: 'live driver username unique ignoring case and surrounding spaces (B3-06, expression index)',
+  },
+  {
+    name: 'Trailer_number_upper_live_key',
+    table: 'Trailer',
+    migration: '20261016090000_driver_username_trailer_number_ci_unique',
+    why: 'live trailer number unique ignoring case and surrounding spaces (B3-06, expression index)',
+  },
 ];
 
 export const CUSTOM_INDEX_NAMES: ReadonlySet<string> = new Set(CUSTOM_INDEXES.map((i) => i.name));

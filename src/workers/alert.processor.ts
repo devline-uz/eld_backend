@@ -9,6 +9,7 @@ import { QUEUES } from '../core/queue/queue.constants';
 import { PrismaService } from '../core/prisma/prisma.service';
 import { AlertDeliveryRepository, AlertRulesRepository } from '../modules/notifications/notifications.repository';
 import { breakDueEpisode } from '../modules/notifications/lib/alert-events';
+import { normalizeRecipientRoles } from '../modules/notifications/lib/alert-recipients';
 import { evaluateAlertPolicy, startOfLocalDay } from '../modules/notifications/lib/alert-policy';
 import {
   deriveNotificationBody,
@@ -85,9 +86,11 @@ export class AlertProcessor extends WorkerHost {
     if (spec.subjectDriver && typeof payload.driverId === 'string') {
       out.push({ kind: 'driver', id: payload.driverId });
     }
-    if (spec.roles?.length) {
+    // F3-01 — rules saved by the web before the fix hold display labels; read them as role keys.
+    const roles = normalizeRecipientRoles(spec.roles);
+    if (roles.length) {
       const users = await this.prisma.user.findMany({
-        where: { status: 'ACTIVE', role: { key: { in: spec.roles } } },
+        where: { status: 'ACTIVE', role: { key: { in: roles } } },
         select: { id: true },
       });
       for (const u of users) out.push({ kind: 'user', id: u.id });

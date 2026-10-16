@@ -106,6 +106,23 @@ describe('AlertProcessor', () => {
     expect(deliveries.create).toHaveBeenCalledTimes(1);
   });
 
+  describe('F3-01 — role recipients', () => {
+    it('matches users by role KEY', async () => {
+      const { processor, prisma } = buildProcessor({ rulesFound: [{ ...baseRule, recipients: { roles: ['FLEET_MANAGER', 'DISPATCHER'] } }] });
+      await processor.process({ name: 'alert.odometer_anomaly', data: { driverId: 'drv_1' } } as never);
+      expect(prisma.user.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { status: 'ACTIVE', role: { key: { in: ['FLEET_MANAGER', 'DISPATCHER'] } } } }));
+    });
+
+    it('resolves the display labels the web used to save to role keys (no data migration)', async () => {
+      const recipients = { roles: ['Fleet managers', 'Dispatchers', 'Assigned fleet manager', 'Safety team'] };
+      const { processor, prisma, deliveries } = buildProcessor({ rulesFound: [{ ...baseRule, recipients }] });
+      prisma.user.findMany.mockResolvedValueOnce([{ id: 'usr_fm' }] as never);
+      await processor.process({ name: 'alert.odometer_anomaly', data: { driverId: 'drv_1' } } as never);
+      expect(prisma.user.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { status: 'ACTIVE', role: { key: { in: ['FLEET_MANAGER', 'DISPATCHER'] } } } }));
+      expect(deliveries.create).toHaveBeenCalledWith(expect.objectContaining({ recipient: 'user:usr_fm' }));
+    });
+  });
+
   it('never dispatches an SMS channel even if one were somehow on the rule (defence in depth)', async () => {
     const rule = { ...baseRule, channels: ['IN_APP', 'SMS'] };
     const { processor, deliveries } = buildProcessor({ rulesFound: [rule] });

@@ -15,6 +15,18 @@ describe('AuditService.list — actorName/actorEmail (B-62)', () => {
     service = new AuditService(events as unknown as EventBusService, repo as unknown as AuditRepository);
   });
 
+  it.each(['zzz', '1.5', '-1', '1e3'])('B3-09 a malformed cursor %p is a 422, never a 500 from BigInt()', async (cursor) => {
+    await expect(service.list({}, 50, cursor)).rejects.toMatchObject({ code: 'VALIDATION_FAILED', status: 422, details: { cursor: expect.any(String) as string } });
+    expect(repo.list).not.toHaveBeenCalled();
+  });
+
+  it('B3-09 a numeric cursor is passed through', async () => {
+    repo.list.mockResolvedValue({ items: [], nextCursor: null });
+    repo.findActorNames.mockResolvedValue(new Map());
+    await service.list({}, 50, '42');
+    expect(repo.list).toHaveBeenCalledWith({}, 50, '42');
+  });
+
   it('resolves actorName/actorEmail for USER rows via one batched lookup', async () => {
     repo.list.mockResolvedValue({
       items: [

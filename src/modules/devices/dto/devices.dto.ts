@@ -22,7 +22,14 @@ export const CreateDeviceDto = z.object({
     .min(1)
     .max(60)
     .transform((value) => normalizeDeviceSerial(value)),
-  bleMacAddress: z.string().max(30).optional(),
+  /** B3-10 — trimmed + upper-cased (`aa:bb…` and `AA:BB…` are one MAC on `Device_bleMacAddress_key`);
+   * `''` / `null` = no MAC (`null`), so two devices without one never collide. */
+  bleMacAddress: z
+    .string()
+    .trim()
+    .max(30)
+    .nullish()
+    .transform((value) => (value === undefined ? undefined : value ? value.toUpperCase() : null)),
   model: DeviceModelEnum.default('PT30'),
   firmware: z.string().max(20).optional(),
   periodicConnectedSec: z.number().int().min(2).max(7200).default(30),

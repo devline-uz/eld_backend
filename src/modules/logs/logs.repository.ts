@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { DailyLog, Driver, DriverDayDetails, EldEvent, HosViolation, Prisma, SyncedChange, UnidentifiedSegment } from '@prisma/client';
 import { BaseRepository, ModelDelegate } from '../../core/prisma/base.repository';
 import { PrismaService } from '../../core/prisma/prisma.service';
+import { findAdverseInvokedDays } from '../drivers/lib/adverse-driving';
 import { syncLedgerKey as ledgerKey } from '../mobile/mobile.repository';
 import type { DayTrip } from './day-extras';
 import { resolveRecordingElds, type RecordingEld } from './recording-elds';
@@ -46,6 +47,11 @@ export class LogsRepository extends BaseRepository<
     return this.prisma.driver.findUnique({ where: { id: driverId } });
   }
 
+  /** BE-01 — RODS days in `[fromKey, toKey]` with adverse driving invoked (empty unless permitted). */
+  findAdverseInvokedDays(driver: Pick<Driver, 'id' | 'homeTerminalTimezone' | 'adverseDrivingEnabled'>, fromKey: string, toKey: string): Promise<string[]> {
+    return findAdverseInvokedDays(this.prisma, driver, fromKey, toKey);
+  }
+
   /** Every record in the window, ACTIVE OR NOT — the RODS view must show the audit trail. */
   findEvents(driverId: string, from: Date, to: Date): Promise<EldEvent[]> {
     return this.prisma.eldEvent.findMany({
@@ -64,6 +70,16 @@ export class LogsRepository extends BaseRepository<
       take,
     });
     return rows.reverse();
+  }
+
+  /** B3-05 — when the driver's first recorded event happened (any record status), or null. */
+  async findFirstEventAt(driverId: string): Promise<Date | null> {
+    const first = await this.prisma.eldEvent.findFirst({
+      where: { driverId },
+      orderBy: { eventDateTime: 'asc' },
+      select: { eventDateTime: true },
+    });
+    return first?.eventDateTime ?? null;
   }
 
   /** MB-10 — the originals the listed edit requests point at. */

@@ -608,6 +608,17 @@ describe('VehiclesService', () => {
       expect(vehiclesRepo.create).not.toHaveBeenCalled();
     });
 
+    it('B3-13 the create / update response carries the paired eldSerial like GET', async () => {
+      vehiclesRepo.findDeviceForPairing.mockResolvedValue(device() as never);
+      vehiclesRepo.findDeviceByVehicleId.mockResolvedValue({ serial: 'PT30_1C4F' } as never);
+      await expect(service.create({ ...base, deviceId: 'PT30_1C4F' } as never)).resolves.toMatchObject({ id: 'veh_new', eldSerial: 'PT30_1C4F' });
+      expect(vehiclesRepo.findDeviceByVehicleId).toHaveBeenCalledWith('veh_new');
+      vehiclesRepo.findDeviceByVehicleId.mockResolvedValue(null);
+      await expect(service.create(base as never)).resolves.toMatchObject({ eldSerial: null });
+      vehiclesRepo.findById.mockResolvedValue(makeVehicle() as never);
+      await expect(service.update('veh_1', { notes: 'x' })).resolves.toMatchObject({ id: 'veh_1', eldSerial: null });
+    });
+
     it('accepts `eldSerial` as an alias of `deviceId`', async () => {
       vehiclesRepo.findDeviceForPairing.mockResolvedValue(device() as never);
       await service.create({ ...base, eldSerial: 'pt30_1c4f' } as never);

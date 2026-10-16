@@ -10,7 +10,7 @@ import { addDays, dayEnd, dayKey, dayStart } from '../hos/engine/timezone';
 import { mapEldEventsToNormalized, type EldEventRow } from '../hos/hos-event-mapper';
 import { reconcileViolations, type ExistingViolation } from '../hos/hos-violation-plan';
 import { HOS_ENGINE_VERSION } from '../hos/hos.constants';
-import type { HosState, PreviousDay } from '../hos/hos.types';
+import type { HosState, PreviousDay, Violation, ViolationType } from '../hos/hos.types';
 import { buildDailyLogHeaders, RODS_HEADER_LOOKBACK_DAYS } from '../logs/daily-log-header';
 import { activeRecords, type SupersedeAware } from '../logs/rods';
 import { HosRecalcRepository } from './hos-recalc.repository';
@@ -26,7 +26,28 @@ export interface HosRecalcJobData {
   to?: string;
   /** Backfill / repair runs (`scripts/hos-recalc-backfill.ts`): rewrite rows, raise no alerts. */
   silent?: boolean;
+  /**
+   * BE-03 / BUG-002 — ISO instant to compute AS OF instead of now: the open-driving sweep sets it to
+   * the stale-status cap of a DRIVING record whose ELD went silent, so nothing past the cap is filed
+   * or alerted. Ignored when invalid or in the future.
+   */
+  asOf?: string;
 }
+
+/** The engine input `computeState` loads once and every engine run of one recalculation reuses. */
+interface EngineInput {
+  events: Array<EldEventRow & SupersedeAware>;
+  dailyLogs: Array<{ logDate: Date; onDutySec: number; drivingSec: number }>;
+  /**
+   * BE-01 — the RODS days adverse driving was invoked on. `undefined` = the driver row's flag is
+   * used as it is (the mobile-facing reads, and the batched web reads whose rows already carry the
+   * EFFECTIVE flag, BUG-001).
+   */
+  adverseDays?: string[];
+}
+
+/** The only limits §395.1(b)(1) adverse driving extends (+2 h each). */
+const ADVERSE_TYPES: ReadonlySet<ViolationType> = new Set<ViolationType>(['DRIVING_11', 'SHIFT_14']);
 
 export interface HosRecalcResult {
   driverId: string;
@@ -117,7 +138,10 @@ export class HosRecalcService {
    * Idempotent: the same events always produce the same rows, because every write is an upsert
    * on (driverId, logDate, type) and nothing is ever inserted blind.
    */
-  async recalculate(data: HosRecalcJobData, now: Date = new Date()): Promise<HosRecalcResult> {
+  async recalculate(data: HosRecalcJobData, requestedNow: Date = new Date()): Promise<HosRecalcResult> {
+    // BE-03 — `asOf` only ever moves the run back in time (an invalid date compares false).
+    const asOf = data.asOf ? new Date(data.asOf) : null;
+    const now = asOf && asOf.getTime() < requestedNow.getTime() ? asOf : requestedNow;
     const driver = await this.repo.findDriver(data.driverId);
     if (!driver) {
       this.logger.warn({ driverId: data.driverId }, 'hos.recalc for an unknown driver — skipped');
@@ -134,7 +158,9 @@ export class HosRecalcService {
     // history, and a header built while that day was still running would otherwise stay partial.
     await this.rebuildHeaders(driver.id, timezone, addDays(firstKey, -1), todayKey, now);
 
-    const state = await this.computeState(driver, timezone, firstKey, now);
+    // BE-01 / BUG-001 — violations are FILED from here: adverse limits only on the invoked days.
+    const input = await this.loadEngineInput(driver, timezone, firstKey, now, true);
+    const state = this.evaluate(driver, timezone, firstKey, now, input);
 
     const inScope = state.violations.filter((violation) => days.includes(violation.logDate));
     const existingRows = await this.repo.findViolations(driver.id, utcDate(firstKey), utcDate(todayKey));
@@ -145,6 +171,7 @@ export class HosRecalcService {
       status: row.status,
       exceededBySec: row.exceededBySec,
     }));
+    inScope.push(...this.cycleViolationsBeforeRestart(driver, timezone, firstKey, now, input, inScope, existing));
 
     const actions = reconcileViolations(inScope, existing, days);
     // Alert candidates: every OPEN row this run upserted. The queue job id (`hos-violation-<id>`)
@@ -322,33 +349,119 @@ export class HosRecalcService {
   async computeCurrentState(
     driverId: string,
     now: Date = new Date(),
+    /**
+     * BE-01 — `perDayAdverse`: apply the adverse limits on the invoked days only, as `recalculate`
+     * files them (web `ActiveViolationsService`). Off by default: the mobile drift check and the
+     * bootstrap keep the stored flag the app's engine also reads.
+     */
+    options: { perDayAdverse?: boolean } = {},
   ): Promise<{ state: HosState; timezone: string } | null> {
     const driver = await this.repo.findDriver(driverId);
     if (!driver) return null;
     const timezone = driver.homeTerminalTimezone;
-    const state = await this.computeState(driver, timezone, dayKey(timezone, now), now);
-    return { state, timezone };
+    const firstKey = dayKey(timezone, now);
+    const input = await this.loadEngineInput(driver, timezone, firstKey, now, options.perDayAdverse === true);
+    return { state: this.evaluate(driver, timezone, firstKey, now, input), timezone };
   }
 
   /**
-   * Loads the history the engine needs and runs it. The engine itself stays pure — every read
-   * happens here, nothing is written. `firstKey` is the first recalculated RODS day; history is
-   * pulled from `RECALC_LOOKBACK_DAYS` before it so the 70/8 recap and the running shift are
-   * both complete.
+   * Loads the history the engine needs. The engine itself stays pure — every read happens here,
+   * nothing is written. `firstKey` is the first recalculated RODS day; history is pulled from
+   * `RECALC_LOOKBACK_DAYS` before it so the 70/8 recap and the running shift are both complete.
    */
-  private async computeState(
+  private async loadEngineInput(
     driver: DriverHosRow,
     timezone: string,
     firstKey: string,
     now: Date,
-  ): Promise<HosState> {
+    perDayAdverse: boolean,
+  ): Promise<EngineInput> {
     const historyKey = addDays(firstKey, -RECALC_LOOKBACK_DAYS);
     const events = await this.repo.findEvents(driver.id, dayStart(timezone, historyKey), now);
     // `DailyLog.logDate` and `HosViolation.logDate` are Postgres DATE columns: Prisma hands
     // them over as UTC midnight, so they are compared and read back in UTC, never in the
     // driver's zone — doing otherwise shifts every log date a day west.
     const dailyLogs = await this.repo.findDailyLogs(driver.id, utcDate(historyKey), utcDate(firstKey));
-    return this.runEngine(driver, timezone, firstKey, now, events, dailyLogs);
+    if (!perDayAdverse) return { events, dailyLogs };
+    const adverseDays = driver.adverseDrivingEnabled ? await this.repo.findAdverseInvokedDays(driver, historyKey, dayKey(timezone, now)) : [];
+    return { events, dailyLogs, adverseDays };
+  }
+
+  /**
+   * BE-01 / BUG-001 — 49 CFR §395.1(b)(1): `adverseDrivingEnabled` only PERMITS the exception; the
+   * +2 h drive / shift limits apply to driving on an invoked RODS day, or in a shift that started
+   * on one. The shared engine (mirrored by the mobile Dart engine) takes one flag for the whole
+   * run, so it is run with and without the exception and each DRIVING_11 / SHIFT_14 is taken from
+   * the run whose limits applied to it; the clocks follow today's. Every other figure is identical
+   * in both runs.
+   */
+  private evaluate(driver: DriverHosRow, timezone: string, firstKey: string, now: Date, input: EngineInput): HosState {
+    const run = (at: Date, adverse: boolean): HosState => this.runEngine(driver, timezone, firstKey, at, input.events, input.dailyLogs, adverse);
+    if (input.adverseDays === undefined) return run(now, driver.adverseDrivingEnabled);
+    const base = run(now, false);
+    const invoked = new Set(input.adverseDays);
+    if (!driver.adverseDrivingEnabled || invoked.size === 0) return base;
+    const adverse = run(now, true);
+
+    const invokedOn = (at: Date | null): boolean => at !== null && invoked.has(dayKey(timezone, at));
+    // The shift a violation belongs to: the engine's shift start at the instant it was crossed
+    // (rest-based, so the same in both runs). Only looked up when an earlier day was invoked.
+    const applies = (violation: Violation): boolean =>
+      invoked.has(violation.logDate) ||
+      ([...invoked].some((day) => day < violation.logDate) && invokedOn(run(violation.occurredAt, false).shiftStartedAt));
+
+    const merged = new Map<string, Violation>();
+    const keep = (violation: Violation): void => {
+      const key = `${violation.logDate}|${violation.type}`;
+      const existing = merged.get(key);
+      if (!existing) {
+        merged.set(key, violation);
+        return;
+      }
+      // Same merge as the engine's collector: earliest crossing, largest overrun.
+      merged.set(key, {
+        ...(violation.exceededBySec > existing.exceededBySec ? violation : existing),
+        occurredAt: violation.occurredAt.getTime() < existing.occurredAt.getTime() ? violation.occurredAt : existing.occurredAt,
+      });
+    };
+    for (const violation of base.violations) if (!ADVERSE_TYPES.has(violation.type) || !applies(violation)) keep(violation);
+    for (const violation of adverse.violations) if (ADVERSE_TYPES.has(violation.type) && applies(violation)) keep(violation);
+    const violations = [...merged.values()].sort(
+      (a, b) => a.occurredAt.getTime() - b.occurredAt.getTime() || a.type.localeCompare(b.type),
+    );
+
+    const today = invoked.has(dayKey(timezone, now)) || invokedOn(base.shiftStartedAt) ? adverse : base;
+    return { ...today, violations };
+  }
+
+  /**
+   * B3-02 — the engine drops every on-duty hour before the latest 34 h restart (§395.3(c)), so a
+   * run that sees a restart no longer reports the CYCLE_70 / CYCLE_60 of a day BEFORE it, although
+   * that driving was over the cycle when it happened. Each OPEN cycle row the fresh result omits is
+   * re-checked with the engine as of the end of its own day (that day's restart context, nothing
+   * after it): when the cycle was still broken then, the violation is kept — returned here for the
+   * reconcile step — instead of being AUTO_CLEARED. An edit that really removed the driving clears
+   * it as before. Server-only; the shared engine is unchanged.
+   */
+  private cycleViolationsBeforeRestart(
+    driver: DriverHosRow,
+    timezone: string,
+    firstKey: string,
+    now: Date,
+    input: EngineInput,
+    fresh: Violation[],
+    existing: ExistingViolation[],
+  ): Violation[] {
+    const freshKeys = new Set(fresh.map((violation) => `${violation.logDate}|${violation.type}`));
+    const kept: Violation[] = [];
+    for (const row of existing) {
+      if (row.status !== 'OPEN' || !row.type.startsWith('CYCLE_') || freshKeys.has(`${row.logDate}|${row.type}`)) continue;
+      const endOfDay = new Date(Math.min(dayEnd(timezone, row.logDate).getTime(), now.getTime()));
+      const then = this.evaluate(driver, timezone, firstKey, endOfDay, input);
+      const violation = then.violations.find((v) => v.logDate === row.logDate && v.type === row.type);
+      if (violation) kept.push(violation);
+    }
+    return kept;
   }
 
   /**
@@ -418,7 +531,7 @@ export class HosRecalcService {
       const ownLogs = (logsByDriver.get(w.driver.id) ?? []).filter(
         (l) => l.logDate.getTime() >= w.logsFrom.getTime() && l.logDate.getTime() <= w.logsTo.getTime(),
       );
-      result.set(w.driver.id, this.runEngine(w.driver, w.timezone, w.firstKey, now, ownEvents, ownLogs));
+      result.set(w.driver.id, this.runEngine(w.driver, w.timezone, w.firstKey, now, ownEvents, ownLogs, w.driver.adverseDrivingEnabled));
     }
   }
 
@@ -435,6 +548,8 @@ export class HosRecalcService {
     now: Date,
     events: Array<EldEventRow & SupersedeAware>,
     dailyLogs: Array<{ logDate: Date; onDutySec: number; drivingSec: number }>,
+    /** BE-01 — the adverse flag for this run (see `evaluate`); never read off the row here. */
+    adverseDrivingEnabled: boolean,
   ): HosState {
     const previousDays: PreviousDay[] = dailyLogs
       .map((log) => ({ date: dayKey('UTC', log.logDate), onDutySec: log.onDutySec + log.drivingSec }))
@@ -446,7 +561,7 @@ export class HosRecalcService {
         driverId: driver.id,
         allowPersonalConveyance: driver.allowPersonalConveyance,
         allowYardMove: driver.allowYardMove,
-        adverseDrivingEnabled: driver.adverseDrivingEnabled,
+        adverseDrivingEnabled,
         shortHaulException: driver.shortHaulException,
         splitSleeperEnabled: driver.splitSleeperEnabled,
       },
