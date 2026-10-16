@@ -3,6 +3,7 @@ import { Logger, type OnModuleInit } from '@nestjs/common';
 import type { Job, Queue } from 'bullmq';
 import { AppConfigService } from '../core/config/config.service';
 import { QUEUES } from '../core/queue/queue.constants';
+import { staleStatusCapAt } from '../modules/drivers/lib/stale-status';
 import { addDays, dayKey } from '../modules/hos/engine/timezone';
 import { HosRecalcRepository, type OpenDrivingRow } from '../modules/hos-recalc/hos-recalc.repository';
 
@@ -27,6 +28,11 @@ export function openDrivingFromDate(row: OpenDrivingRow, now: Date): string {
   const earliest = addDays(dayKey(row.homeTerminalTimezone, now), -HOS_OPEN_DRIVING_LOOKBACK_DAYS);
   const start = dayKey(row.homeTerminalTimezone, row.since);
   return start < earliest ? earliest : start;
+}
+
+/** BE-03 — one at-cap recalculation per stuck DRIVING record (BullMQ job id; no ':' in v5). */
+export function staleRecalcJobId(row: OpenDrivingRow): string {
+  return `hos-recalc-stale-${row.driverId}-${row.since.getTime()}`;
 }
 
 /**
@@ -84,7 +90,16 @@ export class HosOpenDrivingProcessor extends WorkerHost implements OnModuleInit 
     let enqueued = 0;
     for (const row of rows) {
       try {
-        await this.recalcQueue.add('hos.recalc', { driverId: row.driverId, fromDate: openDrivingFromDate(row, now) });
+        const fromDate = openDrivingFromDate(row, now);
+        // BE-03 / BUG-002 — past the 16 h stale-status cap the ELD went silent; the driver is not
+        // still driving. Recalculate AS OF the cap (what was crossed before it stays filed) and only
+        // once per stuck record, so nothing after the cap is filed or alerted.
+        const capAt = staleStatusCapAt('D', row.since, now);
+        if (capAt) {
+          await this.recalcQueue.add('hos.recalc', { driverId: row.driverId, fromDate, asOf: capAt.toISOString() }, { jobId: staleRecalcJobId(row) });
+        } else {
+          await this.recalcQueue.add('hos.recalc', { driverId: row.driverId, fromDate });
+        }
         enqueued += 1;
       } catch (err) {
         this.logger.error({ err, driverId: row.driverId }, 'Failed to enqueue hos.recalc for an open driving record');

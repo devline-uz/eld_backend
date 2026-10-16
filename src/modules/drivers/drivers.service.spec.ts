@@ -534,6 +534,14 @@ describe('DriversService', () => {
       repo.update.mockResolvedValue(makeDriver() as never);
     });
 
+    it.each([['Driver_username_lower_live_key'], ['(lower(btrim(username)))']])(
+      'B3-06 — a racing case-variant username (P2002 on the case-insensitive index, target %s) is USERNAME_TAKEN',
+      async (target) => {
+        repo.create.mockRejectedValueOnce(p2002(target));
+        await expect(service.create({ ...baseDto, username: 'JDOE' })).rejects.toMatchObject(TAKEN.username);
+      },
+    );
+
     it('rejects a phone another live driver has, compared on digits (+1 dropped)', async () => {
       repo.findLiveIdByPhoneKey.mockImplementation((key) => Promise.resolve(key === '6145551000' ? 'drv_2' : null));
       await expect(service.create({ ...baseDto, phone: '+1 (614) 555-1000' })).rejects.toMatchObject(TAKEN.phone);

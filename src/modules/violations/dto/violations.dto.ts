@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { CalendarDateQuerySchema } from '../../../common/dto/calendar-day.dto';
 import { MAX_LIST_PAGE } from '../../../common/dto/list-query.dto';
 
 /**
@@ -10,8 +11,9 @@ export const VIOLATION_WINDOWS = { '24h': 24, '7d': 24 * 7, '30d': 24 * 30 } as 
 export const ViolationListQueryDto = z
   .object({
     window: z.enum(['24h', '7d', '30d']).optional(),
-    from: z.coerce.date().optional(),
-    to: z.coerce.date().optional(),
+    // B3-14 — a real calendar day: `2026-02-30` is "Not a calendar date", not Mar 2.
+    from: CalendarDateQuerySchema.optional(),
+    to: CalendarDateQuerySchema.optional(),
     driverId: z.string().uuid().optional(),
     type: z.enum(['DRIVING_11', 'SHIFT_14', 'BREAK_30', 'CYCLE_70', 'CYCLE_60', 'FORM_MANNER']).optional(),
     /** Defaults to OPEN — the W-01 KPI counts open violations (web/tz.md §W-01 KPI 3). */

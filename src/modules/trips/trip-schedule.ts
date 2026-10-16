@@ -8,6 +8,9 @@ import type { TripStatus } from '@prisma/client';
  *  - DRAFT / PLANNED / ASSIGNED — `plannedStartAt` → `plannedEndAt`; no planned end = open-ended.
  *    A draft counts: the web board lists it under `Scheduled` (DRAFT ∪ PLANNED) with its unit,
  *    and it publishes in place, so it reserves the unit like a planned trip.
+ *    B3-07 — except a draft with no planned end: it cannot be published without one (CODE-058),
+ *    so it reserves nothing (it would otherwise block the resource forever); it is checked when
+ *    published.
  *  - IN_PROGRESS — `startedAt ?? plannedStartAt` → `plannedEndAt`, stretched to "now" while it
  *    overruns; no planned end = open-ended (it is on the road until delivered).
  *  - DELIVERED — the actual `startedAt` → `completedAt` (planned values as a fallback).
@@ -41,6 +44,7 @@ export interface ScheduledTripLike {
 export function occupancyOf(trip: ScheduledTripLike, now: Date = new Date()): TimeWindow | null {
   switch (trip.status) {
     case 'DRAFT':
+      return trip.plannedStartAt && trip.plannedEndAt ? { start: trip.plannedStartAt, end: trip.plannedEndAt } : null;
     case 'PLANNED':
     case 'ASSIGNED':
       return trip.plannedStartAt ? { start: trip.plannedStartAt, end: trip.plannedEndAt } : null;
@@ -57,6 +61,17 @@ export function occupancyOf(trip: ScheduledTripLike, now: Date = new Date()): Ti
     default:
       return null;
   }
+}
+
+/**
+ * B3-03 — the range a trip being started now must be free for: what `occupancyOf` gives it once
+ * IN_PROGRESS — `now` → planned end (at least `now`, open-ended without one). Widened by 1 s on
+ * each side so a trip that is overrunning exactly at `now` still counts as overlapping.
+ */
+export function startingWindow(plannedEndAt: Date | null, now: Date = new Date()): TimeWindow {
+  const start = new Date(now.getTime() - 1000);
+  if (!plannedEndAt) return { start, end: null };
+  return { start, end: new Date(Math.max(plannedEndAt.getTime(), now.getTime() + 1000)) };
 }
 
 /** `a.start < b.end && a.end > b.start`; touching endpoints do not overlap, `null` end = +∞. */

@@ -40,6 +40,9 @@ class FakeRepo {
   /** FE-01 — `Carrier.timezone` (the office zone alert text is written in). */
   carrierZone: string | null = null;
   carrierTimezone = jest.fn(async () => this.carrierZone);
+  /** BE-01 — `AdverseDrivingInvocation` days (the real query returns [] unless permitted). */
+  adverseDays: string[] = [];
+  findAdverseInvokedDays = jest.fn(async (_driver: unknown, from: string, to: string) => this.adverseDays.filter((d) => d >= from && d <= to));
   findEvents = jest.fn(async (_id: string, from: Date, to: Date) => this.events.filter((e) => e.eventDateTime >= from && e.eventDateTime <= to));
   findDailyLogs = jest.fn(async (_id: string, from: Date, to: Date) => this.dailyLogs.filter((l) => l.logDate >= from && l.logDate <= to));
   /** Batched reads: every fake row belongs to the fake driver, the rest are "other drivers". */
@@ -369,11 +372,140 @@ describe('HosRecalcService', () => {
     expect(result.state?.cycleRemainingSec).toBe(60 * H);
   });
 
-  it('honours the driver exception flags', async () => {
+  it('honours the driver exception flags on a day adverse driving was invoked', async () => {
     repo.driver = { ...repo.driver, adverseDrivingEnabled: true };
+    repo.adverseDays = ['2025-01-14'];
     repo.events = OVER_LIMIT_DAY;
     const result = await service.recalculate({ driverId: 'driver-1', fromDate: '2025-01-14' }, NOW);
     expect(result.state?.violations.map((v) => v.type)).toEqual(['BREAK_30']);
+    expect(repo.findAdverseInvokedDays).toHaveBeenCalledWith(expect.objectContaining({ id: 'driver-1' }), '2025-01-05', '2025-01-14');
+  });
+
+  describe('BE-01 — adverse driving PERMITTED but not invoked never relaxes the filed limits', () => {
+    beforeEach(() => {
+      repo.driver = { ...repo.driver, adverseDrivingEnabled: true };
+    });
+
+    it('files DRIVING_11 when the exception was invoked on another day only', async () => {
+      repo.adverseDays = ['2025-01-13'];
+      repo.events = OVER_LIMIT_DAY;
+      const result = await service.recalculate({ driverId: 'driver-1', fromDate: '2025-01-14' }, NOW);
+      expect(result.state?.violations.map((v) => v.type).sort()).toEqual(['BREAK_30', 'DRIVING_11']);
+      expect(repo.upsertViolation).toHaveBeenCalledWith(expect.objectContaining({ type: 'DRIVING_11', exceededBySec: 1 * H }));
+      // The forecast follows today's (non-invoked) limits too: 11 h, not 13 h.
+      expect(result.state?.driveRemainingSec).toBe(0);
+    });
+
+    it('files DRIVING_11 when the exception was never invoked', async () => {
+      repo.events = OVER_LIMIT_DAY;
+      const result = await service.recalculate({ driverId: 'driver-1', fromDate: '2025-01-14' }, NOW);
+      expect(result.state?.violations.map((v) => v.type).sort()).toEqual(['BREAK_30', 'DRIVING_11']);
+    });
+
+    // Shift starts 18:00 EST on 01-13; 12 h of driving, the 11 h limit is crossed at 05:00 EST on 01-14.
+    const overnight = [duty('2025-01-13T05:00:00Z', 1, 1), duty('2025-01-13T23:00:00Z', 3, 2), duty('2025-01-14T11:00:00Z', 1, 3)];
+
+    it('applies the 13 h limit to a shift that STARTED on an invoked day', async () => {
+      repo.adverseDays = ['2025-01-13'];
+      repo.events = overnight;
+      const result = await service.recalculate({ driverId: 'driver-1', fromDate: '2025-01-13' }, NOW);
+      expect(result.state?.violations.map((v) => v.type)).toEqual(['BREAK_30']);
+    });
+
+    it('keeps the 11 h limit for that overnight shift when no day of it was invoked', async () => {
+      repo.adverseDays = ['2025-01-12'];
+      repo.events = overnight;
+      const result = await service.recalculate({ driverId: 'driver-1', fromDate: '2025-01-13' }, NOW);
+      expect(result.state?.violations.find((v) => v.type === 'DRIVING_11')).toMatchObject({ logDate: '2025-01-14', exceededBySec: 1 * H });
+    });
+
+    it('files the 13 h overrun on the day it is crossed, not the 11 h one of the invoked day', async () => {
+      // Shift starts 12:00 EST on 01-13 (invoked); 14 h of driving: 11 h crossed 23:00 EST on 01-13,
+      // 13 h crossed 01:00 EST on 01-14.
+      repo.adverseDays = ['2025-01-13'];
+      repo.events = [duty('2025-01-13T05:00:00Z', 1, 1), duty('2025-01-13T17:00:00Z', 3, 2), duty('2025-01-14T07:00:00Z', 1, 3)];
+      const result = await service.recalculate({ driverId: 'driver-1', fromDate: '2025-01-13' }, NOW);
+      const driving = result.state?.violations.filter((v) => v.type === 'DRIVING_11');
+      expect(driving).toEqual([expect.objectContaining({ logDate: '2025-01-14', exceededBySec: 1 * H })]);
+    });
+
+    it('never asks for invocations for a driver who is not permitted the exception', async () => {
+      repo.driver = { ...repo.driver, adverseDrivingEnabled: false };
+      repo.adverseDays = ['2025-01-14'];
+      repo.events = OVER_LIMIT_DAY;
+      const result = await service.recalculate({ driverId: 'driver-1', fromDate: '2025-01-14' }, NOW);
+      expect(repo.findAdverseInvokedDays).not.toHaveBeenCalled();
+      expect(result.state?.violations.map((v) => v.type).sort()).toEqual(['BREAK_30', 'DRIVING_11']);
+    });
+
+    it('computeCurrentState keeps the stored flag by default (mobile drift parity) and applies the invoked days on request', async () => {
+      repo.events = OVER_LIMIT_DAY;
+      const mobile = await service.computeCurrentState('driver-1', NOW);
+      expect(mobile?.state.violations.map((v) => v.type)).toEqual(['BREAK_30']);
+      expect(repo.findAdverseInvokedDays).not.toHaveBeenCalled();
+      const web = await service.computeCurrentState('driver-1', NOW, { perDayAdverse: true });
+      expect(web?.state.violations.map((v) => v.type).sort()).toEqual(['BREAK_30', 'DRIVING_11']);
+    });
+  });
+
+  describe('BE-03 — `asOf` (the stale-status cap of the open-driving sweep)', () => {
+    it('computes the run at that instant instead of now', async () => {
+      repo.events = OVER_LIMIT_DAY;
+      // 8 h of driving by 23:00Z: neither DRIVING_11 nor BREAK_30 has been crossed yet.
+      const result = await service.recalculate({ driverId: 'driver-1', fromDate: '2025-01-14', asOf: '2025-01-14T23:00:00Z' }, NOW);
+      expect(result.state?.driveUsedSec).toBe(8 * H);
+      expect(repo.upsertViolation).not.toHaveBeenCalled();
+    });
+
+    it('ignores an `asOf` in the future or unparseable', async () => {
+      repo.events = OVER_LIMIT_DAY;
+      expect((await service.recalculate({ driverId: 'driver-1', fromDate: '2025-01-14', asOf: '2025-02-01T00:00:00Z' }, NOW)).state?.driveUsedSec).toBe(12 * H);
+      expect((await service.recalculate({ driverId: 'driver-1', fromDate: '2025-01-14', asOf: 'garbage' }, NOW)).state?.driveUsedSec).toBe(12 * H);
+    });
+  });
+
+  describe('B3-02 — a cycle violation before a later 34 h restart is never auto-cleared by it', () => {
+    const M = 60;
+    /** Consecutive duty records from 2026-04-01 00:00 EDT; returns the events and the end instant. */
+    function timeline(steps: Array<[number, number]>): { events: ReturnType<typeof duty>[]; end: Date } {
+      let t = new Date('2026-04-01T04:00:00Z').getTime();
+      const events = steps.map(([sec, code], i) => {
+        const event = duty(new Date(t).toISOString(), code, i + 1);
+        t += sec * 1000;
+        return event;
+      });
+      return { events, end: new Date(t) };
+    }
+    // 12 h on duty a day (11 h driving, legal break): the 8-day total passes 70 h on day 6 (04-06).
+    const day: Array<[number, number]> = [[8 * H, 3], [30 * M, 1], [3 * H, 3], [1 * H, 4], [11 * H + 30 * M, 1]];
+    const sixDays = ([] as Array<[number, number]>).concat(...Array.from({ length: 6 }, () => day));
+
+    async function fileCycleViolation(): Promise<void> {
+      const first = timeline(sixDays);
+      repo.events = first.events;
+      await service.recalculate({ driverId: 'driver-1', fromDate: '2026-04-01' }, first.end);
+      expect(repo.violations.filter((v) => v.type === 'CYCLE_70').map((v) => [v.logDate.toISOString().slice(0, 10), v.status])).toEqual([['2026-04-06', 'OPEN']]);
+    }
+
+    it('keeps the CYCLE_70 of 04-06 OPEN when a later recalc covering that day sees the restart', async () => {
+      await fileCycleViolation();
+      const later = timeline([...sixDays, [34 * H, 1], [2 * H, 3], [1 * M, 1]]);
+      repo.events = later.events;
+      const result = await service.recalculate({ driverId: 'driver-1', fromDate: '2026-04-06' }, later.end);
+      expect(result.autoCleared).toBe(0);
+      expect(repo.violations.find((v) => v.type === 'CYCLE_70')).toMatchObject({ status: 'OPEN' });
+      expect(repo.dailyFlagUpdates.filter((u) => u.logDate === '2026-04-06').pop()?.count).toBe(1);
+    });
+
+    it('still auto-clears it when an edit removed the driving that broke the cycle', async () => {
+      await fileCycleViolation();
+      // Day 6 edited to off duty, then the same restart and later driving.
+      const edited = timeline([...sixDays.slice(0, day.length * 5), [24 * H, 1], [34 * H, 1], [2 * H, 3], [1 * M, 1]]);
+      repo.events = edited.events;
+      const result = await service.recalculate({ driverId: 'driver-1', fromDate: '2026-04-06' }, edited.end);
+      expect(result.autoCleared).toBe(1);
+      expect(repo.violations.find((v) => v.type === 'CYCLE_70')).toMatchObject({ status: 'AUTO_CLEARED' });
+    });
   });
 
   it('updates the daily log violation flags for every recalculated day', async () => {

@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import type { DailyLog, Driver, EldEvent, HosViolation, UnidentifiedSegment } from '@prisma/client';
 import { BaseRepository, ModelDelegate } from '../../core/prisma/base.repository';
 import { PrismaService } from '../../core/prisma/prisma.service';
+import { findAdverseInvokedDays } from '../drivers/lib/adverse-driving';
 
 /** LIVE-001 — `HosViolation.resolutionNote` of a row the recalculation cleared (≤ 60 chars, as a human note). */
 export const AUTO_CLEAR_NOTE = 'Auto-cleared: no longer supported by the driver\'s records';
@@ -87,6 +88,11 @@ export class HosRecalcRepository extends BaseRepository<
   async carrierTimezone(): Promise<string | null> {
     const carrier = await this.prisma.carrier.findFirst({ select: { timezone: true } });
     return carrier?.timezone ?? null;
+  }
+
+  /** BE-01 — RODS days in `[fromKey, toKey]` with adverse driving invoked (empty unless permitted). */
+  findAdverseInvokedDays(driver: Pick<Driver, 'id' | 'homeTerminalTimezone' | 'adverseDrivingEnabled'>, fromKey: string, toKey: string): Promise<string[]> {
+    return findAdverseInvokedDays(this.prisma, driver, fromKey, toKey);
   }
 
   /**

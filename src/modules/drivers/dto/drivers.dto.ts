@@ -20,6 +20,23 @@ const OptionalDriverEmail = z
   .nullable()
   .optional();
 
+/** B3-11 — digits with an optional leading `+`, spaces, dashes and parentheses; 7–15 digits
+ * (E.164 caps at 15). The web sends E.164 (`+998901234567`); the seed / older rows are formatted
+ * (`+1-614-555-0110`, `(614) 555-0100`) and still pass. Blank = no phone (`trimOrNull`). */
+const PHONE_CHARS_RE = /^\+?[\d\s()-]+$/;
+const DriverPhone = z
+  .string()
+  .max(30)
+  .refine(
+    (value) => {
+      const text = value.trim();
+      if (!text) return true;
+      const digits = text.replace(/\D/g, '').length;
+      return PHONE_CHARS_RE.test(text) && digits >= 7 && digits <= 15;
+    },
+    { message: 'phone must be a phone number: 7–15 digits with an optional leading +, spaces, dashes or parentheses.' },
+  );
+
 /** TZ §5.3 — driver identity, CDL, and the per-driver exception flags. */
 export const CreateDriverDto = z.object({
   // BE-015 — identity fields are trimmed; whitespace-only is rejected.
@@ -29,7 +46,7 @@ export const CreateDriverDto = z.object({
   // Trimmed before the format check (a pasted trailing space is not a 422); RFC 5321 length cap.
   // Optional: `''` / whitespace / `null` (a blank form field or CSV cell) = no email, no invite.
   email: OptionalDriverEmail,
-  phone: z.string().max(30).optional(),
+  phone: DriverPhone.optional(),
   cdlNumber: z.string().trim().min(1).max(40),
   /** BE-017 — a US state / Canadian province code, upper-cased. */
   cdlState: RegionCodeSchema,
@@ -81,7 +98,7 @@ export const UpdateDriverDto = CreateDriverDto.omit({ username: true, password: 
     email: OptionalDriverEmail,
     hosRuleset: HosRulesetEnum.optional(),
     /** CODE-010 — `null` / `''` clears the phone; omitted → unchanged. */
-    phone: z.string().max(30).nullable().optional(),
+    phone: DriverPhone.nullable().optional(),
     /** CODE-010 — `null` clears the exemption reason; omitted → unchanged. */
     eldExemptReason: z.string().max(200).nullable().optional(),
     status: DriverStatusEnum.optional(),
@@ -97,7 +114,8 @@ export const DriverListQueryDto = z.object({
   page: z.coerce.number().int().min(1).max(MAX_LIST_PAGE).default(1),
   limit: z.coerce.number().int().min(1).max(200).default(25),
   sort: z.string().max(60).optional(),
-  q: z.string().max(200).optional(),
+  // L3-06 — trimmed server-side (" 101 " used to match nothing).
+  q: z.string().trim().max(200).optional(),
   status: DriverStatusEnum.optional(),
 });
 export type DriverListQueryDto = z.infer<typeof DriverListQueryDto>;

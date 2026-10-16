@@ -35,6 +35,11 @@ export class MeResponse {
   @ApiPropertyOptional({ type: String, nullable: true, description: 'User only.' }) avatarUrl?: string | null;
   @ApiPropertyOptional({ type: String, nullable: true, description: 'User only.' }) carrierName?: string | null;
   @ApiPropertyOptional({ type: String, nullable: true, description: 'Driver: home terminal zone; user: carrier zone.' }) homeTerminalTimezone?: string | null;
+  @ApiPropertyOptional({
+    type: Boolean,
+    description: 'User only (F3-11) — whether the company profile has a compliance email (alert email destination); readable without `carrierSettings`.',
+  })
+  hasComplianceEmail?: boolean;
 }
 
 /** `POST /auth/password/reset-code` — web "Forgot password?" step 1. */

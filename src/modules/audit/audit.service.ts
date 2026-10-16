@@ -3,6 +3,8 @@ import { EditorType, Prisma } from '@prisma/client';
 import { EventBusService } from '../../core/events/event-bus.service';
 import { AUDIT_EVENT, AuditEventPayload } from '../../common/interceptors/audit.interceptor';
 import { AuditLogFilter, AuditRepository } from './audit.repository';
+import { AppException } from '../../common/errors/app.exception';
+import { ERROR_CODES } from '../../common/errors/codes';
 
 export interface AuditLogView {
   id: string;
@@ -74,6 +76,11 @@ export class AuditService implements OnModuleInit {
   /** B-62 — the `USER ustuni "USER" ko'rsatadi` gap: resolves `actorName`/`actorEmail` for
    * every row in one extra pair of batched queries (never per-row). */
   async list(filter: AuditLogFilter, limit: number, cursor?: string): Promise<{ items: AuditLogView[]; nextCursor: string | null }> {
+    // B3-09 — the cursor is an `AuditLog.id` (bigint); anything else used to 500 in `BigInt()`.
+    if (cursor && !/^\d{1,18}$/.test(cursor)) {
+      const message = 'cursor must be the nextCursor of a previous page.';
+      throw new AppException(ERROR_CODES.VALIDATION_FAILED, message, 422, { cursor: message });
+    }
     const { items, nextCursor } = await this.repo.list(filter, limit, cursor);
     const userIds = items.filter((i) => i.actorType === EditorType.USER).map((i) => i.actorId);
     const driverIds = items.filter((i) => i.actorType === EditorType.DRIVER).map((i) => i.actorId);

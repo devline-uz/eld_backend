@@ -137,6 +137,9 @@ export const ERROR_CODES = {
   /** MR-23 — PC/YM (`specialCondition`) requested by a driver whose exceptions do not allow it
    * (`Driver.allowPersonalConveyance` / `allowYardMove`, §395.1(e)). 422. */
   SPECIAL_CONDITION_NOT_ALLOWED: 'SPECIAL_CONDITION_NOT_ALLOWED',
+  /** B3-05 — a carrier §395.30 proposal (`POST /logs/:driverId/edit-requests` / `events`) dated
+   * before the driver existed or older than the 6-month RODS retention window. 422. */
+  EDIT_OUTSIDE_WINDOW: 'EDIT_OUTSIDE_WINDOW',
 
   // --- transfers / eRODS (TZ §10) -----------------------------------------
   INVALID_TRANSFER_RECIPIENT: 'INVALID_TRANSFER_RECIPIENT',

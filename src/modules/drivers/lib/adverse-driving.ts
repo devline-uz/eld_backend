@@ -4,7 +4,9 @@
  * shift extension may apply only on a RODS day with an `AdverseDrivingInvocation` row.
  *
  * Web-panel reads (`GET /drivers/roster`, `GET /drivers/:id/hos`, `GET /live/fleet`) hand the
- * engine a driver row whose flag is the EFFECTIVE one: permitted AND invoked for today.
+ * engine a driver row whose flag is the EFFECTIVE one: permitted AND invoked for today. The
+ * violation-filing path (`hos.recalc`, W-08 `getDayView`) reads the invoked days instead
+ * (`findAdverseInvokedDays`, BE-01).
  */
 import type { PrismaService } from '../../../core/prisma/prisma.service';
 import { dayKey } from '../../hos/engine/timezone';
@@ -34,6 +36,25 @@ export async function findAdverseInvokedToday(
     select: { driverId: true, logDate: true },
   });
   return new Set(rows.filter((r) => dayKey('UTC', r.logDate) === today.get(r.driverId)).map((r) => r.driverId));
+}
+
+/**
+ * BE-01 — the same rule for the violation-filing path: the RODS days in `[fromKey, toKey]` with
+ * adverse driving invoked, for a PERMITTED driver; always empty for a driver without
+ * `adverseDrivingEnabled`.
+ */
+export async function findAdverseInvokedDays(
+  prisma: PrismaService,
+  driver: AdverseDriverRow,
+  fromKey: string,
+  toKey: string,
+): Promise<string[]> {
+  if (!driver.adverseDrivingEnabled) return [];
+  const rows = await prisma.adverseDrivingInvocation.findMany({
+    where: { driverId: driver.id, logDate: { gte: utcDate(fromKey), lte: utcDate(toKey) } },
+    select: { logDate: true },
+  });
+  return rows.map((r) => dayKey('UTC', r.logDate));
 }
 
 /** Copies of `drivers` whose `adverseDrivingEnabled` is true only when invoked for today. */

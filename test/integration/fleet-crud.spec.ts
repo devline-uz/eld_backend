@@ -147,4 +147,30 @@ describe('Fleet CRUD — vehicles, drivers, devices (Phase 2)', () => {
       await expect(tx.trailer.create({ data: { number } })).rejects.toMatchObject({ code: 'P2002' });
     });
   });
+
+  it('B3-06 — live driver usernames are unique ignoring case (Driver_username_lower_live_key); P2002 names the username', async () => {
+    await inRolledBackTransaction(async (tx) => {
+      const stamp = Date.now();
+      const driver = (username: string, cdl: number, deletedAt: Date | null = null) =>
+        tx.driver.create({
+          data: { username, passwordHash: 'x', firstName: 'Case', lastName: 'Test', cdlNumber: `B306${stamp}${cdl}`, cdlState: 'OH', homeTerminalName: 'Columbus, OH', deletedAt },
+        });
+      await driver(`b306_JDoe_${stamp}`, 1);
+      // A soft-deleted case variant never blocks (same live-row predicate as Driver_username_live_key).
+      await driver(`B306_JDOE_${stamp}`, 2, new Date());
+      const err = await driver(`b306_jdoe_${stamp}`, 3).catch((e: unknown) => e);
+      expect(err).toMatchObject({ code: 'P2002' });
+      // DriversService.conflictOnDuplicate maps the target with /username/i -> USERNAME_TAKEN.
+      expect(JSON.stringify((err as { meta?: unknown }).meta)).toMatch(/username/i);
+    });
+  });
+
+  it('B3-06 — live trailer numbers are unique ignoring case (Trailer_number_upper_live_key)', async () => {
+    await inRolledBackTransaction(async (tx) => {
+      const stamp = Date.now();
+      await tx.trailer.create({ data: { number: `b306-tr-${stamp}` } });
+      await tx.trailer.create({ data: { number: `B306-TR-${stamp}`, deletedAt: new Date() } });
+      await expect(tx.trailer.create({ data: { number: `B306-Tr-${stamp}` } })).rejects.toMatchObject({ code: 'P2002' });
+    });
+  });
 });

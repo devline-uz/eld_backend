@@ -753,6 +753,9 @@ export class AuthService {
       avatarUrl,
       carrierName: carrier?.name ?? null,
       homeTerminalTimezone: carrier?.timezone ?? null,
+      // F3-11 — `GET /carrier` needs `carrierSettings`; roles without it (Fleet Manager) still
+      // need to know whether alert emails have a destination. Only the fact, not the address.
+      hasComplianceEmail: Boolean(carrier?.complianceEmail?.trim()),
     };
   }
 

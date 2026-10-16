@@ -95,6 +95,36 @@ describe('TripsService — lifecycle transitions', () => {
     expect(repo.update).not.toHaveBeenCalled();
   });
 
+  it('B3-03 — starting a trip early is a 409 when [now, plannedEnd) overlaps a later trip of the driver', async () => {
+    const h = 3_600_000;
+    const now = Date.now();
+    const { service, repo } = buildService({
+      id: 'trp_a', number: 'TRP-A', status: 'ASSIGNED', driverId: 'drv_1', vehicleId: null, trailerId: null, etaAt: null, startedAt: null,
+      plannedStartAt: new Date(now + 72 * h), plannedEndAt: new Date(now + 82 * h),
+    });
+    repo.findDriverScheduleCandidates.mockResolvedValueOnce([
+      { id: 'trp_b', number: 'TRP-B', status: 'ASSIGNED', plannedStartAt: new Date(now + 24 * h), plannedEndAt: new Date(now + 34 * h), startedAt: null, completedAt: null, driver: { firstName: 'Tom', lastName: 'A' } },
+    ]);
+    await expect(service.update('trp_a', { status: 'IN_PROGRESS' })).rejects.toMatchObject({ code: 'TRIP_SCHEDULE_CONFLICT', status: 409 });
+    expect(repo.update).not.toHaveBeenCalled();
+    const window = repo.findDriverScheduleCandidates.mock.calls[0][1] as { start: Date; end: Date | null };
+    expect(window.start.getTime()).toBeLessThanOrEqual(Date.now());
+    expect(window.end).toEqual(new Date(now + 82 * h));
+  });
+
+  it('B3-03 — starting a trip on time with no overlap still succeeds', async () => {
+    const h = 3_600_000;
+    const now = Date.now();
+    const { service, repo } = buildService({
+      id: 'trp_a', number: 'TRP-A', status: 'ASSIGNED', driverId: 'drv_1', vehicleId: null, trailerId: null, etaAt: null, startedAt: null,
+      plannedStartAt: new Date(now), plannedEndAt: new Date(now + 10 * h),
+    });
+    repo.findDriverScheduleCandidates.mockResolvedValueOnce([
+      { id: 'trp_b', number: 'TRP-B', status: 'ASSIGNED', plannedStartAt: new Date(now + 24 * h), plannedEndAt: new Date(now + 34 * h), startedAt: null, completedAt: null, driver: null },
+    ]);
+    await expect(service.update('trp_a', { status: 'IN_PROGRESS' })).resolves.toMatchObject({ status: 'IN_PROGRESS' });
+  });
+
   it('LIVE-033 — Start trip is a 409 when the unit has gone out of service', async () => {
     const { service, repo } = buildService({
       id: 'trp_1', status: 'ASSIGNED', driverId: 'drv_1', vehicleId: 'veh_1', trailerId: null, etaAt: null, startedAt: null,
@@ -378,6 +408,19 @@ describe('TripsService — unit schedule overlap (web panel)', () => {
     await expect(
       service.create({ number: 'TRP-8b', vehicleId: VEH, plannedStartAt: at(12), plannedEndAt: at(16), draft: false }, 'usr_1'),
     ).rejects.toMatchObject({ code: 'TRIP_SCHEDULE_CONFLICT' });
+  });
+
+  it('B3-07 an open-ended draft (start, no end) neither reserves nor is checked', async () => {
+    const { service, repo } = buildService();
+    // an earlier open-ended draft on the unit does not block a trip 60 days later
+    repo.findUnitScheduleCandidates.mockResolvedValueOnce([other({ status: 'DRAFT', plannedEndAt: null })]);
+    await service.create({ number: 'TRP-8e', vehicleId: VEH, plannedStartAt: at(24 * 60), plannedEndAt: at(24 * 60 + 4), draft: false }, 'usr_1');
+    // saving another open-ended draft does not look for conflicts (it is checked when published)
+    repo.findUnitScheduleCandidates.mockClear();
+    repo.findUnitScheduleCandidates.mockResolvedValueOnce([other()]);
+    await service.create({ number: 'TRP-8f', vehicleId: VEH, plannedStartAt: at(12), draft: true }, 'usr_1');
+    expect(repo.findUnitScheduleCandidates).not.toHaveBeenCalled();
+    expect(repo.createWithStops).toHaveBeenCalledTimes(2);
   });
 
   it('a draft without a unit or without a start is never checked', async () => {

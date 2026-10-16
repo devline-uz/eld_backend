@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { InstantSchema } from '../../../common/dto/instant.dto';
 import { ListQueryDto } from '../../../common/dto/list-query.dto';
 
 export const TripStatusEnum = z.enum(['DRAFT', 'PLANNED', 'ASSIGNED', 'IN_PROGRESS', 'DELIVERED', 'CANCELLED']);
@@ -22,7 +23,7 @@ const StopDto = z.object({
   address: z.string().max(300).optional(),
   latitude: z.number().min(-90).max(90).optional(),
   longitude: z.number().min(-180).max(180).optional(),
-  scheduledAt: z.coerce.date().optional(),
+  scheduledAt: InstantSchema.optional(),
   note: z.string().max(500).optional(),
 });
 type StopDto = z.infer<typeof StopDto>;
@@ -80,8 +81,8 @@ export const CreateTripDto = z.object({
   commodity: z.string().max(120).optional(),
   weightLbs: z.number().int().min(0).max(TRIP_LIMITS.weightLbs).optional(),
   pieces: z.number().int().min(0).max(TRIP_LIMITS.pieces).optional(),
-  plannedStartAt: z.coerce.date().optional(),
-  plannedEndAt: z.coerce.date().optional(),
+  plannedStartAt: InstantSchema.optional(),
+  plannedEndAt: InstantSchema.optional(),
   notes: z.string().max(500).optional(),
   stops: StopsDto.optional(),
   /** §20 B-73. */
@@ -97,15 +98,16 @@ export const CreateTripDto = z.object({
 });
 export type CreateTripDto = z.infer<typeof CreateTripDto>;
 
+/** B3-04 — dates are strict (`InstantSchema`): `null` is a 422, a planned time cannot be cleared. */
 export const UpdateTripDto = z.object({
   status: TripStatusEnum.optional(),
   shippingDocument: z.string().max(60).optional(),
   commodity: z.string().max(120).optional(),
   weightLbs: z.number().int().min(0).max(TRIP_LIMITS.weightLbs).optional(),
   pieces: z.number().int().min(0).max(TRIP_LIMITS.pieces).optional(),
-  plannedStartAt: z.coerce.date().optional(),
-  plannedEndAt: z.coerce.date().optional(),
-  etaAt: z.coerce.date().optional(),
+  plannedStartAt: InstantSchema.optional(),
+  plannedEndAt: InstantSchema.optional(),
+  etaAt: InstantSchema.optional(),
   notes: z.string().max(500).optional(),
   distanceMi: z.number().positive().max(10_000).optional(),
   rateUsd: z.number().positive().max(1_000_000).multipleOf(0.01).optional(),
@@ -113,7 +115,7 @@ export const UpdateTripDto = z.object({
   estimatedDriveSec: z.number().int().positive().max(TRIP_LIMITS.estimatedDriveSec).optional(),
   /** LIVE-003 — the actual delivery time the dispatcher records with "Mark delivered"; only valid
    * together with `status: 'DELIVERED'` (default: now). Never in the future, never before the start. */
-  completedAt: z.coerce.date().optional(),
+  completedAt: InstantSchema.optional(),
 });
 export type UpdateTripDto = z.infer<typeof UpdateTripDto>;
 

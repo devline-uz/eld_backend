@@ -99,7 +99,8 @@ export class DriversRepository extends BaseRepository<
    * unique index (migration 20260927090000_soft_delete_partial_uniques), so a deleted driver's
    * username is free for reuse. BE-20 — usernames are compared case-insensitively (literal, like
    * unit numbers): an exact match first (so a legacy `JDoe` / `jdoe` pair still resolves each
-   * row), then a case-insensitive one. The DB index still compares the raw value. */
+   * row), then a case-insensitive one. B3-06 — the DB enforces it too
+   * (`Driver_username_lower_live_key`, migration 20261016090000), so a racing create is a P2002 -> 409. */
   async findByUsername(username: string): Promise<Driver | null> {
     return (
       (await this.prisma.driver.findFirst({ where: { username, deletedAt: null } })) ??

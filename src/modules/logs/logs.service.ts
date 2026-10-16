@@ -10,6 +10,7 @@ import type { ContextUser } from '../../core/context/request-context';
 import { RequestContext } from '../../core/context/request-context';
 import { EventBusService } from '../../core/events/event-bus.service';
 import { QUEUES } from '../../core/queue/queue.constants';
+import { RODS_RETENTION_MONTHS } from '../retention/retention.constants';
 import { AuditRepository } from '../audit/audit.repository';
 import { addDays, dayEnd, dayKey, dayStart } from '../hos/engine/timezone';
 import type { DutyStatus } from '../hos/hos.types';
@@ -170,13 +171,18 @@ export class LogsService {
       ? []
       // CODE-063 — up to and including 00:00: a stop stamped at midnight ends the carried driving.
       : await this.repo.findEvents(driverId, dayStart(timezone, addDays(key, -RODS_HEADER_LOOKBACK_DAYS)), startAt);
+    // BE-01 / BUG-001 — the +2 h adverse limits apply to the driving carried over midnight only when
+    // adverse driving was invoked on the RODS day it was driven on (the day before), not merely permitted.
+    const previousKey = addDays(key, -1);
+    const adverseInvoked =
+      driver.adverseDrivingEnabled && history.length > 0 && (await this.repo.findAdverseInvokedDays(driver, previousKey, previousKey)).length > 0;
     const ongoingViolations = ongoingViolationsAtDayStart({
       events: history,
       driver: {
         driverId,
         allowPersonalConveyance: driver.allowPersonalConveyance,
         allowYardMove: driver.allowYardMove,
-        adverseDrivingEnabled: driver.adverseDrivingEnabled,
+        adverseDrivingEnabled: adverseInvoked,
         shortHaulException: driver.shortHaulException,
         splitSleeperEnabled: driver.splitSleeperEnabled,
       },
@@ -387,6 +393,7 @@ export class LogsService {
     const now = new Date();
     this.assertEditableOriginal(original);
     this.assertNotFuture(now, { proposedStart: dto.proposedStart, proposedEnd: dto.proposedEnd ?? null });
+    await this.assertInsideEditWindow(driver, now, { proposedStart: dto.proposedStart });
     const special: SpecialCategory = dto.proposedSpecial ?? 'NONE';
     this.assertSpecialAllowed(driver, special);
     await this.assertNoPendingProposal(original.id);
@@ -504,6 +511,7 @@ export class LogsService {
     // QA CODE-028 — the end of the proposed record cannot be in the future either, and PC/YM need
     // the driver's exception.
     this.assertNotFuture(now, { endDateTime: dto.endDateTime ?? null });
+    await this.assertInsideEditWindow(driver, now, { eventDateTime: dto.eventDateTime });
     this.assertSpecialAllowed(driver, dto.proposedSpecial ?? 'NONE');
     const context = await this.loadEditContext(driverId, timezone, dto.eventDateTime, now);
     this.assertDrivingImmutable(
@@ -1429,6 +1437,32 @@ export class LogsService {
         const message = 'A proposed time cannot be in the future.';
         throw new AppException(ERROR_CODES.VALIDATION_FAILED, message, 422, { [field]: message });
       }
+    }
+  }
+
+  /**
+   * B3-05 — a carrier proposal may not reach back before the driver existed in this system
+   * (`registeredAt`, or their earliest recorded event when history predates it, e.g. imported or
+   * seeded logs), nor past the 6-month RODS retention window (`RODS_RETENTION_MONTHS`, TZ §9.1
+   * defines no other edit window). 422 `EDIT_OUTSIDE_WINDOW` on the field. A proposed end is after
+   * its start, so only the start needs the check.
+   */
+  private async assertInsideEditWindow(
+    driver: { id: string; registeredAt?: Date | null },
+    now: Date,
+    times: Record<string, Date>,
+  ): Promise<void> {
+    const retentionFloor = new Date(now);
+    retentionFloor.setUTCMonth(retentionFloor.getUTCMonth() - RODS_RETENTION_MONTHS);
+    for (const [field, at] of Object.entries(times)) {
+      let message: string | null = null;
+      if (at.getTime() < retentionFloor.getTime()) {
+        message = `A proposed time cannot be older than ${RODS_RETENTION_MONTHS} months (RODS retention).`;
+      } else if (driver.registeredAt && at.getTime() < driver.registeredAt.getTime()) {
+        const firstEventAt = await this.repo.findFirstEventAt(driver.id);
+        if (!firstEventAt || at.getTime() < firstEventAt.getTime()) message = 'A proposed time cannot be before the driver was added.';
+      }
+      if (message) throw new AppException(ERROR_CODES.EDIT_OUTSIDE_WINDOW, message, 422, { [field]: message });
     }
   }
 

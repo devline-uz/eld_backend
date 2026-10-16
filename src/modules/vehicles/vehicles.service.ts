@@ -157,7 +157,11 @@ export class VehiclesService {
 
   /** `GET /vehicles/:id` — the unit plus its paired ELD serial (CODE-085, see `VehicleWithSerial`). */
   async getView(id: string): Promise<VehicleWithSerial> {
-    const vehicle = await this.get(id);
+    return this.withSerial(await this.get(id));
+  }
+
+  /** B3-13 — GET, POST and PATCH all answer with the same shape (the paired serial included). */
+  private async withSerial(vehicle: Vehicle): Promise<VehicleWithSerial> {
     const device = await this.vehicles.findDeviceByVehicleId(vehicle.id);
     return { ...vehicle, eldSerial: device?.serial ?? null };
   }
@@ -169,7 +173,7 @@ export class VehiclesService {
     return vehicle;
   }
 
-  async create(dto: CreateVehicleDto): Promise<Vehicle> {
+  async create(dto: CreateVehicleDto): Promise<VehicleWithSerial> {
     const uniques = normalizeVehicleUniques(dto);
     const [byUnit, byVin] = await Promise.all([
       this.vehicles.findByUnitNumber(dto.unitNumber),
@@ -184,10 +188,10 @@ export class VehiclesService {
     const write = deviceChange?.deviceId
       ? this.vehicles.saveWithDevice({ create: data }, deviceChange.deviceId)
       : this.vehicles.create(data);
-    return this.conflictOnDuplicate(write);
+    return this.withSerial(await this.conflictOnDuplicate(write));
   }
 
-  async update(id: string, dto: UpdateVehicleDto): Promise<Vehicle> {
+  async update(id: string, dto: UpdateVehicleDto): Promise<VehicleWithSerial> {
     const current = await this.get(id);
     const uniques = normalizeVehicleUniques(dto);
     await this.assertUnitAndVinAvailable(dto, id);
@@ -202,7 +206,7 @@ export class VehiclesService {
       : this.vehicles.update({ id }, data);
     const saved = await this.conflictOnDuplicate(write);
     if (leavesService) await this.releaseAssignedDriver(id);
-    return saved;
+    return this.withSerial(saved);
   }
 
   /**

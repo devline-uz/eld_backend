@@ -1,0 +1,6 @@
+-- DOWN migration for 20261014180000_retire_hos_certify_on_behalf
+-- (runner: scripts/migrate-updown-dev.sh — dev database only).
+--
+-- The UP is data-only: it set `hosCertifyOnBehalf` to NONE on stored roles. The previous levels
+-- are not kept anywhere, so there is nothing to restore — this down is intentionally a no-op
+-- (the API reads the key as NONE either way, CODE-029). No schema change to revert.

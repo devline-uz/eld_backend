@@ -109,6 +109,8 @@ describe('ActiveViolationsService (BUG-003)', () => {
     await service.openCountsByDriver(['drv-1'], new Date(NOW.getTime() + 1000));
     await service.activeFilter('drv-1', new Date(NOW.getTime() + 2000));
     expect(hos.computeCurrentState).toHaveBeenCalledTimes(1);
+    // BE-01 — read with the per-day adverse limits `recalculate` files with.
+    expect(hos.computeCurrentState).toHaveBeenCalledWith('drv-1', NOW, { perDayAdverse: true });
   });
 
   it('never writes from a STALE status and drops its rows after the cap (BUG-002)', async () => {
@@ -133,7 +135,7 @@ describe('ActiveViolationsService (BUG-003)', () => {
     const preCap = violation({ type: 'DRIVING_11', logDate: '2026-10-10', occurredAt: new Date('2026-10-10T21:00:00Z') });
     const { service, hos, repo } = setup({ rows: [openDriving({ since })], state: state({ statusSince: since, violations: [preCap] }) });
     await service.openCountsByDriver(['drv-1'], NOW);
-    expect(hos.computeCurrentState).toHaveBeenNthCalledWith(2, 'drv-1', capAt);
+    expect(hos.computeCurrentState).toHaveBeenNthCalledWith(2, 'drv-1', capAt, { perDayAdverse: true });
     expect(hos.recalculate).toHaveBeenCalledWith({ driverId: 'drv-1', fromDate: '2026-10-10' }, capAt);
     // The post-cap exclusion still applies.
     expect(repo.countByDriver).toHaveBeenCalledWith({

@@ -88,7 +88,12 @@ export type CalibrateOdometerDto = z.infer<typeof CalibrateOdometerDto>;
 
 export const AssignDriverDto = z.object({
   driverId: z.string().uuid(),
-  effectiveAt: z.coerce.date().optional(),
+  /** B3-12 — not supported: an assignment always takes effect immediately. The field used to be
+   * accepted and silently ignored (a future date was applied now), so any value is a 422. */
+  effectiveAt: z
+    .never({ errorMap: () => ({ message: 'effectiveAt is not supported: the assignment takes effect immediately. Omit it.' }) })
+    .optional()
+    .describe('Not supported — omit it. Any value is a 422; the assignment takes effect immediately.'),
   /** §20 B-74 — sends the existing driver-app notification on assignment; defaults to true. */
   notify: z.boolean().default(true),
 });
@@ -125,7 +130,8 @@ export const VehicleListQueryDto = z.object({
   page: z.coerce.number().int().min(1).max(MAX_LIST_PAGE).default(1),
   limit: z.coerce.number().int().min(1).max(200).default(25),
   sort: z.string().max(60).optional(),
-  q: z.string().max(200).optional(),
+  // L3-06 — trimmed server-side (" 101 " used to match nothing).
+  q: z.string().trim().max(200).optional(),
   status: VehicleStatusEnum.optional(),
   /** A group id, or `none` for units in no group. */
   groupId: z.union([z.string().uuid(), z.literal('none')]).optional(),
@@ -184,7 +190,8 @@ export const TrailerListQueryDto = z.object({
   page: z.coerce.number().int().min(1).max(MAX_LIST_PAGE).default(1),
   limit: z.coerce.number().int().min(1).max(200).default(25),
   sort: z.string().max(60).optional(),
-  q: z.string().max(200).optional(),
+  // L3-06 — trimmed server-side (" 101 " used to match nothing).
+  q: z.string().trim().max(200).optional(),
   status: VehicleStatusEnum.optional(),
 });
 export type TrailerListQueryDto = z.infer<typeof TrailerListQueryDto>;

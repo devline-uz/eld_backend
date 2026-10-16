@@ -1,4 +1,4 @@
-import { findScheduleConflict, occupancyOf, windowsOverlap, type ScheduledTripLike } from './trip-schedule';
+import { findScheduleConflict, occupancyOf, startingWindow, windowsOverlap, type ScheduledTripLike } from './trip-schedule';
 
 const at = (h: number) => new Date(Date.UTC(2026, 9, 10, h));
 const trip = (o: Partial<ScheduledTripLike> = {}): ScheduledTripLike => ({
@@ -37,6 +37,10 @@ describe('trip-schedule — occupancyOf', () => {
     expect(occupancyOf(trip({ status: 'DRAFT' }), now)).toEqual({ start: at(10), end: at(14) });
     expect(occupancyOf(trip({ status: 'CANCELLED' }), now)).toBeNull();
   });
+  it('B3-07 a DRAFT with a start but no planned end reserves nothing (PLANNED/ASSIGNED still open-ended)', () => {
+    expect(occupancyOf(trip({ status: 'DRAFT', plannedEndAt: null }), now)).toBeNull();
+    expect(occupancyOf(trip({ status: 'PLANNED', plannedEndAt: null }), now)).toEqual({ start: at(10), end: null });
+  });
   it('ignores a scheduled trip with no planned start', () => {
     expect(occupancyOf(trip({ plannedStartAt: null }), now)).toBeNull();
   });
@@ -58,5 +62,22 @@ describe('trip-schedule — findScheduleConflict', () => {
     const hit = findScheduleConflict({ start: at(11), end: at(12) }, [trip({ id: 'a', plannedStartAt: at(0), plannedEndAt: at(5) }), trip({ id: 'b' })]);
     expect(hit?.trip.id).toBe('b');
     expect(hit?.window).toEqual({ start: at(10), end: at(14) });
+  });
+});
+
+describe('trip-schedule — startingWindow (B3-03)', () => {
+  const now = new Date('2026-10-14T12:00:00Z');
+
+  it('covers now → planned end for an early start', () => {
+    const end = new Date('2026-10-17T22:00:00Z');
+    expect(startingWindow(end, now)).toEqual({ start: new Date('2026-10-14T11:59:59Z'), end });
+  });
+
+  it('is open-ended without a planned end, like an IN_PROGRESS trip', () => {
+    expect(startingWindow(null, now).end).toBeNull();
+  });
+
+  it('still covers this moment when the planned end has already passed', () => {
+    expect(startingWindow(new Date('2026-10-14T08:00:00Z'), now).end).toEqual(new Date('2026-10-14T12:00:01Z'));
   });
 });

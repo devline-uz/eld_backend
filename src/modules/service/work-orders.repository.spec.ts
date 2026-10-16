@@ -20,6 +20,7 @@ function fakeTx(opts: { status: string | null; holds: number; oosDefects?: numbe
     },
     defect: { count: jest.fn(async () => opts.oosDefects ?? 0), updateMany: jest.fn(async () => ({ count: 0 })) },
     $queryRaw: jest.fn(async () => [{ seq: BigInt(41) }]),
+    $executeRawUnsafe: jest.fn(async () => 0),
   };
   return { tx: tx as unknown as Prisma.TransactionClient, vehicleUpdate, workOrderCount };
 }
@@ -93,6 +94,8 @@ describe('WorkOrdersRepository synced writes run in one transaction', () => {
   }
   interface FakeTxMocks {
     workOrder: { create: jest.Mock };
+    $queryRaw: jest.Mock;
+    $executeRawUnsafe: jest.Mock;
     defect: { updateMany: jest.Mock };
   }
   const before = { id: 'wo_1', vehicleId: 'veh_1', status: 'OPEN', keepOutOfService: true } as WorkOrder;
@@ -162,6 +165,13 @@ describe('WorkOrdersRepository synced writes run in one transaction', () => {
 
     tx.workOrder.create.mockRejectedValueOnce(new Error('boom'));
     await expect(repo.createSynced({} as Prisma.WorkOrderCreateInput, 'veh_1')).rejects.toThrow('boom');
+  });
+
+  it('B3-08 — numbers are allocated under a transaction-scoped advisory lock (parallel creates never collide)', async () => {
+    const { repo, tx } = build({ status: 'ACTIVE', holds: 0 });
+    await repo.createSynced({} as Prisma.WorkOrderCreateInput, 'veh_1');
+    expect(tx.$executeRawUnsafe).toHaveBeenCalledWith('SELECT pg_advisory_xact_lock(hashtext($1)::bigint)', 'work-order-number');
+    expect(tx.$executeRawUnsafe.mock.invocationCallOrder[0]).toBeLessThan(tx.$queryRaw.mock.invocationCallOrder[0]);
   });
 
   it('QA CODE-033 — gives up after repeated collisions', async () => {

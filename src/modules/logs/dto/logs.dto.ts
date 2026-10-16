@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { InstantSchema } from '../../../common/dto/instant.dto';
 
 /** §395 Appendix A caps every annotation/comment at 60 characters; the floor of 4 is §9.3. */
 export const annotationSchema = z.string().trim().min(4).max(60);
@@ -14,7 +15,10 @@ export const dayKeySchema = z
 
 /** CODE-067 — the documented cap of one range query (`GET /logs/:driverId/range`). */
 export const MAX_LOG_RANGE_DAYS = 62;
+/** Mobile driver log entries (`POST /mobile/log-entries`) — unchanged, out of the web scope. */
 const isoDateTime = z.coerce.date();
+/** B3-04 — the carrier's §395.30 proposals are strict: `null` / `0` is a 422, not a 1970 proposal. */
+const proposalInstant = InstantSchema;
 
 export const DutyStatusEnum = z.enum(['OFF', 'SB', 'D', 'ON']);
 /** §9.3 — a driver may only move between OFF / SB / ON. `D` is rejected by the rule engine. */
@@ -85,8 +89,8 @@ export const CreateEditRequestDto = z
     proposedStatus: DutyStatusEnum,
     /** B-39 — PC/YM; stored as the Appendix A eventType 3 indication once the driver accepts. */
     proposedSpecial: ProposedSpecialEnum.default('NONE'),
-    proposedStart: isoDateTime,
-    proposedEnd: isoDateTime.optional(),
+    proposedStart: proposalInstant,
+    proposedEnd: proposalInstant.optional(),
     location: ProposalLocationDto.optional(),
     odometerMi: z.number().int().min(0).max(9_999_999).optional(),
     engineHours: z.number().min(0).max(99_999).optional(),
@@ -100,8 +104,10 @@ export const CreateEditRequestDto = z
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['proposedEnd'], message: '`proposedEnd` must be after `proposedStart`' });
     }
   });
-/** Input shape: `proposedSpecial` / `notifyDriver` may be absent when called in-process (defaults applied by the service). */
-export type CreateEditRequestDto = z.input<typeof CreateEditRequestDto>;
+/** Input shape: `proposedSpecial` / `notifyDriver` may be absent when called in-process (defaults applied by the service).
+ * The dates are the parsed `Date`s (B3-04 — the wire form is an ISO string). */
+export type CreateEditRequestDto = Omit<z.input<typeof CreateEditRequestDto>, 'proposedStart' | 'proposedEnd'> &
+  Pick<z.output<typeof CreateEditRequestDto>, 'proposedStart' | 'proposedEnd'>;
 
 /**
  * B-72 — `POST /logs/:driverId/events`: the carrier proposes a NEW record (typically on a RODS
@@ -112,8 +118,8 @@ export const ProposeEventDto = z
   .object({
     status: DutyStatusEnum,
     proposedSpecial: ProposedSpecialEnum.default('NONE'),
-    eventDateTime: isoDateTime,
-    endDateTime: isoDateTime.optional(),
+    eventDateTime: proposalInstant,
+    endDateTime: proposalInstant.optional(),
     location: ProposalLocationDto.optional(),
     odometerMi: z.number().int().min(0).max(9_999_999).optional(),
     engineHours: z.number().min(0).max(99_999).optional(),
@@ -126,7 +132,9 @@ export const ProposeEventDto = z
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['endDateTime'], message: '`endDateTime` must be after `eventDateTime`' });
     }
   });
-export type ProposeEventDto = z.input<typeof ProposeEventDto>;
+/** The dates are the parsed `Date`s (B3-04 — the wire form is an ISO string). */
+export type ProposeEventDto = Omit<z.input<typeof ProposeEventDto>, 'eventDateTime' | 'endDateTime'> &
+  Pick<z.output<typeof ProposeEventDto>, 'eventDateTime' | 'endDateTime'>;
 
 export const ResolveEditRequestDto = z.object({ note: annotationSchema.optional() });
 export type ResolveEditRequestDto = z.infer<typeof ResolveEditRequestDto>;

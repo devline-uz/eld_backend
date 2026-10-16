@@ -1059,6 +1059,16 @@ describe('AuthService', () => {
       expect(attachments.presignKey).not.toHaveBeenCalled();
     });
 
+    it('F3-11 tells every web user whether a compliance email is set (no carrierSettings needed)', async () => {
+      users.findByIdWithRole.mockResolvedValue({ id: 'u1', email: 'a@b.com', firstName: 'F', lastName: 'M', avatarKey: null });
+      carrier.get.mockResolvedValue({ name: 'C', timezone: 'America/Chicago', complianceEmail: 'compliance@c.com' });
+      const withEmail = await service.meProfile({ id: 'u1', type: 'user', role: 'FLEET_MANAGER' } as never);
+      expect(withEmail).toMatchObject({ homeTerminalTimezone: 'America/Chicago', hasComplianceEmail: true });
+      expect(withEmail).not.toHaveProperty('complianceEmail');
+      carrier.get.mockResolvedValue({ name: 'C', timezone: 'UTC', complianceEmail: null });
+      await expect(service.meProfile({ id: 'u1', type: 'user' } as never)).resolves.toMatchObject({ hasComplianceEmail: false });
+    });
+
     it('adds the ELD username (and name/email/timezone) for a driver subject (M-31 / D-120)', async () => {
       const driver = { id: 'drv_1', type: 'driver' as const };
       drivers.findById.mockResolvedValue({ id: 'drv_1', username: 'johnsmith', firstName: 'John', lastName: 'Smith', email: null, homeTerminalTimezone: 'America/Chicago' });

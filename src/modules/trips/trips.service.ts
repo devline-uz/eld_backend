@@ -13,6 +13,7 @@ import {
   findScheduleConflict,
   formatScheduleInstant,
   UNIT_SCHEDULED_STATUSES,
+  startingWindow,
   type ScheduledTripLike,
   type TimeWindow,
 } from './trip-schedule';
@@ -219,14 +220,15 @@ export class TripsService {
       ...(trailerId && { trailerId }),
     };
     const stopRows = (stops ?? []).map((s) => ({ ...s }));
-    // Drafts included — a draft with a unit/driver/trailer and a start reserves them (trip-schedule.ts).
+    // Drafts included — a draft with a unit/driver/trailer and a start reserves them (trip-schedule.ts),
+    // B3-07 — unless it has no planned end (it reserves nothing then; checked when published).
     const window = this.windowOf(dto.plannedStartAt, dto.plannedEndAt);
     const holders = { vehicleId: vehicleId ?? null, driverId: driverId ?? null, trailerId: trailerId ?? null };
     // BE-005 — a drafted trip may still be incomplete; it is checked again when published.
     if (!window && !draft && this.hasHolder(holders)) throw plannedStartRequired();
     if (window && !window.end && !draft && this.hasHolder(holders)) throw plannedEndRequired();
     const created =
-      window && this.hasHolder(holders)
+      window && this.reservesSchedule(window, draft ? 'DRAFT' : 'PLANNED') && this.hasHolder(holders)
         ? await this.numberConflictOnDuplicate(
             this.withScheduleLocks(holders, async (db) => {
               await this.assertHoldersFree(holders, window, undefined, db);
@@ -366,9 +368,9 @@ export class TripsService {
     // IN_PROGRESS past its planned end).
     const starting = nextStatus === 'IN_PROGRESS' && trip.status !== 'IN_PROGRESS';
     if ((publishing && nextStatus !== 'CANCELLED') || assigning || starting) await this.assertHoldersAssignable(holders);
-    // "At this moment" as a ±1 s window: an overrunning IN_PROGRESS trip occupies up to `now`.
-    const startNow = Date.now();
-    const checkWindow = starting ? { start: new Date(startNow - 1000), end: new Date(startNow + 1000) } : window;
+    // B3-03 — once started the trip occupies `now → plannedEndAt` (`occupancyOf`), so an early
+    // start must be checked over that whole range, not just "this moment".
+    const checkWindow = starting ? startingWindow(plannedEndAt, new Date()) : window;
     // CODE-024 — the write is guarded on the status read above, so a concurrent move (the driver
     // starting the trip, another dispatcher cancelling it) is a 409, never silently overwritten.
     const guard = { id, status: trip.status };
@@ -377,7 +379,7 @@ export class TripsService {
     const updated = await this.mapUpdateError(
       id,
       trip.status,
-      checkWindow && this.hasHolder(holders) && (timesChanged || publishing || assigning || starting) && UNIT_SCHEDULED_STATUSES.includes(nextStatus)
+      checkWindow && this.reservesSchedule(checkWindow, nextStatus) && this.hasHolder(holders) && (timesChanged || publishing || assigning || starting) && UNIT_SCHEDULED_STATUSES.includes(nextStatus)
         ? this.withScheduleLocks(holders, async (db) => {
             await this.assertHoldersFree(holders, checkWindow, id, db);
             return stopTimes ? this.repo.update(guard, data, db, stopTimes) : this.repo.update(guard, data, db);
@@ -537,6 +539,11 @@ export class TripsService {
   /** The range a trip asks its unit for; `null` (nothing to check) when it has no planned start. */
   private windowOf(start: Date | null | undefined, end: Date | null | undefined): TimeWindow | null {
     return start ? { start, end: end ?? null } : null;
+  }
+
+  /** B3-07 — an open-ended draft reserves nothing (`occupancyOf`), so it is not checked either. */
+  private reservesSchedule(window: TimeWindow, status: Trip['status']): boolean {
+    return status !== 'DRAFT' || window.end !== null;
   }
 
   private hasHolder(holders: ScheduleHolders): boolean {
