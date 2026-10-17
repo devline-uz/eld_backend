@@ -1,4 +1,6 @@
 /** LV-01 — `GET /live/fleet` latest-row probes: constant query count, recent window first. */
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import type { Prisma } from '@prisma/client';
 import type { PrismaService } from '../../core/prisma/prisma.service';
 import { LiveFleetRepository, RECENT_WINDOW_MS } from './live-fleet.repository';
@@ -85,5 +87,69 @@ describe('LiveFleetRepository.latestLocatedEvents (LV-01)', () => {
     const { repo, queries } = setup((q) => q.ids.map((id) => ev(id, T)));
     await repo.latestLocatedEvents(['veh_a', 'veh_b'], UNTIL);
     expect(queries).toHaveLength(1);
+  });
+});
+
+describe('LiveFleetRepository probe timing (LV-02)', () => {
+  it('reports each pass with the number of units it covered; no fallback entry when the window answered all', async () => {
+    const ev = (vehicleId: string, at: Date) => ({ vehicleId, eventDateTime: at, latitude: 1, longitude: 2, locationName: 'X' });
+    const { repo } = setup((q) => (q.text.includes('"EldEvent"') ? (q.since ? [ev('veh_a', T)] : []) : q.ids.map((id) => tele(id, T))));
+    const timer = jest.fn<void, [string, number, number]>();
+    await repo.latestLocatedEvents(['veh_a', 'veh_b', 'veh_c'], UNTIL, timer);
+    await repo.latestTelemetry(['veh_a', 'veh_b'], UNTIL, timer);
+    expect(timer.mock.calls.map(([phase, ms, units]) => [phase, typeof ms, units])).toEqual([
+      ['located.recent', 'number', 3],
+      ['located.fallback', 'number', 2],
+      ['telemetry.recent', 'number', 2],
+    ]);
+  });
+});
+
+describe('LiveFleetRepository located probe ↔ partial index (LV-02)', () => {
+  it('filters on exactly the predicate of EldEvent_vehicleId_eventDateTime_located_idx, so the planner can use it', async () => {
+    const migration = readFileSync(
+      join(__dirname, '../../../prisma/migrations/20261017120000_live_fleet_located_event_index/migration.sql'),
+      'utf8',
+    );
+    const sql = migration.split('\n').filter((l) => !l.trim().startsWith('--')).join(' ');
+    expect(sql).toMatch(/CREATE INDEX IF NOT EXISTS "EldEvent_vehicleId_eventDateTime_located_idx"\s+ON "EldEvent" \("vehicleId", "eventDateTime"\)/);
+    const where = /WHERE (.*);/.exec(sql)?.[1].split(/\s+AND\s+/).map((c) => c.trim()) ?? [];
+    expect(where).toEqual(['"recordStatus" = 1', 'latitude IS NOT NULL', 'longitude IS NOT NULL']);
+
+    const { repo, queries } = setup(() => []);
+    await repo.latestLocatedEvents(['veh_a'], UNTIL);
+    const probe = queries[1].text.replace(/\s+/g, ' ');
+    for (const clause of where) expect(probe).toContain(clause);
+    expect(probe).toContain('ORDER BY "eventDateTime" DESC LIMIT 1');
+  });
+});
+
+describe('LiveFleetRepository raw time bounds are session-TimeZone independent', () => {
+  const UTC_PARAM = `?::timestamptz AT TIME ZONE 'UTC')`;
+
+  it('telemetry probes compare the bare "time" column to UTC timestamps', async () => {
+    const { repo, queries } = setup(() => []);
+    await repo.latestTelemetry(['veh_a'], UNTIL);
+    const windowed = queries[0].text.replace(/\s+/g, ' ');
+    expect(windowed).toContain(`"time" <= (${UTC_PARAM}`);
+    expect(windowed).toContain(`"time" >= (${UTC_PARAM}`);
+    expect(queries[1].text).toContain(`"time" <= (${UTC_PARAM}`);
+    expect(windowed).not.toMatch(/"time" [<>]= \?/);
+  });
+
+  it('located probes compare the bare "eventDateTime" column to UTC timestamps', async () => {
+    const { repo, queries } = setup(() => []);
+    await repo.latestLocatedEvents(['veh_a'], UNTIL);
+    const windowed = queries[0].text.replace(/\s+/g, ' ');
+    expect(windowed).toContain(`"eventDateTime" <= (${UTC_PARAM}`);
+    expect(windowed).toContain(`"eventDateTime" >= (${UTC_PARAM}`);
+    expect(windowed).not.toMatch(/"eventDateTime" [<>]= \?/);
+  });
+
+  it('activeSpecialDriving bounds both ends with UTC timestamps', async () => {
+    const { repo, queries } = setup(() => []);
+    await repo.activeSpecialDriving(['drv_1'], OLD, UNTIL);
+    const text = queries[0].text.replace(/\s+/g, ' ');
+    expect(text).toContain(`"eventDateTime" >= (${UTC_PARAM} AND "eventDateTime" <= (${UTC_PARAM}`);
   });
 });

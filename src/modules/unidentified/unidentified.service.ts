@@ -4,6 +4,7 @@ import { EditorType, type EldEvent, type Prisma, type UnidentifiedSegment } from
 import { Queue } from 'bullmq';
 import { AppException } from '../../common/errors/app.exception';
 import { locationTextOf } from '../../common/geo-location/location-description';
+import { normalizeLocationText } from '../../common/geo-location/location-display';
 import { ERROR_CODES } from '../../common/errors/codes';
 import type { ContextUser } from '../../core/context/request-context';
 import { RequestContext } from '../../core/context/request-context';
@@ -79,7 +80,8 @@ export class UnidentifiedService {
         recordStatus: event.recordStatus,
         recordOrigin: event.recordOrigin,
         wasStoredOnDevice: event.wasStoredOnDevice,
-        locationName: event.locationName,
+        // Web detail — display form of the stored text (`location-display.ts`); record untouched.
+        locationName: normalizeLocationText(event.locationName, { reducedPrecision: (event.locationPrecisionMi ?? 1) >= 10 }),
         totalVehicleMiles: event.totalVehicleMiles,
       })),
     };

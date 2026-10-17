@@ -4,6 +4,7 @@ import { EditorType, type Prisma } from '@prisma/client';
 import { Queue } from 'bullmq';
 import type { DailyLog, EldEvent } from '@prisma/client';
 import { locationTextOf } from '../../common/geo-location/location-description';
+import { displayLocationTextOf, normalizeLocationText } from '../../common/geo-location/location-display';
 import { AppException } from '../../common/errors/app.exception';
 import { ERROR_CODES } from '../../common/errors/codes';
 import type { ContextUser } from '../../core/context/request-context';
@@ -120,12 +121,12 @@ export class LogsService {
   // GET /logs/:driverId — RODS day generation (§9, §23 "split by home terminal")
   // =========================================================================
 
-  async getDay(driverId: string, date: string | undefined, now: Date = new Date()) {
+  async getDay(driverId: string, date: string | undefined, now: Date = new Date(), options: LocationViewOptions = {}) {
     const driver = await this.requireDriver(driverId);
     const key = date ?? dayKey(driver.homeTerminalTimezone, now);
     // CODE-068 — a read never writes: the header is persisted by the record-change paths
     // (`rebuildDailyLogsForSpan`, `hos.recalc`, `certify`), not by looking at a day.
-    const days = await this.buildDays(driverId, key, key, now, true, false);
+    const days = await this.buildDays(driverId, key, key, now, true, false, options.displayLocations);
     return days[0];
   }
 
@@ -165,7 +166,8 @@ export class LogsService {
     const driver = await this.requireDriver(driverId);
     const timezone = driver.homeTerminalTimezone;
     const key = date ?? dayKey(timezone, now);
-    const day = await this.getDay(driverId, key, now);
+    // Web panel — location texts in their display form (`location-display.ts`).
+    const day = await this.getDay(driverId, key, now, { displayLocations: true });
     const startAt = dayStart(timezone, key);
     const history = startAt.getTime() > now.getTime()
       ? []
@@ -205,7 +207,7 @@ export class LogsService {
    * an empty record table ("No ELD records for this day"). Same day boundaries and the same
    * lookback (`RODS_HEADER_LOOKBACK_DAYS`) the grid is built with.
    */
-  async getEvents(driverId: string, date: string | undefined, now: Date = new Date()) {
+  async getEvents(driverId: string, date: string | undefined, now: Date = new Date(), options: LocationViewOptions = {}) {
     const driver = await this.requireDriver(driverId);
     const timezone = driver.homeTerminalTimezone;
     const key = date ?? dayKey(timezone, now);
@@ -216,7 +218,8 @@ export class LogsService {
     // resolved proposal keeps `3` on their own rows; the markers that retire / resolve them may sit
     // outside this day's window, so they are fetched by id.
     const markers = await this.repo.findSupersedingEvents([...events, ...(carriedIn ? [carriedIn] : [])].map((event) => event.id));
-    const withEffective = (event: EldEvent) => ({ ...this.toEventView(event), effectiveRecordStatus: effectiveRecordStatus(event, markers) });
+    const view = (event: EldEvent) => (options.displayLocations ? this.toWebEventView(event) : this.toEventView(event));
+    const withEffective = (event: EldEvent) => ({ ...view(event), effectiveRecordStatus: effectiveRecordStatus(event, markers) });
     return {
       driverId,
       date: key,
@@ -267,7 +270,7 @@ export class LogsService {
    * creates or bumps a header row; the stored header, when there is one, supplies the
    * certification and violation flags.
    */
-  private async buildDays(driverId: string, fromKey: string, toKey: string, now: Date, extras = false, persist = true) {
+  private async buildDays(driverId: string, fromKey: string, toKey: string, now: Date, extras = false, persist = true, displayLocations = false) {
     const driver = await this.requireDriver(driverId);
     const timezone = driver.homeTerminalTimezone;
     const keys = dayKeyRange(fromKey, toKey);
@@ -350,8 +353,8 @@ export class LogsService {
           hasEdits: header.hasEdits,
         },
         /** MR-13 — each segment carries the record that opened it (`eventId`, location, odometer…). */
-        graph: annotateSegments(day.segments, events),
-        events: dayEvents.map((event) => this.toEventView(event)),
+        graph: displayLocations ? displayGraph(annotateSegments(day.segments, events)) : annotateSegments(day.segments, events),
+        events: dayEvents.map((event) => (displayLocations ? this.toWebEventView(event) : this.toEventView(event))),
         ...(extras && {
           /** MR-12 — shipping documents / trailers of the trips overlapping this day, plus (D-129)
            * the driver's day details for it (`dayDetails: true` when a row exists). */
@@ -592,7 +595,7 @@ export class LogsService {
     };
   }
 
-  async listEditRequests(driverId: string, query: EditRequestListQueryDto, now: Date = new Date()) {
+  async listEditRequests(driverId: string, query: EditRequestListQueryDto, now: Date = new Date(), options: LocationViewOptions = {}) {
     const driver = await this.requireDriver(driverId);
     const timezone = driver.homeTerminalTimezone;
     const from = query.from ? dayStart(timezone, query.from) : undefined;
@@ -647,6 +650,9 @@ export class LogsService {
 
       items.push({
         ...view,
+        ...(options.displayLocations && {
+          locationName: normalizeLocationText(request.locationName, { reducedPrecision: (request.locationPrecisionMi ?? 1) >= 10 }),
+        }),
         /** MB-10 — RODS day of `proposedStart`, home-terminal zone. */
         date,
         original: original
@@ -654,7 +660,7 @@ export class LogsService {
               status: original.eventType === 1 ? (DUTY_STATUS_BY_CODE[original.eventCode] ?? null) : null,
               start: original.eventDateTime,
               end: this.nextActiveDutyAfter(dayEvents, original.eventDateTime, original.id),
-              location: locationTextOf(original),
+              location: options.displayLocations ? displayLocationTextOf(original) : locationTextOf(original),
             }
           : null,
         proposedGraph,
@@ -1518,6 +1524,18 @@ export class LogsService {
     };
   }
 
+  /**
+   * Web panel event row: `toEventView` with the stored location text in its display form
+   * (`location-display.ts`). The stored record and the mobile view are unchanged.
+   */
+  private toWebEventView(event: EldEvent) {
+    return {
+      ...this.toEventView(event),
+      locationName: normalizeLocationText(event.locationName, { reducedPrecision: (event.locationPrecisionMi ?? 1) >= 10 }),
+      locationDescription: displayLocationTextOf(event),
+    };
+  }
+
   private toEventView(event: EldEvent) {
     return {
       id: String(event.id),
@@ -1579,6 +1597,19 @@ function dayKeyRange(from: string, to: string): string[] {
     key = addDays(key, 1);
   }
   return keys;
+}
+
+/** Web read options. `displayLocations`: location texts in their display form (never stored). */
+export interface LocationViewOptions {
+  displayLocations?: boolean;
+}
+
+/** Web panel graph — each segment's location text in its display form; PC segments keep 10-mi precision. */
+function displayGraph<T extends { special: string; locationDescription: string | null }>(graph: T[]): T[] {
+  return graph.map((segment) => ({
+    ...segment,
+    locationDescription: normalizeLocationText(segment.locationDescription, { reducedPrecision: segment.special === 'PC' }),
+  }));
 }
 
 /** B-39 / B-076 — the location a proposal row carries, for the record the driver accepts. */

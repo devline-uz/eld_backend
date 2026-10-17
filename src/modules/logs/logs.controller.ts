@@ -134,7 +134,7 @@ export class LogsController {
   @ApiOkResponse({ description: 'Append-only audit trail: active (1), superseded (2), proposed (3) and rejected (4) records.', schema: { example: { driverId: 'drv_1', date: '2026-09-10', events: [{ id: 'evt_8801', eventType: 1, eventCode: 3, eventSequenceId: 1042, recordStatus: 2, recordOrigin: 1, dutyStatus: 'ON', occurredAt: '2026-09-10T18:26:58.000Z', odometerMiles: 993590, latitude: 38.02, longitude: -84.5, locationDescription: '1mi N KY Florence', totalEngineHours: 4321.4, checksumValid: true }] } } })
   @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.DRIVER_NOT_FOUND, 'Driver not found.')] })
   getEvents(@Param('driverId') driverId: string, @Query(zodBody(LogDateQueryDto)) query: LogDateQueryDto) {
-    return this.logs.getEvents(driverId, query.date);
+    return this.logs.getEvents(driverId, query.date, undefined, { displayLocations: true });
   }
 
   @Post(':driverId/events')
@@ -186,7 +186,7 @@ export class LogsController {
     @Param('driverId') driverId: string,
     @Query(zodBody(EditRequestListQueryDto)) query: EditRequestListQueryDto,
   ) {
-    return this.logs.listEditRequests(driverId, query);
+    return this.logs.listEditRequests(driverId, query, undefined, { displayLocations: true });
   }
 
   @Post(':driverId/edit-requests')

@@ -233,7 +233,8 @@ describe('toLiveFleetUnit (GET /live/fleet, web/tz.md §20 B-3)', () => {
         device: { serial: 's', bleState: 'CONNECTED', lastSeenAt: minsAgo(120) },
       }),
     );
-    expect(unit).toMatchObject({ lat: 39.1, lon: -84.5, locationLabel: '0.64 mi N of Florence, KY', lastSeenAt: minsAgo(5).toISOString() });
+    // Display normaliser: the stored "of" text is shown in the §7.29 form.
+    expect(unit).toMatchObject({ lat: 39.1, lon: -84.5, locationLabel: '1mi N KY Florence', lastSeenAt: minsAgo(5).toISOString() });
   });
 
   it('labels a newer telemetry fix from the fix coordinates, never from an older located event', () => {
@@ -261,6 +262,39 @@ describe('toLiveFleetUnit (GET /live/fleet, web/tz.md §20 B-3)', () => {
   it('describes a fix at 10 mi precision while personal conveyance is active', () => {
     const unit = toLiveFleetUnit(input({ special: 'PC' }));
     expect(unit.locationLabel).toBe(describeLocation(38.99, -84.63, { reducedPrecision: true }));
+  });
+
+  describe('locationLabel display normalisation (location-display.ts)', () => {
+    const fromEvent = (locationName: string | null, special: 'PC' | null = null) =>
+      toLiveFleetUnit(
+        input({
+          special,
+          telemetry: { ...input().telemetry!, time: minsAgo(20), fixTime: minsAgo(20) },
+          located: { eventDateTime: minsAgo(3), latitude: 39.1, longitude: -84.5, locationName },
+        }),
+      ).locationLabel;
+
+    it.each([
+      ['2 mi E of Richmond, IN', '2mi E IN Richmond'],
+      ['1 mi N of Florence, KY', '1mi N KY Florence'],
+      ['Gary, IN', 'IN Gary'],
+      ['Nashville, TN', 'TN Nashville'],
+      ['2mi SSE OH Riverside', '2mi SSE OH Riverside'],
+      ['KY Florence', 'KY Florence'],
+      ['4mi NNW KY Lexington-Fayette', '4mi NNW KY Lexington-Fayette'],
+      ['Teston, Vaughan, Canada', 'Teston, Vaughan, Canada'],
+    ])('stored %j -> %j', (stored, label) => {
+      expect(fromEvent(stored)).toBe(label);
+    });
+
+    it('PC: a stored distance is shown at 10-mile precision only', () => {
+      expect(fromEvent('4 mi S of Terre Haute, IN', 'PC')).toBe('IN Terre Haute');
+      expect(fromEvent('12mi E OH Columbus', 'PC')).toBe('10mi E OH Columbus');
+    });
+
+    it('a blank stored name still falls back to the computed §7.29 text', () => {
+      expect(fromEvent(null)).toBe(describeLocation(39.1, -84.5));
+    });
   });
 
   it('has no label without a fix and without a located event', () => {

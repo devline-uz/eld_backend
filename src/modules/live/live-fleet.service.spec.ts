@@ -1,10 +1,11 @@
 import 'reflect-metadata';
 import { PERM_METADATA_KEY } from '../../common/decorators/perm.decorator';
 import { LiveFleetController } from './live-fleet.controller';
-import { FUTURE_TOLERANCE_MS, LIVE_FLEET_CACHE_MS, LiveFleetService } from './live-fleet.service';
+import { FUTURE_TOLERANCE_MS, LIVE_FLEET_CACHE_MS, LIVE_FLEET_MAX_STALE_MS, LiveFleetService, serverTiming } from './live-fleet.service';
 
 const NOW = new Date('2026-09-14T15:41:00.000Z');
 const minsAgo = (m: number): Date => new Date(NOW.getTime() - m * 60_000);
+const at = (ms: number): Date => new Date(NOW.getTime() + ms);
 
 const driver = {
   id: 'drv_1', firstName: 'John', lastName: 'Smith', phone: null, homeTerminalTimezone: 'America/New_York',
@@ -56,19 +57,18 @@ describe('LiveFleetService.snapshot', () => {
 
     expect(hos.computeCurrentStates).toHaveBeenCalledWith([driver], NOW);
     const until = new Date(NOW.getTime() + FUTURE_TOLERANCE_MS);
-    expect(repo.latestTelemetry).toHaveBeenCalledWith(['veh_110', 'veh_101', 'veh_104'], until);
-    expect(repo.latestLocatedEvents).toHaveBeenCalledWith(['veh_110', 'veh_101', 'veh_104'], until);
+    expect(repo.latestTelemetry).toHaveBeenCalledWith(['veh_110', 'veh_101', 'veh_104'], until, expect.any(Function));
+    expect(repo.latestLocatedEvents).toHaveBeenCalledWith(['veh_110', 'veh_101', 'veh_104'], until, expect.any(Function));
     expect(repo.activeSpecialDriving).toHaveBeenCalledWith(['drv_1'], expect.any(Date), until);
   });
 
-  it('serves repeated polls inside the 10 s window from one computation, then refreshes', async () => {
+  it('serves repeated polls inside the 10 s window from one computation', async () => {
     const { repo, service } = setup();
     const [a, b] = await Promise.all([service.snapshot(NOW), service.snapshot(new Date(NOW.getTime() + 5_000))]);
     expect(a).toBe(b);
     expect(repo.findVehicles).toHaveBeenCalledTimes(1);
-
-    await service.snapshot(new Date(NOW.getTime() + LIVE_FLEET_CACHE_MS));
-    expect(repo.findVehicles).toHaveBeenCalledTimes(2);
+    await expect(service.read(at(LIVE_FLEET_CACHE_MS - 1))).resolves.toMatchObject({ snapshot: a, cache: 'fresh' });
+    expect(repo.findVehicles).toHaveBeenCalledTimes(1);
   });
 
   it('does not cache a failure', async () => {
@@ -84,6 +84,136 @@ describe('LiveFleetService.snapshot', () => {
     hos.computeCurrentStates.mockRejectedValueOnce(new Error('engine'));
     const res = await service.snapshot(NOW);
     expect(res.items[0]).toMatchObject({ unitNumber: '101', lat: 38.99, driveRemainingSec: null, dutyStatus: 'OFF_DUTY' });
+  });
+});
+
+/** A promise resolved/rejected from the test, to hold a build open. */
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+const flush = () => new Promise((r) => setImmediate(r));
+
+describe('LiveFleetService — completion-stamped stale-while-revalidate cache (LV-02)', () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  it('stamps freshness at build COMPLETION: a 15 s build is still fresh for 10 s after it lands', async () => {
+    const { repo, service } = setup();
+    let clock = 0;
+    jest.spyOn(performance, 'now').mockImplementation(() => clock);
+    const vehicles = deferred<unknown[]>();
+    const rows = (await repo.findVehicles()) as unknown[];
+    repo.findVehicles.mockClear();
+    repo.findVehicles.mockReturnValueOnce(vehicles.promise);
+
+    const first = service.read(NOW);
+    clock = 15_000; // the build takes 15 s of wall time
+    vehicles.resolve(rows);
+    const built = await first;
+    expect(built.cache).toBe('miss');
+    expect(built.snapshot.generatedAt).toBe(NOW.toISOString()); // as-of instant, not completion
+    expect(built.phases.total).toBe(15_000);
+
+    // The old start-stamped cache had expired at NOW+10 s, before this build even landed.
+    const detail = await service.read(at(15_000 + LIVE_FLEET_CACHE_MS - 1));
+    expect(detail).toMatchObject({ cache: 'fresh', ageMs: LIVE_FLEET_CACHE_MS - 1 });
+    expect(detail.snapshot).toBe(built.snapshot);
+    expect(repo.findVehicles).toHaveBeenCalledTimes(1);
+  });
+
+  it('serves a stale snapshot at once and refreshes it in the background with ONE build', async () => {
+    const { repo, service } = setup();
+    const old = await service.snapshot(NOW);
+    const next = deferred<unknown[]>();
+    const rows = (await repo.findVehicles()) as unknown[];
+    repo.findVehicles.mockClear();
+    repo.findVehicles.mockReturnValueOnce(next.promise);
+
+    const stale = await service.read(at(LIVE_FLEET_CACHE_MS + 1_000));
+    expect(stale).toMatchObject({ cache: 'stale', snapshot: old });
+    expect(stale.snapshot.generatedAt).toBe(NOW.toISOString());
+    // More polls (list + detail) while the rebuild runs: same old snapshot, no second build.
+    await expect(service.unit('veh_101', at(LIVE_FLEET_CACHE_MS + 2_000))).resolves.toMatchObject({ vehicleId: 'veh_101' });
+    await expect(service.snapshot(at(LIVE_FLEET_CACHE_MS + 3_000))).resolves.toBe(old);
+    expect(repo.findVehicles).toHaveBeenCalledTimes(1);
+
+    next.resolve(rows);
+    await flush();
+    const fresh = await service.read(at(LIVE_FLEET_CACHE_MS + 4_000));
+    expect(fresh.cache).toBe('fresh');
+    expect(fresh.snapshot).not.toBe(old);
+    expect(fresh.snapshot.generatedAt).toBe(at(LIVE_FLEET_CACHE_MS + 1_000).toISOString());
+    expect(repo.findVehicles).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits for a fresh build once the snapshot is older than the max staleness', async () => {
+    const { repo, service } = setup();
+    const old = await service.snapshot(NOW);
+    const res = await service.read(at(LIVE_FLEET_MAX_STALE_MS + 1_000));
+    expect(res.cache).toBe('miss');
+    expect(res.snapshot).not.toBe(old);
+    expect(res.snapshot.generatedAt).toBe(at(LIVE_FLEET_MAX_STALE_MS + 1_000).toISOString());
+    expect(repo.findVehicles).toHaveBeenCalledTimes(2);
+  });
+
+  it('cold start: concurrent callers share one build', async () => {
+    const { repo, service } = setup();
+    const [a, b, c] = await Promise.all([service.read(NOW), service.read(at(1)), service.unit('veh_101', at(2))]);
+    expect(a.snapshot).toBe(b.snapshot);
+    expect(c.vehicleId).toBe('veh_101');
+    expect(repo.findVehicles).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failed background refresh keeps the previous snapshot and is retried by the next read', async () => {
+    const { repo, service } = setup();
+    const old = await service.snapshot(NOW);
+    repo.findVehicles.mockRejectedValueOnce(new Error('db down'));
+    await expect(service.read(at(LIVE_FLEET_CACHE_MS + 1_000))).resolves.toMatchObject({ cache: 'stale', snapshot: old });
+    await flush();
+    expect(repo.findVehicles).toHaveBeenCalledTimes(2);
+
+    await expect(service.read(at(LIVE_FLEET_CACHE_MS + 2_000))).resolves.toMatchObject({ cache: 'stale', snapshot: old });
+    await flush();
+    expect(repo.findVehicles).toHaveBeenCalledTimes(3);
+    await expect(service.read(at(LIVE_FLEET_CACHE_MS + 3_000))).resolves.toMatchObject({ cache: 'fresh' });
+  });
+
+  it('a failed build past the max staleness reaches the caller (nothing stale is served)', async () => {
+    const { repo, service } = setup();
+    await service.snapshot(NOW);
+    repo.findVehicles.mockRejectedValueOnce(new Error('db down'));
+    await expect(service.read(at(LIVE_FLEET_MAX_STALE_MS + 1_000))).rejects.toThrow('db down');
+  });
+
+  it('records each phase, including the probe passes reported by the repository', async () => {
+    const { repo, service } = setup();
+    repo.latestLocatedEvents.mockImplementationOnce(async (_ids: string[], _until: Date, timer: (p: string, ms: number, n: number) => void) => {
+      timer('located.recent', 3, 3);
+      timer('located.fallback', 20, 2);
+      return new Map();
+    });
+    const res = await service.read(NOW);
+    expect(Object.keys(res.phases)).toEqual(expect.arrayContaining(['vehicles', 'adverse', 'telemetry', 'located', 'located.recent', 'located.fallback', 'special', 'hos', 'map', 'total']));
+    expect(res.units).toEqual({ 'located.recent': 3, 'located.fallback': 2 });
+  });
+});
+
+describe('serverTiming', () => {
+  it('formats cache state, age and every phase (total as app)', () => {
+    expect(
+      serverTiming({
+        snapshot: { items: [], generatedAt: 'x' },
+        cache: 'stale',
+        ageMs: 12_345.6,
+        phases: { vehicles: 4.2, 'located.fallback': 25_000, total: 25_010 },
+        units: { 'located.fallback': 27 },
+      }),
+    ).toBe('cache;desc="stale", age;dur=12346, vehicles;dur=4.2, located-fallback;dur=25000;desc="27 units", app;dur=25010');
   });
 });
 
@@ -116,18 +246,32 @@ describe('LiveFleetService — invalid stored timezone (BE-003)', () => {
   });
 });
 
+const readOf = (items: object[]) => ({
+  snapshot: { items, generatedAt: 'x' }, cache: 'fresh', ageMs: 5, phases: { vehicles: 1, total: 2 }, units: {},
+});
+
 describe('LiveFleetController', () => {
   it('GET /live/fleet requires liveFleet:READ and delegates to the service', async () => {
     expect(Reflect.getMetadata(PERM_METADATA_KEY, LiveFleetController.prototype.fleet)).toEqual({ key: 'liveFleet', level: 'READ' });
     expect(Reflect.getMetadata('path', LiveFleetController)).toBe('live');
     expect(Reflect.getMetadata('path', LiveFleetController.prototype.fleet)).toBe('fleet');
-    const live = { snapshot: jest.fn().mockResolvedValue({ items: [], generatedAt: 'x' }) };
+    const live = { read: jest.fn().mockResolvedValue(readOf([])) };
     await expect(new LiveFleetController(live as never).fleet()).resolves.toEqual({ items: [], generatedAt: 'x' });
+  });
+
+  it('LV-02 — sets Server-Timing on the list and on the detail read', async () => {
+    const live = { read: jest.fn().mockResolvedValue(readOf([{ vehicleId: 'v', driverPhone: null }])), unitOf: (s: { items: unknown[] }) => s.items[0] };
+    const ctl = new LiveFleetController(live as never);
+    const res = { setHeader: jest.fn() };
+    await ctl.fleet(undefined, { view: 'list' }, res as never);
+    await ctl.unit('v', undefined, res as never);
+    expect(res.setHeader).toHaveBeenCalledTimes(2);
+    expect(res.setHeader).toHaveBeenCalledWith('Server-Timing', 'cache;desc="fresh", age;dur=5, vehicles;dur=1, app;dur=2');
   });
 
   it('?view=list returns slim rows without the detail-card-only fields; default stays full', async () => {
     const row = { vehicleId: 'v', unitNumber: '1', driverPhone: '+1 555', odometerMi: 1, driveRemainingSec: 2, shiftEndsAt: 'x', eldSerial: 'S', dutyStatus: 'DRIVING', bleState: 'CONNECTED' };
-    const live = { snapshot: jest.fn().mockResolvedValue({ items: [row], generatedAt: 'x' }) };
+    const live = { read: jest.fn().mockResolvedValue(readOf([row])) };
     const ctl = new LiveFleetController(live as never);
     const reader = { permissions: { liveFleet: 'READ', drivers: 'READ' } } as never;
     await expect(ctl.fleet(reader, { view: 'list' })).resolves.toEqual({
@@ -142,13 +286,14 @@ describe('LiveFleetController', () => {
     expect(Reflect.getMetadata(PERM_METADATA_KEY, LiveFleetController.prototype.unit)).toEqual({ key: 'liveFleet', level: 'READ' });
     expect(Reflect.getMetadata('path', LiveFleetController.prototype.unit)).toBe('fleet/:vehicleId');
     const row = { vehicleId: 'v', driverPhone: '+1 555', driveRemainingSec: 60, shiftEndsAt: 'x', eldSerial: 'S', odometerMi: 9 };
-    const live = { unit: jest.fn().mockResolvedValue(row) };
+    const unitOf = jest.fn().mockReturnValue(row);
+    const live = { read: jest.fn().mockResolvedValue(readOf([row])), unitOf };
     const ctl = new LiveFleetController(live as never);
     const viewer = { permissions: { liveFleet: 'READ' } } as never;
     const reader = { permissions: { liveFleet: 'READ', drivers: 'READ' } } as never;
     await expect(ctl.unit('v', reader)).resolves.toEqual(row);
     await expect(ctl.unit('v', viewer)).resolves.toEqual({ ...row, driverPhone: null });
-    expect(live.unit).toHaveBeenCalledWith('v');
+    expect(unitOf).toHaveBeenCalledWith({ items: [row], generatedAt: 'x' }, 'v');
   });
 
   it('GET /live/fleet/:vehicleId propagates the 404 for an unknown unit', async () => {
@@ -158,7 +303,7 @@ describe('LiveFleetController', () => {
   });
 
   it('CODE-053 — hides driverPhone without drivers READ', async () => {
-    const live = { snapshot: jest.fn().mockResolvedValue({ items: [{ vehicleId: 'v', driverPhone: '+1 555' }], generatedAt: 'x' }) };
+    const live = { read: jest.fn().mockResolvedValue(readOf([{ vehicleId: 'v', driverPhone: '+1 555' }])) };
     const ctl = new LiveFleetController(live as never);
     const viewer = { permissions: { liveFleet: 'READ' } } as never;
     const reader = { permissions: { liveFleet: 'READ', drivers: 'READ' } } as never;

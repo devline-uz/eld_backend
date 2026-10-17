@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../../core/prisma/prisma.service';
+import { utcTimestamp } from '../../../core/prisma/sql-time';
 import type { IdleFuelReportParamsDto } from '../dto/reports.dto';
 import { renderPdf } from '../lib/pdf-render';
 
@@ -33,7 +34,7 @@ export class IdleFuelReportGenerator {
     const from = new Date(`${params.from}T00:00:00.000Z`);
     const to = new Date(`${params.to}T23:59:59.999Z`);
 
-    const clauses: Prisma.Sql[] = [Prisma.sql`t."time" >= ${from} AND t."time" <= ${to}`];
+    const clauses: Prisma.Sql[] = [Prisma.sql`t."time" >= ${utcTimestamp(from)} AND t."time" <= ${utcTimestamp(to)}`];
     if (params.vehicleId) clauses.push(Prisma.sql`t."vehicleId" = ${params.vehicleId}`);
     if (params.driverId) clauses.push(Prisma.sql`t."driverId" = ${params.driverId}`);
 

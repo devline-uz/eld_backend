@@ -67,4 +67,12 @@ describe('IdleFuelReportGenerator', () => {
     expect(data.totalIdleHours).toBe('5.00');
     expect(data.totalFuelIdleGal).toBe('2.50');
   });
+
+  it('bounds TelemetryPoint."time" by whole UTC days as UTC timestamps (session-TimeZone independent)', async () => {
+    const { generator, prisma } = makeGenerator([]);
+    await generator.rows({ from: '2026-09-10', to: '2026-09-11' });
+    const sql = (prisma.$queryRaw.mock.calls[0] as unknown[])[0] as { sql: string; values: unknown[] };
+    expect(sql.sql).toContain(`t."time" >= (?::timestamptz AT TIME ZONE 'UTC') AND t."time" <= (?::timestamptz AT TIME ZONE 'UTC')`);
+    expect(sql.values.slice(0, 2)).toEqual([new Date('2026-09-10T00:00:00.000Z'), new Date('2026-09-11T23:59:59.999Z')]);
+  });
 });

@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
 import { AppConfigService } from '../../core/config/config.service';
+import { utcTimestamp } from '../../core/prisma/sql-time';
 
 /**
  * The ONE place in the codebase allowed to `DELETE FROM "AuditLog"`. `AuditLog` is a flat
@@ -56,7 +57,7 @@ export class RetentionPurgeService implements OnModuleDestroy {
    * the archive before calling this — this method does not archive anything itself. */
   async purgeOlderThan(cutoff: Date): Promise<number> {
     const client = this.getClient();
-    const result = await client.$executeRaw`DELETE FROM "AuditLog" WHERE "createdAt" < ${cutoff}`;
+    const result = await client.$executeRaw`DELETE FROM "AuditLog" WHERE "createdAt" < ${utcTimestamp(cutoff)}`;
     this.logger.log({ cutoff: cutoff.toISOString(), deleted: result }, 'AuditLog retention purge executed');
     return result;
   }

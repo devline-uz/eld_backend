@@ -13,12 +13,13 @@ import { configureApp } from '../../src/main';
 describe('Dashboard summary (e2e)', () => {
   let app: INestApplication;
   let token: string;
+  let allowedOrigin: string;
   const server = () => app.getHttpServer();
 
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
     app = moduleRef.createNestApplication();
-    configureApp(app);
+    allowedOrigin = configureApp(app).corsOrigins[0];
     await app.init();
 
     const login = await request(server())
@@ -61,5 +62,14 @@ describe('Dashboard summary (e2e)', () => {
   it('rejects without a token', async () => {
     const res = await request(server()).get('/api/dashboard/summary');
     expect(res.status).toBe(401);
+  });
+
+  it('exposes Server-Timing to cross-origin JS (CORS expose-headers)', async () => {
+    const res = await request(server()).get('/api/live/fleet').set('Origin', allowedOrigin);
+    expect(res.status).toBe(401);
+    const exposed = String(res.headers['access-control-expose-headers'] ?? '')
+      .split(',')
+      .map((h) => h.trim().toLowerCase());
+    expect(exposed).toEqual(expect.arrayContaining(['x-trace-id', 'x-request-id', 'server-timing']));
   });
 });

@@ -1,4 +1,5 @@
-import { Controller, Get, Param, Query } from '@nestjs/common';
+import { Controller, Get, Param, Query, Res } from '@nestjs/common';
+import type { Response } from 'express';
 import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Perm } from '../../common/decorators/perm.decorator';
@@ -8,7 +9,7 @@ import { zodBody } from '../../common/pipes/zod-validation.pipe';
 import type { ContextUser } from '../../core/context/request-context';
 import { LiveFleetQueryDto } from './dto/live-fleet.dto';
 import { toLiveFleetListUnit, type LiveFleetUnit } from './live-fleet.mapper';
-import { LiveFleetService } from './live-fleet.service';
+import { LiveFleetService, serverTiming, type LiveFleetRead } from './live-fleet.service';
 
 const UNIT_EXAMPLE = {
   vehicleId: 'veh_1', unitNumber: '101', driverId: 'drv_1', driverName: 'John Smith',
@@ -23,6 +24,11 @@ const UNIT_EXAMPLE = {
 function canSeePhone(actor?: ContextUser): boolean {
   const level = actor?.permissions?.drivers ?? 'NONE';
   return level === 'READ' || level === 'FULL';
+}
+
+/** LV-02 — `Server-Timing` on both live-fleet reads: cache state, snapshot age, build phases. */
+function setTiming(res: Response | undefined, read: LiveFleetRead): void {
+  res?.setHeader('Server-Timing', serverTiming(read));
 }
 
 /**
@@ -58,8 +64,11 @@ export class LiveFleetController {
   async fleet(
     @CurrentUser() actor?: ContextUser,
     @Query(zodBody(LiveFleetQueryDto)) query: LiveFleetQueryDto = { view: 'full' },
+    @Res({ passthrough: true }) res?: Response,
   ) {
-    const snapshot = await this.live.snapshot();
+    const read = await this.live.read();
+    setTiming(res, read);
+    const { snapshot } = read;
     // The slim web list carries no phone at all, so there is nothing to redact.
     if (query.view === 'list') return { ...snapshot, items: snapshot.items.map(toLiveFleetListUnit) };
     if (canSeePhone(actor)) return snapshot;
@@ -79,8 +88,14 @@ export class LiveFleetController {
     schema: { example: UNIT_EXAMPLE },
   })
   @ApiStandardErrors({ errors: [apiError.notFound(ERROR_CODES.VEHICLE_NOT_FOUND, 'Vehicle not found.')] })
-  async unit(@Param('vehicleId') vehicleId: string, @CurrentUser() actor?: ContextUser): Promise<LiveFleetUnit> {
-    const unit = await this.live.unit(vehicleId);
+  async unit(
+    @Param('vehicleId') vehicleId: string,
+    @CurrentUser() actor?: ContextUser,
+    @Res({ passthrough: true }) res?: Response,
+  ): Promise<LiveFleetUnit> {
+    const read = await this.live.read();
+    setTiming(res, read);
+    const unit = this.live.unitOf(read.snapshot, vehicleId);
     return canSeePhone(actor) ? unit : { ...unit, driverPhone: null };
   }
 }
