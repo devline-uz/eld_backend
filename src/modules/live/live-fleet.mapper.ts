@@ -82,6 +82,31 @@ export interface LiveFleetResponse {
   generatedAt: string;
 }
 
+/**
+ * The fields only W-02's selected-unit detail card reads. `GET /live/fleet?view=list` leaves them
+ * out of every row; the card reads them from `GET /live/fleet/:vehicleId`.
+ */
+export const LIVE_FLEET_DETAIL_ONLY_FIELDS = ['driverPhone', 'odometerMi', 'driveRemainingSec', 'shiftEndsAt', 'eldSerial'] as const;
+export type LiveFleetDetailOnlyField = (typeof LIVE_FLEET_DETAIL_ONLY_FIELDS)[number];
+
+/**
+ * `GET /live/fleet?view=list` row — everything the web's unit list, segment counts, search, map
+ * markers, Vehicles status column and Messages' driver panel read; the detail-card-only fields
+ * are dropped. Mirrors `web/src/shared/api/liveFleet.ts#LiveFleetListUnit`.
+ */
+export type LiveFleetListUnit = Omit<LiveFleetUnit, LiveFleetDetailOnlyField>;
+
+export interface LiveFleetListResponse {
+  items: LiveFleetListUnit[];
+  generatedAt: string;
+}
+
+/** Drops the detail-card-only fields from one row (a new object; the cached snapshot is untouched). */
+export function toLiveFleetListUnit(unit: LiveFleetUnit): LiveFleetListUnit {
+  const { driverPhone: _phone, odometerMi: _odo, driveRemainingSec: _drive, shiftEndsAt: _shift, eldSerial: _serial, ...rest } = unit;
+  return rest;
+}
+
 /** §7 hard rule — "over 30 min unconnected -> alert.eld_disconnected"; the panel uses the same line. */
 export const ELD_OFFLINE_AFTER_MS = 30 * 60 * 1000;
 /** A telemetry fix older than this no longer says anything about the truck's current speed. */

@@ -3,6 +3,8 @@ import {
   compareUnitNumbers,
   ELD_OFFLINE_AFTER_MS,
   isEldOffline,
+  LIVE_FLEET_DETAIL_ONLY_FIELDS,
+  toLiveFleetListUnit,
   toLiveFleetUnit,
   type LiveFleetInput,
 } from './live-fleet.mapper';
@@ -303,5 +305,23 @@ describe('QA LIVE-002 — driverDutyStatus is the driver\'s own HOS status (the 
   it('is null with no driver, or when the HOS state is unavailable', () => {
     expect(toLiveFleetUnit(input({ driver: null, hos: null })).driverDutyStatus).toBeNull();
     expect(toLiveFleetUnit(input({ hos: null })).driverDutyStatus).toBeNull();
+  });
+});
+
+describe('toLiveFleetListUnit (GET /live/fleet?view=list)', () => {
+  it('drops exactly the detail-card-only fields and keeps every list/map/status field', () => {
+    const full = toLiveFleetUnit(input());
+    const slim = toLiveFleetListUnit(full);
+    for (const key of LIVE_FLEET_DETAIL_ONLY_FIELDS) expect(slim).not.toHaveProperty(key);
+    expect(Object.keys(slim).sort()).toEqual(
+      [
+        'vehicleId', 'unitNumber', 'driverId', 'driverName', 'dutyStatus', 'driverDutyStatus', 'speedMph', 'headingDeg',
+        'lat', 'lon', 'locationLabel', 'lastSeenAt', 'bleState', 'recordStatus', 'connectivity', 'isStale', 'staleSince',
+      ].sort(),
+    );
+    const { driverPhone: _p, odometerMi: _o, driveRemainingSec: _d, shiftEndsAt: _s, eldSerial: _e, ...rest } = full;
+    expect(slim).toEqual(rest);
+    // The cached full row is not mutated.
+    expect(full.driverPhone).toBe('+1 334 765 4888');
   });
 });
