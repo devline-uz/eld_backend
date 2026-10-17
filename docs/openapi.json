@@ -64243,7 +64243,9 @@
                         "colour": "BLUE",
                         "countAsYardMove": false,
                         "vehicleGroupId": null,
-                        "vehicleGroupName": null
+                        "vehicleGroupName": null,
+                        "vehicleIds": [],
+                        "vehicles": []
                       }
                     ]
                   }
@@ -64445,7 +64447,17 @@
                     "radiusMi": 0.5,
                     "colour": "GREEN",
                     "countAsYardMove": true,
-                    "vehicleGroupId": "b1c2d3e4-0000-4000-8000-000000000001"
+                    "vehicleGroupId": null,
+                    "vehicleGroupName": null,
+                    "vehicleIds": [
+                      "c1d2e3f4-0000-4000-8000-000000000007"
+                    ],
+                    "vehicles": [
+                      {
+                        "id": "c1d2e3f4-0000-4000-8000-000000000007",
+                        "unitNumber": "101"
+                      }
+                    ]
                   }
                 }
               }
@@ -64693,7 +64705,9 @@
                     "colour": "BLUE",
                     "countAsYardMove": false,
                     "vehicleGroupId": "b1c2d3e4-0000-4000-8000-000000000001",
-                    "vehicleGroupName": "Northeast"
+                    "vehicleGroupName": "Northeast",
+                    "vehicleIds": [],
+                    "vehicles": []
                   }
                 }
               }
@@ -64945,7 +64959,10 @@
                   "example": {
                     "id": "gf_1",
                     "enabled": false,
-                    "vehicleGroupId": null
+                    "vehicleGroupId": null,
+                    "vehicleGroupName": null,
+                    "vehicleIds": [],
+                    "vehicles": []
                   }
                 }
               }
@@ -76195,10 +76212,14 @@
               "type": "object",
               "properties": {
                 "lat": {
-                  "type": "number"
+                  "type": "number",
+                  "minimum": -90,
+                  "maximum": 90
                 },
                 "lon": {
-                  "type": "number"
+                  "type": "number",
+                  "minimum": -180,
+                  "maximum": 180
                 }
               },
               "required": [
@@ -76206,7 +76227,8 @@
                 "lon"
               ]
             },
-            "minItems": 3
+            "minItems": 3,
+            "maxItems": 500
           },
           "address": {
             "type": "string",
@@ -76246,6 +76268,14 @@
             "type": "string",
             "format": "uuid",
             "nullable": true
+          },
+          "vehicleIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "maxItems": 500
           }
         },
         "required": [
@@ -80389,10 +80419,14 @@
               "type": "object",
               "properties": {
                 "lat": {
-                  "type": "number"
+                  "type": "number",
+                  "minimum": -90,
+                  "maximum": 90
                 },
                 "lon": {
-                  "type": "number"
+                  "type": "number",
+                  "minimum": -180,
+                  "maximum": 180
                 }
               },
               "required": [
@@ -80400,7 +80434,8 @@
                 "lon"
               ]
             },
-            "minItems": 3
+            "minItems": 3,
+            "maxItems": 500
           },
           "address": {
             "type": "string",
@@ -80440,6 +80475,14 @@
             "type": "string",
             "format": "uuid",
             "nullable": true
+          },
+          "vehicleIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "maxItems": 500
           }
         }
       },

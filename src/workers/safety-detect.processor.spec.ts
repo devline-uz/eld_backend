@@ -14,7 +14,10 @@ function buildProcessor(fences: unknown[] = [], vehicleGroupId: string | null = 
     vehicle: { findUnique: jest.fn(async () => ({ groupId: vehicleGroupId })) },
   };
   const safety = { createMany: jest.fn(async (rows: unknown[]) => createManyCalls.push(...rows)) };
-  const geofences = { activeCircleFences: jest.fn(async () => fences) };
+  // `activeCircleFences()` always includes the unit scope (empty = not unit-scoped).
+  const geofences = {
+    activeCircleFences: jest.fn(async () => fences.map((f) => ({ vehicles: [], ...(f as object) }))),
+  };
   const events = { publish: jest.fn(async (name: string) => publishedEvents.push(name)) };
   const alertQueue = { add: jest.fn(async (name: string, data: unknown) => alertJobs.push({ name, data })) };
 
@@ -221,6 +224,54 @@ describe('SafetyDetectProcessor — geofences', () => {
         .map((j) => (j.data as { geofenceId: string }).geofenceId);
       expect(ids).toEqual(['gf_all']);
       expect(prisma.vehicle.findUnique).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('"Applies to" specific units', () => {
+    const crossing = {
+      data: {
+        vehicleId: 'veh_1',
+        driverId: 'drv_1',
+        points: [
+          { time: '2026-09-11T00:00:00.000Z', latitude: 41.0, longitude: -83.0 },
+          { time: '2026-09-11T00:00:01.000Z', latitude: 40.0, longitude: -83.0 },
+        ],
+      },
+    } as never;
+    const enteredIds = (jobs: Array<{ name: string; data: unknown }>) =>
+      jobs.filter((j) => j.name === 'alert.geofence_enter').map((j) => (j.data as { geofenceId: string }).geofenceId);
+
+    it('fires a fence scoped to units only for a listed unit, without looking up the vehicle', async () => {
+      const { processor, alertJobs, prisma } = buildProcessor(
+        [
+          { ...fence, id: 'gf_mine', vehicleGroupId: null, vehicles: [{ vehicleId: 'veh_2' }, { vehicleId: 'veh_1' }] },
+          { ...fence, id: 'gf_other', vehicleGroupId: null, vehicles: [{ vehicleId: 'veh_2' }] },
+          { ...fence, id: 'gf_all', vehicleGroupId: null, vehicles: [] },
+        ],
+        'grp_a',
+      );
+      await processor.process(crossing);
+      expect(enteredIds(alertJobs)).toEqual(['gf_mine', 'gf_all']);
+      expect(prisma.vehicle.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('raises nothing for a vehicle no unit-scoped fence lists', async () => {
+      const { processor, alertJobs } = buildProcessor([{ ...fence, vehicles: [{ vehicleId: 'veh_9' }] }]);
+      await processor.process(crossing);
+      expect(enteredIds(alertJobs)).toEqual([]);
+    });
+
+    it('combines with group scoping: unit and group fences each apply only to their own vehicles', async () => {
+      const { processor, alertJobs } = buildProcessor(
+        [
+          { ...fence, id: 'gf_unit', vehicleGroupId: null, vehicles: [{ vehicleId: 'veh_1' }] },
+          { ...fence, id: 'gf_grp_b', vehicleGroupId: 'grp_b', vehicles: [] },
+          { ...fence, id: 'gf_grp_a', vehicleGroupId: 'grp_a', vehicles: [] },
+        ],
+        'grp_a',
+      );
+      await processor.process(crossing);
+      expect(enteredIds(alertJobs)).toEqual(['gf_unit', 'gf_grp_a']);
     });
   });
 });

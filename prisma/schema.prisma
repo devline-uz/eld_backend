@@ -442,6 +442,8 @@ model Vehicle {
   workOrders WorkOrder[]
   schedules  MaintenanceSchedule[]
   trips      Trip[]
+  /// Geofences scoped to this unit explicitly (`GeofenceVehicle`).
+  geofenceScopes GeofenceVehicle[]
 
   @@index([status])
   @@index([groupId])
@@ -1147,9 +1149,23 @@ model Geofence {
   /// the group makes the fence apply to all groups again (SetNull).
   vehicleGroupId  String?
   vehicleGroup    VehicleGroup?  @relation(fields: [vehicleGroupId], references: [id], onDelete: SetNull)
+  /// "Applies to" specific units (web overlay 11.1). Non-empty = only these units; mutually
+  /// exclusive with `vehicleGroupId`. Empty and no group = every unit.
+  vehicles        GeofenceVehicle[]
   createdAt       DateTime       @default(now())
 
   @@index([vehicleGroupId])
+}
+
+/// A geofence scoped to an explicit unit (web overlay 11.1 "Applies to" → specific units).
+model GeofenceVehicle {
+  geofenceId String
+  vehicleId  String
+  geofence   Geofence @relation(fields: [geofenceId], references: [id], onDelete: Cascade)
+  vehicle    Vehicle  @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+
+  @@id([geofenceId, vehicleId])
+  @@index([vehicleId])
 }
 
 model SafetyEvent {

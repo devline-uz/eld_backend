@@ -158,11 +158,14 @@ export class SafetyDetectProcessor extends WorkerHost {
     }
   }
 
-  /** §20 B-104 — a fence with a `vehicleGroupId` only applies to vehicles in that group;
-   * a null group applies to every vehicle. The vehicle's group is read at most once per job,
-   * and only when some active fence is group-scoped. */
+  /** §20 B-104 — a fence with a `vehicleGroupId` only applies to vehicles in that group, and a
+   * fence scoped to specific units only to those units; with neither it applies to every
+   * vehicle. The vehicle's group is read at most once per job, and only when some active fence
+   * is group-scoped. */
   private async applicableFences(vehicleId: string) {
-    const fences = await this.geofences.activeCircleFences();
+    const fences = (await this.geofences.activeCircleFences()).filter(
+      (f) => f.vehicles.length === 0 || f.vehicles.some((v) => v.vehicleId === vehicleId),
+    );
     if (!fences.some((f) => f.vehicleGroupId)) return fences;
     const vehicle = await this.prisma.vehicle.findUnique({ where: { id: vehicleId }, select: { groupId: true } });
     const groupId = vehicle?.groupId ?? null;
