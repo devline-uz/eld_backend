@@ -24,12 +24,14 @@ export class GeofencesService {
    * (stored as CIRCLE-shaped data, `address` kept for display); `radiusMeters` is an alias of
    * `radiusMi` (decisions.md). Requires `GEOCODER_URL` — otherwise `422 GEOCODER_NOT_CONFIGURED`. */
   async create(dto: CreateGeofenceDto) {
-    const { radiusMeters, vehicleGroupId, ...rest } = dto;
+    const { radiusMeters, vehicleGroupId, vehicleIds, ...rest } = dto;
     await this.assertGroupExists(vehicleGroupId);
+    await this.assertVehiclesExist(vehicleIds);
     const data = {
       ...rest,
       radiusMi: rest.radiusMi ?? radiusMeters,
       ...(vehicleGroupId && { vehicleGroup: { connect: { id: vehicleGroupId } } }),
+      ...(vehicleIds?.length && { vehicles: { create: vehicleIds.map((vehicleId) => ({ vehicleId })) } }),
     };
     if (data.type === 'ADDRESS') {
       const geocoderUrl = this.config.get('GEOCODER_URL');
@@ -37,20 +39,29 @@ export class GeofencesService {
         throw new AppException(ERROR_CODES.GEOCODER_NOT_CONFIGURED, 'No geocoding service is configured.', 422);
       }
       const { lat, lon } = await geocodeAddress(data.address as string, geocoderUrl);
-      return this.repo.create({ ...data, centerLat: lat, centerLon: lon });
+      return this.withScope(await this.repo.create({ ...data, centerLat: lat, centerLon: lon }));
     }
-    return this.repo.create(data);
+    return this.withScope(await this.repo.create(data));
   }
 
   async update(id: string, dto: UpdateGeofenceDto) {
     const existing = await this.get(id);
-    const { radiusMeters, vehicleGroupId, ...rest } = dto;
+    const { radiusMeters, vehicleGroupId, vehicleIds, ...rest } = dto;
     await this.assertGroupExists(vehicleGroupId);
+    // Units already on the fence may be re-sent even if soft-deleted since (the edit form echoes
+    // `vehicleIds` back); only newly added ones must be live.
+    await this.assertVehiclesExist(vehicleIds?.filter((v) => !existing.vehicleIds.includes(v)));
+    // The group and unit scopes are mutually exclusive: setting one clears the other.
+    const units = vehicleIds ?? (vehicleGroupId ? [] : undefined);
+    const group = vehicleGroupId !== undefined ? vehicleGroupId : vehicleIds?.length ? null : undefined;
     const data = {
       ...rest,
       ...(radiusMeters != null && rest.radiusMi == null && { radiusMi: radiusMeters }),
-      ...(vehicleGroupId !== undefined && {
-        vehicleGroup: vehicleGroupId === null ? { disconnect: true } : { connect: { id: vehicleGroupId } },
+      ...(group !== undefined && {
+        vehicleGroup: group === null ? { disconnect: true } : { connect: { id: group } },
+      }),
+      ...(units !== undefined && {
+        vehicles: { deleteMany: {}, create: units.map((vehicleId) => ({ vehicleId })) },
       }),
     };
     if (dto.address && existing.type === 'ADDRESS') {
@@ -59,9 +70,22 @@ export class GeofencesService {
         throw new AppException(ERROR_CODES.GEOCODER_NOT_CONFIGURED, 'No geocoding service is configured.', 422);
       }
       const { lat, lon } = await geocodeAddress(dto.address, geocoderUrl);
-      return this.repo.update({ id }, { ...data, centerLat: lat, centerLon: lon });
+      return this.withScope(await this.repo.update({ id }, { ...data, centerLat: lat, centerLon: lon }));
     }
-    return this.repo.update({ id }, data);
+    return this.withScope(await this.repo.update({ id }, data));
+  }
+
+  /** Re-reads a written fence with its group and units so create/update answer like `GET`. */
+  private withScope(fence: { id: string }) {
+    return this.get(fence.id);
+  }
+
+  /** Every id must name a live unit — an unknown or deleted one is a 404, not a raw FK 500. */
+  private async assertVehiclesExist(ids: string[] | undefined): Promise<void> {
+    if (!ids?.length) return;
+    if ((await this.repo.countLiveVehicles(ids)) !== ids.length) {
+      throw new AppException(ERROR_CODES.VEHICLE_NOT_FOUND, 'Vehicle not found.', 404);
+    }
   }
 
   /** §20 B-104 — the app is single-carrier (no `carrierId` column, tz §27.3), so "same
@@ -80,7 +104,14 @@ export class GeofencesService {
   }
 }
 
-/** §20 B-104 — flattens the joined group into `vehicleGroupName` (null = all groups). */
-function toView({ vehicleGroup, ...fence }: GeofenceWithGroup) {
-  return { ...fence, vehicleGroupName: vehicleGroup?.name ?? null };
+/** §20 B-104 — flattens the joined group into `vehicleGroupName` (null = all groups) and the
+ * unit scope into `vehicleIds` + `vehicles` (`[]` = not unit-scoped). */
+function toView({ vehicleGroup, vehicles, ...fence }: GeofenceWithGroup) {
+  const units = vehicles.map((v) => v.vehicle);
+  return {
+    ...fence,
+    vehicleGroupName: vehicleGroup?.name ?? null,
+    vehicleIds: units.map((v) => v.id),
+    vehicles: units,
+  };
 }

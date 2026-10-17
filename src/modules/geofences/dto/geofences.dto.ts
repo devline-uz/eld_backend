@@ -26,6 +26,12 @@ const PolygonPoints = z
     message: 'A polygon needs at least 3 different points.',
   });
 
+/** Units an "Applies to" scope names — distinct ids, at most 500. */
+const VehicleIds = z
+  .array(z.string().uuid())
+  .max(500)
+  .transform((ids) => [...new Set(ids)]);
+
 /** TZ §5.10 / eld.docs "Live Fleet" §5 — "Geofences chip draws a terminal/customer area". */
 export const CreateGeofenceDto = z
   .object({
@@ -48,6 +54,13 @@ export const CreateGeofenceDto = z
     countAsYardMove: z.boolean().default(false),
     /** §20 B-104 — "Applies to" vehicle group (overlay 11.1). null/absent = all groups. */
     vehicleGroupId: z.string().uuid().nullable().optional(),
+    /** "Applies to" specific units (overlay 11.1). Non-empty = only these units; cannot be
+     * combined with `vehicleGroupId`. Absent/empty (and no group) = every unit. */
+    vehicleIds: VehicleIds.optional(),
+  })
+  .refine((v) => !(v.vehicleGroupId && v.vehicleIds?.length), {
+    message: 'A geofence applies to a vehicle group or to specific units, not both.',
+    path: ['vehicleIds'],
   })
   .refine(
     (v) => {
@@ -76,5 +89,11 @@ export const UpdateGeofenceDto = z.object({
   enabled: z.boolean().optional(),
   /** §20 B-104 — null resets the fence to "all groups"; absent leaves it unchanged. */
   vehicleGroupId: z.string().uuid().nullable().optional(),
+  /** Replaces the unit scope; `[]` clears it, absent leaves it unchanged. A non-empty list drops
+   * the group scope and a group drops the unit scope (the two are mutually exclusive). */
+  vehicleIds: VehicleIds.optional(),
+}).refine((v) => !(v.vehicleGroupId && v.vehicleIds?.length), {
+  message: 'A geofence applies to a vehicle group or to specific units, not both.',
+  path: ['vehicleIds'],
 });
 export type UpdateGeofenceDto = z.infer<typeof UpdateGeofenceDto>;
