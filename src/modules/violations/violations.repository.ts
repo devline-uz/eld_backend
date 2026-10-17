@@ -65,7 +65,7 @@ export class ViolationsRepository {
     return this.prisma.eldEvent.findFirst({
       where: { driverId, recordStatus: 1, eventDateTime: { lte: at } },
       orderBy: [{ eventDateTime: 'desc' }, { eventSequenceId: 'desc' }],
-      select: { vehicleId: true, locationName: true },
+      select: { vehicleId: true, locationName: true, locationPrecisionMi: true },
     });
   }
 

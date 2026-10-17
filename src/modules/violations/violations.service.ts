@@ -1,6 +1,7 @@
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { EditorType, type HosViolation, type Prisma } from '@prisma/client';
 import { AppException, ERROR_CODES } from '../../common/errors';
+import { normalizeLocationText } from '../../common/geo-location/location-display';
 import { RequestContext, type ContextUser } from '../../core/context/request-context';
 import { AuditRepository } from '../audit/audit.repository';
 import { VIOLATION_WINDOWS, type ResolveViolationDto, type ViolationListQueryDto } from './dto/violations.dto';
@@ -116,7 +117,7 @@ export function buildWhere(query: ViolationListQueryDto, now: Date): Prisma.HosV
 
 export function toListView(
   row: ViolationWithDriver,
-  context: { vehicleId: string | null; locationName: string | null } | null,
+  context: { vehicleId: string | null; locationName: string | null; locationPrecisionMi?: number | null } | null,
   units: Map<string, string>,
 ) {
   const vehicleId = context?.vehicleId ?? row.driver.assignedVehicleId ?? null;
@@ -140,7 +141,10 @@ export function toListView(
     vehicleId,
     unitNumber: vehicleId ? (units.get(vehicleId) ?? null) : null,
     event: VIOLATION_EVENT_LABEL[row.type],
-    locationLabel: context?.locationName ?? null,
+    // Display only — the stored text in the §7.29 form (`location-display.ts`).
+    locationLabel: normalizeLocationText(context?.locationName, {
+      reducedPrecision: (context?.locationPrecisionMi ?? 1) >= 10,
+    }),
     date: day(row.logDate),
   };
 }

@@ -7,6 +7,7 @@
  * coarsened at ingest (1 mi / 10 mi under PC, §7.3 rule 9), so nothing here can leak a raw fix.
  */
 import { describeLocation, resolveLocationText } from '../../common/geo-location/location-description';
+import { normalizeLocationText } from '../../common/geo-location/location-display';
 import { staleStatusCapAt } from '../drivers/lib/stale-status';
 import type { DutyStatus as HosDutyStatus } from '../hos/hos.types';
 
@@ -237,11 +238,16 @@ export function toLiveFleetUnit(input: LiveFleetInput): LiveFleetUnit {
   // same offline geo-location ingest uses, computed from the fix (never an older event's name).
   // PC (§4.7.3): ingest already coarsened the stored coordinates to 10 mi, so describe at 10 mi too.
   const reducedPrecision = input.special === 'PC';
-  const locationLabel = useEvent
-    ? resolveLocationText(located.locationName, located.latitude, located.longitude, { reducedPrecision })
-    : fix
-      ? describeLocation(fix.lat, fix.lon, { reducedPrecision })
-      : null;
+  // Display only: a stored text in another shape ("2 mi E of Richmond, IN") is shown in the
+  // §7.29 form the computed labels use (`location-display.ts`); the record itself is untouched.
+  const locationLabel = normalizeLocationText(
+    useEvent
+      ? resolveLocationText(located.locationName, located.latitude, located.longitude, { reducedPrecision })
+      : fix
+        ? describeLocation(fix.lat, fix.lon, { reducedPrecision })
+        : null,
+    { reducedPrecision },
+  );
 
   const offline = isEldOffline(device, now);
   const recordStatus = recordStatusOf(vehicle.status);

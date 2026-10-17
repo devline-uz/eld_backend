@@ -96,7 +96,7 @@ describe('ViolationsService.list', () => {
           vehicleId: 'veh-1',
           unitNumber: '101',
           event: '11-hour driving limit exceeded',
-          locationLabel: 'Florence, KY',
+          locationLabel: 'KY Florence', // display form of the stored 'Florence, KY' (location-display.ts)
           occurredAt: '2026-09-14T10:00:00.000Z',
           resolvedAt: null,
         }),

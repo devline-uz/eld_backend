@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../core/prisma/prisma.service';
+import { utcTimestamp } from '../../core/prisma/sql-time';
 import { findAdverseInvokedToday } from '../drivers/lib/adverse-driving';
 import type { LatestLocatedEvent, LatestTelemetry } from './live-fleet.mapper';
 
@@ -12,11 +13,28 @@ import type { LatestLocatedEvent, LatestTelemetry } from './live-fleet.mapper';
 export const RECENT_WINDOW_MS = 2 * 24 * 60 * 60 * 1000;
 
 /**
+ * LV-02 — receives the duration of each pass of the latest-row probes (`telemetry.recent`,
+ * `telemetry.fallback`, `located.recent`, `located.fallback`) and how many units it covered, so
+ * `GET /live/fleet` can report where its time goes (log + `Server-Timing`).
+ */
+export type ProbeTimer = (phase: string, ms: number, units: number) => void;
+
+async function timed<T>(timer: ProbeTimer | undefined, phase: string, units: number, run: () => Promise<T>): Promise<T> {
+  const started = performance.now();
+  try {
+    return await run();
+  } finally {
+    timer?.(phase, performance.now() - started, units);
+  }
+}
+
+/**
  * Reads for `GET /live/fleet`. Constant query count for the whole fleet (no N+1, tz.md §19):
  * one vehicle scan with its device + assigned driver, one LATERAL "latest fix per vehicle" on
  * `TelemetryPoint`, one on located `EldEvent`s (each + one fallback pass only for units silent
  * for 2 days, LV-01), one "latest status/PC-YM record per driver".
- * The LATERAL `LIMIT 1` probes ride the `(vehicleId, time)` / `(vehicleId, eventDateTime)` indexes.
+ * The LATERAL `LIMIT 1` probes ride `TelemetryPoint_vehicleId_time_idx` / `_fix_idx` and, for
+ * located RODS records, `EldEvent_vehicleId_eventDateTime_located_idx` (LV-02, partial).
  */
 @Injectable()
 export class LiveFleetRepository {
@@ -57,19 +75,22 @@ export class LiveFleetRepository {
    * fix probe rides `TelemetryPoint_vehicleId_time_fix_idx` (partial, fix rows only) instead of
    * walking — with a heap fetch per row — over every fix-less point of the vehicle.
    */
-  async latestTelemetry(vehicleIds: string[], until: Date): Promise<Map<string, LatestTelemetry>> {
+  async latestTelemetry(vehicleIds: string[], until: Date, timer?: ProbeTimer): Promise<Map<string, LatestTelemetry>> {
     if (!vehicleIds.length) return new Map();
     const since = new Date(until.getTime() - RECENT_WINDOW_MS);
-    const recent = await this.telemetryProbe(vehicleIds, until, since);
+    const recent = await timed(timer, 'telemetry.recent', vehicleIds.length, () => this.telemetryProbe(vehicleIds, until, since));
     const result = new Map<string, LatestTelemetry>();
     for (const [vehicleId, row] of recent) if (row.fixTime) result.set(vehicleId, row);
     const missing = vehicleIds.filter((id) => !result.has(id));
-    if (missing.length) for (const [vehicleId, row] of await this.telemetryProbe(missing, until, null)) result.set(vehicleId, row);
+    if (missing.length) {
+      const older = await timed(timer, 'telemetry.fallback', missing.length, () => this.telemetryProbe(missing, until, null));
+      for (const [vehicleId, row] of older) result.set(vehicleId, row);
+    }
     return result;
   }
 
   private async telemetryProbe(vehicleIds: string[], until: Date, since: Date | null): Promise<Map<string, LatestTelemetry>> {
-    const from = since ? Prisma.sql`AND "time" >= ${since}` : Prisma.empty;
+    const from = since ? Prisma.sql`AND "time" >= ${utcTimestamp(since)}` : Prisma.empty;
     const rows = await this.prisma.$queryRaw<Array<LatestTelemetry & { vehicleId: string }>>(Prisma.sql`
       SELECT v.id AS "vehicleId", t."time", p."time" AS "fixTime",
              p.latitude::float8 AS latitude, p.longitude::float8 AS longitude,
@@ -78,14 +99,14 @@ export class LiveFleetRepository {
       CROSS JOIN LATERAL (
         SELECT "time", "speedMph", "headingDeg", "odometerMi", "engineOn"
         FROM "TelemetryPoint"
-        WHERE "vehicleId" = v.id AND "time" <= ${until} ${from}
+        WHERE "vehicleId" = v.id AND "time" <= ${utcTimestamp(until)} ${from}
         ORDER BY "time" DESC
         LIMIT 1
       ) t
       LEFT JOIN LATERAL (
         SELECT "time", latitude, longitude
         FROM "TelemetryPoint"
-        WHERE "vehicleId" = v.id AND "time" <= ${until} ${from} AND latitude IS NOT NULL AND longitude IS NOT NULL
+        WHERE "vehicleId" = v.id AND "time" <= ${utcTimestamp(until)} ${from} AND latitude IS NOT NULL AND longitude IS NOT NULL
         ORDER BY "time" DESC
         LIMIT 1
       ) p ON true`);
@@ -95,17 +116,27 @@ export class LiveFleetRepository {
   /**
    * Latest active, located RODS record per vehicle — carries the §7 `locationName`. LV-01: same
    * recent-window-then-unbounded two passes as `latestTelemetry` (monthly `EldEvent` partitions).
+   *
+   * LV-02 — the predicate below is EXACTLY the one of the partial index
+   * `EldEvent_vehicleId_eventDateTime_located_idx` (`recordStatus = 1 AND latitude/longitude IS NOT
+   * NULL`); keep them in step. Without it the unbounded pass walked, per unit that never had a
+   * located record, its whole RODS history (or, on a `recordStatus` index plan, the whole fleet's) —
+   * the 25 s production `GET /live/fleet` with 27 position-less units.
    */
-  async latestLocatedEvents(vehicleIds: string[], until: Date): Promise<Map<string, LatestLocatedEvent>> {
+  async latestLocatedEvents(vehicleIds: string[], until: Date, timer?: ProbeTimer): Promise<Map<string, LatestLocatedEvent>> {
     if (!vehicleIds.length) return new Map();
-    const result = await this.locatedProbe(vehicleIds, until, new Date(until.getTime() - RECENT_WINDOW_MS));
+    const since = new Date(until.getTime() - RECENT_WINDOW_MS);
+    const result = await timed(timer, 'located.recent', vehicleIds.length, () => this.locatedProbe(vehicleIds, until, since));
     const missing = vehicleIds.filter((id) => !result.has(id));
-    if (missing.length) for (const [vehicleId, row] of await this.locatedProbe(missing, until, null)) result.set(vehicleId, row);
+    if (missing.length) {
+      const older = await timed(timer, 'located.fallback', missing.length, () => this.locatedProbe(missing, until, null));
+      for (const [vehicleId, row] of older) result.set(vehicleId, row);
+    }
     return result;
   }
 
   private async locatedProbe(vehicleIds: string[], until: Date, since: Date | null): Promise<Map<string, LatestLocatedEvent>> {
-    const from = since ? Prisma.sql`AND "eventDateTime" >= ${since}` : Prisma.empty;
+    const from = since ? Prisma.sql`AND "eventDateTime" >= ${utcTimestamp(since)}` : Prisma.empty;
     const rows = await this.prisma.$queryRaw<Array<LatestLocatedEvent & { vehicleId: string }>>(Prisma.sql`
       SELECT v.id AS "vehicleId", e."eventDateTime", e.latitude::float8 AS latitude,
              e.longitude::float8 AS longitude, e."locationName"
@@ -114,7 +145,7 @@ export class LiveFleetRepository {
         SELECT "eventDateTime", latitude, longitude, "locationName"
         FROM "EldEvent"
         WHERE "vehicleId" = v.id AND "recordStatus" = 1 AND latitude IS NOT NULL
-          AND longitude IS NOT NULL AND "eventDateTime" <= ${until} ${from}
+          AND longitude IS NOT NULL AND "eventDateTime" <= ${utcTimestamp(until)} ${from}
         ORDER BY "eventDateTime" DESC
         LIMIT 1
       ) e`);
@@ -134,7 +165,7 @@ export class LiveFleetRepository {
       SELECT DISTINCT ON ("driverId", "eventType") "driverId", "eventType", "eventCode", "eventDateTime"
       FROM "EldEvent"
       WHERE "driverId" = ANY(${driverIds}::text[]) AND "eventType" IN (1, 3) AND "recordStatus" = 1
-        AND "eventDateTime" >= ${from} AND "eventDateTime" <= ${until}
+        AND "eventDateTime" >= ${utcTimestamp(from)} AND "eventDateTime" <= ${utcTimestamp(until)}
       ORDER BY "driverId", "eventType", "eventDateTime" DESC, "eventSequenceId" DESC`);
     const byDriver = new Map<string, { status?: Date; special?: { code: number; at: Date } }>();
     for (const row of rows) {

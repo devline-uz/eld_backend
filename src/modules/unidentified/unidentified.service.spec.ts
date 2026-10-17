@@ -657,3 +657,16 @@ describe('UnidentifiedListQueryDto — B3-14 date filters', () => {
     expect(UnidentifiedListQueryDto.safeParse({ from: '2026-10-01', to: '2026-10-01' }).success).toBe(true);
   });
 });
+
+describe('GET /unidentified/:id (web) — location display form', () => {
+  it('shows each stored location text in the §7.29 form; free text passes through; records untouched', async () => {
+    const { service, repo } = build();
+    repo.events = [
+      { ...poolEvent(1n, '2026-06-01T12:00:00Z'), locationName: '1 mi N of Florence, KY' },
+      { ...poolEvent(2n, '2026-06-01T13:00:00Z', 1), locationName: 'Teston, Vaughan, Canada' },
+    ];
+    const detail = await service.get('seg-1');
+    expect(detail.events.map((event) => event.locationName)).toEqual(['1mi N KY Florence', 'Teston, Vaughan, Canada']);
+    expect(repo.events[0].locationName).toBe('1 mi N of Florence, KY');
+  });
+});

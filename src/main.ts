@@ -41,7 +41,7 @@ export function configureApp(app: INestApplication): AppConfigService {
   app.enableCors({
     origin: config.corsOrigins,
     credentials: true,
-    exposedHeaders: ['x-trace-id', 'x-request-id'],
+    exposedHeaders: ['x-trace-id', 'x-request-id', 'server-timing'],
   });
   app.setGlobalPrefix(config.get('API_PREFIX'), {
     exclude: ['health/live', 'health/ready', 'health/deep', 'metrics'],

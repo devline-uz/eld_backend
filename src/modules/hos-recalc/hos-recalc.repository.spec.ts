@@ -102,7 +102,21 @@ describe('HosRecalcRepository', () => {
     expect(sql.sql).toContain('e."id"');
     expect(sql.sql).toMatch(/LIMIT \?::int/);
     expect(sql.sql).not.toMatch(/SELECT \*/);
+    // Upper bound as a UTC timestamp — a bare Date param is session-TimeZone skewed.
+    expect(sql.sql).toContain(`"eventDateTime" <= (?::timestamptz AT TIME ZONE 'UTC')`);
     expect(sql.values).toEqual([['a', 'b'], ['2025-01-05T05:00:00.000Z', '2025-01-05T08:00:00.000Z'], to, 2001]);
+  });
+
+  it('open-driving sweep bounds eventDateTime with UTC timestamps (session-TimeZone independent)', async () => {
+    prisma.$queryRaw.mockResolvedValue([]);
+    const since = new Date('2025-01-14T00:00:00Z');
+    const now = new Date('2025-01-15T00:00:00Z');
+    await repo.findOpenDrivingDrivers(since, now);
+    const sql = (prisma.$queryRaw.mock.calls[0] as unknown[])[0] as { sql: string; values: unknown[] };
+    expect(sql.sql).toContain(
+      `e."eventDateTime" >= (?::timestamptz AT TIME ZONE 'UTC') AND e."eventDateTime" <= (?::timestamptz AT TIME ZONE 'UTC')`,
+    );
+    expect(sql.values).toEqual([since, now]);
   });
 
   it('B-055: the batched daily-log read selects only the recap columns', async () => {

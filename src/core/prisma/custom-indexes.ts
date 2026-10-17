@@ -107,6 +107,12 @@ export const CUSTOM_INDEXES: readonly CustomIndex[] = [
     why: 'duty-status / PC-YM records (eventType 1, 3) per driver for the batched HOS clocks (LV-01, partial index)',
   },
   {
+    name: 'EldEvent_vehicleId_eventDateTime_located_idx',
+    table: 'EldEvent',
+    migration: '20261017120000_live_fleet_located_event_index',
+    why: 'latest ACTIVE located record per vehicle for GET /live/fleet — silent units no longer walk their whole history (LV-02, partial index)',
+  },
+  {
     name: 'Driver_username_lower_live_key',
     table: 'Driver',
     migration: '20261016090000_driver_username_trailer_number_ci_unique',

@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import type { DailyLog, Driver, EldEvent, HosViolation, UnidentifiedSegment } from '@prisma/client';
 import { BaseRepository, ModelDelegate } from '../../core/prisma/base.repository';
 import { PrismaService } from '../../core/prisma/prisma.service';
+import { utcTimestamp } from '../../core/prisma/sql-time';
 import { findAdverseInvokedDays } from '../drivers/lib/adverse-driving';
 
 /** LIVE-001 — `HosViolation.resolutionNote` of a row the recalculation cleared (≤ 60 chars, as a human note). */
@@ -143,7 +144,7 @@ export class HosRecalcRepository extends BaseRepository<
         SELECT "id", "recordStatus", "supersedesId", "eventType", "eventCode", "eventDateTime", "eventSequenceId", "locationPrecisionMi"
         FROM "EldEvent"
         WHERE "driverId" = w."driverId" AND "recordStatus" IN (1, 2) AND "eventType" IN (1, 3)
-          AND "eventDateTime" >= w."fromIso"::timestamp AND "eventDateTime" <= ${to}
+          AND "eventDateTime" >= w."fromIso"::timestamp AND "eventDateTime" <= ${utcTimestamp(to)}
         ORDER BY "eventDateTime" ASC, "eventSequenceId" ASC
         LIMIT ${perDriverLimit}::int
       ) e
@@ -338,7 +339,7 @@ export class HosRecalcRepository extends BaseRepository<
         FROM "EldEvent" e
         JOIN "Driver" d ON d."id" = e."driverId"
         WHERE e."eventType" = 1 AND e."recordStatus" = 1
-          AND e."eventDateTime" >= ${since} AND e."eventDateTime" <= ${now}
+          AND e."eventDateTime" >= ${utcTimestamp(since)} AND e."eventDateTime" <= ${utcTimestamp(now)}
           AND d."deletedAt" IS NULL AND d."status" = 'ACTIVE'
         ORDER BY e."driverId", e."eventDateTime" DESC, e."eventSequenceId" DESC
       ) last

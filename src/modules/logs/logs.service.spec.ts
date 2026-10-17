@@ -1503,6 +1503,47 @@ describe('MR-12 / MR-13 / MR-16 — GET /mobile/logs day extras', () => {
   });
 });
 
+describe('web display of stored location texts (location-display.ts)', () => {
+  const NOW_DISPLAY = new Date('2026-06-02T12:00:00Z');
+  function seeded() {
+    const built = build();
+    built.repo.events = [
+      { ...evt({ id: 1n, at: '2026-06-01T12:00:00Z', code: 4 }), locationName: '2 mi E of Richmond, IN' },
+      { ...evt({ id: 2n, at: '2026-06-01T16:00:00Z', code: 1 }), locationName: 'Teston, Vaughan, Canada' },
+    ];
+    return built;
+  }
+
+  it('getDayView (web) shows the §7.29 form in graph and events; free text passes through', async () => {
+    const { service } = seeded();
+    const view = await service.getDayView(DRIVER, '2026-06-01', NOW_DISPLAY);
+    expect(view.graph.find((segment) => segment.status === 'ON')).toMatchObject({ locationDescription: '2mi E IN Richmond' });
+    expect(view.events[0]).toMatchObject({ locationName: '2mi E IN Richmond', locationDescription: '2mi E IN Richmond' });
+    expect(view.events[1]).toMatchObject({ locationName: 'Teston, Vaughan, Canada', locationDescription: 'Teston, Vaughan, Canada' });
+  });
+
+  it('getEvents with displayLocations (web) normalises; without it (internal / reports) it is verbatim', async () => {
+    const { service } = seeded();
+    const web = await service.getEvents(DRIVER, '2026-06-01', NOW_DISPLAY, undefined, { displayLocations: true });
+    expect(web.events[0]).toMatchObject({ locationName: '2mi E IN Richmond', locationDescription: '2mi E IN Richmond' });
+    const raw = await service.getEvents(DRIVER, '2026-06-01', NOW_DISPLAY);
+    expect(raw.events[0]).toMatchObject({ locationName: '2 mi E of Richmond, IN', locationDescription: '2 mi E of Richmond, IN' });
+  });
+
+  it('getDay (mobile GET /mobile/logs) keeps the stored text verbatim', async () => {
+    const { service } = seeded();
+    const day = await service.getDay(DRIVER, '2026-06-01', NOW_DISPLAY);
+    expect(day.events[0]).toMatchObject({ locationName: '2 mi E of Richmond, IN', locationDescription: '2 mi E of Richmond, IN' });
+  });
+
+  it('a 10-mile precision (PC) record is shown at 10-mile precision', async () => {
+    const { service, repo } = build();
+    repo.events = [{ ...evt({ id: 1n, at: '2026-06-01T12:00:00Z', code: 4 }), locationName: '12 mi E of Columbus, OH', locationPrecisionMi: 10 } as FakeEvent];
+    const web = await service.getEvents(DRIVER, '2026-06-01', NOW_DISPLAY, undefined, { displayLocations: true });
+    expect(web.events[0]).toMatchObject({ locationName: '10mi E OH Columbus', locationDescription: '10mi E OH Columbus' });
+  });
+});
+
 describe('W-08 — the record table and the grid read the same RODS day', () => {
   it('getEvents returns the record carried in over midnight, so a 24:00 grid never sits over an empty table', async () => {
     const { service, repo } = build();
