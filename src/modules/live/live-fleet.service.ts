@@ -4,7 +4,8 @@ import type { HosState } from '../hos/hos.types';
 import { HosRecalcService } from '../hos-recalc/hos-recalc.service';
 import { withEffectiveAdverse } from '../drivers/lib/adverse-driving';
 import { LiveFleetRepository } from './live-fleet.repository';
-import { compareUnitNumbers, toLiveFleetUnit, type LiveFleetResponse } from './live-fleet.mapper';
+import { AppException, ERROR_CODES } from '../../common/errors';
+import { compareUnitNumbers, toLiveFleetUnit, type LiveFleetResponse, type LiveFleetUnit } from './live-fleet.mapper';
 
 /** tz.md §19 — "live fleet 10 sec" cache. The web polls every 30 s (web/tz.md §6.4). */
 export const LIVE_FLEET_CACHE_MS = 10_000;
@@ -33,6 +34,18 @@ export class LiveFleetService {
       if (this.cache === entry) this.cache = null;
     });
     return value;
+  }
+
+  /**
+   * `GET /live/fleet/:vehicleId` — one unit's full row, read from the same cached snapshot as the
+   * list (so a list poll and a detail poll inside the TTL cost one computation, and both always
+   * agree). A deleted or unknown unit is a 404, exactly as the list leaves it out.
+   */
+  async unit(vehicleId: string, now: Date = new Date()): Promise<LiveFleetUnit> {
+    const snapshot = await this.snapshot(now);
+    const unit = snapshot.items.find((u) => u.vehicleId === vehicleId);
+    if (!unit) throw new AppException(ERROR_CODES.VEHICLE_NOT_FOUND, 'Vehicle not found.', 404);
+    return unit;
   }
 
   private async build(now: Date): Promise<LiveFleetResponse> {

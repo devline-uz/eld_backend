@@ -87,6 +87,21 @@ describe('LiveFleetService.snapshot', () => {
   });
 });
 
+describe('LiveFleetService.unit', () => {
+  it('returns the full row for one unit from the shared cached snapshot', async () => {
+    const { repo, service } = setup();
+    await service.snapshot(NOW);
+    const unit = await service.unit('veh_101', new Date(NOW.getTime() + 1_000));
+    expect(unit).toMatchObject({ vehicleId: 'veh_101', unitNumber: '101', driveRemainingSec: 39_600, eldSerial: 'PT30_A86E', odometerMi: 50_100 });
+    expect(repo.findVehicles).toHaveBeenCalledTimes(1);
+  });
+
+  it('is a VEHICLE_NOT_FOUND 404 for a unit outside the snapshot (unknown or deleted)', async () => {
+    const { service } = setup();
+    await expect(service.unit('veh_nope', NOW)).rejects.toMatchObject({ status: 404, code: 'VEHICLE_NOT_FOUND' });
+  });
+});
+
 describe('LiveFleetService — invalid stored timezone (BE-003)', () => {
   it('leaves the bad driver out of the HOS batch instead of losing every unit\'s clocks', async () => {
     const { repo, hos, service } = setup();
@@ -108,6 +123,38 @@ describe('LiveFleetController', () => {
     expect(Reflect.getMetadata('path', LiveFleetController.prototype.fleet)).toBe('fleet');
     const live = { snapshot: jest.fn().mockResolvedValue({ items: [], generatedAt: 'x' }) };
     await expect(new LiveFleetController(live as never).fleet()).resolves.toEqual({ items: [], generatedAt: 'x' });
+  });
+
+  it('?view=list returns slim rows without the detail-card-only fields; default stays full', async () => {
+    const row = { vehicleId: 'v', unitNumber: '1', driverPhone: '+1 555', odometerMi: 1, driveRemainingSec: 2, shiftEndsAt: 'x', eldSerial: 'S', dutyStatus: 'DRIVING', bleState: 'CONNECTED' };
+    const live = { snapshot: jest.fn().mockResolvedValue({ items: [row], generatedAt: 'x' }) };
+    const ctl = new LiveFleetController(live as never);
+    const reader = { permissions: { liveFleet: 'READ', drivers: 'READ' } } as never;
+    await expect(ctl.fleet(reader, { view: 'list' })).resolves.toEqual({
+      items: [{ vehicleId: 'v', unitNumber: '1', dutyStatus: 'DRIVING', bleState: 'CONNECTED' }],
+      generatedAt: 'x',
+    });
+    await expect(ctl.fleet(reader, { view: 'full' })).resolves.toEqual({ items: [row], generatedAt: 'x' });
+    await expect(ctl.fleet(reader)).resolves.toEqual({ items: [row], generatedAt: 'x' });
+  });
+
+  it('GET /live/fleet/:vehicleId requires liveFleet:READ, returns the full row and hides driverPhone without drivers READ', async () => {
+    expect(Reflect.getMetadata(PERM_METADATA_KEY, LiveFleetController.prototype.unit)).toEqual({ key: 'liveFleet', level: 'READ' });
+    expect(Reflect.getMetadata('path', LiveFleetController.prototype.unit)).toBe('fleet/:vehicleId');
+    const row = { vehicleId: 'v', driverPhone: '+1 555', driveRemainingSec: 60, shiftEndsAt: 'x', eldSerial: 'S', odometerMi: 9 };
+    const live = { unit: jest.fn().mockResolvedValue(row) };
+    const ctl = new LiveFleetController(live as never);
+    const viewer = { permissions: { liveFleet: 'READ' } } as never;
+    const reader = { permissions: { liveFleet: 'READ', drivers: 'READ' } } as never;
+    await expect(ctl.unit('v', reader)).resolves.toEqual(row);
+    await expect(ctl.unit('v', viewer)).resolves.toEqual({ ...row, driverPhone: null });
+    expect(live.unit).toHaveBeenCalledWith('v');
+  });
+
+  it('GET /live/fleet/:vehicleId propagates the 404 for an unknown unit', async () => {
+    const { service } = setup();
+    const ctl = new LiveFleetController(service);
+    await expect(ctl.unit('veh_nope')).rejects.toMatchObject({ status: 404 });
   });
 
   it('CODE-053 — hides driverPhone without drivers READ', async () => {

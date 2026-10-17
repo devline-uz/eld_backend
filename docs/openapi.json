@@ -66378,7 +66378,21 @@
     "/api/live/fleet": {
       "get": {
         "operationId": "LiveFleetController_fleet",
-        "parameters": [],
+        "parameters": [
+          {
+            "name": "view",
+            "required": false,
+            "in": "query",
+            "description": "'full' (default) — every field below. 'list' — the web's slim rows: driverPhone, odometerMi, driveRemainingSec, shiftEndsAt and eldSerial are omitted (the selected-unit card reads them from GET /live/fleet/{vehicleId}).",
+            "schema": {
+              "enum": [
+                "full",
+                "list"
+              ],
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "UI-003/UI-004 (additive): recordStatus 'ACTIVE'|'INACTIVE'|'OUT_OF_SERVICE' (stored Vehicle.status); connectivity 'NO_DEVICE'|'ELD_OFFLINE'|'ONLINE' (ELD_OFFLINE = silent > 30 min); isStale boolean (duty status past its plausibility cap, or a DRIVING/ON_DUTY unit whose ELD went silent); staleSince ISO string|null. dutyStatus semantics: a stale assigned D/ON unit reads ELD_OFFLINE; an OUT_OF_SERVICE/INACTIVE record reads INACTIVE. speedMph is null when telemetry is older than 30 min. QA LIVE-002 (additive): driverDutyStatus 'DRIVING'|'ON_DUTY'|'SLEEPER'|'OFF_DUTY'|null — the assigned driver's own HOS status (Drivers roster vocabulary), last known even when the unit reads ELD_OFFLINE/INACTIVE; null with no driver or no HOS state.",
@@ -66575,6 +66589,274 @@
           }
         ],
         "summary": "Current snapshot of every unit: last known position, speed, driver, duty status, HOS clocks, ELD link.",
+        "tags": [
+          "live"
+        ],
+        "x-figma-screens": [
+          {
+            "id": "web/live-fleet",
+            "title": "Live Fleet",
+            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.7"
+          },
+          {
+            "id": "web/fleet-dashboard",
+            "title": "Fleet Dashboard",
+            "source": "eld.docs/web/OneBook-ELD-admin.pdf p.5"
+          }
+        ]
+      }
+    },
+    "/api/live/fleet/{vehicleId}": {
+      "get": {
+        "operationId": "LiveFleetController_unit",
+        "parameters": [
+          {
+            "name": "vehicleId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Same row as one GET /live/fleet item (view=full); driverPhone is null without drivers READ (CODE-053).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "vehicleId": "veh_1",
+                    "unitNumber": "101",
+                    "driverId": "drv_1",
+                    "driverName": "John Smith",
+                    "driverPhone": "+1 334 765 4888",
+                    "dutyStatus": "ON_DUTY",
+                    "speedMph": 0,
+                    "headingDeg": 274,
+                    "odometerMi": 993589,
+                    "lat": 38.99,
+                    "lon": -84.63,
+                    "locationLabel": "0.64 mi N of Florence, KY",
+                    "lastSeenAt": "2026-09-12T15:39:00.000Z",
+                    "driveRemainingSec": 0,
+                    "shiftEndsAt": "2026-09-12T15:59:34.000Z",
+                    "eldSerial": "PT30_A86E",
+                    "bleState": "CONNECTED",
+                    "driverDutyStatus": "DRIVING",
+                    "recordStatus": "ACTIVE",
+                    "connectivity": "ONLINE",
+                    "isStale": false,
+                    "staleSince": null
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHORIZED — Authentication required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 401,
+                    "code": "UNAUTHORIZED",
+                    "message": "Authentication required.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN — Insufficient permissions for this action.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 403,
+                    "code": "FORBIDDEN",
+                    "message": "Insufficient permissions for this action.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "VEHICLE_NOT_FOUND — Vehicle not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 404,
+                    "code": "VEHICLE_NOT_FOUND",
+                    "message": "Vehicle not found.",
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "VALIDATION_FAILED — Request validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "type": "number"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "Stable code from common/errors/codes.ts (append-only)."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "traceId": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "example": {
+                    "statusCode": 422,
+                    "code": "VALIDATION_FAILED",
+                    "message": "Request validation failed.",
+                    "details": {
+                      "issues": [
+                        {
+                          "path": "field",
+                          "code": "invalid_type",
+                          "message": "Required"
+                        }
+                      ]
+                    },
+                    "traceId": "01J8X3QK9Z0000000000000000",
+                    "timestamp": "2026-09-11T15:41:00.000Z"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "One unit of the live snapshot, every field (the Live Fleet selected-unit card).",
         "tags": [
           "live"
         ],
